@@ -1169,7 +1169,7 @@ impl BooksApp {
         source: &str,
     ) -> f64 {
         let theme = ctx.theme;
-        let label = ui::i18n::I18nManager::lookup_plain("arriving-retry");
+        let label = crate::resource::CATALOG.t("arriving-retry");
         let y = y + f64::from(theme.tokens.spacing.rhythm.related);
         let width = button_width(ctx, &label, None, ControlSize::Small);
         let height = ButtonFace::height(ControlSize::Small, theme);

@@ -676,7 +676,14 @@ function mcpClient() {
   const send = (message, timeoutMs = 180000) => new Promise((resolve, reject) => {
     if (closed) { reject(new Error(`tilo mcp is not running: ${said.slice(-400)}`)); return; }
     const requestId = ++id;
-    waiting.set(requestId, resolve);
+    // What a fresh `tilo mcp` answers first is where an agent's return is spent when it is slow:
+    // its entry into the workspace, or the call itself. The page shows it only after both.
+    const askedAt = Date.now();
+    const name = message.params?.name ?? message.method;
+    waiting.set(requestId, answer => {
+      log(`tilo mcp ${name} answered in ${((Date.now() - askedAt) / 1000).toFixed(1)} s`);
+      resolve(answer);
+    });
     child.stdin.write(`${JSON.stringify({jsonrpc: '2.0', id: requestId, ...message})}\n`);
     setTimeout(() => {
       if (!waiting.has(requestId)) return;
@@ -765,6 +772,21 @@ async function settled(agent, answer, followed = () => {}) {
     await sleep(1000);
     answer = await agent.call('tilo_status', {invocation_id: id});
     followed(answer);
+  }
+  // A batch answers each call on a line of its own ("[1] path: ok", "[2] path: pending ID: …"):
+  // each call still pending is asked after until it is done, and the batch is answered as its
+  // calls came out.
+  if (/^\[\d+\] /m.test(answer.text) && /: pending \S+:/.test(answer.text)) {
+    const lines = await Promise.all(answer.text.split('\n').map(async line => {
+      const id = (line.match(/^\[\d+\] .*?: pending (\S+):/) ?? [])[1];
+      if (!id) return {line, failed: false};
+      const head = line.slice(0, line.indexOf(': pending '));
+      const done = await settled(agent, {failed: true, text: `pending ${id}: not finished yet`}, followed);
+      const ok = verdict(done) === 'ok';
+      return {line: `${head}: ${ok ? 'ok' : done.text.split('\n')[0]}`, failed: !ok};
+    }));
+    const failed = lines.some(entry => entry.failed) || /: (failed|refused)\b/i.test(answer.text);
+    answer = {...answer, failed, text: lines.map(entry => entry.line).join('\n')};
   }
   return answer;
 }

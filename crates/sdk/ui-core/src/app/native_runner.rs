@@ -1767,7 +1767,7 @@ impl AppHandler {
         }
         let logical_size = native_floating_logical_size(rect);
         let attributes = Window::default_attributes()
-            .with_title(format!("Floating · {id}"))
+            .with_title(crate::i18n::widget_format("floating-window-title", &[]))
             .with_decorations(false)
             .with_resizable(false)
             .with_transparent(true)

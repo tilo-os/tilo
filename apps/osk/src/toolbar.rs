@@ -200,7 +200,7 @@ impl OskToolbarItem {
             Self::new(
                 "dismiss",
                 Some(Icon::ChevronDown),
-                &ui::i18n::I18nManager::lookup_plain("osk-toolbar-dismiss"),
+                &crate::i18n::t("osk-toolbar-dismiss"),
                 OskToolbarAction::Dismiss,
             ),
             // No park item: a terminal's row already spends its width on the

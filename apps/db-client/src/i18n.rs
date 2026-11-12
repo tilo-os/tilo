@@ -69,7 +69,7 @@ mod tests {
             )
             .expect("the German catalogue parses");
             for id in ids(DE_FTL) {
-                let text = ui::i18n::I18nManager::lookup_plain(&id);
+                let text = ui::i18n::I18nManager::lookup(&id, None);
                 assert!(!text.trim().is_empty(), "{id} says nothing in German");
                 assert_ne!(text, id, "{id} falls back to its key");
             }

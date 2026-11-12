@@ -19,7 +19,6 @@ pub mod locales;
 
 use std::collections::HashMap;
 use std::ops::Range;
-use ui::i18n::I18nManager;
 use ui::prelude::*;
 
 /// How many rows the source reports. None is allocated until it is in view.
@@ -201,7 +200,7 @@ impl ResourceApp for App {
             48.0,
             move |_, index, key| {
                 let height = if index % 5 == 0 { 72.0 } else { 44.0 };
-                let label = I18nManager::format("list-row", &[("id", (*key).into())]);
+                let label = crate::locales::CATALOG.t_args("list-row", &[("id", (*key).into())]);
                 let open = actions.bind_invocation(
                     Button::new(&format!("open-{key}"), "list-open"),
                     Feed::OPEN_ACTIVITY.with(*key),
@@ -224,8 +223,10 @@ impl ResourceApp for App {
         let recent = cx
             .text(|feed| {
                 feed.opened.first().map_or_else(
-                    || I18nManager::lookup_plain("list-none-opened"),
-                    |id| I18nManager::format("list-last-opened", &[("id", (*id).into())]),
+                    || crate::locales::CATALOG.t("list-none-opened"),
+                    |id| {
+                        crate::locales::CATALOG.t_args("list-last-opened", &[("id", (*id).into())])
+                    },
                 )
             })
             .with_id("last-opened");

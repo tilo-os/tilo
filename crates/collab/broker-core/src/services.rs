@@ -212,30 +212,6 @@ pub struct LaunchContent<'a> {
     pub author: Option<&'a str>,
 }
 
-/// Original signed package evidence retained by the host for an actual launch.
-/// This has no wire decoder and is never supplied by the joining application.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ApplicationCreationEvidence {
-    pub package_hash: String,
-    pub declared_kinds: Vec<String>,
-}
-
-impl ApplicationCreationEvidence {
-    #[must_use]
-    pub fn valid(&self) -> bool {
-        self.package_hash.len() == 64
-            && self
-                .package_hash
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-            && !self.declared_kinds.is_empty()
-            && self.declared_kinds.len() <= 256
-            && self.declared_kinds.iter().all(|kind| {
-                !kind.is_empty() && kind.len() <= 256 && !kind.chars().any(char::is_control)
-            })
-    }
-}
-
 /// One admitted launch's actual startup observation. Dropping an unanswered one retires its
 /// host-side subscription; enqueueing a worker is never sufficient for this receipt.
 pub struct LaunchReadiness {
@@ -374,9 +350,8 @@ impl Drop for LaunchReadiness {
 }
 
 /// Original host-retained facts for one authenticated live launch.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct AuthenticatedApplicationLaunch {
-    pub creation: Option<ApplicationCreationEvidence>,
     pub continuation_instance: Option<u64>,
     /// The ticket that launch answered ([`Launched::Started`]), from the host's own launch
     /// record. Correlation only, never authority.

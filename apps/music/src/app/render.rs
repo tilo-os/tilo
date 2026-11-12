@@ -2429,10 +2429,11 @@ impl Music {
                 .or_else(|| self.lib.artist(id).map(|a| a.name.clone()))
                 .unwrap_or_else(|| "Artist".to_string()),
             View::Playlist(id) => self
-                .lib
-                .playlist(id)
-                .map(|p| p.name.clone())
-                .unwrap_or_default(),
+                .playlist_pages
+                .get(id)
+                .map(|page| page.title.clone())
+                .or_else(|| self.lib.playlist(id).map(|p| p.name.clone()))
+                .unwrap_or_else(|| crate::i18n::t("music-view-playlist")),
         }
     }
 

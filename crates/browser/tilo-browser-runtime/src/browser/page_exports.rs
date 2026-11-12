@@ -249,7 +249,7 @@ pub fn asset_requests(id: u64) -> Result<String, JsValue> {
         if !m.blob_waiting.borrow().is_empty()
             && let Some(peer) = m.peer
         {
-            crate::replication::ask_content(peer);
+            crate::replicated::ask_content(peer);
         }
         serde_json::to_string(&requests).map_err(error)
     })

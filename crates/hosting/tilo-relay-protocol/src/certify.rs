@@ -266,7 +266,7 @@ pub struct PageDeparture {
     pub destination: String,
     /// The filled page as the person allows it: a content address of a PNG in
     /// the workspace's store, which their device reads to see what leaves.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub picture: Option<String>,
 }
 
@@ -334,8 +334,10 @@ pub struct PendingConfirmation {
     /// Unanswered by then, the question is a refusal; ns since the epoch.
     pub expires_at_ns: u64,
     /// The page departure it asks about, when it asks about one: what leaves a
-    /// page nobody stands at, and the filled page it leaves from.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// page nobody stands at, and the filled page it leaves from. Written even
+    /// when there is none: a question is encoded by position (postcard), so a
+    /// field left out is one its reader still expects.
+    #[serde(default)]
     pub page: Option<PageDeparture>,
 }
 
@@ -477,12 +479,11 @@ mod tests {
         );
     }
 
-    /// A question from a host that predates the page a departure leaves from
-    /// reads as one about no page, and one that names a page is read back as
-    /// it was written.
+    /// A question that names no page reads as one, and one that names a page
+    /// is read back as it was written.
     #[test]
     fn a_question_reads_the_page_it_names_and_one_that_names_none() {
-        let older: PendingConfirmation = serde_json::from_value(serde_json::json!({
+        let plain: PendingConfirmation = serde_json::from_value(serde_json::json!({
             "id": serde_json::json!(vec![0u8; 32]),
             "agent_id": "agent",
             "agent_label": "Jane Doe's agent",
@@ -497,8 +498,8 @@ mod tests {
             "expires_at_ns": 7,
         }))
         .expect("a question without a page is one");
-        assert_eq!(older.page, None);
-        assert_eq!(older.page_origin(), None);
+        assert_eq!(plain.page, None);
+        assert_eq!(plain.page_origin(), None);
 
         let departure = PageDeparture {
             page: "https://visa.example".into(),
@@ -509,7 +510,7 @@ mod tests {
         };
         let written = serde_json::to_value(PendingConfirmation {
             page: Some(departure.clone()),
-            ..older
+            ..plain
         })
         .expect("the question encodes");
         assert_eq!(written["page"]["method"], "POST");

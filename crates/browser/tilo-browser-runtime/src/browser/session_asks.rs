@@ -47,7 +47,7 @@ impl Desktop {
         );
         if let Some(peer) = self.asks.peer {
             for (node, may) in permitted {
-                crate::replication::permit(peer, &node, may);
+                crate::replicated::permit(peer, &node, may);
             }
         }
         for ask in self.openings.take_node_asks() {
@@ -62,9 +62,9 @@ impl Desktop {
             let permitted = std::sync::Arc::clone(&self.asks.permitted);
             let woken = std::sync::Arc::clone(&self.shared.woken);
             let asked_node = node.clone();
-            let sent = crate::replication::host_then(
+            let sent = crate::replicated::host_then(
                 peer,
-                |workspace| node_request(workspace, node, action),
+                Box::new(|workspace| node_request(workspace, node, action)),
                 Box::new(move |reply| {
                     // What the workspace permits beyond the person's role (an
                     // item shared with them to edit) reaches their windows.

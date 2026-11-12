@@ -148,3 +148,4 @@ music-kind-album = Album
 music-kind-artist = Künstler
 music-kind-playlist = Playlist
 music-detail-load-failed = { $kind } konnte nicht geladen werden
+music-view-playlist = Wiedergabeliste

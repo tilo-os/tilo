@@ -42,7 +42,7 @@ const RECORD: &str = "chat";
 const HEARD: f32 = 0.02;
 
 fn public(seed: u8) -> EndpointId {
-    iroh::SecretKey::from_bytes(&[seed; 32]).public()
+    test_relay::endpoint_key(seed).public()
 }
 
 /// The person a device is a device of, in the hex everyone here knows them by.
@@ -56,11 +56,7 @@ fn person(seed: u8) -> String {
 
 /// One device's key, as the workspace's governance names it.
 fn key(seed: u8) -> Ed25519PublicKey {
-    Ed25519PublicKey::from_bytes(
-        ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
-            .verifying_key()
-            .to_bytes(),
-    )
+    Ed25519PublicKey::from_bytes(test_relay::signing_key(seed).verifying_key().to_bytes())
 }
 
 /// The person all of a call's devices are devices of.
@@ -108,18 +104,13 @@ fn private_home() -> tempfile::TempDir {
 /// One of the person's devices, on its own loopback endpoint, taking part in the collaboration
 /// plane as its certified self.
 fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Client {
-    let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
-    let mut cert = tilo_user_identity::DeviceCert {
-        user_public_key: person.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: label.to_owned(),
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: tilo_clock::unix_now_ns(),
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, person).expect("the person signs their device");
+    let key = test_relay::signing_key(seed);
+    let cert = test_relay::certified(
+        person,
+        &key,
+        label,
+        tilo_user_identity::DeviceCapabilities::member(),
+    );
     Client::start(
         Entry {
             identity: Some(HostIdentity::kept(cert, key)),
@@ -128,7 +119,7 @@ fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Client {
             continuity: Continuity::default(),
             wake: Arc::new(|| {}),
             fabric: None,
-            relays: tilo_endpoint_reachability::relays(),
+            relays: test_relay::loopback(),
         },
         None,
         None,
@@ -178,7 +169,7 @@ fn keys(device: u8, vault: u8, admitted: &[u8]) -> (ChannelKeyProvider, tempfile
                 directory.path().join("channels"),
             )),
             vault: VaultKey::new([vault; 32]),
-            signer: std::sync::Arc::new(ed25519_dalek::SigningKey::from_bytes(&[device; 32])),
+            signer: std::sync::Arc::new(test_relay::signing_key(device)),
             role: tilo_channels::Role::Participant,
         },
         Box::new(Directory {

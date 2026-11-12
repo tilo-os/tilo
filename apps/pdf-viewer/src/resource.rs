@@ -25,7 +25,7 @@ use crate::markup::{
 };
 use crate::model::{
     AnnoKind, Annotation, Comment, FormEntry, GeomSpace, HighlightColor, MARGIN, PAGE_H, PAGE_W,
-    PdfAnchor, PtRect, Reply, SignatureInk,
+    PdfAnchor, PtRect, Reply, SignatureInk, annotation_label,
 };
 
 /// The most text one comment or reply holds.
@@ -732,10 +732,13 @@ impl PdfMarkup {
             .into_iter()
             .map(|annotation| {
                 SearchEntry::new(
-                    format!("{} annotation", annotation.kind.type_key()),
-                    format!(
-                        "Page {} annotated by {}",
-                        annotation.page, annotation.author
+                    annotation_label(&annotation.kind),
+                    crate::t_args(
+                        "pdf-search-annotation",
+                        &[
+                            ("kind", annotation_label(&annotation.kind).into()),
+                            ("page", annotation.page.to_string().into()),
+                        ],
                     ),
                 )
                 .anchored(anchor("annotations", &annotation.id))
@@ -748,15 +751,30 @@ impl PdfMarkup {
                 .collect::<Vec<_>>()
                 .join("\n");
             entries.push(
-                SearchEntry::new(format!("Comment: {}", comment.author), text)
-                    .anchored(anchor("comments", &thread.id)),
+                SearchEntry::new(
+                    crate::t_args(
+                        "pdf-search-comment",
+                        &[("author", comment.author.clone().into())],
+                    ),
+                    text,
+                )
+                .anchored(anchor("comments", &thread.id)),
             );
         }
         for signature in self.list_signatures() {
             entries.push(
                 SearchEntry::new(
-                    format!("Signature by {}", signature.signer),
-                    format!("Page {} signed on {}", signature.page, signature.date),
+                    crate::t_args(
+                        "pdf-a11y-signature-by",
+                        &[("signer", signature.signer.clone().into())],
+                    ),
+                    crate::t_args(
+                        "pdf-search-signed",
+                        &[
+                            ("page", signature.page.to_string().into()),
+                            ("date", signature.date.clone().into()),
+                        ],
+                    ),
                 )
                 .anchored(anchor("signatures", &signature.id)),
             );
@@ -844,9 +862,12 @@ impl ResourceApp for PdfViewerShell {
         if !state.source_name.is_empty() {
             state.source_name.clone()
         } else if state.pages.is_empty() {
-            "PDF Viewer".into()
+            crate::t("pdf-title")
         } else {
-            format!("{} pages", state.pages.len())
+            crate::t_args(
+                "pdf-search-pages",
+                &[("count", state.pages.len().to_string().into())],
+            )
         }
     }
 
@@ -909,16 +930,16 @@ fn workspace_document(
     } else if let Some(name) = &document.name {
         name.clone()
     } else {
-        "PDF document".to_owned()
+        crate::t("pdf-empty-the-document")
     };
     let pages = document.state.pages.len();
     crate::app::WorkspaceDocument {
         target: document.uri(),
         name,
-        caption: match pages {
-            0 => "No pages yet".to_owned(),
-            1 => "1 page".to_owned(),
-            count => format!("{count} pages"),
+        caption: if pages == 0 {
+            crate::t("pdf-search-no-pages")
+        } else {
+            crate::t_args("pdf-search-pages", &[("count", pages.to_string().into())])
         },
     }
 }

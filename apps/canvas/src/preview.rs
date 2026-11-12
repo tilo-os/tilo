@@ -120,7 +120,7 @@ impl VersionPreview {
             );
         }
         // A badge at the top says this is not the live artwork.
-        let label = ui::i18n::I18nManager::lookup_plain("canvas-preview-banner");
+        let label = crate::locales::CATALOG.t("canvas-preview-banner");
         let width = ui::widget::BadgeFace::intrinsic_width(&label, text, theme);
         let height = ui::widget::BadgeFace::height(theme);
         let pad = f64::from(theme.tokens.spacing.s4);

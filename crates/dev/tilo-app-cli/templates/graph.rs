@@ -43,7 +43,7 @@ fn screens(cx: &ViewCx<Projects>) -> Element {
     cx.route_graph_text(context.values(), "draft", Projects::paths().draft);
     match crate::screens::router_with("main", &Theme::default(), context) {
         Ok(router) => Box::new(router),
-        Err(error) => Box::new(Banner::error(ui::i18n::I18nManager::format(
+        Err(error) => Box::new(Banner::error(crate::locales::CATALOG.t_args(
             "graph-load-error",
             &[("error", error.to_string().as_str().into())],
         ))),

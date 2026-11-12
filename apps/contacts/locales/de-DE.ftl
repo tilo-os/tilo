@@ -93,3 +93,5 @@ contacts-birthday = Geburtstag
 
 contacts-keep-this-card = Diese Karte behalten
 contacts-keep-other-card = Die andere Karte behalten
+contacts-importing = Kontakte werden importiert
+contacts-exporting = Kontakte werden exportiert

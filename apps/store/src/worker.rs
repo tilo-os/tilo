@@ -753,7 +753,7 @@ fn handle(
             let opened = runtime_details(&runtime, registry.as_deref(), state);
             let (label, detail, error) = match &opened {
                 Ok(item) => (
-                    ui::i18n::I18nManager::format(
+                    crate::resource::STORE_CATALOG.t_args(
                         "store-runtime-reviewed",
                         &[("name", ui::i18n::ArgValue::Text(item.name.clone()))],
                     ),
@@ -1128,7 +1128,7 @@ fn browse_remote(id: &str, state: &mut State, snapshots: &Snapshots) -> (bool, O
             }
             state.details.clear();
             sync_authoritative_catalogue(state);
-            let label = ui::i18n::I18nManager::format(
+            let label = crate::resource::STORE_CATALOG.t_args(
                 "store-remote-results",
                 &[
                     ("name", ui::i18n::ArgValue::Text(title)),
@@ -1146,7 +1146,7 @@ fn browse_remote(id: &str, state: &mut State, snapshots: &Snapshots) -> (bool, O
             (alive, Some(Ok(Finished::status(label))))
         }
         Err(error) => {
-            let label = ui::i18n::I18nManager::format(
+            let label = crate::resource::STORE_CATALOG.t_args(
                 "store-remote-error",
                 &[("error", ui::i18n::ArgValue::Text(error))],
             );
@@ -1234,7 +1234,7 @@ fn update_all(
     for (index, item) in items.iter().enumerate() {
         let progress = Snapshot {
             items: state.base_items.clone(),
-            status_line: ui::i18n::I18nManager::format(
+            status_line: crate::resource::STORE_CATALOG.t_args(
                 "store-update-all-progress",
                 &[
                     (
@@ -1289,11 +1289,12 @@ fn update_all(
 }
 
 fn update_all_summary(total: usize, failures: &[String]) -> String {
-    use ui::i18n::{ArgValue, I18nManager};
+    use ui::i18n::ArgValue;
     let count = |n: usize| ArgValue::Number(f64::from(u32::try_from(n).unwrap_or(u32::MAX)));
     match failures {
-        [] => I18nManager::format("store-update-all-done", &[("total", count(total))]),
-        [first, rest @ ..] => I18nManager::format(
+        [] => crate::resource::STORE_CATALOG
+            .t_args("store-update-all-done", &[("total", count(total))]),
+        [first, rest @ ..] => crate::resource::STORE_CATALOG.t_args(
             if rest.is_empty() {
                 "store-update-all-failed"
             } else {

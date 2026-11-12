@@ -359,10 +359,13 @@ impl crate::Shared {
         if crate::termination::asked() {
             return;
         }
-        let tree = self.handle.read(Clone::clone);
         let shows = self.notes.records().into_iter().collect::<Vec<_>>();
-        self.activity
-            .record_desk(&tree, crate::activity::now_seconds(), &shows);
+        self.activity.desk().record_at(
+            self.handle.revision(),
+            || self.handle.read(Clone::clone),
+            crate::activity::now_seconds(),
+            &shows,
+        );
     }
 
     /// [`Self::keep_desk`], and write the desk as it looks now rather than

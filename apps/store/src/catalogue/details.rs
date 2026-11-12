@@ -97,11 +97,11 @@ impl Permission {
     #[must_use]
     pub fn label(&self) -> String {
         match self {
-            Self::Folder(folder) => ui::i18n::I18nManager::format(
+            Self::Folder(folder) => crate::resource::STORE_CATALOG.t_args(
                 self.message(),
                 &[("folder", ui::i18n::ArgValue::Text(folder.clone()))],
             ),
-            _ => ui::i18n::I18nManager::lookup_plain(self.message()),
+            _ => crate::resource::STORE_CATALOG.t(self.message()),
         }
     }
 
@@ -257,7 +257,7 @@ fn well_known_folder(place: &str) -> Option<String> {
         "xdg-templates" => "store-folder-templates",
         _ => return None,
     };
-    Some(ui::i18n::I18nManager::lookup_plain(key))
+    Some(crate::resource::STORE_CATALOG.t(key))
 }
 
 /// What an app's page shows beyond its catalogue row.

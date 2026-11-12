@@ -828,9 +828,7 @@ impl AppWindow {
     }
 
     fn show_loading(&mut self) {
-        let loading =
-            ui::widget::EmptyState::new(ui::i18n::I18nManager::lookup_plain("arriving-loading"))
-                .busy();
+        let loading = ui::widget::EmptyState::new(ui::i18n::widget_text("arriving-loading")).busy();
         if let Some(pane) = self.shell_pane() {
             pane.set(Box::new(loading));
         }

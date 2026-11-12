@@ -104,14 +104,6 @@ impl Session {
             launch.follow_render_node(|| self.compositor.render_node(), self.first_frame);
             launch.start_asked_now();
         }
-        // What search reads of the desk is read in turns that have nothing to draw. What arrived
-        // above is drawn first: a window committing the frame it was configured for is answered by
-        // this turn's frame rather than by a turn the index is read in first. A desk that keeps
-        // drawing is still read, every tenth of a second.
-        if !self.compositor.owes_frame() || self.kept_at.elapsed() >= KEEP_INTERVAL {
-            self.kept_at = Instant::now();
-            self.shared.observe();
-        }
         // What a tool handed the desk's input is taken where a device's own input reaches the desk:
         // here, and each time the wait for the frame below is woken, so the frame carries it as it
         // carries a key the person pressed.
@@ -145,7 +137,6 @@ impl Session {
         // What each window shows, as its app holds the record: the note this pass's desk, layout
         // and arrangement are read from.
         self.read_window_notes();
-        self.follow_session_actions();
         self.shared.follow_arrangement(underway);
         self.follow_controllers()?;
         self.follow_displays()?;
@@ -213,6 +204,14 @@ impl Session {
         self.first_frame_presented();
         self.serve_drawn_frame();
         self.follow_desk_over_frame()?;
+        // What search and the session's steps read of what the desk publishes is read once the
+        // frame is out: a key's turn draws what it opens before anything is read, and the reading
+        // never delays a frame. A desk that keeps drawing is still read, every tenth of a second.
+        if !self.compositor.owes_frame() || self.kept_at.elapsed() >= KEEP_INTERVAL {
+            self.kept_at = Instant::now();
+            self.shared.observe();
+            self.follow_session_actions();
+        }
         self.compositor.end_tick();
         Ok(())
     }

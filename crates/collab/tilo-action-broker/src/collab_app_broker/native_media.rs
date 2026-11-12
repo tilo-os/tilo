@@ -64,7 +64,6 @@ pub trait NativeMediaServices: Send + Sync {
 pub(super) struct LocalAppConnection {
     pub(super) app_id: String,
     pub(super) workspace_id: String,
-    pub(super) creation: Option<crate::services::ApplicationCreationEvidence>,
     pub(super) continuation_instance: Option<u64>,
     /// An instance of the app the host runs with no window
     /// ([`crate::services::AuthenticatedApplicationLaunch::windowless`]).
@@ -244,7 +243,6 @@ impl LocalAppConnection {
                 }),
                 app_id,
                 workspace_id,
-                creation: launch.creation,
                 continuation_instance: launch.continuation_instance,
                 windowless: launch.windowless,
                 earlier,

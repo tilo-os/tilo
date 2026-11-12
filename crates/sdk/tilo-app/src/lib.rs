@@ -280,6 +280,7 @@ pub use registry_types as registry;
 pub use serde_json;
 /// Reviewed feedback and durable submission, shared by every host.
 pub use tilo_feedback as feedback;
+mod copy_catalogue;
 pub mod feedback_composer;
 pub mod feedback_read_out;
 /// Files on every target: capability-scoped directories on Linux and macOS,

@@ -269,7 +269,7 @@ impl ResourceApp for App {
 /// the keyboard shortcuts.
 fn sheets(cx: &ViewCx<Artwork>, tools: &tools::Tools) -> Vec<Element> {
     use tools::{FileRequest, Sheet};
-    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let lookup = |key: &str| crate::locales::CATALOG.t(key);
     let close = |tools: &tools::Tools| {
         let sheet = tools.sheet.clone();
         move || sheet.set(None)
@@ -474,11 +474,10 @@ fn rail_choices(tools: &tools::Tools, workspace: tools::Workspace, compact: bool
             tools.all_tools.get() || workspace.tools().contains(tool) || **tool == tools.tool.get()
         })
         .map(|tool| {
-            let segment = ui::widget::toggle_group::Segment::new(
-                ui::i18n::I18nManager::lookup_plain(tool.label()),
-            )
-            .with_icon(tool.icon())
-            .with_hint(tool.shortcut().to_uppercase());
+            let segment =
+                ui::widget::toggle_group::Segment::new(crate::locales::CATALOG.t(tool.label()))
+                    .with_icon(tool.icon())
+                    .with_hint(tool.shortcut().to_uppercase());
             (*tool, segment)
         })
         .collect();
@@ -538,7 +537,7 @@ fn workspace_controls(tools: &tools::Tools) -> Element {
     .map(|(value, label)| {
         (
             value,
-            ui::widget::toggle_group::Segment::new(ui::i18n::I18nManager::lookup_plain(label)),
+            ui::widget::toggle_group::Segment::new(crate::locales::CATALOG.t(label)),
         )
     })
     .collect();
@@ -576,13 +575,13 @@ fn workspace_controls(tools: &tools::Tools) -> Element {
                         (
                             false,
                             ui::widget::toggle_group::Segment::new(
-                                ui::i18n::I18nManager::lookup_plain("canvas-tools-focused"),
+                                crate::locales::CATALOG.t("canvas-tools-focused"),
                             ),
                         ),
                         (
                             true,
                             ui::widget::toggle_group::Segment::new(
-                                ui::i18n::I18nManager::lookup_plain("canvas-tools-all"),
+                                crate::locales::CATALOG.t("canvas-tools-all"),
                             ),
                         ),
                     ],
@@ -649,7 +648,7 @@ fn dock_tabs(
     let tab = |which: Dock, id: &str| {
         (
             which,
-            ui::widget::toggle_group::Segment::new(ui::i18n::I18nManager::lookup_plain(id)),
+            ui::widget::toggle_group::Segment::new(crate::locales::CATALOG.t(id)),
         )
     };
     let tabs = ui::widget::ViewTabs::from_state(
@@ -695,7 +694,7 @@ fn fold(cx: &ViewCx<Artwork>, open: &LocalState<bool>) -> Element {
         } else {
             (ui::icons::Icon::ChevronUp, "canvas-dock-unfold")
         };
-        let name = ui::i18n::I18nManager::lookup_plain(id);
+        let name = crate::locales::CATALOG.t(id);
         let flip = flip.clone();
         Box::new(
             Button::icon_only(id, icon, &name)

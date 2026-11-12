@@ -149,7 +149,10 @@ fn text_cell(
     // The blank row under the pairs invites a new one; repeating the
     // column headers there read as a second header row.
     let placeholder = if row.pending.get() {
-        format!("Add {}", name.to_lowercase())
+        crate::locales::CATALOG.t_args(
+            "api-tester-add-row",
+            &[("field", name.to_lowercase().into())],
+        )
     } else {
         name.to_owned()
     };

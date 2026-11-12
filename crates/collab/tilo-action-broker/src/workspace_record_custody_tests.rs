@@ -15,7 +15,7 @@ mod workspace_record_custody {
     }
 
     /// A channel on `route` held by a connection the launcher attested for
-    /// `LAUNCHED` in the fixture's workspace, launched from its signed original.
+    /// `LAUNCHED` in the fixture's workspace.
     fn launched_channel(
         workspace: &signed_worker::OriginalWorkspace,
         identity: &AdmittedJoinIdentity,
@@ -27,10 +27,6 @@ mod workspace_record_custody {
             workspace.route.cluster_id.clone(),
             native_media::PeerProcess::from_socket(socket).unwrap(),
             crate::services::AuthenticatedApplicationLaunch {
-                creation: Some(crate::services::ApplicationCreationEvidence {
-                    package_hash: "ab".repeat(32),
-                    declared_kinds: vec!["notes.notebook".into()],
-                }),
                 continuation_instance: Some(91),
                 launch_ticket: None,
                 windowless: false,
@@ -97,13 +93,6 @@ mod workspace_record_custody {
                     .document_read_context()
                     .expect("a window of the workspace reads the workspace's record");
                 assert_eq!(context.record_kind(), Some(emoji().kind));
-                assert_eq!(
-                    context
-                        .application_creation()
-                        .map(|evidence| evidence.declared_kinds.clone()),
-                    Some(vec![emoji().kind.to_owned()]),
-                    "the record's kind is the platform's, not the launching package's"
-                );
                 for (route, why) in [
                     (
                         CrdtRoute::record(emoji().app, &cluster, "tab:0000000000000001"),

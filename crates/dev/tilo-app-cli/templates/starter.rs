@@ -1,4 +1,3 @@
-use ui::i18n::I18nManager;
 use ui::prelude::*;
 
 /// The app's state. The framework stores it, syncs it to collaborators and
@@ -27,9 +26,9 @@ impl Greeting {
 fn greeting(name: &str) -> String {
     let name = name.trim();
     if name.is_empty() {
-        I18nManager::lookup_plain("starter-greeting-empty")
+        crate::locales::CATALOG.t("starter-greeting-empty")
     } else {
-        I18nManager::format("starter-greeting", &[("name", name.into())])
+        crate::locales::CATALOG.t_args("starter-greeting", &[("name", name.into())])
     }
 }
 

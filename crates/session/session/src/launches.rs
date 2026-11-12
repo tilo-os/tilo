@@ -441,7 +441,6 @@ impl Launches {
             return None;
         }
         Some(AuthenticatedApplicationLaunch {
-            creation: None,
             continuation_instance: Some(instance),
             launch_ticket: None,
             windowless: false,
@@ -562,9 +561,6 @@ impl LauncherServices for Launches {
     /// A launched app's record stays for its whole life; the session's own
     /// record for a window of it is spent by the one connection naming the
     /// window's instance.
-    ///
-    /// # Errors
-    /// Reading the connection's creation evidence failed.
     fn authenticated_launch(
         &self,
         pid: u32,
@@ -574,7 +570,6 @@ impl LauncherServices for Launches {
     ) -> Result<Option<AuthenticatedApplicationLaunch>, String> {
         if let Some((_, windowless)) = self.live_launch(pid, app, workspace) {
             return Ok(Some(AuthenticatedApplicationLaunch {
-                creation: self.application_creation_evidence(pid, app, workspace)?,
                 continuation_instance: None,
                 launch_ticket: None,
                 windowless,

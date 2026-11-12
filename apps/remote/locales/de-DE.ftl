@@ -43,3 +43,5 @@ remote-action-open-session = Eine laufende Sitzung zu dieser gespeicherten Verbi
 remote-nearby-devices = Geräte in der Nähe
 remote-other-connections = Andere Verbindungen
 remote-pinned = Angeheftet
+remote-a11y-terminal = Remote-Terminal
+remote-a11y-desktop = Remote-Desktop

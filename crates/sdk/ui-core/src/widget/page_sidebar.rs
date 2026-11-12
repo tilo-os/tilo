@@ -208,6 +208,7 @@ fn shifted(rect: Rect, dy: f64) -> Rect {
 pub struct PageSidebar {
     /// Thumbnail height as a multiple of its width (`page_h / page_w`).
     aspect: f64,
+    /// The rail's title; empty paints the toolkit catalogue's.
     header: String,
     add_label: String,
     show_add: bool,
@@ -261,7 +262,7 @@ impl PageSidebar {
         Self {
             dirty: true,
             aspect: aspect.max(0.05),
-            header: "Pages".to_string(),
+            header: String::new(),
             add_label: String::new(),
             show_add: false,
             draw_panel: true,
@@ -329,6 +330,7 @@ impl PageSidebar {
         self.marked = pages;
     }
 
+    /// A rail titled `header` rather than the catalogue's "Pages".
     #[must_use]
     pub fn with_header(mut self, header: impl Into<String>) -> Self {
         self.header = header.into();
@@ -726,17 +728,24 @@ impl PageSidebar {
 
         if self.draw_panel {
             // The header is a section label, sentence case, centred on its
-            // own measured line in the header band.
+            // own measured line in the header band. A rail that names its own
+            // title keeps it; the rest say what they are in the window's
+            // language.
+            let header = if self.header.is_empty() {
+                crate::i18n::widget_format("page-sidebar-title", &[])
+            } else {
+                self.header.clone()
+            };
             let style = label_style(theme);
             let (_, lh) = tr.measure_style(
-                &self.header,
+                &header,
                 None,
                 &style.clone().with_weight(TextWeight::Semibold),
             );
             let hy = self.rect.y0 + (self.m.header_h - f64::from(lh)) / 2.0;
             tr.draw_style(
                 scene,
-                &self.header,
+                &header,
                 c.text_dim,
                 base.pre_translate((self.rect.x0 + self.m.pad, hy).into()),
                 None,
@@ -1108,6 +1117,30 @@ mod tests {
         let mut s = PageSidebar::new(792.0 / 612.0).with_add("Import…");
         s.begin_frame(Rect::new(0.0, 0.0, 200.0, 800.0), count, 0);
         s
+    }
+
+    /// The rail's title is the window's own words: an app that names none
+    /// paints the catalogue's, and one that names its own keeps it.
+    #[test]
+    fn the_rail_title_is_the_windows_language_unless_the_app_names_it() {
+        let rail = PageSidebar::new(792.0 / 612.0);
+        assert!(
+            rail.header.is_empty(),
+            "an unnamed rail paints \"page-sidebar-title\""
+        );
+        let named = PageSidebar::new(792.0 / 612.0).with_header("Slides");
+        assert_eq!(named.header, "Slides");
+        crate::i18n::I18nManager::register_widget_messages();
+        crate::i18n::I18nManager::set_locale("de-DE");
+        assert_eq!(
+            crate::i18n::widget_format("page-sidebar-title", &[]),
+            "Seiten"
+        );
+        crate::i18n::I18nManager::set_locale("en-US");
+        assert_eq!(
+            crate::i18n::widget_format("page-sidebar-title", &[]),
+            "Pages"
+        );
     }
 
     #[test]

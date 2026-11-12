@@ -10,11 +10,7 @@ use crate::feedback::{
     ReviewedText, TextKind,
 };
 
-ui_core::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
-
-fn t_args(key: &str, args: &[(&str, ui_core::i18n::ArgValue)]) -> String {
-    CATALOG.t_args(key, args)
-}
+use crate::copy_catalogue::t_args;
 
 /// The file name a report's picture goes by where it shows as an image (a
 /// report's message, a bridge's upload).

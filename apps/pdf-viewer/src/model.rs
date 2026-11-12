@@ -101,15 +101,17 @@ impl Tool {
         Tool::Sign,
     ];
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Tool::Select => "Select",
-            Tool::Highlight => "Highlight",
-            Tool::Ink => "Draw",
-            Tool::Note => "Note",
-            Tool::Text => "Text",
-            Tool::Sign => "Sign",
-        }
+    /// What the tool's slot in the window bar says it does, in the window's
+    /// language.
+    pub fn label(self) -> String {
+        crate::t(match self {
+            Tool::Select => "pdf-tool-select",
+            Tool::Highlight => "pdf-tool-highlight",
+            Tool::Ink => "pdf-tool-draw",
+            Tool::Note => "pdf-tool-note",
+            Tool::Text => "pdf-tool-text",
+            Tool::Sign => "pdf-tool-sign",
+        })
     }
 
     /// One-key shortcut hint shown in the tooltip / status bar.
@@ -136,6 +138,37 @@ impl Tool {
 // ----------------------------------------------------------------------
 
 pub use tilo_document::annotation::HighlightColor;
+
+/// What a marking on a page is called: the thing a person sees, not the
+/// stored kind.
+pub fn annotation_label(kind: &AnnoKind) -> String {
+    crate::t(match kind {
+        AnnoKind::Markup { style, .. } => match style {
+            MarkupStyle::Highlight => "pdf-annotation-highlight",
+            MarkupStyle::Underline => "pdf-annotation-underline",
+            MarkupStyle::StrikeOut => "pdf-annotation-strikeout",
+            MarkupStyle::Squiggly => "pdf-annotation-squiggly",
+        },
+        AnnoKind::Ink { .. } => "pdf-annotation-drawing",
+        AnnoKind::Note { .. } => "pdf-annotation-note",
+        AnnoKind::FreeText { .. } => "pdf-annotation-text",
+    })
+}
+
+/// What a swatch is called in the marker colour menu: the window's word for
+/// the colour, not the key its markup is stored under.
+pub fn colour_label(colour: HighlightColor) -> String {
+    crate::t(match colour {
+        HighlightColor::Yellow => "pdf-colour-yellow",
+        HighlightColor::Green => "pdf-colour-green",
+        HighlightColor::Pink => "pdf-colour-pink",
+        HighlightColor::Blue => "pdf-colour-blue",
+        HighlightColor::Purple => "pdf-colour-purple",
+        // A colour a file brought along is named by its own value; no menu
+        // offers one.
+        HighlightColor::Custom(rgb) => return format!("#{:06x}", rgb & 0x00ff_ffff),
+    })
+}
 
 // ----------------------------------------------------------------------
 // Geometry

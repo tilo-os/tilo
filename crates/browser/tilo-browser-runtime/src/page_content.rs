@@ -1,6 +1,6 @@
 //! The content the page's windows hold: the pictures and attachments their
 //! records reference, by hash, in the profile's app files. Every window of a
-//! workspace shares its store ([`crate::replication::content`]); the
+//! workspace shares its store ([`crate::replicated::content`]); the
 //! framework joins it to each window's record route, so content a record
 //! references and the page lacks is asked of the workspace, and its pieces are
 //! verified before they are kept here.

@@ -1217,7 +1217,15 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The commit `build.json` names for the bundle, for a person reading it: the one
+/// `TILO_SOURCE_REVISION` names, which a build farm that keeps the tree but not its Git view can
+/// hand over, else the checkout's `HEAD`.
 fn git_revision(root: &Path) -> Option<String> {
+    if let Some(named) =
+        std::env::var_os("TILO_SOURCE_REVISION").filter(|revision| !revision.is_empty())
+    {
+        return Some(named.to_string_lossy().into_owned());
+    }
     let output = ProcessCommand::new("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(root)

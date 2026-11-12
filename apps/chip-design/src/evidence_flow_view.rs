@@ -6,14 +6,13 @@ use crate::verification::flow::{
 use crate::verification::{CheckStatus, ReceiptStatus};
 use crate::view::ChipEffect;
 use ui::framework::{EffectCx, Effected, ViewCx};
-use ui::i18n::I18nManager;
 use ui::widget::{
     Button, Card, Column, Container, Element, GraphCanvas, GraphCanvasConnection, Property,
     PropertyList, ScrollAxis, Scrollable, Text,
 };
 
 fn tr(key: &str) -> String {
-    I18nManager::lookup_plain(key)
+    crate::view::CATALOG.t(key)
 }
 pub fn anchor(report: &str, kind: &str, id: &str) -> String {
     format!("{report}/{kind}/{id}")
@@ -82,7 +81,7 @@ pub fn body(
     for (tool, identity) in &record.receipt.tools {
         provenance.push(Property::new(
             tool,
-            I18nManager::format(
+            crate::view::CATALOG.t_args(
                 "chip-flow-tool-identity",
                 &[
                     ("version", identity.version.clone().into()),
@@ -212,7 +211,7 @@ fn inspector(
             if edge.from == stage.id || edge.to == stage.id {
                 properties.push(property(
                     "chip-flow-dependency",
-                    &I18nManager::format(
+                    &crate::view::CATALOG.t_args(
                         "chip-flow-dependency-line",
                         &[
                             ("from", edge.from.clone().into()),

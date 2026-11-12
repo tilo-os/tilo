@@ -642,7 +642,7 @@ impl Shared {
         if self.window_capture_protected(tree, tab) {
             return None;
         }
-        let workspace = crate::replication::workspace_uuid(self.record_actions.peer?)?;
+        let workspace = crate::replicated::workspace_uuid(self.record_actions.peer?)?;
         let (_, record) = self.live_record_of(tree, tab)?;
         Some(tilo_desktop::feedback::ShownRecord { workspace, record })
     }
@@ -746,12 +746,12 @@ impl tilo_app::linked_accounts::WorkspaceRecordActions for RecordActions {
     fn apps(&self) -> Vec<String> {
         let workspace_apps = self
             .peer
-            .map(crate::replication::records)
+            .map(crate::replicated::records)
             .unwrap_or_default()
             .into_iter()
             .filter(|(_, record)| record.is_empty())
             .map(|(app, _)| app)
-            .filter(|app| app != crate::replication::DESKTOP_APP);
+            .filter(|app| app != crate::replicated::DESKTOP_APP);
         // An app this page can open runs here, not on the workspace's host: no
         // connector, so its record is not asked for a reading.
         let here = known_applications();
@@ -1409,7 +1409,7 @@ impl Persistence {
         let time = ui::time::unix_now_i64();
         if self
             .peer
-            .and_then(crate::replication::desktop_history_heads)
+            .and_then(crate::replicated::desktop_history_heads)
             .is_some()
         {
             // The workspace holds the desk itself; the copy keeps the view alone.
@@ -1446,7 +1446,7 @@ impl Persistence {
         let Some(peer) = self.peer else {
             return Ok(false);
         };
-        let Some(heads) = crate::replication::desktop_history_heads(peer) else {
+        let Some(heads) = crate::replicated::desktop_history_heads(peer) else {
             return Ok(false);
         };
         if heads
@@ -1455,7 +1455,7 @@ impl Persistence {
         {
             return Ok(false);
         }
-        let Some(bytes) = crate::replication::desk_bytes(peer) else {
+        let Some(bytes) = crate::replicated::desk_bytes(peer) else {
             return Ok(false);
         };
         self.desk

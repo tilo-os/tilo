@@ -93,14 +93,11 @@ impl FileOpenSurface {
                 .paint(ctx, bounds, 0.0);
             return crate::widget::PaintedStack::default();
         }
-        let message = content
-            .message
-            .map_or_else(|| hint.clone(), |message| format!("{message}\n{hint}"));
         let (action, documents) = EmptyState::paint_focused_with_documents(
             ctx,
             bounds,
             &EmptyStateContent {
-                message: Some(&message),
+                hint: Some(&hint),
                 ..*content
             },
             cursor,
@@ -151,11 +148,11 @@ mod tests {
         assert_eq!(surface.handle_event(&WindowEvent::RedrawRequested), None);
     }
 
-    /// A failed open says what went wrong on its one bounded line, and the
-    /// drop hint takes a line of its own under it: the action moves down
-    /// by that line instead of the hint being drawn over the button.
+    /// A failed open says what went wrong on its one bounded line; the drop
+    /// hint is the other way in, so it stands under the action rather than
+    /// between the explanation and the button.
     #[test]
-    fn an_error_and_the_drop_hint_each_keep_a_line_above_the_action() {
+    fn the_drop_hint_stands_under_the_action() {
         let bounds = Rect::new(0.0, 0.0, 480.0, 640.0);
         let theme = Theme::dark();
         let mut scene = Scene::new();
@@ -173,12 +170,16 @@ mod tests {
             .paint(&mut ctx, bounds, &content, Point::ZERO, false)
             .action
             .expect("the action");
-        // The stack is centred, so a line added above the action moves it
-        // down by half a line.
-        let moved = hinted.y0 - alone.y0;
+        // The stack is centred, so a line under the action moves the action
+        // up by half that line: the hint is below the button, not over it.
+        let moved = alone.y0 - hinted.y0;
         assert!(
             moved > 4.0,
-            "the hint's line moves the action down: {alone:?} -> {hinted:?}"
+            "the hint's line stands under the action: {alone:?} -> {hinted:?}"
+        );
+        assert!(
+            hinted.y1 <= bounds.y1,
+            "the hint keeps the button on screen: {hinted:?}"
         );
     }
 

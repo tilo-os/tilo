@@ -70,6 +70,9 @@ struct Inner {
     fresh: bool,
     /// An operation ran since the last take; the worker may hold changes.
     dirty: bool,
+    /// This participant's changes taken and put back ([`ConfinedReplica::put_back`]):
+    /// the next take returns them first.
+    kept: Vec<u8>,
     /// The records the app keeps beside this one that are held with it
     /// (the parts of its chain), each mirrored as this one is.
     beside: BTreeMap<RecordId, AutoCommit>,
@@ -162,6 +165,7 @@ impl ConfinedReplica {
                 dirty: true,
                 beside: BTreeMap::new(),
                 beside_dirty: false,
+                kept: Vec::new(),
                 held: BTreeSet::new(),
                 asks_workspace: None,
             }),
@@ -742,11 +746,41 @@ impl ConfinedReplica {
     pub fn take_mutation(&self) -> Result<Option<DocumentMutation>, AppError> {
         let mut inner = self.lock();
         let own = self.collect(&mut inner)?;
+        let mut kept = std::mem::take(&mut inner.kept);
         let whole = std::mem::take(&mut inner.fresh).then(|| inner.mirror.save());
         drop(inner);
+        let own = match own {
+            Some(own) if kept.is_empty() => Some(own),
+            Some(own) => {
+                kept.extend(own);
+                Some(kept)
+            }
+            None => (!kept.is_empty()).then_some(kept),
+        };
         Ok(whole
             .map(DocumentMutation::Snapshot)
             .or_else(|| own.map(DocumentMutation::Incremental)))
+    }
+
+    /// Give back `mutation`, taken by [`Self::take_mutation`] but not
+    /// written: the next take returns it again, before anything since. What
+    /// fails to be written alongside it (the records beside) must not take
+    /// it with it.
+    pub fn put_back(&self, mutation: DocumentMutation) {
+        let mut inner = self.lock();
+        match mutation {
+            // The whole record is in the mirror: it goes whole again.
+            DocumentMutation::Snapshot(_) => {
+                inner.fresh = true;
+                inner.kept.clear();
+            }
+            DocumentMutation::Incremental(bytes) => {
+                if !inner.fresh {
+                    let later = std::mem::replace(&mut inner.kept, bytes);
+                    inner.kept.extend(later);
+                }
+            }
+        }
     }
 
     /// Ask the worker for its changes and admit them to the mirror.

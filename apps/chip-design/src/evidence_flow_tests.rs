@@ -66,9 +66,7 @@ fn public_flow_stage_artifact_search_and_view_preserve_scope() {
         "chip-flow-setup",
     ] {
         assert!(
-            rendered.contains(
-                &serde_json::to_string(&ui::i18n::I18nManager::lookup_plain(key)).unwrap()
-            ),
+            rendered.contains(&serde_json::to_string(&crate::view::CATALOG.t(key)).unwrap()),
             "missing {key}"
         );
     }
@@ -79,7 +77,7 @@ fn public_flow_stage_artifact_search_and_view_preserve_scope() {
         ))));
     app.harness().click_named("flow-stage-cpu").unwrap();
     app.settle();
-    let comparison = ui::i18n::I18nManager::lookup_plain("chip-flow-comparison");
+    let comparison = crate::view::CATALOG.t("chip-flow-comparison");
     assert!(
         app.harness()
             .inspection_json()
@@ -142,7 +140,7 @@ fn referenced_subflow_resolves_only_exact_imported_summary_bytes() {
             .is_err()
     );
     app.settle();
-    let missing = ui::i18n::I18nManager::lookup_plain("chip-flow-not-imported");
+    let missing = crate::view::CATALOG.t("chip-flow-not-imported");
     assert!(
         app.harness()
             .inspection_json()
@@ -151,7 +149,7 @@ fn referenced_subflow_resolves_only_exact_imported_summary_bytes() {
     );
     let child_id = import(&mut app, &child);
     app.settle();
-    let open = ui::i18n::I18nManager::lookup_plain("chip-flow-open-subflow");
+    let open = crate::view::CATALOG.t("chip-flow-open-subflow");
     assert!(
         app.harness()
             .inspection_json()

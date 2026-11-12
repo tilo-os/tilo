@@ -76,6 +76,13 @@ pub fn route_under(
     }
 }
 
+/// Whether an instance joining `route` opens the record `asked`, as a launch names it: a member's
+/// own, by its id. The workspace's record of the app is no record a launch names.
+fn opens_record(route: &collaboration::RouteSpec, asked: &str) -> bool {
+    collaboration::record::RecordId::parse(asked)
+        .is_some_and(|asked| asked.route() == route.record.as_deref().unwrap_or_default())
+}
+
 /// Why an instance the session handed over does not run.
 #[derive(Debug, thiserror::Error)]
 pub enum AdmitError {
@@ -93,6 +100,11 @@ pub enum AdmitError {
     Records { app: String, records: String },
     #[error("the workspace `{0}` is no workspace id")]
     Workspace(String),
+    #[error(
+        "the window was asked to open the record `{asked}`, but an instance of `{app}` opens \
+         only its own record of the workspace"
+    )]
+    OtherRecord { app: String, asked: String },
     #[error("the instance's connection could not join its workspace: {0}")]
     Join(String),
     #[error(transparent)]
@@ -130,6 +142,8 @@ struct Opening {
     reached: Vec<(&'static str, std::time::Duration)>,
     /// The person's formats changed while it opened: its first frame writes its times again.
     formats_changed: bool,
+    /// The item its window was asked to open on ([`InstanceRequest::reveal`]).
+    reveal: Option<String>,
 }
 
 impl Opening {
@@ -345,6 +359,7 @@ impl TilolangHost {
         let (sender, decoded) = std::sync::mpsc::channel();
         let (module, len, wake) = (fds.module, request.module_len, Arc::clone(&self.wake));
         let (app, instance) = (request.app.clone(), request.instance);
+        let reveal = request.reveal.clone();
         std::thread::Builder::new()
             .name("tilolang-module".into())
             .spawn(move || {
@@ -368,6 +383,7 @@ impl TilolangHost {
             received: std::time::Instant::now(),
             reached: Vec::new(),
             formats_changed: false,
+            reveal,
         });
         Ok(())
     }
@@ -397,6 +413,7 @@ impl TilolangHost {
             received: std::time::Instant::now(),
             reached: Vec::new(),
             formats_changed: false,
+            reveal: None,
         });
     }
 
@@ -541,12 +558,23 @@ impl TilolangHost {
             .map_err(|_| AdmitError::Workspace(request.room.clone()))?;
         let identity =
             identity.ok_or_else(|| AdmitError::Join("no identity connection".to_owned()))?;
+        let route = route_under(&bundle.meta, &records, workspace, &request.person);
+        // A window asked for a record: its instance opens the one its route names, and only that
+        // one is what it was asked for.
+        if let Some(asked) = request.record.as_deref()
+            && !opens_record(&route, asked)
+        {
+            return Err(AdmitError::OtherRecord {
+                app: request.app,
+                asked: asked.to_owned(),
+            });
+        }
         let _scope = self.scope.enter();
         let manager = collaboration::CollaborationManager::join_instance(
             &collaboration::record::RecordKind::new(RECORD_KIND),
             broker,
             identity.as_fd(),
-            route_under(&bundle.meta, &records, workspace, &request.person),
+            route,
             Some(request.person.clone()),
         )
         .map_err(|error| AdmitError::Join(format!("{error:?}")))?;
@@ -632,6 +660,10 @@ impl TilolangHost {
             Some(identity) => hosted.holding_identity(identity),
             None => hosted,
         };
+        // The item its window was asked to open on, shown as its `open` shows one.
+        if let Some(anchor) = opening.reveal.take() {
+            hosted.reveal(anchor);
+        }
         // Its types with a mail server as origin are kept in step through the app's connector,
         // which holds the network and the credentials this process has none of.
         if let Some(origin) = opening.origin.take() {
@@ -986,4 +1018,27 @@ fn hung_up(fd: std::os::fd::BorrowedFd<'_>) -> bool {
     // nonblocking query.
     let ready = unsafe { libc::poll(&raw mut poll, 1, 0) };
     ready > 0 && poll.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A window asked for the workspace's record, or a member's own, opens on an instance whose
+    /// route names that record, and on no other.
+    #[test]
+    fn an_instance_opens_only_the_record_its_route_names() {
+        let workspace = uuid::Uuid::from_u128(7);
+        let own = collaboration::record::RecordId::for_file_record(uuid::Uuid::from_u128(9));
+        let workspaces = collaboration::RouteSpec::app("so.tilo.lang.notes", workspace);
+        let owns = collaboration::RouteSpec::record("so.tilo.lang.notes", workspace, own.route());
+        assert!(opens_record(&owns, own.as_str()));
+        assert!(
+            !opens_record(&workspaces, own.as_str()),
+            "the workspace's record is never named: a launch that names one names another"
+        );
+        let other = collaboration::record::RecordId::for_file_record(uuid::Uuid::from_u128(10));
+        assert!(!opens_record(&owns, other.as_str()));
+        assert!(!opens_record(&owns, "not a record"));
+    }
 }

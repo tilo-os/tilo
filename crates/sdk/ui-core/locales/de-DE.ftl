@@ -755,6 +755,8 @@ framework-unreadable-hint = Diese Version der App kann nicht lesen, was hier ges
 empty-state-details = Details
 file-open-drop-hint = Oder eine Datei hier ablegen
 file-open-release = Zum Öffnen loslassen
+# The page rail's title, above its thumbnails, unless the app names it.
+page-sidebar-title = Seiten
 widget-documents-in-workspace = In diesem Arbeitsbereich
 # Shown instead of a window's document while it cannot be opened.
 record-unavailable-title = Dieses Dokument kann nicht geöffnet werden
@@ -1266,3 +1268,4 @@ media-fullscreen-exit = Vollbild verlassen
 media-playback-settings = Wiedergabeeinstellungen
 media-toggle-on = Ein
 media-toggle-off = Aus
+floating-window-title = Schwebendes Fenster

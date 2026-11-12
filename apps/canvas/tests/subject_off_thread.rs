@@ -220,7 +220,7 @@ fn the_window_takes_input_while_the_subject_model_works() {
 
     // The window says what it is doing, and keeps answering the pointer:
     // clicking the photo with the select tool selects it.
-    let finding = ui::i18n::I18nManager::lookup_plain("canvas-finding-subject");
+    let finding = canvas::locales::CATALOG.t("canvas-finding-subject");
     let says = |harness: &ui::headless::FrameHarness, what: &str| {
         harness.inspection_json().unwrap().contains(what)
     };

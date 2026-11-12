@@ -120,6 +120,9 @@ struct Window {
     detail: Option<patch::Node>,
     /// The resource the detail lane shows.
     detail_target: Option<patch::ResourceRef>,
+    /// The item the window shows beside its list: what a press showed in place, as the
+    /// window heard it from the instance.
+    in_place: Option<patch::ResourceRef>,
     /// The instance asked the window to come forward.
     activated: bool,
     /// What the instance says each bound control holds, by key: its type is what a window
@@ -168,6 +171,10 @@ impl Window {
                             change.apply(detail).expect("the patch applies");
                         }
                     }
+                    ToUi::Front {
+                        shows: Some((_, resource)),
+                        ..
+                    } => self.in_place = Some(resource),
                     ToUi::Activate => self.activated = true,
                     ToUi::Bound { key, value, .. } => {
                         self.bound.insert(key, value);
@@ -325,6 +332,7 @@ fn instance_on(
         root: None,
         detail: None,
         detail_target: None,
+        in_place: None,
         activated: false,
         bound: BTreeMap::new(),
         form: None,
@@ -417,6 +425,7 @@ fn opened_from_own_copy_in(
         root: None,
         detail: None,
         detail_target: None,
+        in_place: None,
         activated: false,
         bound: BTreeMap::new(),
         form: None,
@@ -1051,6 +1060,7 @@ fn a_slow_open_does_not_hold_up_another_instances_frame() {
         root: None,
         detail: None,
         detail_target: None,
+        in_place: None,
         activated: false,
         bound: BTreeMap::new(),
         form: None,
@@ -1175,6 +1185,7 @@ fn an_idle_hosts_loop_does_not_wake_until_a_window_has_something() {
         root: None,
         detail: None,
         detail_target: None,
+        in_place: None,
         activated: false,
         bound: BTreeMap::new(),
         form: None,
@@ -1544,10 +1555,12 @@ fn broker_labels(sent: &Sent) -> Vec<String> {
         .collect()
 }
 
-/// The event that puts `shown` into the field `input`: a rich field is edited whole, as the
-/// toolkit sends what the person typed into it, a text field by the splice each key is.
+/// The event that puts `shown` into the field `input` of the page of `lane` showing `target`: a
+/// rich field is edited whole, as the toolkit sends what the person typed into it, a text field
+/// by the splice each key is.
 fn key_edit(
     rich: bool,
+    lane: Lane,
     target: &patch::ResourceRef,
     input: &str,
     seq: usize,
@@ -1557,14 +1570,14 @@ fn key_edit(
 ) -> ToApp {
     if rich {
         ToApp::EditRich {
-            lane: Lane::Detail,
+            lane,
             target: target.clone(),
             key: input.to_owned(),
             rich: typed_rich(shown),
         }
     } else {
         ToApp::Splice {
-            lane: Lane::Detail,
+            lane,
             target: target.clone(),
             key: input.to_owned(),
             seq: (seq as u64).saturating_add(1),
@@ -1575,19 +1588,15 @@ fn key_edit(
     }
 }
 
-/// A notebook of `held` notes, the first of them open in the window as the person made it; what
-/// the instance did while the person typed `typed` into the open note's field whose placeholder
-/// is `field`, a key at a time, each followed by the host's frames until it is quiet, as its loop
-/// runs them.
-fn typing(held: usize, field: &str, typed: &str) -> Typed {
-    let directory = Rc::new(RefCell::new(Directory::default()));
-    let (mut host, mut window, sent, inbox, _route) =
-        running_with("ada", NOTES, notes(), Rc::clone(&directory));
-    settle(&mut host, &mut window);
-    // The person starts a note from the empty notebook: it opens beside the list.
-    let button = node_with(window.root.as_ref().unwrap(), "label", "New note")
-        .expect("the empty notebook offers a new note")
-        .clone();
+/// The window's own "New note": the press that makes a note and shows it beside the list.
+fn press_new_note(window: &mut Window) {
+    let button = node_with(
+        window.root.as_ref().expect("the notebook is shown"),
+        "label",
+        "New note",
+    )
+    .expect("the notebook offers a new note")
+    .clone();
     let event = button
         .events
         .keys()
@@ -1600,6 +1609,19 @@ fn typing(held: usize, field: &str, typed: &str) -> Typed {
         event,
         value: None,
     }]);
+}
+
+/// A notebook of `held` notes, the first of them open in the window as the person made it; what
+/// the instance did while the person typed `typed` into the open note's field whose placeholder
+/// is `field`, a key at a time, each followed by the host's frames until it is quiet, as its loop
+/// runs them.
+fn typing(held: usize, field: &str, typed: &str) -> Typed {
+    let directory = Rc::new(RefCell::new(Directory::default()));
+    let (mut host, mut window, sent, inbox, _route) =
+        running_with("ada", NOTES, notes(), Rc::clone(&directory));
+    settle(&mut host, &mut window);
+    // The person starts a note from the empty notebook: it opens beside the list.
+    press_new_note(&mut window);
     settle(&mut host, &mut window);
     // An agent adds the rest, which moves nobody's view.
     let new_note = host
@@ -1616,8 +1638,10 @@ fn typing(held: usize, field: &str, typed: &str) -> Typed {
         deliver(&inbox, (id as u64).saturating_add(100), &new_note, "ada");
     }
     settle(&mut host, &mut window);
+    // The note the press made shows beside the tree, its page the window's own: the field is
+    // in the tree's lane, as the window draws it.
     let field_node = node_with(
-        window.detail.as_ref().expect("the note is open"),
+        window.root.as_ref().expect("the notebook is shown"),
         "placeholder",
         field,
     )
@@ -1630,7 +1654,10 @@ fn typing(held: usize, field: &str, typed: &str) -> Typed {
         Some(_) => false,
         None => panic!("the instance says what the field `{field}` holds"),
     };
-    let target = window.detail_target.clone().expect("the note is open");
+    let target = window
+        .in_place
+        .clone()
+        .expect("the press showed the note beside the list");
     let documents = documents_sent(&sent);
     let (mut built, mut relabeled) = (0, 0);
     let mut seen: u64 = 0;
@@ -1639,7 +1666,7 @@ fn typing(held: usize, field: &str, typed: &str) -> Typed {
     for (seq, key) in typed.chars().enumerate() {
         let at = u32::try_from(shown.len()).unwrap();
         shown.push(key);
-        let edit = key_edit(rich, &target, &input, seq, at, &shown, key);
+        let edit = key_edit(rich, Lane::Root, &target, &input, seq, at, &shown, key);
         let (before, before_sweeps) = (visited(&host), swept(&host));
         let ((), phases) = tilo_resource::profiling::observe(|| {
             window.send(&[edit]);
@@ -1792,33 +1819,21 @@ fn title_of(host: &TilolangHost, target: &patch::ResourceRef) -> String {
 fn an_edit_lands_in_the_note_it_was_typed_into_whatever_the_window_shows_when_it_arrives() {
     let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", NOTES, notes());
     settle(&mut host, &mut window);
-    let new_note = |window: &mut Window| {
-        let button = node_with(window.root.as_ref().unwrap(), "label", "New note")
-            .expect("the notebook offers a new note")
-            .clone();
-        let event = button.events.keys().next().unwrap().clone();
-        window.send(&[ToApp::Fire {
-            lane: Lane::Root,
-            key: button.key,
-            event,
-            value: None,
-        }]);
-    };
-    new_note(&mut window);
+    press_new_note(&mut window);
     settle(&mut host, &mut window);
     let first = window
-        .detail_target
+        .in_place
         .clone()
-        .expect("the first note is open");
-    let title = node_with(window.detail.as_ref().unwrap(), "placeholder", "Untitled")
+        .expect("the first note shows beside the list");
+    let title = node_with(window.root.as_ref().unwrap(), "placeholder", "Untitled")
         .expect("the note has its title field")
         .key
         .clone();
     // The person typed into the first note's title; the window sent it just as their next
     // press made a second note, which the instance shows by the time the typing arrives.
-    new_note(&mut window);
+    press_new_note(&mut window);
     window.send(&[ToApp::Splice {
-        lane: Lane::Detail,
+        lane: Lane::Root,
         target: first.clone(),
         key: title,
         seq: 1,
@@ -1828,9 +1843,9 @@ fn an_edit_lands_in_the_note_it_was_typed_into_whatever_the_window_shows_when_it
     }]);
     settle(&mut host, &mut window);
     let second = window
-        .detail_target
+        .in_place
         .clone()
-        .expect("the second note is open");
+        .expect("the second note shows beside the list");
     assert_ne!(first, second, "the press opened the second note");
     assert_eq!(
         title_of(&host, &first),
@@ -2768,4 +2783,88 @@ fn the_palette_makes_a_task_and_asks_the_form_for_a_moment() {
     let task = a_task_added_from_the_palette(&mut host, &mut window);
     a_reminder_asks_when(&mut host, &mut window);
     the_moment_picked_answers_the_reminder(&mut host, &mut window, &task);
+}
+
+/// The day the task `task` is due, as its record holds it.
+fn due_of(hosted: &Hosted, task: &Value) -> Option<String> {
+    let Value::Ref(task) = task else {
+        panic!("a task is a resource: {task:?}")
+    };
+    let instance = hosted.instance();
+    let host = instance.host().expect("the runtime");
+    match host.runtime().read(&task.target, "due").expect("its day") {
+        Value::Opt(Some(day)) => match *day {
+            Value::Text(day) => Some(day),
+            other => panic!("a day: {other:?}"),
+        },
+        Value::Opt(None) => None,
+        other => panic!("a day: {other:?}"),
+    }
+}
+
+/// A task typed into Today's entry is due the person's today, and so stands under the day their
+/// window heads Today: nine in the evening where they are is already the next day in UTC, and
+/// their day, not UTC's, is the one their list is of.
+#[test]
+fn a_task_typed_into_todays_entry_is_due_the_persons_today() {
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "a_task_typed_into_todays_entry_is_due_the_persons_today",
+        || {
+            // 11 November, nine in the evening in Los Angeles: the 12th in UTC.
+            let mut zone = tilo_test_env::ScopedEnv::new();
+            zone.set("TZ", "America/Los_Angeles");
+            let _clock = tilo_clock::testing::hold_wall_everywhere(
+                tilo_clock::testing::OwnProcess::of_a_test_in_its_own_process(),
+                tilo_clock::UNIX_EPOCH + tilo_clock::Duration::from_secs(1_794_459_600),
+            );
+            let (app, bundle) = shipped(&shipped_dir().join("tasks"));
+            assert_eq!(app, TASKS);
+            let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", &app, bundle);
+            settle(&mut host, &mut window);
+            let entry = node_with(
+                window.root.as_ref().expect("the window shows"),
+                "placeholder",
+                "New task for today",
+            )
+            .expect("Today's entry stands at the list's foot")
+            .clone();
+            let event = entry
+                .events
+                .get_key_value("submit")
+                .expect("the entry submits what is typed into it")
+                .0
+                .clone();
+            window.send(&[ToApp::Fire {
+                lane: Lane::Root,
+                key: entry.key,
+                event,
+                value: Some(patch::Value::text("File the report")),
+            }]);
+            settle(&mut host, &mut window);
+            let held = host.instances().next().expect("the instance runs");
+            let tasks = tasks_of(held);
+            let [task] = tasks.as_slice() else {
+                panic!("the entry made one task: {tasks:?}");
+            };
+            let due = due_of(held, task);
+            assert_eq!(
+                due.as_deref(),
+                Some("2026-11-11"),
+                "a task typed in their evening is due on their today, not UTC's tomorrow"
+            );
+            // The day a row is grouped under is the day the window heads by its own clock
+            // (`ui::clock::today()`): the day it is due. They are one day, so the row heads
+            // Today and stands in Today's list.
+            let headed_by =
+                chrono::DateTime::<chrono::Local>::from(tilo_clock::to_std(tilo_clock::wall()))
+                    .date_naive()
+                    .to_string();
+            assert_eq!(
+                due.as_deref(),
+                Some(headed_by.as_str()),
+                "and it stands under the day their window heads Today"
+            );
+        },
+    );
 }

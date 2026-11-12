@@ -1268,7 +1268,7 @@ impl PlayerState {
             .with_name(if self.player.has_media() {
                 self.title.clone()
             } else {
-                "Video Player".into()
+                crate::i18n::t("video-title")
             })
             .with_children(children)
     }

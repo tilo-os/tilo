@@ -34,7 +34,6 @@ impl crate::services::LauncherServices for LaunchedHere {
     ) -> Result<Option<crate::services::AuthenticatedApplicationLaunch>, String> {
         Ok(self.attest_process(pid, app, workspace).then_some(
             crate::services::AuthenticatedApplicationLaunch {
-                creation: None,
                 continuation_instance: None,
                 launch_ticket: None,
                 windowless: false,
@@ -714,6 +713,78 @@ async fn a_journaled_session_admits_the_app_its_launcher_started() {
             assert!(refused.to_string().contains("so.tilo.notes"), "{refused:?}");
             drop((kept, own, app));
             rig.stop().await;
+        })
+        .await;
+}
+
+/// A session that keeps its own journal admits an app's declared read of
+/// another app's record: the reader holds that route to read it live and
+/// changes nothing there, so it needs no worker descriptor of the route and
+/// becomes no worker of it. An app that declares no read is still refused.
+#[tokio::test(flavor = "current_thread")]
+async fn a_journaled_session_admits_an_apps_declared_read_of_another_app() {
+    static NOTES: &[u8] =
+        b"[[resources]]\nkind = \"test.journal-notes.Note\"\nlabel = \"Note\"\nversion = 1\n";
+    static TODAY: &[u8] = b"reads = [\"test.journal-notes.Note\"]\n\n[[resources]]\nkind = \"test.journal-today.Day\"\nlabel = \"Day\"\nversion = 1\n";
+    static TASKS: &[u8] =
+        b"[[resources]]\nkind = \"test.journal-tasks.Task\"\nlabel = \"Task\"\nversion = 1\n";
+    ui::app_surface::register_package("test.journal-notes", NOTES);
+    ui::app_surface::register_package("test.journal-today", TODAY);
+    ui::app_surface::register_package("test.journal-tasks", TASKS);
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            const READER_PEER: u64 = 941;
+            let env = Environment::new();
+            let notes = CrdtRoute::record(
+                "test.journal-notes",
+                env.route.cluster_id.clone(),
+                "notes-1",
+            );
+            let identity = presentation(&env.route.cluster_id, &env.cert, &env.key);
+            for (app, reads) in [("test.journal-today", true), ("test.journal-tasks", false)] {
+                let mut services = env.membership.services();
+                services.launcher = Some(Arc::new(LaunchedHere {
+                    app: app.to_owned(),
+                    workspace: env.route.cluster_id.clone(),
+                }));
+                let journal = tempfile::tempdir().unwrap();
+                let config = crate::NativePeerBrokerConfig {
+                    journal_root: journal.path().join("journal"),
+                    certificate_authority: env.authority.clone(),
+                };
+                let rig = Rig::with_own_journal(&env, services, &config).await;
+                assert!(rig.state.durable_owner_required);
+                let (launched, _server, _client) = launched_app_connection(
+                    &rig.state,
+                    &rig.directories,
+                    READER_PEER,
+                    app,
+                    &env.route.cluster_id,
+                );
+                let joined = launched.join_channel(&notes.channel_key(), &identity).await;
+                if reads {
+                    let reading = joined.expect("a declared read joins in a journaled session");
+                    assert!(
+                        rig.state
+                            .host_workers
+                            .lock()
+                            .unwrap()
+                            .get(READER_PEER, &notes)
+                            .is_none(),
+                        "a reader is no worker of the route it reads"
+                    );
+                    drop(reading);
+                } else {
+                    let refused = joined.err().expect("an undeclared read joins nothing");
+                    assert!(
+                        refused.to_string().contains("declares no read of"),
+                        "{refused:?}"
+                    );
+                }
+                rig.state.remove_connection(READER_PEER);
+                drop(launched);
+                rig.stop().await;
+            }
         })
         .await;
 }

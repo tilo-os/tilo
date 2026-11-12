@@ -6,7 +6,6 @@
 use std::rc::Rc;
 
 use ui::framework::People;
-use ui::i18n::I18nManager;
 use ui::prelude::*;
 use ui::time::{Duration, Instant};
 use ui::tokens::Rhythm;
@@ -28,11 +27,11 @@ const BOTTOM: [usize; 3] = [5, 4, 3];
 const SEAT_CARDS: u8 = 4;
 
 fn fmt(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
-    I18nManager::format(key, args)
+    crate::locales::CATALOG.t_args(key, args)
 }
 
 fn plain(key: &str) -> String {
-    I18nManager::lookup_plain(key)
+    crate::locales::CATALOG.t(key)
 }
 
 /// The whole table, built again whenever the record changes.

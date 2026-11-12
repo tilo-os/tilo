@@ -526,16 +526,15 @@ impl CanvasSurface {
         // is said beside the title, as Files' answers are: never silence.
         let notice = self.tools.notice.clone();
         let said = move |why: String| {
-            notice.set(Some(ui::i18n::I18nManager::format(
-                "canvas-picture-failed",
-                &[("why", why.into())],
-            )));
+            notice.set(Some(
+                crate::locales::CATALOG.t_args("canvas-picture-failed", &[("why", why.into())]),
+            ));
         };
         let files = match answer {
             Some(ui::portal::ContentsOutcome::Picked(files)) => files,
             Some(ui::portal::ContentsOutcome::Cancelled) => return,
             Some(ui::portal::ContentsOutcome::Failed(why)) => return said(why),
-            None => return said(ui::i18n::I18nManager::lookup_plain("canvas-chooser-gone")),
+            None => return said(crate::locales::CATALOG.t("canvas-chooser-gone")),
         };
         let Some(file) = files.into_iter().next() else {
             return;
@@ -2256,7 +2255,7 @@ impl CanvasSurface {
             return Err("image area finding needs background threads on this platform".into());
         }
         if self.finding.get() {
-            return Err(ui::i18n::I18nManager::lookup_plain("canvas-finding-busy"));
+            return Err(crate::locales::CATALOG.t("canvas-finding-busy"));
         }
         if let Some(layer) = &select.layer
             && art.layer(layer).is_none_or(crate::model::Layer::is_mask)
@@ -2267,7 +2266,7 @@ impl CanvasSurface {
         let content = crate::content::store();
         let sampled = art.clone();
         let request = select.clone();
-        let phase = ui::i18n::I18nManager::lookup_plain(if select.subject == Some(true) {
+        let phase = crate::locales::CATALOG.t(if select.subject == Some(true) {
             "canvas-finding-subject"
         } else {
             "canvas-refining-edge"

@@ -52,7 +52,7 @@ const COMMANDS: [(&str, &str); 7] = [
 
 /// The window bar's slots for what the window shows now.
 fn toolbar(tools: &Tools, title: &str, open: bool) -> WindowToolbar {
-    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let lookup = |key: &str| crate::locales::CATALOG.t(key);
     let commands = COMMANDS
         .into_iter()
         .map(|(value, id)| {
@@ -93,7 +93,7 @@ fn toolbar(tools: &Tools, title: &str, open: bool) -> WindowToolbar {
             ToolbarAction::new(
                 ZOOM,
                 Icon::Search.name(),
-                ui::i18n::I18nManager::format("canvas-zoom-at", &[("percent", percent.into())]),
+                crate::locales::CATALOG.t_args("canvas-zoom-at", &[("percent", percent.into())]),
             )
             .with_items(vec![
                 ToolbarAction::new(ZOOM_IN, Icon::Plus.name(), lookup("canvas-zoom-in")),

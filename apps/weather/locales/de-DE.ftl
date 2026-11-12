@@ -59,3 +59,6 @@ weather-choose-place = Wähle einen gespeicherten Ort, um seine Vorhersage zu se
 ## Fenster- und Barrierefreiheits-Texte
 weather-a11y-places = Orte
 weather-add-place = Ort hinzufügen
+weather-loading = Aktuelle Bedingungen werden geladen
+weather-now-conditions = Aktuelle Bedingungen
+weather-air-quality = Luftqualität

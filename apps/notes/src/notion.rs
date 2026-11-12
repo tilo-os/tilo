@@ -65,7 +65,7 @@ pub fn pages(bytes: &[u8]) -> Result<Vec<ImportedPage>, String> {
         return Err(ui::i18n!("notes-notion-empty"));
     }
     if pages.len() > MAX_IMPORTED_PAGES {
-        return Err(ui::i18n::I18nManager::format(
+        return Err(crate::metadata::CATALOG.t_args(
             "notes-notion-too-many-pages",
             &[(
                 "limit",

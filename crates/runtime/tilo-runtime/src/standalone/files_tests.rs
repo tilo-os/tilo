@@ -10,15 +10,20 @@ struct Host {
 
 impl Host {
     fn new(profile: &Path) -> Self {
+        // The relay this device's endpoint holds is one on this machine's loopback: a test never
+        // reaches number 0's relays or directory.
+        let relays = test_relay::loopback().relays;
         tilo_rt::app()
-            .block_on(async {
+            .block_on(async move {
                 Self {
                     store: Arc::new(
                         tilo_fs::ContentStore::open(&profile.join("content"))
                             .await
                             .unwrap(),
                     ),
-                    endpoint: iroh::Endpoint::bind(iroh::endpoint::presets::N0)
+                    endpoint: iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+                        .relay_mode(iroh::RelayMode::Custom(relays))
+                        .bind()
                         .await
                         .unwrap(),
                 }

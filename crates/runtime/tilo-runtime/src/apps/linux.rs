@@ -26,7 +26,7 @@ pub(super) fn launch(
     apps: &Apps,
     app: &InstalledApp,
     sockets: &Sockets,
-    original: &super::creation::OriginalLaunch,
+    original: &super::original::OriginalLaunch,
 ) -> Result<Launch, String> {
     let launcher = resolve_launcher(&apps.launcher_candidates)?;
     let wayland = wayland_socket()?;

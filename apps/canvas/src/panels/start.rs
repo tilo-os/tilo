@@ -296,7 +296,7 @@ fn sides(width: f64, height: f64) -> String {
 
 /// The size tiles: the presets turned as the dialog says, and any size.
 fn size_tiles(choices: &Choices) -> Vec<Element> {
-    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let lookup = |key: &str| crate::locales::CATALOG.t(key);
     let mut sizes: Vec<Element> = SIZES
         .iter()
         .map(|size| {
@@ -336,7 +336,7 @@ fn size_tiles(choices: &Choices) -> Vec<Element> {
                 move || ground.ground(),
             ),
             &lookup("canvas-size-custom"),
-            || ui::i18n::I18nManager::lookup_plain("canvas-size-custom-detail"),
+            || crate::locales::CATALOG.t("canvas-size-custom-detail"),
         ));
     }
     sizes
@@ -344,7 +344,7 @@ fn size_tiles(choices: &Choices) -> Vec<Element> {
 
 /// The tiles of the grounds with the medium of their first layer.
 fn start_tiles(choices: &Choices) -> Vec<Element> {
-    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let lookup = |key: &str| crate::locales::CATALOG.t(key);
     let starts: Vec<Element> = STARTS
         .iter()
         .map(|start| {
@@ -377,7 +377,7 @@ fn start_tiles(choices: &Choices) -> Vec<Element> {
 
 /// Portrait or landscape, and for any size its sides.
 fn orientation(cx: &ViewCx<Artwork>, choices: &Choices) -> Element {
-    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let lookup = |key: &str| crate::locales::CATALOG.t(key);
     let choices = choices.clone();
     cx.switch(&choices.size.clone(), move |_, size| {
         if size == CUSTOM {
@@ -410,7 +410,7 @@ fn orientation(cx: &ViewCx<Artwork>, choices: &Choices) -> Element {
 
 /// A custom size's width and height, typed.
 fn custom_sides(choices: &Choices) -> Element {
-    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let lookup = |key: &str| crate::locales::CATALOG.t(key);
     let width = TextInput::from_state(&choices.width)
         .with_id("canvas-new-width")
         .with_accessible_name(lookup("canvas-label-artwork-width"));
@@ -451,14 +451,14 @@ fn replacing(cx: &ViewCx<Artwork>) -> Element {
         Text::dynamic(move || {
             let art = live.get();
             if art.marks.is_empty() {
-                ui::i18n::I18nManager::lookup_plain("canvas-new-tab-hint")
+                crate::locales::CATALOG.t("canvas-new-tab-hint")
             } else {
                 let title = if art.title.is_empty() {
-                    ui::i18n::I18nManager::lookup_plain("canvas-untitled")
+                    crate::locales::CATALOG.t("canvas-untitled")
                 } else {
                     art.title.clone()
                 };
-                ui::i18n::I18nManager::format("canvas-new-replaces", &[("title", title.into())])
+                crate::locales::CATALOG.t_args("canvas-new-replaces", &[("title", title.into())])
             }
         })
         .with_role(TextRole::Caption)
@@ -469,7 +469,7 @@ fn replacing(cx: &ViewCx<Artwork>) -> Element {
 
 pub fn body(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let choices = tools.new.clone();
-    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let lookup = |key: &str| crate::locales::CATALOG.t(key);
     let title = TextInput::from_state(&choices.title)
         .with_id("canvas-new-title")
         .with_placeholder(lookup("canvas-untitled"))
@@ -520,7 +520,7 @@ pub fn welcome(cx: &ViewCx<Artwork>, tools: &Tools, compact: bool) -> Element {
 
 /// The welcome's card.
 fn card(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
-    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let lookup = |key: &str| crate::locales::CATALOG.t(key);
     let button = |id: &str, icon: Icon, then: Box<dyn Fn()>| -> Element {
         let name = lookup(id);
         Box::new(Button::new(id, &name).with_icon(icon).on_view(then))
@@ -680,11 +680,11 @@ fn recent_list(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
                 .with_intrinsic_height()
                 .with_rhythm(ui::tokens::Rhythm::Tight)
                 .push(super::heading("canvas-recent"));
-            let here = ui::i18n::I18nManager::lookup_plain("canvas-recent-workspace");
+            let here = crate::locales::CATALOG.t("canvas-recent-workspace");
             for (index, artwork) in kept.iter().enumerate() {
                 let art = &artwork.state;
                 let name = if art.title.is_empty() {
-                    ui::i18n::I18nManager::lookup_plain("canvas-untitled")
+                    crate::locales::CATALOG.t("canvas-untitled")
                 } else {
                     art.title.clone()
                 };
@@ -773,7 +773,7 @@ impl ui::widget::Decorator for Welcome {
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         Some(
             ui::a11y::AccessNode::new(ui::a11y::Role::Group)
-                .with_name(ui::i18n::I18nManager::lookup_plain("canvas-welcome-title")),
+                .with_name(crate::locales::CATALOG.t("canvas-welcome-title")),
         )
     }
 }

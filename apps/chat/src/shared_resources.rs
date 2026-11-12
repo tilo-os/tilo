@@ -208,10 +208,9 @@ impl Navigation {
     pub(crate) fn open_label(&self, message: &str, attachment: usize, label: &str) -> String {
         match self.outcome(message, attachment, true) {
             Some(Err(why)) => format!("{}: {why}", crate::i18n::t("chat-resource-not-opened")),
-            Some(Ok(())) | None => ui::i18n::I18nManager::format(
-                "reference-open",
-                &[("label", label.to_owned().into())],
-            ),
+            Some(Ok(())) | None => {
+                crate::i18n::t_args("reference-open", &[("label", label.to_owned().into())])
+            }
         }
     }
 

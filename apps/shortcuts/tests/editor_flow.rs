@@ -713,7 +713,7 @@ fn morning_refresh_draft_requires_schedule_choice_and_keyboard_save_review() {
     app.harness()
         .expect(
             &SemanticExpectation::named("schedule-review-0")
-                .name(ui::i18n::I18nManager::format(
+                .name(shortcuts::locales::CATALOG.t_args(
                     "shortcuts-schedule-review",
                     &[(
                         "time",

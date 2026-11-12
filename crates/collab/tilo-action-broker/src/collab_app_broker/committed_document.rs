@@ -17,7 +17,6 @@ pub struct NativeDocumentReadContext {
     route: CrdtRoute,
     certificate: tilo_user_identity::DeviceCert,
     record_kind: Option<String>,
-    creation: Option<crate::services::ApplicationCreationEvidence>,
     revalidate: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
 }
 
@@ -32,7 +31,7 @@ mod changes_tests;
 mod service_session_tests;
 impl NativeDocumentReadContext {
     /// A read of `route` by an agent task acting for the person whose device certificate is
-    /// `certificate` (`record_read`): no launcher custody and no creation, only `revalidate`,
+    /// `certificate` (`record_read`): no launcher custody, only `revalidate`,
     /// which decides the task's read of the record again. Only the broker can make one.
     pub(super) fn for_task(
         route: CrdtRoute,
@@ -43,7 +42,6 @@ impl NativeDocumentReadContext {
             route,
             certificate,
             record_kind: None,
-            creation: None,
             revalidate,
         }
     }
@@ -57,7 +55,6 @@ impl NativeDocumentReadContext {
             route,
             certificate,
             record_kind: None,
-            creation: None,
             revalidate: Arc::new(|| Ok(())),
         }
     }
@@ -69,9 +66,6 @@ impl NativeDocumentReadContext {
     }
     pub fn record_kind(&self) -> Option<&str> {
         self.record_kind.as_deref()
-    }
-    pub fn application_creation(&self) -> Option<&crate::services::ApplicationCreationEvidence> {
-        self.creation.as_ref()
     }
     /// Re-checks the admitted channel's live custody and admission.
     pub fn revalidate(&self) -> Result<(), String> {
@@ -497,25 +491,6 @@ impl JoinedChannel {
             .as_ref()
             .and_then(|lease| lease.local_media.clone());
         let peer = self.peer_id;
-        let workspace_record = local
-            .as_ref()
-            .and_then(|local| launch_workspace_record(local, &route));
-        let creation = local
-            .as_ref()
-            .filter(|_| admitted.agent_id.is_none())
-            .and_then(|local| local.creation.clone())
-            .map(|evidence| match workspace_record {
-                // A workspace record's kind is declared by the platform's
-                // list of them, not by the package of the window that
-                // opens it; the launch's signed original still stands for
-                // who creates it, and the workspace's grants decide whether they
-                // may.
-                Some(record) => crate::services::ApplicationCreationEvidence {
-                    declared_kinds: vec![record.kind.to_owned()],
-                    ..evidence
-                },
-                None => evidence,
-            });
         let state = Arc::downgrade(&self.state);
         let checked_route = route.clone();
         let revalidate = Arc::new(move || {
@@ -551,7 +526,6 @@ impl JoinedChannel {
             route,
             certificate,
             record_kind: self.record_kind.clone(),
-            creation,
             revalidate,
         };
         context.revalidate()?;

@@ -1131,10 +1131,7 @@ fn the_window_bar_names_the_screen_and_holds_its_actions() {
         app.state().problems.name.is_some(),
         "Save in the bar saves the form"
     );
-    press(
-        &mut app,
-        &ui::i18n::I18nManager::lookup_plain("window-toolbar-back"),
-    );
+    press(&mut app, &crate::resource::CATALOG.t("window-toolbar-back"));
     assert_eq!(app.state().screen, Screen::List);
 
     let rdp = app.state().first_of_kind(ConnectionKind::Rdp).unwrap();

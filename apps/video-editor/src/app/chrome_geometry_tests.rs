@@ -371,8 +371,9 @@ fn dialogs_and_sheets_stay_on_their_card_at_every_text_scale() {
         );
         assert_close(
             m1.row_h,
-            line(&mut tr1, &ty1.sm) + f64::from(theme1.tokens.spacing.s1),
-            "a 1x row is its line plus one step",
+            line(&mut tr1, &ty1.sm).max(InputHint::keycap_height(&theme1))
+                + f64::from(theme1.tokens.spacing.s1),
+            "a 1x row holds its line or its keycaps, plus one step",
         );
 
         for scale in [1.0, 2.0] {
@@ -495,7 +496,7 @@ fn dialogs_and_sheets_stay_on_their_card_at_every_text_scale() {
         let widest_description = crate::app::shortcuts()
             .iter()
             .flat_map(|(_, rows)| rows.iter())
-            .map(|(_, what)| f64::from(tr.measure_style(what, None, &ty.sm).0))
+            .map(|shortcut| f64::from(tr.measure_style(&shortcut.what, None, &ty.sm).0))
             .fold(0.0, f64::max);
         let row = l.groups[0].rows[0];
         assert!(

@@ -135,7 +135,6 @@ fn context(custody: &Arc<AtomicBool>) -> NativeDocumentReadContext {
     let custody = Arc::clone(custody);
     NativeDocumentReadContext {
         record_kind: None,
-        creation: None,
         route: crate::collab_broker::CrdtRoute::record("so.tilo.notes", WORKSPACE, ""),
         certificate,
         revalidate: Arc::new(move || {

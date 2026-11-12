@@ -796,9 +796,36 @@ pub(crate) struct RowM {
     /// field (padded) plus a controls row.
     pub(crate) editing: bool,
     edit_ctrl_h: f64,
+    /// This row was not measured this frame: it stands where a row is estimated to,
+    /// out of view, and is measured when it comes into view.
+    pub(crate) unmeasured: bool,
 }
 
 impl RowM {
+    /// A row the frame did not measure, standing `height` tall where nothing of it
+    /// shows: the timeline's own total is summed from what its rows were measured at,
+    /// and a row out of view is measured when it comes into it.
+    pub(crate) fn unmeasured(id: &str, height: f64) -> Self {
+        Self {
+            idx_id: id.to_owned(),
+            show_header: false,
+            top_gap: height,
+            pad: 0.0,
+            header_h: 0.0,
+            body_h: 0.0,
+            work_h: 0.0,
+            reasoning_h: 0.0,
+            resource_h: 0.0,
+            att_h: 0.0,
+            react_h: 0.0,
+            edited_h: 0.0,
+            thread_h: 0.0,
+            editing: false,
+            edit_ctrl_h: 0.0,
+            unmeasured: true,
+        }
+    }
+
     pub(crate) fn height(&self) -> f64 {
         let header = if self.show_header { self.header_h } else { 0.0 };
         let body = if self.editing {
@@ -901,7 +928,9 @@ mod tests {
         ];
         let groups = crate::model::group_messages(&app.messages, true);
         let clock = ui::widget::ConversationClock::at(0, start);
-        let (items, _) = app.measure_message_rows(&mut text, &theme, &groups, 400.0, clock);
+        let (items, _) =
+            app.measure_message_rows(&mut text, &theme, &groups, 400.0, clock, (0.0, f64::MAX));
+
         let dividers = items
             .iter()
             .filter(|item| matches!(item, TimelineItem::Divider { .. }))
@@ -1068,6 +1097,7 @@ mod tests {
             thread_h: 0.0,
             editing: false,
             edit_ctrl_h: 0.0,
+            unmeasured: false,
         };
         assert_eq!(
             row.height(),

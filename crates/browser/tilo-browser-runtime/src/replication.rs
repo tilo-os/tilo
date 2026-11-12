@@ -30,7 +30,7 @@
 //! A package's workspace-primary document travels with an empty record, as the
 //! native broker sends it; in the page's stores it is
 //! [`RecordId::package_primary`], kept at the workspace index.
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -47,12 +47,11 @@ use tilo_session::sync::{Cmd, Event, Outbox};
 use tilo_session_client::{Events, Link};
 use ui::automerge::{AutoCommit, ReadDoc as _, transaction::Transactable as _};
 use ui::collaboration::record_content::ContentLane;
-use ui::record::{RecordId, RecordStore, RecordSync};
+use ui::record::{RecordId, RecordSync};
 use ui::state::DocumentReplica;
 
-/// The desktop document's route. Changing it splits workspaces by build.
-pub(crate) const DESKTOP_APP: &str = "so.tilo.browser-desktop";
-pub(crate) const DESKTOP_RECORD: &str = "desktop";
+use crate::replicated::{Attachment, DESKTOP_APP, DESKTOP_RECORD};
+
 /// How often a page asks again what the workspace lets its person do: a role the
 /// workspace grants or withdraws while they are in it reaches their page within
 /// this.
@@ -65,21 +64,30 @@ thread_local! {
     static JOINED: RefCell<HashMap<u32, Rc<RefCell<Joined>>>> = RefCell::new(HashMap::new());
 }
 
-/// What a mount shares with the workspace.
-pub(crate) struct Attachment {
-    pub stores: Rc<RefCell<Vec<RecordStore>>>,
-    pub desktop: Option<(tilo_desktop_surface::DesktopHandle, crate::desktop::Shared)>,
-    /// Set when a peer's change reached one of this mount's records.
-    pub changed: Rc<Cell<bool>>,
-    /// Schedules a frame for the mount.
-    pub notify: Arc<dyn Fn() + Send + Sync>,
-    /// Who the mount's person is: the desktop changes it publishes name
-    /// them, so every page's Activity says whose they were.
-    pub author: String,
-    /// What the mount's apps may offer their person: set to the role the
-    /// workspace answers they hold, so an app does not offer what the workspace
-    /// would refuse.
-    pub permissions: ui::permissions::SharedPermissions,
+/// Hand the start module the page's replication (`crate::replicated`), which
+/// asks it from a table of functions so that the engine this module reads the
+/// workspace through loads with the peer's code, not with the page's first
+/// frame. Called from `peer_sync::register`, when a peer starts.
+pub(crate) fn install() {
+    crate::replicated::install(crate::replicated::Replicated {
+        page_store,
+        attach,
+        detach,
+        publish,
+        follow_answers,
+        ask_content,
+        device_of,
+        committed_record,
+        changes,
+        record_document,
+        content,
+        permit,
+        host_then,
+        workspace_uuid,
+        records,
+        desktop_history_heads,
+        desk_bytes,
+    });
 }
 
 /// How a page sends its desktop to the workspace.
@@ -432,10 +440,12 @@ pub(crate) fn committed_record(
 /// The peer replicates no workspace, or its session is gone.
 pub(crate) fn host_then(
     id: u32,
-    request: impl FnOnce(&str) -> tilo_relay_protocol::workspaces::WorkspacesRequest,
-    done: impl FnOnce(Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>) + 'static,
+    request: crate::replicated::Ask,
+    done: crate::replicated::Answer,
 ) -> Result<(), String> {
-    let joined = replica_of(id).ok_or("this page joined no workspace")?;
+    let Some(joined) = replica_of(id) else {
+        return Err(crate::replicated::NONE.to_owned());
+    };
     let joined = joined.borrow();
     Ok(ask_then(&joined.peer, request(&joined.uuid), done)?)
 }

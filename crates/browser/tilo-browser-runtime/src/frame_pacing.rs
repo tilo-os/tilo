@@ -164,7 +164,6 @@ mod tests {
     /// which each turn of the loop moves on.
     struct Loop {
         pacing: FramePacing,
-        started: Instant,
         now: Instant,
         pending: Vec<char>,
         drawn: Vec<Vec<char>>,
@@ -178,7 +177,6 @@ mod tests {
             let started = ui::time::now();
             Self {
                 pacing: FramePacing::default(),
-                started,
                 now: started,
                 pending: Vec::new(),
                 drawn: Vec::new(),

@@ -544,8 +544,20 @@ fn join_through_door(
 async fn enter_through_door(
     plain: std::net::SocketAddr,
     workspace: &str,
+    device: (&ed25519_dalek::SigningKey, &tilo_user_identity::DeviceCert),
+    name: &str,
+) -> Result<tilo_relay_client::login::Admission, tilo_session_client::device::HostRefusal> {
+    enter_through_door_as(plain, workspace, device, name, device.1.device_public_key).await
+}
+
+/// [`enter_through_door`] as the entry `request_id` names it: `tilo mcp` asks
+/// with a fresh one on every run.
+async fn enter_through_door_as(
+    plain: std::net::SocketAddr,
+    workspace: &str,
     (device, cert): (&ed25519_dalek::SigningKey, &tilo_user_identity::DeviceCert),
     name: &str,
+    request_id: [u8; 32],
 ) -> Result<tilo_relay_client::login::Admission, tilo_session_client::device::HostRefusal> {
     let info = tilo_relay_client::https::host_info(&Plain(plain))
         .await
@@ -560,7 +572,7 @@ async fn enter_through_door(
             entering: Some(tilo_relay_protocol::entering::Entering {
                 workspace: workspace.to_owned(),
                 name: name.to_owned(),
-                request_id: cert.device_public_key,
+                request_id,
                 through: tilo_relay_protocol::entering::Through::Door,
             }),
         },
@@ -1361,5 +1373,99 @@ fn the_room_serves_without_an_operator_and_answers_its_deployment_routes() {
     assert_eq!(get(&runtime, management, "/wait-list").status, 404);
     answers_the_door(&runtime, started.plain, &started.workspace);
 
+    room.stop();
+}
+
+/// What the door keeps of the people it let in, in the room's state: the file
+/// beside the room's record, wherever the run laid its state out.
+fn door_admissions(state: &std::path::Path) -> std::path::PathBuf {
+    let mut rooms = vec![state.to_path_buf()];
+    let mut kept: Vec<std::path::PathBuf> = Vec::new();
+    while let Some(dir) = rooms.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                rooms.push(path);
+            } else if path.extension().is_some_and(|kind| kind == "admissions") {
+                kept.push(path);
+            }
+        }
+    }
+    assert_eq!(kept.len(), 1, "one room, one door: {kept:?}");
+    kept.into_iter()
+        .next()
+        .expect("the room keeps the door's admissions")
+}
+
+/// The door's record as it stands once nothing is writing it: an entry's
+/// admission is written as it settles, which a session's answer can run ahead
+/// of.
+fn settled_admissions(path: &std::path::Path) -> Vec<u8> {
+    let mut last = std::fs::read(path).unwrap_or_default();
+    for _ in 0..40 {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let now = std::fs::read(path).unwrap_or_default();
+        if now == last {
+            return now;
+        }
+        last = now;
+    }
+    last
+}
+
+/// A computer that came in through the room's door before enters again without
+/// it: the door decides nothing for someone already in, so a returning run
+/// (a `tilo mcp` restarted, a page opened again) has no invitation put into the
+/// workspace's governance, none published to everyone there and none spent.
+#[test]
+fn a_device_that_came_in_before_enters_again_without_the_door() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
+    std::fs::create_dir_all(&state).unwrap();
+    let root_file = scratch.path().join("root");
+    std::fs::write(&root_file, "11".repeat(32)).unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let room = start_with(
+        &state,
+        &root_file,
+        &secrets,
+        &[
+            "--listing-description",
+            "Coffee and tea",
+            "--web-plain",
+            "127.0.0.1:0",
+        ],
+    )
+    .unwrap();
+    let started = announced(&room);
+    let (id, plain) = (started.workspace, started.plain);
+    // A computer `tilo login` made a device of the person's, in through the
+    // listed workspace's door.
+    let (key, cert) = join_through_door(
+        &runtime,
+        plain,
+        &id,
+        own_device(0xc1, "Claude Code on build-box"),
+        "Claude Code",
+    );
+    let door = door_admissions(&state);
+    let before = settled_admissions(&door);
+    // The same computer's next `tilo mcp`: its session enters the workspace
+    // again, under an entry of its own as every run makes one.
+    let answered = runtime.block_on(enter_through_door_as(
+        plain,
+        &id,
+        (&key, &cert),
+        "Claude Code",
+        rand::random(),
+    ));
+    assert!(answered.is_ok(), "{answered:?}");
+    // The door was asked for nothing: no invitation was issued for a member,
+    // nothing of its entry published, nothing spent.
+    assert_eq!(
+        settled_admissions(&door),
+        before,
+        "a member's entry asked the door for an invitation"
+    );
     room.stop();
 }

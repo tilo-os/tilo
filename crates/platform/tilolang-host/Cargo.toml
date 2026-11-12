@@ -32,7 +32,11 @@ tilo-wake.workspace = true
 tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history" }
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
-chrono = { workspace = true, features = ["std"] }
+# The person's date and time, read in their zone: what `today` is and what a day reads as.
+chrono = { workspace = true, features = ["std", "clock"] }
+# The device's clock, which is the person's: the same clock their window's dates and days read
+# by, so what an instance writes as today is the day their window shows it under.
+tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
 serde_json.workspace = true
 # A record the door hands over travels as base64 on the program connection.
 base64.workspace = true
@@ -52,6 +56,10 @@ tilo-content-device = { version = "0.1.0", path = "../../system/content-device" 
 tilo-dialogs = { version = "0.1.0", path = "../tilo-dialogs" }
 
 [dev-dependencies]
+# The person's clock held at a moment, and the zone the test's process reads: a day is only
+# today's or tomorrow's against a clock and a zone a test says.
+tilo-clock = { version = "0.1.0", path = "../tilo-clock", features = ["test-support"] }
+tilo-test-env = { path = "../../dev/test-env" }
 collaboration = { version = "0.1.0", path = "../../collab/collaboration", features = ["test-support", "broker-transport", "native"] }
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 tilolang = { path = "../../lang/tilolang" }

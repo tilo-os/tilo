@@ -5534,12 +5534,26 @@ impl FrameHarness {
         if name == WINDOW_SLOTS {
             return self.perform_slot_row_semantic(semantic_target, action);
         }
-        if semantic_target.is_none() && !self.named_target_nodes().contains_key(name) {
-            // A control a widget paints and publishes as a semantic child
-            // (a custom surface's button) is named by its own target, as
-            // search and agents name it; it routes through its owner.
-            if let Some(owner) = self.semantic_target_owner(name)? {
-                return self.perform_semantic_named(&owner, Some(name), action);
+        if !self.named_target_nodes().contains_key(name) {
+            if let Some(target) = semantic_target {
+                // A widget that hands its layout to a widget it holds (a
+                // sidebar around its list) is walked in the same place, so
+                // the page names its children under either path. Only the
+                // widget that publishes the target can carry it out, and
+                // the target says which one that is.
+                if let Some(owner) = self.semantic_target_owner(target)?
+                    && owner != name
+                {
+                    return self.perform_semantic_named(&owner, Some(target), action);
+                }
+            } else {
+                // A control a widget paints and publishes as a semantic
+                // child (a custom surface's button) is named by its own
+                // target, as search and agents name it; it routes through
+                // its owner.
+                if let Some(owner) = self.semantic_target_owner(name)? {
+                    return self.perform_semantic_named(&owner, Some(name), action);
+                }
             }
         }
         if let Some(target) = semantic_target {
@@ -5647,6 +5661,22 @@ impl FrameHarness {
             self.host_tick();
             self.relayout();
             return Ok(());
+        }
+
+        // A widget that names its own node as the control (a row whose
+        // selection and opening its list keeps) acts on an activation only
+        // through the pointer: it declined the action, so press it where it
+        // stands, as a pointer on it does.
+        if own_target && matches!(action, SemanticAction::Activate) {
+            let rect = self
+                .inspect_node(node, |widget| widget.get_rect())
+                .map_err(|error| format!("component inspection refused: {error:?}"))?;
+            if rect.width() > 0.0 && rect.height() > 0.0 {
+                let center = rect.center();
+                self.click_at(center.x, center.y);
+                self.relayout();
+                return Ok(());
+            }
         }
 
         match action {

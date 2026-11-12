@@ -101,7 +101,7 @@ fn person() -> Person {
             now.saturating_add(3_600_000_000_000),
         )
         .expect("this device may enroll another of the person's");
-    let phone_key = ed25519_dalek::SigningKey::from_bytes(&[0x52; 32]);
+    let phone_key = test_relay::signing_key(0x52);
     let phone_cert = store
         .complete_enrollment(
             &profile.id,
@@ -201,7 +201,7 @@ impl Devices {
                     continuity: Continuity::default(),
                     wake: Arc::new(|| {}),
                     fabric: None,
-                    relays: tilo_endpoint_reachability::relays(),
+                    relays: test_relay::loopback(),
                 },
                 None,
                 Some(questions.clone()),
@@ -224,7 +224,7 @@ impl Devices {
                     continuity: Continuity::default(),
                     wake: Arc::new(|| {}),
                     fabric: None,
-                    relays: tilo_endpoint_reachability::relays(),
+                    relays: test_relay::loopback(),
                 },
                 None,
                 None,

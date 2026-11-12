@@ -14,7 +14,14 @@ use collab_types::DocumentMutation;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_session_client::{Cmd, Outbox};
 
-use super::{COMMIT_WAIT, Needs, Worker, is_part};
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
+
+use tilo_actions::remote::{ActorPlace, InvocationReceipt, InvocationState};
+use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
+use tilo_lock::MutexRecover as _;
+
+use super::{COMMIT_WAIT, Ledger, Needs, Outcome, Performed, Worker, is_part};
 
 /// The record at `route` as the session's replica holds it, and whether the
 /// replica holds it at all.
@@ -37,8 +44,14 @@ fn document(
     }
 }
 
-/// How long [`Worker::watch_saved`] waits to hear a write was saved before
-/// it logs that it was not.
+/// How long an invocation waits to hear its writes were saved before it is
+/// answered pending: the caller follows it with `tilo_status` until it is
+/// saved. A write the host saves at once (most) is answered done directly.
+const SAVE_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How long a write waits to be saved before the host logs that it is not
+/// yet. It goes on waiting: a write held for its record's keys is saved once
+/// they arrive, however late.
 const SAVE_WATCH: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// One write the host handed to the session, as its log names it.
@@ -61,6 +74,15 @@ impl Written {
         }
     }
 
+    /// The route the write went to.
+    pub(super) fn route(&self) -> DocumentRoute {
+        DocumentRoute {
+            app_id: self.app.clone(),
+            cluster_id: self.workspace.clone(),
+            record: self.record.clone(),
+        }
+    }
+
     fn saved(&self) {
         tracing::info!(
             app = %self.app,
@@ -80,8 +102,79 @@ impl Written {
             whole = self.whole,
             changes = ?self.changes,
             %reason,
-            "workspace actions: a change answered done is not saved"
+            "workspace actions: a change is not saved"
         );
+    }
+}
+
+/// Where the writes one request handed to the session stand once it ran
+/// ([`Worker::saving`]).
+pub(super) enum Saving {
+    /// The host holds every one of them durably.
+    Saved,
+    /// The host refused them, or the session ended before it held them:
+    /// why.
+    Failed(String),
+    /// Not yet saved, as when held for a record's keys: [`Unsaved::settle`]
+    /// says how it ends.
+    Pending(Unsaved),
+}
+
+/// Writes handed to the session that the host has not said it holds yet.
+pub(super) struct Unsaved {
+    saved: tilo_session_client::Receipt<Result<(), String>>,
+    written: Vec<Written>,
+}
+
+impl Unsaved {
+    /// Writes nobody named, waiting on `saved`: what a test settles.
+    #[cfg(test)]
+    pub(super) const fn waiting(saved: tilo_session_client::Receipt<Result<(), String>>) -> Self {
+        Self {
+            saved,
+            written: Vec::new(),
+        }
+    }
+
+    /// Wait, off the service's thread, until the host holds the writes or
+    /// refuses them, then `settled` hears which: `Ok` once saved, or why
+    /// not. A write still unsaved after [`SAVE_WATCH`] is logged and waited
+    /// for on.
+    pub(super) fn settle(self, settled: impl FnOnce(Result<(), String>) + Send + 'static) {
+        let Self { saved, written } = self;
+        let watching = std::thread::Builder::new()
+            .name("write-saved".into())
+            .spawn(move || {
+                let outcome = match saved.recv_timeout(SAVE_WATCH) {
+                    Ok(outcome) => Some(outcome),
+                    Err(tilo_session_client::RecvTimeoutError::Timeout) => {
+                        for write in &written {
+                            write.unsaved(
+                                "not saved yet: it waits for its record's keys or the host",
+                            );
+                        }
+                        saved.recv().ok()
+                    }
+                    Err(tilo_session_client::RecvTimeoutError::Disconnected) => None,
+                };
+                let outcome = outcome.unwrap_or_else(|| {
+                    Err("the session ended before the host saved the change".into())
+                });
+                log_saved(&written, &outcome);
+                settled(
+                    outcome.map_err(|reason| format!("the host did not save the change: {reason}")),
+                );
+            });
+        if let Err(error) = watching {
+            tracing::warn!(%error, "workspace actions: whether a write was saved is not watched");
+        }
+    }
+}
+
+fn log_saved(written: &[Written], outcome: &Result<(), String>) {
+    match outcome {
+        Ok(()) => written.iter().for_each(Written::saved),
+        Err(reason) => written.iter().for_each(|write| write.unsaved(reason)),
     }
 }
 
@@ -104,8 +197,29 @@ fn changes_of(mutation: &DocumentMutation) -> Vec<String> {
 
 impl Worker {
     /// Publish `mutation` as the member: sealed with the record's channel
-    /// keys, or held until a participant admits the member to it.
+    /// keys, or held until a participant admits the member to it. The write
+    /// is kept with what the request being served handed over, which is
+    /// answered done only once the host holds it ([`Self::saving`]).
     pub(super) fn commit(
+        &mut self,
+        workspace_id: u64,
+        route: &DocumentRoute,
+        mutation: &DocumentMutation,
+    ) -> Result<(), String> {
+        self.hand_over(workspace_id, route, mutation)?;
+        self.handed
+            .entry(workspace_id)
+            .or_default()
+            .push(Written::of(route, mutation));
+        // The workspace holds the record by its index naming it, as a
+        // window opening the record names it there.
+        self.index_record(workspace_id, route);
+        Ok(())
+    }
+
+    /// Hand `mutation` to the session, which seals it with the record's
+    /// channel keys, or holds it until a participant admits the member.
+    fn hand_over(
         &mut self,
         workspace_id: u64,
         route: &DocumentRoute,
@@ -146,22 +260,18 @@ impl Worker {
             changes = ?written.changes,
             "workspace actions: a change was handed to the session"
         );
-        // The workspace holds the record by its index naming it, as a
-        // window opening the record names it there.
-        self.index_record(workspace_id, route);
         Ok(())
     }
 
-    /// [`Self::commit`], done only once the host holds the change durably
-    /// (the session's barrier): handing it to the session, possibly to wait
-    /// for keys, is not a save.
-    pub(super) fn commit_durably(
+    /// Hand `mutation` to the session, done only once the host holds it
+    /// durably (the session's barrier): what the next write is made over.
+    fn commit_durably(
         &mut self,
         workspace_id: u64,
         route: &DocumentRoute,
         mutation: &DocumentMutation,
     ) -> Result<(), String> {
-        self.commit(workspace_id, route, mutation)?;
+        self.hand_over(workspace_id, route, mutation)?;
         let saved = self
             .workspaces
             .get(&workspace_id)
@@ -178,32 +288,121 @@ impl Worker {
         }
     }
 
-    /// Log whether the host comes to hold `written`, handed to the session
-    /// by [`Self::commit`], durably: without holding the caller's answer, as
-    /// a write held for its record's keys goes once they arrive. What proves
-    /// afterwards whether a write answered done was kept.
-    pub(super) fn watch_saved(&self, workspace_id: u64, written: Vec<Written>) {
-        if written.is_empty() {
-            return;
+    /// Answer `invocation` pending: it ran, and is done once the host holds
+    /// what it wrote, which the caller follows it to.
+    pub(super) fn answer_pending(
+        &self,
+        invocation: InvocationId,
+        (output, left_at): (ActionOutput, Option<ActorPlace>),
+        unsaved: Unsaved,
+    ) -> InvocationReceipt {
+        let mut ledger = self.ledger();
+        ledger.running = None;
+        if let Some(entry) = ledger.entries.get_mut(&invocation) {
+            entry.saving = true;
+            entry.left_at = left_at;
         }
-        let Some(saved) = self
+        drop(ledger);
+        let shared = Arc::clone(&self.shared);
+        unsaved.settle(move |saved| {
+            settle_saved(&shared.ledger, invocation, output, saved);
+        });
+        InvocationState::new(invocation, InvocationUpdate::Accepted { invocation }).receipt()
+    }
+
+    /// `outcome`, an action's, once what it wrote is saved: failed when the
+    /// host refuses it, and with what is still on its way to be saved when
+    /// it is not saved yet. One rule for every caller: done means saved.
+    /// What a write not yet saved was made through, a caller's replica
+    /// within bounds, is let go, so nothing unsaved is acted on again.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome becomes the receipt the host records"
+    )]
+    pub(super) fn saved(
+        &mut self,
+        workspace_id: u64,
+        outcome: Performed,
+    ) -> (Performed, Option<Unsaved>) {
+        if outcome.is_err() {
+            return (outcome, None);
+        }
+        let routes: HashSet<DocumentRoute> =
+            self.handed.values().flatten().map(Written::route).collect();
+        let (outcome, unsaved) = match self.saving(workspace_id) {
+            Saving::Saved => return (outcome, None),
+            Saving::Failed(reason) => (Err(Outcome::Failed(unsaved_failure(reason))), None),
+            Saving::Pending(unsaved) => (outcome, Some(unsaved)),
+        };
+        let holders: HashSet<DocumentRoute> =
+            routes.iter().map(|route| self.holder_of(route)).collect();
+        self.bounded
+            .retain(|(route, _, _), _| !routes.contains(route) && !holders.contains(route));
+        (outcome, unsaved)
+    }
+
+    /// Where the writes the request just served handed to the session
+    /// stand: saved, refused, or still on their way after [`SAVE_GRACE`].
+    /// Every write, whoever it was made for, is answered by this one rule:
+    /// done only once the host holds it.
+    pub(super) fn saving(&mut self, workspace_id: u64) -> Saving {
+        let written: Vec<Written> = std::mem::take(&mut self.handed)
+            .into_values()
+            .flatten()
+            .collect();
+        if written.is_empty() {
+            return Saving::Saved;
+        }
+        let saved = match self
             .workspaces
             .get(&workspace_id)
-            .and_then(|workspace| workspace.peer.barrier().ok())
-        else {
-            return;
+            .ok_or_else(|| "the workspace was not joined".to_owned())
+            .and_then(|workspace| {
+                workspace
+                    .peer
+                    .barrier()
+                    .map_err(|closed| closed.to_string())
+            }) {
+            Ok(saved) => saved,
+            Err(reason) => {
+                let reason = format!("the host did not save the change: {reason}");
+                log_saved(&written, &Err(reason.clone()));
+                return Saving::Failed(reason);
+            }
         };
-        let watching = std::thread::Builder::new()
-            .name("write-saved".into())
-            .spawn(move || match saved.recv_timeout(SAVE_WATCH) {
-                Ok(Ok(())) => written.iter().for_each(Written::saved),
-                Ok(Err(reason)) => written.iter().for_each(|write| write.unsaved(&reason)),
-                Err(_) => written.iter().for_each(|write| {
-                    write.unsaved("the host has not acknowledged saving it");
-                }),
-            });
-        if let Err(error) = watching {
-            tracing::debug!(%error, "workspace actions: whether a write was saved is not watched");
+        match saved.recv_timeout(SAVE_GRACE) {
+            Ok(outcome) => {
+                log_saved(&written, &outcome);
+                match outcome {
+                    Ok(()) => Saving::Saved,
+                    Err(reason) => {
+                        Saving::Failed(format!("the host did not save the change: {reason}"))
+                    }
+                }
+            }
+            Err(tilo_session_client::RecvTimeoutError::Timeout) => {
+                Saving::Pending(Unsaved { saved, written })
+            }
+            Err(tilo_session_client::RecvTimeoutError::Disconnected) => {
+                let reason = "the host did not save the change: the session ended".to_owned();
+                log_saved(&written, &Err(reason.clone()));
+                Saving::Failed(reason)
+            }
+        }
+    }
+
+    /// Log whether the host comes to hold what a job that answers no
+    /// invocation handed to the session, without holding the job.
+    pub(super) fn watch_handed(&mut self) {
+        for (workspace_id, written) in std::mem::take(&mut self.handed) {
+            let Some(saved) = self
+                .workspaces
+                .get(&workspace_id)
+                .and_then(|workspace| workspace.peer.barrier().ok())
+            else {
+                continue;
+            };
+            Unsaved { saved, written }.settle(|_| {});
         }
     }
 
@@ -310,5 +509,39 @@ impl Worker {
         // Durably: the next name is written over this one, read back from the
         // session's replica.
         self.commit_durably(workspace_id, &index_route, &mutation)
+    }
+}
+
+/// `invocation`, answered pending while what it wrote was on its way, ends
+/// as the save did: done with `output` once the host holds it, or failed
+/// with why it does not.
+pub(super) fn settle_saved(
+    ledger: &Mutex<Ledger>,
+    invocation: InvocationId,
+    output: ActionOutput,
+    saved: Result<(), String>,
+) {
+    let mut ledger = ledger.lock_recover();
+    if let Some(entry) = ledger.entries.get_mut(&invocation) {
+        entry.saving = false;
+        entry.update = match saved {
+            Ok(()) => InvocationUpdate::Succeeded { invocation, output },
+            Err(message) => InvocationUpdate::Failed {
+                invocation,
+                error: unsaved_failure(message),
+            },
+        };
+    }
+}
+
+/// Why an action whose change the host did not save failed. The workspace
+/// took none of it (it refused the change, or the session it rode ended), so
+/// asking again runs it again over the session the workspace holds now.
+fn unsaved_failure(message: String) -> ActionFailure {
+    ActionFailure {
+        code: "commit_failed".into(),
+        message,
+        details: None,
+        retryable: true,
     }
 }

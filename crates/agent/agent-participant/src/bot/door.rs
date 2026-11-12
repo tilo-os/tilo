@@ -486,7 +486,16 @@ struct BotReads<P: DoorParticipant> {
     installation: String,
 }
 
-impl<P: DoorParticipant> RecordReads for BotReads<P> {
+impl<P: DoorParticipant + 'static> RecordReads for BotReads<P> {
+    fn answer_read(
+        self: Arc<Self>,
+        caller: &Caller,
+        correlation: u64,
+        read: tilo_actions::remote::RecordReadRequest,
+    ) -> tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage> {
+        tilo_actions::remote::answer_read(self, caller, correlation, read)
+    }
+
     fn read(
         &self,
         caller: &Caller,

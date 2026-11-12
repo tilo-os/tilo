@@ -172,12 +172,10 @@ pub(crate) fn variable_hint(
                 .filter(|name| !env.contains_key(*name))
                 .collect();
             if unresolved.is_empty() {
-                ui::i18n::I18nManager::format(
-                    "api-variables-resolved",
-                    &[("count", refs.len().into())],
-                )
+                crate::locales::CATALOG
+                    .t_args("api-variables-resolved", &[("count", refs.len().into())])
             } else {
-                ui::i18n::I18nManager::format(
+                crate::locales::CATALOG.t_args(
                     "api-variables-unresolved",
                     &[
                         ("count", unresolved.len().into()),

@@ -384,7 +384,7 @@ pub fn file_name(title: &str, extension: &str) -> String {
         .collect();
     let words = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
     let stem = if words.is_empty() {
-        ui::i18n::I18nManager::lookup_plain("canvas-untitled")
+        crate::locales::CATALOG.t("canvas-untitled")
     } else {
         words
     };

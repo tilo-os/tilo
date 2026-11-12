@@ -35,6 +35,28 @@ use crate::app::{ChatApp, Hit};
 use crate::model::{self, Message};
 use crate::paint::{line_in, line_of, text, width_of};
 
+/// A conversation laid out for a frame: the items it stands, the bands above them, and the
+/// height the painting starts at.
+struct Placed {
+    items: Vec<TimelineItem>,
+    /// The message the "new messages" line stands above, if any.
+    first_unread: Option<String>,
+    /// The place the earlier messages take, and the "new messages" line's height.
+    earlier_h: f64,
+    new_h: f64,
+    /// Where the items' first line is painted.
+    y: f64,
+}
+
+/// One row of the timeline before it is measured: the message it stands for, and the day
+/// divider above it where the local day changes.
+struct TimelineRow {
+    index: usize,
+    id: String,
+    show_header: bool,
+    divider: Option<String>,
+}
+
 impl ChatApp {
     fn draw_empty_messages(&mut self, paint: PaintCtx<'_>, area: Rect) {
         let PaintCtx {
@@ -134,57 +156,13 @@ impl ChatApp {
             return;
         }
 
-        let groups = self.timeline_groups();
-        let clock = ConversationClock::local();
-        let (items, measured) = self.measure_message_rows(tr, theme, &groups, text_w, clock);
-        let first_unread = self.scrollback.first_unread.clone();
-        let earlier_h = if reads_back {
-            Self::earlier_height(tr, theme, text_w)
-        } else {
-            0.0
-        };
-        let new_h = first_unread
-            .as_ref()
-            .map_or(0.0, |_| SectionDividerFace::height(theme));
-        let total = measured + earlier_h + new_h;
-        let tops = Self::item_tops(&items, theme, earlier_h, new_h, first_unread.as_deref());
-
-        // The newest edge at the bottom; content shorter than the view
-        // starts at its top.
-        let start_y = (area.y1 - total).min(area.y0);
-        self.keep_view(&items, &tops, area, start_y, total);
-
-        self.scroll_content = total;
-        self.scroll_viewport = area.height().max(0.0);
-        self.scroll_to_revealed(&items, &tops, area, start_y);
-        self.scroll = self.scroll.clamp(0.0, (total - area.height()).max(0.0));
-        let mut y = (start_y + self.scroll).clamp(start_y, area.y0);
-        // Store the normalised (bounded) offset, not the raw wheel accumulator.
-        // This prevents an unbounded value from leaking across a resize or a
-        // channel switch, and gives sync an accurate read-edge answer.
-        self.scroll = y - start_y;
-        // `scroll == 0` is the newest edge: `start_y` starts the timeline at
-        // its bottom-aligned position, while increasing offsets travel back
-        // through history toward the view's top.
-        let at_end = self.scroll <= 0.5;
-        // Scrolling back to the newest message reads it. The read receipt
-        // is the sync's, asked for once when the timeline arrives at its
-        // newest edge, not on each wheel notch that brought it there (a
-        // notch only pans the view: `events.rs`).
-        if at_end && !self.timeline_at_end {
-            self.read_on_present = true;
-        }
-        self.timeline_at_end = at_end;
-        self.timeline_total_height = total;
-        // The message at the top of the view, kept there next frame.
-        self.scrollback.anchor = (!at_end)
-            .then(|| view_anchor(&items, &tops, area, y))
-            .flatten();
-        // Reading within a view of the earlier messages' place opens the
-        // part before.
-        if reads_back && self.messages_read_current() && y + earlier_h >= area.y0 - area.height() {
-            self.scrollback.reached_top();
-        }
+        let Placed {
+            items,
+            first_unread,
+            earlier_h,
+            new_h,
+            mut y,
+        } = self.place_timeline(tr, theme, area, text_w, reads_back);
 
         let first_row_hit = hits.len();
         // Only what stands in view is painted; a row keeps its scene for
@@ -456,9 +434,92 @@ impl ChatApp {
         ChatApp::push_hit(hits, rect, Hit::JumpToLatest);
     }
 
-    /// Measure every row across every group, with a day divider wherever the
-    /// local day changes — not only at the oldest loaded message — returning
-    /// the timeline's items and its total height.
+    /// Lay the conversation out for a frame: its items, where each stands, and where the
+    /// view begins, against what the reader has scrolled and what was revealed.
+    fn place_timeline(
+        &mut self,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        text_w: f32,
+        reads_back: bool,
+    ) -> Placed {
+        let groups = self.timeline_groups();
+        let clock = ConversationClock::local();
+        let window = self.timeline_window(area);
+        let (items, measured) =
+            self.measure_message_rows(tr, theme, &groups, text_w, clock, window);
+        let first_unread = self.scrollback.first_unread.clone();
+        let earlier_h = if reads_back {
+            Self::earlier_height(tr, theme, text_w)
+        } else {
+            0.0
+        };
+        let new_h = first_unread
+            .as_ref()
+            .map_or(0.0, |_| SectionDividerFace::height(theme));
+        let total = measured + earlier_h + new_h;
+        let tops = Self::item_tops(&items, theme, earlier_h, new_h, first_unread.as_deref());
+        // The newest edge at the bottom; content shorter than the view
+        // starts at its top.
+        let start_y = (area.y1 - total).min(area.y0);
+        self.keep_view(&items, &tops, area, start_y, total);
+
+        self.scroll_content = total;
+        self.scroll_viewport = area.height().max(0.0);
+        self.scroll_to_revealed(&items, &tops, area, start_y);
+        self.scroll = self.scroll.clamp(0.0, (total - area.height()).max(0.0));
+        let y = (start_y + self.scroll).clamp(start_y, area.y0);
+        // Store the normalised (bounded) offset, not the raw wheel accumulator.
+        // This prevents an unbounded value from leaking across a resize or a
+        // channel switch, and gives sync an accurate read-edge answer.
+        self.scroll = y - start_y;
+        // `scroll == 0` is the newest edge: `start_y` starts the timeline at
+        // its bottom-aligned position, while increasing offsets travel back
+        // through history toward the view's top.
+        let at_end = self.scroll <= 0.5;
+        // Scrolling back to the newest message reads it. The read receipt
+        // is the sync's, asked for once when the timeline arrives at its
+        // newest edge, not on each wheel notch that brought it there (a
+        // notch only pans the view: `events.rs`).
+        if at_end && !self.timeline_at_end {
+            self.read_on_present = true;
+        }
+        self.timeline_at_end = at_end;
+        self.timeline_total_height = total;
+        // The message at the top of the view, kept there next frame.
+        self.scrollback.anchor = (!at_end)
+            .then(|| view_anchor(&items, &tops, area, y))
+            .flatten();
+        // Reading within a view of the earlier messages' place opens the
+        // part before.
+        if reads_back && self.messages_read_current() && y + earlier_h >= area.y0 - area.height() {
+            self.scrollback.reached_top();
+        }
+        Placed {
+            items,
+            first_unread,
+            earlier_h,
+            new_h,
+            y,
+        }
+    }
+
+    /// The stretch of the timeline a frame measures, as distances from the newest edge: what
+    /// stands in view, and a viewport either side of it, so scrolling meets rows that were
+    /// measured before they came into view. `scroll` already counts from that edge, so this
+    /// holds however tall the rows not yet measured turn out to be.
+    fn timeline_window(&self, area: Rect) -> (f64, f64) {
+        let viewport = area.height().max(0.0);
+        (self.scroll - viewport, self.scroll + viewport + viewport)
+    }
+
+    /// Measure the rows across every group that stand within `window` — distances from the
+    /// timeline's newest edge — with a day divider wherever the local day changes, not only
+    /// at the oldest loaded message, returning the timeline's items and its total height. A
+    /// row outside the window stands at what it was measured at, or at what a row of this
+    /// conversation is estimated to cost, and is measured when a frame's window reaches it:
+    /// a timeline of thousands of messages lays out what stands in view, not every row of it.
     pub(super) fn measure_message_rows(
         &self,
         tr: &mut TextRenderer,
@@ -466,29 +527,92 @@ impl ChatApp {
         groups: &[model::MessageGroup],
         text_w: f32,
         clock: ConversationClock,
+        window: (f64, f64),
     ) -> (Vec<TimelineItem>, f64) {
+        let rows = self.timeline_rows(groups, clock);
+        let stands = self.rows_in_window(&rows, theme, window);
         let mut total = 0.0;
-        let mut items: Vec<TimelineItem> = Vec::new();
+        let mut items: Vec<TimelineItem> = Vec::with_capacity(rows.len());
+        for (at, row) in rows.iter().enumerate() {
+            if let Some(label) = row.divider.clone() {
+                let height = SectionDividerFace::height(theme);
+                total += height;
+                items.push(TimelineItem::Divider { label });
+            }
+            // Where the row stands: what it was measured at, or what a row of this
+            // conversation is estimated to cost until a frame reaches it.
+            let height = self
+                .timeline
+                .borrow()
+                .kept_height(&row.id)
+                .unwrap_or_else(|| self.timeline.borrow().estimate());
+            let rm = match self
+                .messages
+                .get(row.index)
+                .filter(|_| stands.get(at).copied().unwrap_or(true))
+            {
+                Some(m) => self.measure_row_kept(tr, theme, m, row.show_header, text_w),
+                None => RowM::unmeasured(&row.id, height),
+            };
+            total += rm.height();
+            items.push(TimelineItem::Row(rm));
+        }
+        (items, total)
+    }
+
+    /// Every row of the timeline in order, with the day divider it stands under: what a
+    /// message says the timeline shows, without measuring any of them.
+    fn timeline_rows(
+        &self,
+        groups: &[model::MessageGroup],
+        clock: ConversationClock,
+    ) -> Vec<TimelineRow> {
+        let mut rows = Vec::new();
         let mut days = DayBreaks::new();
         for g in groups {
-            for (gi, &idx) in g.message_indices.iter().enumerate() {
-                let Some(m) = self.messages.get(idx) else {
+            for (gi, &index) in g.message_indices.iter().enumerate() {
+                let Some(m) = self.messages.get(index) else {
                     continue;
                 };
                 let day = clock.day(m.ts);
-                if days.begins(day) {
-                    let height = SectionDividerFace::height(theme);
-                    total += height;
-                    items.push(TimelineItem::Divider {
-                        label: clock.day_label(day),
-                    });
-                }
-                let rm = self.measure_row_kept(tr, theme, m, gi == 0, text_w);
-                total += rm.height();
-                items.push(TimelineItem::Row(rm));
+                let divider = days.begins(day).then(|| clock.day_label(day));
+                rows.push(TimelineRow {
+                    index,
+                    id: m.id.clone(),
+                    show_header: gi == 0,
+                    divider,
+                });
             }
         }
-        (items, total)
+        rows
+    }
+
+    /// Which of `rows` stand within `window`, a range of distances from the timeline's
+    /// newest edge: the rows in view and the margin either side of them, counted up from
+    /// the edge with the heights the rows are laid out at.
+    fn rows_in_window(&self, rows: &[TimelineRow], theme: &Theme, window: (f64, f64)) -> Vec<bool> {
+        let (from, to) = window;
+        let divider = SectionDividerFace::height(theme);
+        let mut stands = vec![false; rows.len()];
+        let mut from_bottom = 0.0;
+        for (at, row) in rows.iter().enumerate().rev() {
+            let height = self
+                .timeline
+                .borrow()
+                .kept_height(&row.id)
+                .unwrap_or_else(|| self.timeline.borrow().estimate());
+            if let Some(stands) = stands.get_mut(at)
+                && from_bottom + height >= from
+                && from_bottom <= to
+            {
+                *stands = true;
+            }
+            from_bottom += height;
+            if row.divider.is_some() {
+                from_bottom += divider;
+            }
+        }
+        stands
     }
 
     /// One timeline item's height: a divider's row, or a message's.
@@ -630,6 +754,7 @@ impl ChatApp {
             thread_h,
             editing,
             edit_ctrl_h,
+            unmeasured: false,
         }
     }
 

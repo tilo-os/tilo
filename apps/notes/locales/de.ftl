@@ -2,6 +2,7 @@ notes-created-date = Erstellt { $date }
 notes-edited-date = Bearbeitet { $date }
 notes-dates = Erstellt { $created }, bearbeitet { $edited }
 notes-date-today = heute um { $time }
+notes-date-unavailable = Datum unbekannt
 notes-table-add-row = Zeile darunter einfügen
 notes-table-add-column = Spalte danach einfügen
 notes-table-delete-row = Zeile löschen

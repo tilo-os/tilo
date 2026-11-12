@@ -93,3 +93,5 @@ contacts-birthday = Birthday
 
 contacts-keep-this-card = Keep this card's
 contacts-keep-other-card = Keep the other card's
+contacts-importing = Importing contacts
+contacts-exporting = Exporting contacts

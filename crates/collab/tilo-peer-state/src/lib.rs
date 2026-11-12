@@ -4,6 +4,10 @@
     allow(
         clippy::arc_with_non_send_sync,
         reason = "a page's store and neighbour handles reach JavaScript and stay on the page's one thread"
+    ),
+    allow(
+        clippy::future_not_send,
+        reason = "a page's signer answers through a JavaScript promise, so the owner's write future, which awaits it while it holds the page's store, stays on the page's one thread"
     )
 )]
 mod frames;

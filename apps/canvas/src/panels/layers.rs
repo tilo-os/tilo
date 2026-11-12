@@ -55,7 +55,7 @@ fn engine_label(art: &Artwork, medium: &str) -> String {
         Some("watercolour") => "canvas-medium-watercolour",
         _ => "canvas-medium-plain",
     };
-    ui::i18n::I18nManager::lookup_plain(id)
+    crate::locales::CATALOG.t(id)
 }
 
 /// The layers' rows, top first; a mask rides in its layer's row.
@@ -316,7 +316,7 @@ fn pictures(cx: &ViewCx<Artwork>, tools: &Tools, row: &LayerRow) -> Row {
                 )),
         )
     };
-    let named = |id: &str| ui::i18n::I18nManager::format(id, &[("name", row.name.clone().into())]);
+    let named = |id: &str| crate::locales::CATALOG.t_args(id, &[("name", row.name.clone().into())]);
     let mut pictures = Row::new()
         .with_gap(ui::tokens::Spacing::BASE.s1)
         .no_wrap()
@@ -330,7 +330,7 @@ fn pictures(cx: &ViewCx<Artwork>, tools: &Tools, row: &LayerRow) -> Row {
 
 fn layer_row(cx: &ViewCx<Artwork>, tools: &Tools, row: &LayerRow) -> Element {
     let pictures = pictures(cx, tools, row);
-    let named = |id: &str| ui::i18n::I18nManager::format(id, &[("name", row.name.clone().into())]);
+    let named = |id: &str| crate::locales::CATALOG.t_args(id, &[("name", row.name.clone().into())]);
     let rename = Artwork::RENAME_LAYER.map({
         let id = row.id.clone();
         move |name: String| (id.clone(), name)
@@ -340,7 +340,7 @@ fn layer_row(cx: &ViewCx<Artwork>, tools: &Tools, row: &LayerRow) -> Element {
         EditableLabel::new(&row.name)
             .with_text_role(TextRole::Body)
             .with_id(&format!("canvas-layer-name-{}", row.id))
-            .with_accessible_name(ui::i18n::I18nManager::lookup_plain("canvas-layer-rename"))
+            .with_accessible_name(crate::locales::CATALOG.t("canvas-layer-rename"))
             .renames_on_double_click()
             .begins_editing_on(&renaming)
             .filling(),
@@ -434,9 +434,9 @@ fn row_menu(
         if !mine && chosen.with(|id| *id != row.id) {
             chosen.set(row.id.clone());
         }
-        let lookup = ui::i18n::I18nManager::lookup_plain;
+        let lookup = |key: &str| crate::locales::CATALOG.t(key);
         let named =
-            |id: &str| ui::i18n::I18nManager::format(id, &[("name", row.name.clone().into())]);
+            |id: &str| crate::locales::CATALOG.t_args(id, &[("name", row.name.clone().into())]);
         let invoke = |make: fn(&LayerRow) -> Invoke<Artwork>| {
             let dispatcher = dispatcher.clone();
             let row = row.clone();
@@ -494,7 +494,7 @@ fn masking(
     entries: &mut Vec<ui::widget::MenuEntry>,
 ) {
     use ui::widget::MenuEntry;
-    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let lookup = |key: &str| crate::locales::CATALOG.t(key);
     let invoke = |make: fn(&LayerRow) -> Invoke<Artwork>| {
         let dispatcher = dispatcher.clone();
         let row = row.clone();
@@ -552,9 +552,7 @@ fn chosen_layer(cx: &ViewCx<Artwork>, id: &str, tools: &Tools) -> Element {
     let slider = cx.actions().bind(
         Slider::from_state(&opacity)
             .with_id("canvas-layer-opacity")
-            .with_accessible_name(&ui::i18n::I18nManager::lookup_plain(
-                "canvas-label-layer-opacity",
-            ))
+            .with_accessible_name(&crate::locales::CATALOG.t("canvas-label-layer-opacity"))
             .commits_on_release(),
         Artwork::SET_LAYER_OPACITY.map({
             let id = row.id.clone();
@@ -563,7 +561,7 @@ fn chosen_layer(cx: &ViewCx<Artwork>, id: &str, tools: &Tools) -> Element {
     );
     let label = {
         Text::dynamic(move || {
-            ui::i18n::I18nManager::format(
+            crate::locales::CATALOG.t_args(
                 "canvas-layer-opacity-value",
                 &[("percent", percent(opacity.with(|value| *value)).into())],
             )
@@ -574,7 +572,7 @@ fn chosen_layer(cx: &ViewCx<Artwork>, id: &str, tools: &Tools) -> Element {
         icon_button(
             cx,
             icon,
-            &ui::i18n::I18nManager::lookup_plain(name),
+            &crate::locales::CATALOG.t(name),
             Artwork::MOVE_LAYER.with((row.id.clone(), to.to_owned())),
         )
     };
@@ -584,7 +582,7 @@ fn chosen_layer(cx: &ViewCx<Artwork>, id: &str, tools: &Tools) -> Element {
     let remove = icon_button(
         cx,
         Icon::Trash2,
-        &ui::i18n::I18nManager::format(
+        &crate::locales::CATALOG.t_args(
             "canvas-layer-remove-name",
             &[("name", row.name.clone().into())],
         ),
@@ -632,10 +630,8 @@ fn folder_field(cx: &ViewCx<Artwork>, id: &str) -> Element {
                 EditableLabel::new(folder)
                     .edits_on_click()
                     .with_id("canvas-layer-folder")
-                    .with_placeholder(ui::i18n::I18nManager::lookup_plain("canvas-layer-folder"))
-                    .with_accessible_name(ui::i18n::I18nManager::lookup_plain(
-                        "canvas-layer-folder",
-                    ))
+                    .with_placeholder(crate::locales::CATALOG.t("canvas-layer-folder"))
+                    .with_accessible_name(crate::locales::CATALOG.t("canvas-layer-folder"))
                     .filling(),
                 Artwork::SET_LAYER_GROUP.map({
                     let id = id.clone();
@@ -705,7 +701,7 @@ fn objects(cx: &ViewCx<Artwork>, layer: &str, tools: &Tools) -> Element {
             picked.set(Some(picks));
         });
         Box::new(ui::widget::Section::titled(
-            ui::i18n::I18nManager::lookup_plain("canvas-objects"),
+            crate::locales::CATALOG.t("canvas-objects"),
             vec![listed],
         ))
     })
@@ -713,7 +709,7 @@ fn objects(cx: &ViewCx<Artwork>, layer: &str, tools: &Tools) -> Element {
 
 /// Giving the chosen layer a mask, and clipping it to the layer below.
 fn mask_buttons(cx: &ViewCx<Artwork>, row: &LayerRow) -> Element {
-    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let lookup = |key: &str| crate::locales::CATALOG.t(key);
     let mut buttons = Row::new()
         .with_gap(ui::tokens::Spacing::BASE.s1)
         .no_wrap()
@@ -741,7 +737,7 @@ fn mask_buttons(cx: &ViewCx<Artwork>, row: &LayerRow) -> Element {
 /// The chosen layer's mask: switch it off, invert it, remove it. It is
 /// painted by choosing its picture in the layer's row.
 fn mask_line(cx: &ViewCx<Artwork>, row: &LayerRow, mask: &MaskRow) -> Element {
-    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let lookup = |key: &str| crate::locales::CATALOG.t(key);
     let (eye, name) = if mask.visible {
         (Icon::Eye, "canvas-layer-mask-off")
     } else {
@@ -797,7 +793,7 @@ pub fn add_menu(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let (media, names) = cx.read(|art| {
         let mut media = vec![(
             String::new(),
-            ui::i18n::I18nManager::lookup_plain("canvas-medium-plain"),
+            crate::locales::CATALOG.t("canvas-medium-plain"),
         )];
         if let Some(art) = art {
             media.extend(
@@ -815,9 +811,7 @@ pub fn add_menu(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let mut menu = Dropdown::from_state(Vec::new(), &state)
         .as_menu(Icon::Plus)
         .with_id("canvas-add-layer")
-        .with_accessible_name(ui::i18n::I18nManager::lookup_plain(
-            "canvas-command-add-layer",
-        ));
+        .with_accessible_name(crate::locales::CATALOG.t("canvas-command-add-layer"));
     menu.set_value_options(media.clone());
     let chosen = tools.layer.clone();
     let add = Artwork::ADD_LAYER.map(move |medium: String| {

@@ -1174,6 +1174,21 @@ impl VideoEditorApp {
     }
 }
 
+/// One row's keys as a reader hears them, spelled for this platform and the
+/// person's keyboard. Every key that runs the shortcut is named; alternatives
+/// are listed, never joined by a separator glyph.
+fn keys_as_read(keys: &[&str]) -> String {
+    let spelled: Vec<String> = keys
+        .iter()
+        .map(|template| ui::spell_shortcut(template))
+        .collect();
+    match spelled.split_last() {
+        None => String::new(),
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+    }
+}
+
 impl VideoEditorApp {
     /// The shortcut sheet as accessible content — every binding readable in
     /// order, so the sheet is as useful to a reader as it is to the eye.
@@ -1187,12 +1202,13 @@ impl VideoEditorApp {
                     .with_key(key),
             );
             key += 1;
-            for (combo, what) in rows {
+            for shortcut in rows {
                 kids.push(
                     AccessNode::new(Role::StaticText)
-                        .with_name(what)
-                        // Spelled for this platform, as the sheet paints it.
-                        .with_value(ui::spell_shortcut(combo))
+                        .with_name(shortcut.what)
+                        // Spelled for this platform, as the sheet paints it;
+                        // alternatives are a list, which a reader reads out.
+                        .with_value(keys_as_read(shortcut.keys))
                         .with_key(key),
                 );
                 key += 1;

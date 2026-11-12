@@ -1214,7 +1214,7 @@ impl StoreState {
         Some(if self.unanswered_repositories.is_empty() {
             ui::i18n!("store-installed-unlisted")
         } else {
-            ui::i18n::I18nManager::format(
+            crate::resource::STORE_CATALOG.t_args(
                 "store-installed-unanswered",
                 &[(
                     "repositories",
@@ -1234,7 +1234,7 @@ impl StoreState {
     }
 
     fn technical_properties_section(&self, properties: Vec<Property>) -> Element {
-        let label = ui::i18n::I18nManager::lookup_plain(if self.technical_details_open {
+        let label = crate::resource::STORE_CATALOG.t(if self.technical_details_open {
             "store-hide-technical-details"
         } else {
             "store-show-technical-details"
@@ -1252,10 +1252,8 @@ impl StoreState {
         };
         Box::new(
             Section::new(items).with_header(
-                SectionHeader::heading(ui::i18n::I18nManager::lookup_plain(
-                    "store-technical-details",
-                ))
-                .action(toggle),
+                SectionHeader::heading(crate::resource::STORE_CATALOG.t("store-technical-details"))
+                    .action(toggle),
             ),
         )
     }
@@ -1540,7 +1538,8 @@ pub(super) fn progress_label(action: ActionKind, name: &str) -> String {
         ActionKind::NeedsFlatpakHost => "store-progress-preparing",
         ActionKind::AddBot => "store-progress-adding",
     };
-    ui::i18n::I18nManager::format(key, &[("name", ui::i18n::ArgValue::Text(name.to_owned()))])
+    crate::resource::STORE_CATALOG
+        .t_args(key, &[("name", ui::i18n::ArgValue::Text(name.to_owned()))])
 }
 
 /// An installed app's row meta in Updates: the version it moves to.
@@ -1704,7 +1703,10 @@ fn bot_does(bot: &crate::model::BotListing) -> Element {
                 "incoming_message" => Some("store-bot-trigger-incoming-message"),
                 _ => None,
             };
-            let text = key.map_or_else(|| trigger.clone(), ui::i18n::I18nManager::lookup_plain);
+            let text = key.map_or_else(
+                || trigger.clone(),
+                |key| crate::resource::STORE_CATALOG.t(key),
+            );
             Box::new(ListRow::new(format!("store.bot.trigger.{index}"), text).icon(Icon::Clock))
                 as Element
         })
@@ -1792,7 +1794,7 @@ fn technical_properties(item: &StoreItem) -> Vec<Property> {
     if let Some(key) = item.publisher_pubkey_hex.as_deref() {
         rows.push(
             Property::new(
-                ui::i18n::I18nManager::lookup_plain("store-publisher-key"),
+                crate::resource::STORE_CATALOG.t("store-publisher-key"),
                 format!("ed25519:{key}"),
             )
             .with_kind(TextKind::Identifier)
@@ -1843,7 +1845,7 @@ pub(super) fn device_properties(item: &StoreItem) -> Vec<(String, String)> {
             },
         ) => vec![(
             on_device,
-            ui::i18n::I18nManager::format(
+            crate::resource::STORE_CATALOG.t_args(
                 "store-device-provided-version",
                 &[("version", ui::i18n::ArgValue::Text(version.clone()))],
             ),

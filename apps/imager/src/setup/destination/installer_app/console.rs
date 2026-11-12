@@ -205,7 +205,10 @@ impl InstallerApp {
                 "hostname": local_text(&self.hostname).trim(),
                 "locale": self.locale().trim(),
                 "timezone": self.timezone().trim(),
-                "encryption": self.encryption_summary(),
+                // The method and every factor that unlocks it, as the Review
+                // rows list them: a caller gets the facts, not one joined line.
+                "encryption": "LUKS",
+                "unlock_factors": self.encryption_factors(),
             },
             "media": {
                 "codecs": self.codecs,

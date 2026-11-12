@@ -111,7 +111,10 @@ fn a_wheel_step_lays_out_nothing_and_draws_only_the_rows_it_brings_into_view() {
     let (mut app, mut doc) = long_channel(300);
     let mut frames = Frames::new();
     let (first, _) = frames.draw(&mut app);
-    assert_eq!(first.measured, 300, "the first frame measures every row");
+    assert!(
+        first.measured > 0 && first.measured < 300,
+        "the first frame measures the rows standing in view, not every row: {first:?}"
+    );
     settle(&mut app, &mut frames);
     // The pointer rests over the timeline's gutter, where no row lifts.
     let area = app.messages_rect();
@@ -134,7 +137,10 @@ fn a_wheel_step_lays_out_nothing_and_draws_only_the_rows_it_brings_into_view() {
         let seen: HashSet<&String> = before.iter().collect();
         let entered = shown.iter().filter(|id| !seen.contains(id)).count();
         came += entered;
-        assert_eq!(counts.measured, 0, "step {step} measured no row");
+        assert!(
+            counts.measured < 60,
+            "step {step} measured only what stands near the view: {counts:?}"
+        );
         assert_eq!(
             counts.drawn, entered,
             "step {step} drew only the {entered} rows that came into view: {counts:?}"
@@ -143,6 +149,66 @@ fn a_wheel_step_lays_out_nothing_and_draws_only_the_rows_it_brings_into_view() {
         before = shown;
     }
     assert!(came > 3, "the steps brought rows into view");
+}
+
+/// A timeline of thousands of messages measures what stands in view, and the rows a step
+/// reaches as the reader scrolls: no frame of it walks every row of the conversation.
+#[test]
+fn a_long_timeline_measures_what_stands_in_view_and_no_more() {
+    let (mut app, mut doc) = long_channel(2_000);
+    let mut frames = Frames::new();
+    let (first, shown) = frames.draw(&mut app);
+    assert!(
+        first.measured > 0 && first.measured < 200,
+        "the first frame measures the rows in view and a margin, not two thousand: {first:?}"
+    );
+    assert!(!shown.is_empty(), "the newest rows stand in view");
+    let first_total = app.timeline_total_height;
+    settle(&mut app, &mut frames);
+    let area = app.messages_rect();
+    feed(
+        &mut app,
+        &mut doc,
+        &ui::synthetic_input::cursor_moved(area.x0 + 2.0, area.center().y),
+    );
+    // The reader scrolls back through the conversation: every step measures what its
+    // window reaches and no more, so a step costs a screenful however long the chat
+    // has run.
+    let mut measured = 0;
+    let mut moved = 0;
+    for step in 0..300 {
+        let scroll = app.scroll;
+        feed(
+            &mut app,
+            &mut doc,
+            &ui::synthetic_input::mouse_wheel(0.0, 1.0),
+        );
+        let (counts, _) = frames.draw(&mut app);
+        // A step that measured rows stands where its anchor was kept, not where the wheel
+        // pushed it: the row the reader was reading stays under the pointer.
+        assert!(
+            app.scroll >= scroll,
+            "step {step} does not move forward through history"
+        );
+        if app.scroll > scroll {
+            moved += 1;
+        }
+        assert!(
+            counts.measured < 120,
+            "step {step} measures only what its window reaches: {counts:?}"
+        );
+        measured += counts.measured;
+    }
+    assert!(measured > 0, "scrolling back measured the rows it reached");
+    assert!(moved > 100, "the steps moved back through {moved} rows");
+    // What stands there now is the height of two thousand rows, most of them measured as
+    // the reader scrolled past, and not the screenful the first frame measured.
+    assert!(
+        app.timeline_total_height > first_total * 1.5,
+        "the timeline stands at the height of its rows: {} against {}",
+        app.timeline_total_height,
+        first_total
+    );
 }
 
 #[test]

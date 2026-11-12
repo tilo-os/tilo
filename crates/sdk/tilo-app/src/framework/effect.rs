@@ -66,7 +66,7 @@ fn attach_approved_check_reporter(
                 }
                 ui_core::invocation_scope::ApprovedCheckReportObservation::Disabled { .. } => {
                     progress.report(
-                        ui_core::i18n::I18nManager::lookup_plain("approved-check-reports-disabled"),
+                        ui_core::i18n::widget_text("approved-check-reports-disabled"),
                         None,
                         None,
                     );

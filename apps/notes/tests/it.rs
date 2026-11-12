@@ -119,6 +119,8 @@ mod note_context_menu;
 mod note_header;
 #[path = "note_reactions.rs"]
 mod note_reactions;
+#[path = "semantic_activation.rs"]
+mod semantic_activation;
 #[path = "semantic_input.rs"]
 mod semantic_input;
 

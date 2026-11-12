@@ -643,6 +643,22 @@ pub(crate) fn widget_format(key: &str, args: &[(&str, ArgValue)]) -> String {
     I18nManager::format(key, args)
 }
 
+/// Resolve one of the toolkit's own messages in the host's locale.
+///
+/// The words are the toolkit's, so they resolve in the toolkit's catalogue:
+/// a framework crate (the app runner, the shell) names a toolkit message
+/// here, and an app's copy goes through the app's own
+/// [`EmbeddedCatalog`](crate::i18n::EmbeddedCatalog) instead. A thread with
+/// a manager gets the toolkit's translations added to it once; a thread
+/// without one resolves the source copy, as [`widget_format`] does.
+#[must_use]
+pub fn widget_text(key: &str) -> String {
+    if manager_id().is_some() {
+        WIDGET_CATALOG.ensure();
+    }
+    I18nManager::lookup(key, None)
+}
+
 /// A resource's name in the language this thread reads: the catalogue entry
 /// for its kind ([`tilo_resource::label::message_key`]) when one is loaded,
 /// and nothing when none is, so the resource keeps the name it declares.
@@ -1199,8 +1215,13 @@ impl I18nManager {
 
     /// Resolve a message without variables. This function-shaped form is
     /// convenient in iterator adapters such as `Option::map`.
+    ///
+    /// Only the toolkit's own widgets call it: an app's copy resolves through
+    /// its [`EmbeddedCatalog`] (`CATALOG.t`), which loads the catalogue onto
+    /// the thread first. A lookup that skips that step reads a raw key
+    /// wherever the thread had not loaded the app's words yet.
     #[must_use]
-    pub fn lookup_plain(key: &str) -> String {
+    pub(crate) fn lookup_plain(key: &str) -> String {
         Self::lookup(key, None)
     }
 
@@ -1212,7 +1233,11 @@ impl I18nManager {
     /// itself, and a placeable whose variable is missing is left as the
     /// formatter's best-effort rendering rather than panicking. Passing an empty
     /// slice is equivalent to a plain lookup.
-    pub fn format(key: &str, args: &[(&str, ArgValue)]) -> String {
+    ///
+    /// Only the toolkit's own widgets call it, for the reason
+    /// [`Self::lookup_plain`] gives: an app builds its sentences through
+    /// `CATALOG.t_args`.
+    pub(crate) fn format(key: &str, args: &[(&str, ArgValue)]) -> String {
         if args.is_empty() {
             return Self::lookup(key, None);
         }

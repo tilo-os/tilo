@@ -242,6 +242,10 @@ mod person_records;
 #[cfg(any(target_arch = "wasm32", test))]
 #[cfg(target_arch = "wasm32")]
 mod replication;
+// The workspace a page replicates, as the start module asks it: the peer's
+// code installs the answers when it starts.
+#[cfg(target_arch = "wasm32")]
+mod replicated;
 // The workspaces a host governs, as the page administers them.
 #[cfg(target_arch = "wasm32")]
 mod rooms;

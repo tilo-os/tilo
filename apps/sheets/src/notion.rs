@@ -46,7 +46,7 @@ pub fn tables(bytes: &[u8]) -> Result<Vec<ImportedTable>, String> {
         return Err(ui::i18n!("sheets-notion-no-tables"));
     }
     if tables.len() > MAX_IMPORTED_TABLES {
-        return Err(ui::i18n::I18nManager::format(
+        return Err(crate::resource::CATALOG.t_args(
             "sheets-notion-too-many-tables",
             &[(
                 "limit",

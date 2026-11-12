@@ -328,7 +328,7 @@ impl Emoji {
         let requests = self.requests.get().wrapping_add(1);
         self.requests.set(requests);
         let handle = format!("workspace-emoji-{requests}");
-        let lookup = ui::i18n::I18nManager::lookup_plain;
+        let lookup = t;
         let home = tilo_paths::home();
         let start = home.clone().unwrap_or_else(|| PathBuf::from("/"));
         picker.ask(Some(FileRequest {

@@ -22,6 +22,9 @@ app gets on a real system:
   hosted-here the session's own workspace is one this device holds, so no app waits
              on a host: each shows its own state as first opened (first-*.png)
   snapshot   a PNG of the nested session per app, in OUT
+  windows    a second window of Tasks, opened as a person opens one from search (its row
+             with Ctrl+Enter), is a second window of the same process and its instance runs
+             in the same host; a task typed into one window shows in the other at once
   native     native Notes (so.tilo.notes), installed beside them, launches and
              presents a frame (native-notes.png)
   activation "Show this window" answers for tilolang Notes as for native Notes
@@ -30,14 +33,11 @@ app gets on a real system:
   idle       each app untouched for 10 s, native Notes and the tilolang host that
              runs the apps' instances included: every thread of them sleeps
   routes     the broker's route access, as the attested launch of an app: the
-             collaboration probe (crates/dev/collab-probe) is installed as
-             Today, whose surface declares that it reads Notes' kinds, and as
-             Tasks, which declares no read. Tasks cannot join Notes' route at
-             all; Today's join is refused before the read it declares is read,
-             by the broker that keeps what it admits (a tilolang host holds an
-             app's route). This runs in a second start of the same throwaway
-             session, with the probe packages installed in place of Today and
-             Tasks.
+             collaboration probe (crates/dev/collab-probe) is installed as Today
+             (which declares that it reads Notes' kinds) and as Tasks (which
+             declares no read), in a second start of the same throwaway session.
+             Tasks cannot join Notes' route at all; Today joins it to read, and
+             its write is refused.
 
 Usage:
   scripts/headless-examples/tilolang-e2e.py [--no-build] [--out DIR] [--keep]
@@ -57,10 +57,11 @@ import json
 import os
 import re
 import shutil
-import signal
+import struct
 import subprocess
 import sys
 import time
+import zlib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -77,7 +78,6 @@ def app_id(name: str) -> str:
 
 
 BIN = BUILD / "bin"
-# The desk's own resource, whose verbs a tool invokes as the session publishes them.
 DESK_RESOURCE = "desktop:desk"
 APPS = ["notes", "chat", "tasks", "today"]
 # The native app installed beside them, to hold the tilolang apps to what it does.
@@ -182,11 +182,11 @@ def host_pids(session_pid: int) -> list[int]:
 
 # --- checks ---------------------------------------------------------------------
 
-def check_registry(session: Session, names=APPS) -> dict:
+def check_registry(session: Session) -> dict:
     # A cold query starts the index's refresh and may answer before it has
     # every application (docs/headless-testing.md): ask again until it does.
     found = {}
-    for name in names:
+    for name in APPS:
         hits = until(f"{app_id(name)} among the session's applications", lambda: [
             a for a in session.actions(app_id(name))
             if a.get("provider") == "applications" and a.get("id") == app_id(name)
@@ -260,14 +260,127 @@ def check_hosts(session: Session, processes: dict, session_pid: int) -> dict:
     return {"host": hosts[0], "handed": len(lines)}
 
 
-def own_action(session: Session, name: str, title: str, kind: str):
-    """The action `name`'s own window publishes as `title`, of the kind `kind` its effect has
-    (`View` for a view, `Document` for one that writes the app's record)."""
-    for action in session.actions(title):
-        if (action.get("application") == app_id(name) and action.get("title") == title
-                and action.get("operation_kind") == kind):
-            return action
-    return None
+def png_rgb(path: Path) -> tuple[int, int, int, bytes]:
+    """A snapshot's width, height, channels and decoded pixels."""
+    data = path.read_bytes()
+    pos, width, height, channels, packed = 8, 0, 0, 0, bytearray()
+    while pos + 12 <= len(data):
+        length = struct.unpack(">I", data[pos:pos + 4])[0]
+        kind, payload = data[pos + 4:pos + 8], data[pos + 8:pos + 8 + length]
+        pos += 12 + length
+        if kind == b"IHDR":
+            width, height, depth, colour = struct.unpack(">IIBB", payload[:10])
+            channels = {2: 3, 6: 4}.get(colour, 0) if depth == 8 else 0
+        elif kind == b"IDAT":
+            packed += payload
+    if not channels:
+        raise Failed(f"{path} is no 8-bit RGB(A) PNG")
+    raw, stride = zlib.decompress(bytes(packed)), width * channels
+    out, above, offset = bytearray(), bytearray(stride), 0
+    for _ in range(height):
+        kind, row = raw[offset], bytearray(raw[offset + 1:offset + 1 + stride])
+        offset += stride + 1
+        for i in range(stride):
+            left = row[i - channels] if i >= channels else 0
+            corner = above[i - channels] if i >= channels else 0
+            if kind == 1:
+                row[i] = (row[i] + left) & 0xff
+            elif kind == 2:
+                row[i] = (row[i] + above[i]) & 0xff
+            elif kind == 3:
+                row[i] = (row[i] + (left + above[i]) // 2) & 0xff
+            elif kind == 4:
+                p = left + above[i] - corner
+                pa, pb, pc = abs(p - left), abs(p - above[i]), abs(p - corner)
+                row[i] = (row[i] + (left if pa <= pb and pa <= pc else above[i] if pb <= pc else corner)) & 0xff
+        out += row
+        above = row
+    return width, height, channels, bytes(out)
+
+
+def window_pixels(shot: tuple[int, int, int, bytes], rect: list[int]) -> bytes:
+    """The pixels of `rect`, `[x, y, width, height]` on the desktop, in the snapshot `shot`."""
+    width, height, channels, pixels = shot
+    x, y, w, h = rect
+    x0, y0, x1, y1 = max(x, 0), max(y, 0), min(x + w, width), min(y + h, height)
+    if x1 - x0 < 64 or y1 - y0 < 64:
+        raise Failed(f"a window at {rect} is not on the {width}x{height} desktop to be seen")
+    return b"".join(pixels[(row * width + x0) * channels:(row * width + x1) * channels]
+                    for row in range(y0, y1))
+
+
+def search_beside(session: Session, title: str) -> None:
+    """Open a window of its own of the app called `title`, as a person does: search
+    (Super+Space), its name, and Ctrl+Enter on its row."""
+    session.control({"op": "key_down", "key": "Super"})
+    session.control({"op": "key", "key": "Space"})
+    session.control({"op": "key_up", "key": "Super"})
+    session.control({"op": "type", "text": title})
+    def settled():
+        answer = session.control({"op": "search_rows"})["answer"]
+        if answer["query"] != title or answer["searching"]:
+            return None
+        rows = answer["rows"]
+        index = next((i for i, row in enumerate(rows) if row["title"] == title
+                      and "window" not in (row.get("kind") or "").lower()), None)
+        return (index, rows) if index is not None else None
+    index, rows = until(f"search's row for {title!r}", settled, 30)
+    for _ in range(index):
+        session.control({"op": "key", "key": "ArrowDown"})
+    session.control({"op": "modifiers", "ctrl": True})
+    try:
+        session.control({"op": "key", "key": "Enter"})
+    finally:
+        session.control({"op": "modifiers", "ctrl": False})
+
+
+def check_windows(session: Session, processes: dict, session_pid: int, out: Path) -> dict:
+    """A second window of Tasks, opened from search as a person opens one, is a window of the
+    process Tasks' first window is, and its instance runs in the host the first one's does. A
+    task typed into the first window shows in the second at once."""
+    tasks = app_id("tasks")
+    first = [w for w in session.windows() if w.get("app_id") == tasks]
+    if len(first) != 1:
+        raise Failed(f"{tasks} shows {len(first)} windows before a second is asked for")
+    hosts = host_pids(session_pid)
+    def handed() -> int:
+        return len([line for line in log_lines(session, "tilolang instance handed over")
+                    if line.get("package_id") == tasks])
+    before_handed = handed()
+    search_beside(session, "Tasks")
+    windows = until(f"a second window of {tasks}", lambda: (lambda shown: shown if len(shown) == 2
+                    else None)([w for w in session.windows() if w.get("app_id") == tasks]), 30)
+    until("the second window's instance handed to the host", lambda: handed() > before_handed, 30)
+    procs = [p for p in descendants(session_pid) if environ(p).get("TILO_PACKAGE_ID") == tasks
+             and exe(p).endswith("/bin/tilolang-app")]
+    if procs != [processes["apps"][tasks]["pid"]]:
+        raise Failed(f"{tasks}'s second window started another process: {procs}")
+    if host_pids(session_pid) != hosts:
+        raise Failed(f"{tasks}'s second window's instance runs elsewhere: hosts {hosts} became "
+                     f"{host_pids(session_pid)}")
+    def shot(name: str) -> list[bytes]:
+        """Each window in front in turn, as it shows then: the strip shows one at a time."""
+        seen = []
+        for i, window in enumerate(windows):
+            focus(session, window)
+            time.sleep(1.0)
+            rect = next(w["rect"] for w in session.windows() if w.get("tab") == window["tab"])
+            path = out / f"tasks-window-{i}-{name}.png"
+            session.control_cmd("snapshot", str(path))
+            seen.append(window_pixels(png_rgb(path), rect))
+        return seen
+    before = shot("before")
+    if shot("still") != before:
+        raise Failed(f"{tasks}'s windows change while nothing happens: nothing could tell an edit")
+    # Typed into the first window's own field, as a person adds a task there.
+    focus(session, windows[0])
+    time.sleep(0.5)
+    session.control({"op": "type", "text": "Water the plants"})
+    session.control({"op": "key", "key": "Enter"})
+    after = until("the task in both of Tasks' windows", lambda: (lambda now: now if all(
+        a != b for a, b in zip(now, before)) else None)(shot("after")), 30, 1.0)
+    return {"windows": [{"group": w["group"], "tab": w["tab"]} for w in windows],
+            "process": procs[0], "host": hosts[0], "changed": len(after)}
 
 
 def invoke_found(session: Session, found: dict, args: dict | None = None) -> dict:
@@ -277,7 +390,7 @@ def invoke_found(session: Session, found: dict, args: dict | None = None) -> dic
 
 def history_total(session: Session, name: str) -> int:
     history = until(f"{app_id(name)}'s history action",
-                    lambda: own_action(session, name, "History", "View"))
+                    lambda: app_action(session, app_id(name), "History", "View"))
     answer = invoke_found(session, history)
     try:
         return answer["receipt"]["update"]["output"]["value"]["total"]
@@ -296,7 +409,7 @@ def check_actions(session: Session) -> dict:
         out[app_id(name)] = {"published": len(published)}
     for name, title in news.items():
         action = until(f"{app_id(name)}'s {title!r}",
-                       lambda: own_action(session, name, title, "Document"))
+                       lambda: app_action(session, app_id(name), title, "Document"))
         before = history_total(session, name)
         state = invoke_found(session, action)["receipt"]["update"]["state"]
         after = until(f"{title!r} in {app_id(name)}'s history",
@@ -312,17 +425,19 @@ def value_of(answer: dict):
         raise Failed(f"an answer without a value: {json.dumps(answer)[:2000]}") from None
 
 
-def app_action(session: Session, app: str, title: str):
-    """The first action called `title` that the window of `app` publishes. Its application is
-    `app` exactly: so.tilo.notes never matches so.tilo.lang.notes."""
+def app_action(session: Session, app: str, title: str, kind: str | None = None):
+    """The first action called `title` that the window of `app` publishes, of the kind its effect
+    has when `kind` names one (`View`, `Document`). Its application is `app` exactly: so.tilo.notes
+    never matches so.tilo.lang.notes."""
     for action in session.actions(title):
-        if action.get("application") == app and action.get("title") == title:
+        if (action.get("application") == app and action.get("title") == title
+                and kind in (None, action.get("operation_kind"))):
             return action
     return None
 
 
 def focus(session: Session, window: dict) -> None:
-    """Bring the tab of `window` to the front, as the desk's own verb does for the window menu."""
+    """Bring the tab of `window` to the front, as the desk's own verb does."""
     session.invoke("so.tilo.session", f"{DESK_RESOURCE}\u001ffocus", {"tab": str(window["tab"])})
 
 
@@ -398,11 +513,9 @@ def native_pid(session_pid: int) -> int | None:
 
 
 def check_idle(session: Session, processes: dict, session_pid: int, seconds: float = 10.0) -> dict:
-    """Every app, native Notes among them, and the tilolang host that runs the apps' instances,
-    left untouched for 10 s: every thread of them sleeps. Nothing animates here — each app's
-    workspace is one this device holds, so no app waits for anything to arrive — and this session
-    reports no per-window frame count, so a thread that woke woke for work nobody asked for, and
-    the check fails on it and names the threads."""
+    """Every app, native Notes and the tilolang host that runs the apps' instances, left untouched
+    for 10 s: every thread of them sleeps. Nothing animates here and this session reports no
+    per-window frame count, so a thread that woke woke for work nobody asked for."""
     time.sleep(3)
     pids = {app: info["pid"] for app, info in processes["apps"].items()}
     native = native_pid(session_pid)
@@ -445,9 +558,8 @@ def check_hosted_here(session: Session, windows: dict, out: Path) -> dict:
     another device), so its apps wait on no host and each shows its own state at once."""
     state = session.state_dump()
     held = {row["workspace"] for row in state.get("held_workspaces") or []}
-    waiting = [workspace["name"] or workspace["room"]
-               for workspace in state["workspace_tree"]["workspaces"]
-               if workspace["id"] not in held]
+    waiting = [w["name"] or w["room"] for w in state["workspace_tree"]["workspaces"]
+               if w["id"] not in held]
     if waiting:
         raise Failed(f"the session's own workspace is held by another device, so its apps wait "
                      f"on that host: {waiting}")
@@ -493,10 +605,9 @@ def probe_packages(state: Path, out: Path) -> list[Path]:
     return tapps
 
 
-def open_probes(session: Session) -> list[str]:
-    """The probe packages up, each with a window of its own: one the desk already shows is left
-    to it (a workspace's record says what was open in it), and one without a window is opened
-    through the applications listing, as a person opens an app."""
+def open_probes(session: Session) -> None:
+    """The probe packages up, each with a window: one the desk already shows is left to it (a
+    workspace's record says what was open in it), the rest opened as a person opens an app."""
     def up():
         windows = {window.get("app_id") for window in session.windows()}
         missing = [name for name in PROBE_ROUTES if app_id(name) not in windows]
@@ -507,7 +618,7 @@ def open_probes(session: Session) -> list[str]:
             if opened is not None:
                 session.invoke("applications", opened["id"])
         return windows if not missing else None
-    return sorted(until("a window of each probe package", up, 120))
+    until("a window of each probe package", up, 120)
 
 
 def check_routes(session: Session) -> dict:
@@ -523,11 +634,6 @@ def check_routes(session: Session) -> dict:
     today = result.get(f"{app_id('today')} -> {app_id('notes')}", "")
     tasks = result.get(f"{app_id('tasks')} -> {app_id('notes')}", "")
     if not (today.startswith("JOINED") and "WRITE-REFUSED" in today and "changes nothing" in today):
-        if "host-owned worker descriptor admission" in today:
-            raise Failed(
-                "Today's declared read of Notes cannot be exercised: this session's broker keeps "
-                "what it admits, and refuses an app process's join of another app's route before "
-                f"the read it declares is read (a tilolang host holds that route instead): {today!r}")
         raise Failed(f"Today's declared read of Notes was not a read-only join: {today!r}")
     if not tasks.startswith("JOIN-REFUSED"):
         raise Failed(f"Tasks, which declares no read of Notes, joined its route: {tasks!r}")
@@ -567,7 +673,10 @@ def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
         ("native", lambda: check_native(session, out)),
         ("activation", lambda: check_activation(session)),
         ("read", lambda: check_read(session)),
+        # Before the checks that type into the desk: every app's threads are held to sleeping
+        # on a desk no other check has just touched.
         ("idle", lambda: check_idle(session, summary["checks"]["processes"], pid)),
+        ("windows", lambda: check_windows(session, summary["checks"]["processes"], pid, out)),
     ])
     stop_session(proc)
     running["proc"] = None

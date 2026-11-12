@@ -81,6 +81,11 @@ label = "Copy used by source is in every shipped catalogue"
 run = "python3 tools/policy/check_app_copy.py"
 
 [[step]]
+name = "app-copy-resolution"
+label = "App copy resolves through the app's catalogue"
+run = "python3 tools/policy/check_app_copy_resolution.py"
+
+[[step]]
 name = "copy-language"
 label = "Copy follows the house language and glossary"
 run = "python3 tools/policy/check_copy_language.py"

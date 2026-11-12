@@ -1741,7 +1741,7 @@ impl JoinedChannel {
         self.state.refresh_action_directory_root_snapshot();
         // The directory can alter remote discoverability without an eager
         // action snapshot changing, so tell catalogue subscribers.
-        self.state.publish_action_catalogue();
+        self.state.catalogue_changed();
         Ok(())
     }
 

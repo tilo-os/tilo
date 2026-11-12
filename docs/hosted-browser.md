@@ -253,17 +253,20 @@ A departure no action asked for, such as a page posting on its own or a
 download the page started, waits on nobody's invocation. The window publishes
 it as the wait it is — `send-held-request` and `keep-held-request` of
 `browser.page`, each bound to the number the window holds it under and stating
-it as their one accepted argument, beside what leaves: the page it leaves
-from, what it does, the method, where it goes, and the picture of the filled
-page when the window kept one. The number is the window's own, one per hold:
-a request and a download the engine counts alike are two holds with two
-numbers. The session in the VM reports each hold the window publishes to
-the relay, naming that invocation. The relay puts it to the person as it puts
-any page action, and their answer comes back to the session as the
-confirmation their allow runs it with: the same witness the relay signs for a
-page action, for that one request. Denied or unanswered, the session runs
-`keep-held-request` instead and the page stays as it was filled. A person's
-own window holds none of this: what they click leaves as they click it.
+it as the argument a caller names. The number is the window's own, one per
+hold: a request and a download the engine counts alike are two holds with two
+numbers. The session in the VM reports each hold the window publishes to the
+relay, naming that invocation. The departure travels with the row, so the
+question names what leaves and not only a name for it: the page it leaves
+from, what it sends and where (`send the form to https://visa.example
+(POST)`), and the filled page as a picture the window kept in the workspace's
+content store, which the person's device draws before they allow it. The relay
+puts it to the person as it puts any page action, and their answer comes back
+to the session as the confirmation their allow runs it with: the same witness
+the relay signs for a page action, for that one request. Denied or unanswered,
+the session runs `keep-held-request` instead and the page stays as it was
+filled. A person's own window holds none of this: what they click leaves as
+they click it.
 
 The tab's record says what was held, whose action reached it and how it
 ended: let leave and by whom, kept as it is, or dropped and why: nobody

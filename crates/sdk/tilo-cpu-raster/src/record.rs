@@ -149,16 +149,24 @@ pub(crate) fn record(
     ops: &[u32],
     region: Rect,
     base: AlphaColor<Srgb>,
+    scale: f64,
     scratch: &mut Scratch,
     stats: &mut Stats,
 ) -> usize {
-    let offset = Affine::translate((-region.x0, -region.y0));
+    // `region` is in points; `scale` is device pixels per point, so what is
+    // recorded lands on the pixel grid the target holds.
+    let offset = Affine::scale(scale) * Affine::translate((-region.x0, -region.y0));
     let mut recorded = 0;
     scratch.pushed.clear();
     if base.components[3] > 0.0 {
         ctx.set_transform(Affine::IDENTITY);
         ctx.set_paint(base);
-        ctx.fill_rect(&Rect::new(0.0, 0.0, region.width(), region.height()));
+        ctx.fill_rect(&Rect::new(
+            0.0,
+            0.0,
+            region.width() * scale,
+            region.height() * scale,
+        ));
     }
     for &index in ops {
         let Some(op) = list.ops.get(index as usize) else {

@@ -430,9 +430,9 @@ fn history_operation(record: String, label: &str, undo: bool) -> tilo_actions::A
     )
     .of_kind(tilo_actions::ActionKind::Read)
     .with_description(if undo {
-        format!("Take back your last change to your {label}.")
+        crate::copy_catalogue::t_args("tilo-app-undo-description", &[("label", label.into())])
     } else {
-        format!("Make again the change to your {label} you last took back.")
+        crate::copy_catalogue::t_args("tilo-app-redo-description", &[("label", label.into())])
     })
 }
 

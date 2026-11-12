@@ -73,3 +73,5 @@ feedback-report-hidden = { $kind ->
     [credential] ‹credential›
    *[personal] ‹personal›
 }
+tilo-app-undo-description = Take back your last change to your { $label }.
+tilo-app-redo-description = Make again the change to your { $label } you last took back.

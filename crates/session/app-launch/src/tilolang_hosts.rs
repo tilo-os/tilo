@@ -148,6 +148,8 @@ pub struct Instance {
     pub identity: OwnedFd,
     /// Its connection to the app's origin connector, when the app has one.
     pub origin: Option<OwnedFd>,
+    /// What the window was asked to show.
+    pub opens: crate::Opens,
 }
 
 /// How a host is started: the command for one on `runtime` and `app_runtime`, keeping `storage`.
@@ -292,6 +294,8 @@ impl Hosts {
             records_under,
             applies_change: false,
             formats: ui::format::region::configured_formats(),
+            record: instance.opens.record,
+            reveal: instance.opens.reveal,
         };
         let fds = InstanceFds {
             broker: instance.collaboration,

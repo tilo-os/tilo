@@ -182,7 +182,7 @@ fn a_tools_key_works_after_a_click_in_the_rail_and_a_tool_click_after_a_drag_lan
     app.harness()
         .drag_at((x - 100.0, y - 100.0), (x - 80.0, y - 80.0));
     let snapshot = app.harness().inspection();
-    let label = ui::i18n::I18nManager::lookup_plain("canvas-tool-ellipse");
+    let label = canvas::locales::CATALOG.t("canvas-tool-ellipse");
     let target = support::named_bounds(&snapshot.root, &label).expect("ellipse control is visible");
     app.harness().click_at(target.center().x, target.center().y);
     app.harness()
@@ -486,7 +486,7 @@ fn a_small_vector_icon_keeps_vector_tools_in_the_automatic_workspace() {
         .unwrap();
     app.call("draw", serde_json::json!({"marks":[{"id":"icon","shape":{"kind":"ellipse","cx":16,"cy":16,"rx":10,"ry":10},"fill":"#123456"}]})).unwrap();
     let snapshot = app.harness().inspection();
-    let name = ui::i18n::I18nManager::lookup_plain(canvas::tools::Tool::Text.label());
+    let name = canvas::locales::CATALOG.t(canvas::tools::Tool::Text.label());
     assert!(
         support::named_bounds(&snapshot.root, &name).is_some(),
         "small vector icons still offer lettering"
@@ -504,7 +504,7 @@ fn all_project_choices_fit_and_accept_pointer_input_at_the_live_window_size() {
         ("canvas-workspace-auto", false),
     ] {
         let snapshot = app.harness().inspection();
-        let label = ui::i18n::I18nManager::lookup_plain(key);
+        let label = canvas::locales::CATALOG.t(key);
         let bounds = support::named_bounds(&snapshot.root, &label).unwrap();
         assert!(
             bounds.x0 >= 0.0 && bounds.x1 <= 868.0 && bounds.y1 <= 772.0,
@@ -518,7 +518,7 @@ fn all_project_choices_fit_and_accept_pointer_input_at_the_live_window_size() {
             assert_eq!(app.state().marks[0].style.brush.as_deref(), Some("pixel"));
         } else {
             let snapshot = app.harness().inspection();
-            let name = ui::i18n::I18nManager::lookup_plain(canvas::tools::Tool::Select.label());
+            let name = canvas::locales::CATALOG.t(canvas::tools::Tool::Select.label());
             assert!(support::named_bounds(&snapshot.root, &name).is_some());
         }
     }

@@ -64,7 +64,7 @@ impl Core {
             freshness::updated(snapshot.fetched_at, ui::clock::local_now().naive_local())
         });
         let detail = snapshot.map_or_else(
-            || "Current conditions are loading.".to_string(),
+            || crate::i18n::t("weather-loading"),
             |snapshot| {
                 let temp = snapshot
                     .temp_in(snapshot.current.temperature, self.units)
@@ -114,14 +114,14 @@ impl Core {
                 );
             }
             children.push(group(
-                "Current conditions",
+                &crate::i18n::t("weather-now-conditions"),
                 reading_tiles(snapshot, self.units, true),
             ));
             children.push(hours_group(snapshot, self.units));
             children.push(days_group(snapshot, self.units));
         }
         if let Some(aq) = self.model.selected_air_quality().filter(|aq| aq.has_any()) {
-            children.push(group("Air quality", air_tiles(aq)));
+            children.push(group(&crate::i18n::t("weather-air-quality"), air_tiles(aq)));
         }
         node.with_name(format!("{} forecast", location.name))
             .with_description(detail)
@@ -1474,7 +1474,7 @@ impl Air {
     }
 
     fn paint(&self, ctx: &mut PaintCtx<'_>, r: Rect, lead: f64) {
-        section_heading(ctx, "Air quality", r.origin());
+        section_heading(ctx, &t("weather-air-quality"), r.origin());
         match &self.tiles {
             Some(tiles) => tiles.paint(ctx, r),
             None => ctx.text_role(

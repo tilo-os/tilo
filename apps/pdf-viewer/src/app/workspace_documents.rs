@@ -87,7 +87,7 @@ impl PdfApp {
             .iter()
             .find(|document| document.target == target)
             .map_or_else(
-                || "That document".to_owned(),
+                || crate::t("pdf-empty-the-document"),
                 |document| document.name.clone(),
             );
         // The list stays: what the host refused may be the paper's own state,

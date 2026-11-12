@@ -43,3 +43,5 @@ remote-action-open-session = Open a live session to this saved connection. { $de
 remote-nearby-devices = Nearby devices
 remote-other-connections = Other connections
 remote-pinned = Pinned
+remote-a11y-terminal = Remote terminal
+remote-a11y-desktop = Remote desktop

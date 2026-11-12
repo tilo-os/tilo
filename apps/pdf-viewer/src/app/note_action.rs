@@ -67,7 +67,7 @@ impl PdfApp {
                 Some(_) => notice.action(ToolbarAction::new(
                     TRY_AGAIN_ACTION,
                     "rotate-cw",
-                    "Try again",
+                    crate::t("pdf-try-again"),
                 )),
                 None => notice,
             }

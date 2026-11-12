@@ -693,6 +693,12 @@ heavy = true
 
 # The web desktop's start module, measured against its budget on every head: the one the page waits
 # for before anything shows (tools/web/wasm-size-budget/budget.toml).
+#
+# The bundle records the commit it was built from in `build.json`, which a person reading the bundle
+# looks at and the measurement never reads. A check that reads Git is keyed by the commit and reruns
+# on every one, which a page's whole wasm build cannot afford; the module's size follows the tree's
+# sources, which t keys by already. So this check has no Git view, and the bundle takes its revision
+# from `TILO_SOURCE_REVISION` when a build farm names one.
 [[check]]
 name = "sdk-web-size"
 run = "cargo build --locked -p tilo-app-cli --bin tilo-app\ncargo test --locked --manifest-path tools/web/wasm-split/Cargo.toml\napp=$CARGO_TARGET_DIR/debug/tilo-app\n# model-providers-web builds the same bundle path in the dev profile, possibly\n# at the same time in the same build directory, so the release bundle has its own.\nexport CARGO_TARGET_DIR=$CARGO_TARGET_DIR/release-web\nbundle=$CARGO_TARGET_DIR/tilo-app/web/calculator/bundle\n\"$app\" build --target web --bundle desktop --release apps/calculator\npython3 tools/web/wasm_size_ratchet.py measure desktop \"$bundle\"\n"

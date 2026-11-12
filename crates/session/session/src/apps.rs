@@ -522,6 +522,7 @@ impl Apps {
             collaboration: hosted.collaboration,
             identity,
             origin,
+            opens: hosted.opens,
         });
     }
 
@@ -1297,6 +1298,10 @@ impl Apps {
             (Some(doors), true) => instance.or_else(|| Some(doors.next_instance())),
             _ => instance,
         };
+        let opens = window_opens(launch, reveal, hosted).map_err(|error| {
+            tilo_startup_metrics::launch_failed(timed);
+            DoorError::Failed(error)
+        })?;
         let mut planned = match self.plan(launch, workspace, new_window, instance) {
             Ok(planned) => planned,
             Err(error) => {
@@ -1308,7 +1313,7 @@ impl Apps {
         // The window this launch starts is the one the shell asked for: a
         // process has no door open to it yet, so its launch says which item
         // it opens (`ui::window_door::REVEAL_ENV`).
-        if let Some(reveal) = reveal {
+        if let Some(reveal) = reveal.filter(|_| !hosted) {
             planned
                 .env
                 .insert(ui::window_door::REVEAL_ENV.to_owned(), reveal.to_owned());
@@ -1340,7 +1345,7 @@ impl Apps {
             &planned.app,
             &workspace.id,
             routable,
-            reveal,
+            &opens,
             &alone,
             instance,
         );
@@ -1378,6 +1383,15 @@ impl Apps {
         {
             // The launch holds its door from its start: the reservation is spent, not given up.
             reservation.launched();
+        }
+        // A hosted app's first window goes to its host as a later window does.
+        if started.is_ok()
+            && hosted
+            && let Some(instance) = instance
+            && let Err(error) =
+                doors.first_hosted_window(&planned.app, &workspace.id, instance, &opens)
+        {
+            tracing::error!(%error, app = %planned.app, "a hosted window's instance runs nowhere");
         }
         started.map(|_| true)
     }
@@ -1571,30 +1585,10 @@ impl Apps {
         if let Some(asked) = asked {
             state.running.insert(started.id, asked.to_owned());
         }
-        let doors = state.doors.clone();
         if let Some(door) = door {
             state.held.insert(started.id, door);
         }
         drop(state);
-        // A hosted app's first window: its patch connection goes on the door the launch serves,
-        // and its instance to its host.
-        if planned
-            .args
-            .iter()
-            .any(|arg| arg == tilo_app_launch::tilolang_hosts::HOSTED_ARG)
-            && let Some(doors) = doors
-        {
-            let first = planned
-                .env
-                .get("TILO_CONTINUITY_INSTANCE")
-                .and_then(|instance| instance.parse::<u64>().ok())
-                .ok_or(std::io::ErrorKind::InvalidInput)
-                .map_err(std::io::Error::from)
-                .and_then(|instance| doors.first_hosted_window(&planned.app, workspace, instance));
-            if let Err(error) = first {
-                tracing::error!(%error, app = %planned.app, "a hosted window's instance runs nowhere");
-            }
-        }
         tracing::info!(
             app = %planned.app,
             pid = started.pid,
@@ -1603,6 +1597,30 @@ impl Apps {
         );
         Ok(started.id)
     }
+}
+
+/// What the window `launch` starts shows: the record it names and the item it opens on
+/// (`reveal`). A hosted window's instance is handed both, the first window's as every later
+/// one's; its app opens no file or link, only its records, so a `hosted` launch naming one is
+/// refused.
+fn window_opens(
+    launch: &Launch,
+    reveal: Option<&str>,
+    hosted: bool,
+) -> Result<tilo_app_launch::Opens, String> {
+    if hosted && matches!(launch, Launch::Package { open: Some(_), .. }) {
+        return Err(format!(
+            "{} opens no file or link: its windows show its records",
+            launch.app()
+        ));
+    }
+    Ok(tilo_app_launch::Opens {
+        record: match launch {
+            Launch::Record { record, .. } => Some(record.clone()),
+            _ => None,
+        },
+        reveal: reveal.map(str::to_owned),
+    })
 }
 
 /// The argv an agent is run with: the launcher's `--service` , whose own arguments follow the

@@ -251,10 +251,10 @@ pub async fn run() {
     } else {
         native
             .peer
-            .write(route.clone(), &source.take_mutation().unwrap())
+            .write(route.clone(), &source.take_mutation().unwrap().unwrap())
             .unwrap();
     }
-    for (changed, mutation) in source.take_record_mutations() {
+    for (changed, mutation) in source.take_record_mutations().unwrap() {
         assert_eq!(changed, part, "every message is in the first part");
         native
             .peer
@@ -414,10 +414,10 @@ pub async fn run() {
                     &serde_json::json!({"channel": channel.id,
                         "text": "Native fixture while browser disconnected"}),
                 );
-                if let Some(mutation) = source.take_mutation() {
+                if let Some(mutation) = source.take_mutation().unwrap() {
                     native.peer.write(route.clone(), &mutation).unwrap();
                 }
-                for (changed, mutation) in source.take_record_mutations() {
+                for (changed, mutation) in source.take_record_mutations().unwrap() {
                     assert_eq!(changed, part, "the post is in the first part");
                     native
                         .peer

@@ -2,8 +2,11 @@
 // the page is already up can be operated by the name assistive technology
 // reads, with the interface shown as HTML (`dom: true`): the semantic
 // element is adopted into the painted element of the widget it describes, and
-// the check looks for it in the page's own tree, presses it there, and reads
-// back what the runtime answered.
+// the check looks for it in the page's own tree, presses every element that
+// carries the name, and reads back what the runtime answered. It fails —
+// exit code 1 — when no control arrived late, when none could be pressed, or
+// when a press was not performed: a screen reader that presses a control
+// expects it to run, not to be told it cannot.
 //
 // usage: node tools/web/html-renderer/check-activation.mjs BUNDLE_DIR [--names LABEL,LABEL] [--dump]
 import {mkdirSync, writeFileSync} from 'node:fs';
@@ -12,6 +15,10 @@ import {launch, serve, sleep} from '../chrome.mjs';
 
 const bundle = resolve(process.argv[2]);
 const out = process.argv[3] ?? bundle;
+// The roles a screen reader presses: a control, rather than the container it
+// stands in or the label beside it.
+const CONTROL_ROLES = ['Button', 'ToggleButton', 'MenuItem', 'Tab', 'TreeItem', 'ListBoxOption', 'ListItem', 'Checkbox', 'Switch'];
+const isControl = role => CONTROL_ROLES.includes(role);
 const namesAt = process.argv.indexOf('--names');
 const wanted = namesAt < 0 ? null : process.argv[namesAt + 1].split(',').filter(Boolean);
 const dump = process.argv.includes('--dump');
@@ -66,19 +73,30 @@ const MIRROR = `(() => {
   };
 })()`;
 
-// Press the control the name reads as, where a screen reader finds it: the
-// page's own element. Returns what the runtime answered.
+// Press the controls the name reads as, where a screen reader finds them:
+// the page's own elements, every one of them when a widget and a label in a
+// bar say the same words. A disabled control is not pressed — there is
+// nothing there to perform. Returns what the runtime answered each.
 const PRESS = wanted => `(async () => {
   const wanted = ${JSON.stringify(wanted)};
-  const elements = [...document.querySelectorAll('[data-tilo-semantic]')];
-  const element = elements.find(e => e.getAttribute('aria-label') === wanted);
-  if (!element) return {found: false, pressed: false};
-  const adopted = Boolean(element.closest('.tilo-dom'));
-  const before = window.renderMarks.reports.length;
-  element.click();
-  for (let i = 0; i < 40 && window.renderMarks.reports.length === before; i++) await new Promise(done => setTimeout(done, 25));
-  const report = window.renderMarks.reports.slice(before).find(row => row.semanticAction === 'activate');
-  return {found: true, adopted, pressed: true, result: report?.semanticResult ?? null};
+  const elements = [...document.querySelectorAll('[data-tilo-semantic]')]
+    .filter(e => e.getAttribute('aria-label') === wanted);
+  if (!elements.length) return {found: false, pressed: 0, answers: []};
+  const answers = [];
+  for (const element of elements) {
+    const role = element.getAttribute('role');
+    const adopted = Boolean(element.closest('.tilo-dom'));
+    if (element.getAttribute('aria-disabled') === 'true' || element.disabled) {
+      answers.push({role, adopted, result: 'disabled'});
+      continue;
+    }
+    const before = window.renderMarks.reports.length;
+    element.click();
+    for (let i = 0; i < 40 && window.renderMarks.reports.length === before; i++) await new Promise(done => setTimeout(done, 25));
+    const report = window.renderMarks.reports.slice(before).find(row => row.semanticAction === 'activate');
+    answers.push({role, adopted, result: report?.semanticResult ?? null});
+  }
+  return {found: true, pressed: answers.filter(answer => answer.result !== 'disabled').length, answers};
 })()`;
 
 const browser = await launch({args: ['--window-size=1280,800', ...sandbox]});
@@ -119,7 +137,7 @@ try {
   const late = shown.names.filter(row => !had.has(key(row)));
 
   result.late = late.map(([role, name]) => `${role}: ${name}`);
-  const operable = late.filter(([role]) => ['Button', 'ToggleButton', 'MenuItem', 'Tab', 'TreeItem', 'ListBoxOption', 'ListItem', 'Checkbox', 'Switch'].includes(role));
+  const operable = late.filter(([role]) => isControl(role));
   const labels = wanted ?? (operable.length ? operable : late).slice(0, 8).map(([, name]) => name);
   result.pressed = [];
   for (const label of labels) {
@@ -135,10 +153,25 @@ try {
   await browser.close().catch(() => {});
 }
 console.log(JSON.stringify(result, null, 1));
-const silent = result.pressed?.filter(row => row.found && row.result !== 'accepted') ?? [];
-const missing = result.pressed?.filter(row => !row.found) ?? [];
-if (result.error || silent.length) {
-  console.error(`activation by name failed: ${silent.map(row => `${row.label} (${row.result})`).join(', ') || result.error}`);
+// A control that arrives after the page is up is operable by the name a
+// screen reader reads, or this check fails: pressing it must reach the
+// runtime and be performed there, not be found missing or refused.
+const late = result.late ?? [];
+const refused = (result.pressed ?? []).flatMap(row => row.answers.filter(answer => answer.result !== 'accepted' && answer.result !== 'disabled').map(answer => `${row.label} (${answer.role ?? 'no role'}: ${answer.result ?? 'no answer'})`));
+const missing = (result.pressed ?? []).filter(row => !row.found).map(row => row.label);
+const pressed = (result.pressed ?? []).reduce((count, row) => count + row.pressed, 0);
+const refusals = [];
+if (result.error) refusals.push(`the page failed: ${result.error}`);
+if (!late.length) refusals.push('no control arrived after the page was up, so nothing was proved');
+if (!result.pressed?.length) refusals.push('no control was pressed');
+if (missing.length) refusals.push(`names not on the page: ${missing.join(', ')}`);
+if (!pressed) refusals.push('no element was found for any of the names');
+if (refused.length) refusals.push(`presses the runtime did not perform: ${refused.join(', ')}`);
+console.error(`${late.length} controls arrived after the page was up (${late.filter(row => isControl(row.split(':')[0])).length} of them controls); ` +
+  `pressed ${pressed} element(s) by name: ${(result.pressed ?? []).map(row => `${row.label} (${row.answers.map(answer => answer.result ?? 'none').join('/')})`).join(', ')}`);
+if (refusals.length) {
+  console.error(`activation by name failed: ${refusals.join('; ')}`);
   process.exitCode = 1;
+} else {
+  console.error('every control the page offered by name was pressed and performed');
 }
-console.error(`names not on the page: ${missing.map(row => row.label).join(', ') || 'none'}`);

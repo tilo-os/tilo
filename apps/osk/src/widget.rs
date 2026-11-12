@@ -551,7 +551,7 @@ impl OskWidget {
         self.toolbar.push(OskToolbarItem::new(
             "dismiss",
             Some(ui::icons::Icon::ChevronDown),
-            &ui::i18n::I18nManager::lookup_plain("osk-toolbar-dismiss"),
+            &crate::i18n::t("osk-toolbar-dismiss"),
             OskToolbarAction::Dismiss,
         ));
         self.structure_dirty = true;
@@ -1190,15 +1190,11 @@ impl OskWidget {
                     && self.context_generation == Some(*generation);
                 self.context_error = if admitted {
                     self.context_handler.as_mut().map_or_else(
-                        || {
-                            Some(ui::i18n::I18nManager::lookup_plain(
-                                "osk-context-unavailable",
-                            ))
-                        },
+                        || Some(crate::i18n::t("osk-context-unavailable")),
                         |handler| handler(*generation, *slot).err(),
                     )
                 } else {
-                    Some(ui::i18n::I18nManager::lookup_plain("osk-context-stale"))
+                    Some(crate::i18n::t("osk-context-stale"))
                 };
             }
             OskToolbarAction::Key(symbol) => {

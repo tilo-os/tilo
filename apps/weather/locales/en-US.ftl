@@ -59,3 +59,6 @@ weather-choose-place = Choose a saved place to see its forecast.
 ## Window and accessibility copy
 weather-a11y-places = Places
 weather-add-place = Add a place
+weather-loading = Current conditions are loading
+weather-now-conditions = Current conditions
+weather-air-quality = Air quality

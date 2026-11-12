@@ -99,6 +99,17 @@ struct Presenter {
     present: Function,
 }
 
+/// What the frame about to be drawn was asked for by
+/// ([`Mount::note_dom_frame_wanted`]).
+struct Want {
+    /// A peer's change arrived since the last frame.
+    replica: bool,
+    /// The theme changed since the last frame.
+    theme_changed: bool,
+    /// What asked for it, for the frame metrics; empty unless they are on.
+    reasons: Vec<String>,
+}
+
 /// What one mount shown as HTML keeps between frames.
 struct Shown {
     presenter: Presenter,
@@ -267,7 +278,7 @@ impl Mount {
         }
         self.save_desktop();
         if let Some(peer) = self.peer {
-            crate::replication::publish(peer);
+            crate::replicated::publish(peer);
         }
         if let Some(error) = unsettled {
             if let Some(line) = self.frame.skip_frame(&error) {
@@ -281,8 +292,9 @@ impl Mount {
     }
 
     /// Whether a frame is due, noted in `pending`; returns whether a peer's
-    /// change arrived and whether the theme changed since the last frame.
-    fn note_dom_frame_wanted(&mut self) -> (bool, bool) {
+    /// change arrived, whether the theme changed since the last frame, and
+    /// what asked for the frame, for the frame metrics.
+    fn note_dom_frame_wanted(&mut self) -> Want {
         let schedule = self.frame.frame_schedule();
         let due = schedule
             .next_wake_deadline
@@ -290,7 +302,45 @@ impl Mount {
         let theme_changed = self.theme_seen != crate::page_theme::generation();
         let replica = self.replica_changed.replace(false);
         if let Some(peer) = self.peer {
-            crate::replication::follow_answers(peer);
+            crate::replicated::follow_answers(peer);
+        }
+        let asked = self.pending;
+        let mut reasons = Vec::new();
+        if self.metrics.borrow().enabled() {
+            if asked {
+                reasons.push("input or host".to_owned());
+            }
+            if self.viewport.needs_present() {
+                reasons.push("viewport".into());
+            }
+            if schedule.queued_work {
+                let sources = self.frame.queued_work_sources();
+                if sources.is_empty() {
+                    reasons.push("queued work".into());
+                }
+                reasons.extend(
+                    sources
+                        .into_iter()
+                        .map(|source| format!("queued: {source}")),
+                );
+            }
+            if schedule.needs_animation_frame || due {
+                reasons.extend(
+                    self.frame
+                        .frame_requesters()
+                        .into_iter()
+                        .map(|(path, demand)| match demand {
+                            ui::headless::FrameDemand::Animation => format!("animation: {path}"),
+                            ui::headless::FrameDemand::Deadline => format!("deadline: {path}"),
+                        }),
+                );
+            }
+            if theme_changed {
+                reasons.push("theme".into());
+            }
+            if replica {
+                reasons.push("a peer's change".into());
+            }
         }
         self.pending |= self.viewport.needs_present()
             || schedule.queued_work
@@ -298,7 +348,11 @@ impl Mount {
             || due
             || theme_changed
             || replica;
-        (replica, theme_changed)
+        Want {
+            replica,
+            theme_changed,
+            reasons,
+        }
     }
 
     /// Lay out and present one frame as HTML, with the presentation's code
@@ -325,7 +379,8 @@ pub(crate) fn draw_dom_frame(m: &mut Mount) -> Result<(), String> {
 
 impl Mount {
     fn draw_dom_frame(&mut self) -> Result<(), String> {
-        let (replica, theme_changed) = self.note_dom_frame_wanted();
+        let want = self.note_dom_frame_wanted();
+        let (replica, theme_changed) = (want.replica, want.theme_changed);
         if !self.pending {
             self.held = "nothing to draw";
             return Ok(());
@@ -340,7 +395,10 @@ impl Mount {
         let layout_ms = started.elapsed().as_secs_f64() * 1000.0;
         let input = self.frame.frame_render_input();
         let theme_generation = self.theme_seen;
-        let viewport = self.viewport.requested().logical_size();
+        let requested = self.viewport.requested();
+        let viewport = requested.logical_size();
+        // Pictures are drawn at the density of the screen showing them.
+        let device_scale = f64::from(requested.dpr);
         let presented = MOUNTS.with_borrow_mut(|mounts| {
             let shown = mounts.get_mut(&self.id)?;
             let publish_theme = shown.theme_published != Some(theme_generation);
@@ -354,6 +412,7 @@ impl Mount {
                     scene: input.scene,
                     background: input.background,
                     viewport,
+                    device_scale,
                     layout_ms,
                     theme: publish_theme.then(|| self.frame.theme()),
                 });
@@ -366,6 +425,7 @@ impl Mount {
         self.viewport.did_present();
         self.pending = false;
         self.frames = self.frames.saturating_add(1);
+        self.metrics.borrow_mut().presented(want.reasons);
         self.presentation.set(true);
         self.publish_frame(0, FrameChange::Other, true);
         self.presentation.set(false);

@@ -343,12 +343,18 @@ impl FrameHarness {
     /// slot or a `window-search-*` part), as assistive technology and
     /// automation do, and show what the app made of it, as a press on the
     /// slot does.
+    ///
+    /// The row itself is no slot: a part of it that names no target names
+    /// the window for a reader (its location's label, a menu's name) and
+    /// stands where a press on the row's own background does nothing.
     pub(super) fn perform_slot_row_semantic(
         &mut self,
         target: Option<&str>,
         action: &crate::a11y::Action,
     ) -> Result<(), String> {
-        let target = target.ok_or("a window slot is performed by its target")?;
+        let Some(target) = target else {
+            return Ok(());
+        };
         let ran = self
             .with_slot_row(|row, lent| row.perform(lent, target, action))
             .ok_or("this frame hosts no window slots")?;
@@ -409,6 +415,12 @@ mod tests {
             let name = if self.muted { "Unmute" } else { "Mute" };
             crate::window_toolbar::declare(Some(WindowToolbar {
                 actions: vec![ToolbarAction::new("call-mute", "mic", name)],
+                // What the call is, in the bar: a label a reader hears, and
+                // no control of its own.
+                location: Some(crate::window_toolbar::ToolbarLocation {
+                    label: "Call".into(),
+                    ..crate::window_toolbar::ToolbarLocation::default()
+                }),
                 ..WindowToolbar::default()
             }));
             self.content.sync(state, path);
@@ -597,6 +609,43 @@ mod tests {
             [WindowAction::Close],
             "the press reaches the window"
         );
+    }
+
+    // The bar names what the window is on: a label at the row's location
+    // that names no target, because a press on it runs nothing that a press
+    // on the row's own background does not. A reader that presses it is
+    // told nothing was refused, and no slot runs.
+    #[test]
+    fn a_press_on_the_rows_own_label_runs_nothing_and_is_not_refused() {
+        let (mut harness, heard) = call_app();
+        let named = |harness: &FrameHarness, name: &str| {
+            fn find(node: &crate::a11y::AccessNode, name: &str) -> bool {
+                node.name.as_deref() == Some(name)
+                    || node.children.iter().any(|child| find(child, name))
+            }
+            let inspection = harness.inspection();
+            inspection
+                .root
+                .children
+                .iter()
+                .find(|node| node.path == WINDOW_SLOTS)
+                .and_then(|row| row.semantics.as_ref())
+                .is_some_and(|row| find(row, name))
+        };
+        assert!(
+            named(&harness, "Call"),
+            "the call is named in the row: {:?}",
+            slot(&harness, MUTE).and_then(|mute| mute.name)
+        );
+        harness
+            .perform_semantic_named(WINDOW_SLOTS, None, &crate::a11y::Action::Activate)
+            .expect("a press on the row's own label is not refused");
+        assert!(
+            heard.borrow().is_empty(),
+            "no slot ran: {:?}",
+            heard.borrow()
+        );
+        assert!(harness.take_slot_row_window_actions().is_empty());
     }
 
     /// An app whose bar holds a menu, as a list's sort menu does: the row's button says what the

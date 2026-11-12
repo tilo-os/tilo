@@ -52,3 +52,4 @@ video-play = Play { $title }
 
 ## Facts, property labels and section titles
 video-player-too-large = { $title } was too large to reopen after a reload (over { $size })
+video-title = Video Player

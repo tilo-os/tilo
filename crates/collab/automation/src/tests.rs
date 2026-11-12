@@ -918,6 +918,15 @@ fn a_run_a_task_asked_for_stamps_its_steps_with_that_tasks_group() {
 struct NoteReads;
 
 impl RecordReads for NoteReads {
+    fn answer_read(
+        self: std::sync::Arc<Self>,
+        caller: &Caller,
+        correlation: u64,
+        read: tilo_actions::remote::RecordReadRequest,
+    ) -> tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage> {
+        tilo_actions::remote::answer_read(self, caller, correlation, read)
+    }
+
     fn read(&self, _: &Caller, address: &RecordAddress) -> Result<RecordCopy, ActionHostError> {
         if address.record == "private" {
             return Err(ActionHostError::Refused {

@@ -743,23 +743,43 @@ async fn a_page_whose_keys_have_not_arrived_holds_back_no_other() {
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     held.requested().await;
 
-    // The host holds the workspace's keys, so nothing about the page waits on
-    // the ones it lacks: the host opens a record for the page, lists its
-    // actions, and the page's catalogue answers.
+    // The host opens a record for the page while no keys have arrived. The
+    // record's first change waits for them before the host can keep it, so
+    // the open is answered pending, not done; and the page's other requests
+    // are answered meanwhile.
     let started = Instant::now();
-    let opened = browser
-        .invoke(request(
-            &format!("workspace:{WORKSPACE}"),
-            ActionAddress::new(format!("app.{SHEETS}"), "open"),
-            InvokeArgument::None,
-        ))
-        .await;
+    let open = request(
+        &format!("workspace:{WORKSPACE}"),
+        ActionAddress::new(format!("app.{SHEETS}"), "open"),
+        InvokeArgument::None,
+    );
+    let opening = open.invocation;
+    let opened = browser.invoke(open).await;
     eprintln!(
         "workspace actions latency: an open answered while the page held no keys: {:?}",
         started.elapsed()
     );
-    let ReceiptStatus::Completed { output } = &opened.status else {
-        panic!("the host opens a record while the page holds no keys: {opened:?}");
+    assert!(
+        matches!(opened.status, ReceiptStatus::Accepted),
+        "a record whose first change waits for its keys is answered pending: {opened:?}"
+    );
+    let listing = browser
+        .catalogue(CatalogueQuery {
+            max_results: 200,
+            ..CatalogueQuery::default()
+        })
+        .await;
+    assert!(
+        listing.is_ok(),
+        "the page's catalogue answers while a write waits for its keys: {listing:?}"
+    );
+
+    // The keys arrive: the held write is saved, and the open is answered
+    // done, naming the record it made.
+    drop(held);
+    let settled = browser.settled(opening).await;
+    let tilo_actions::InvocationUpdate::Succeeded { output, .. } = &settled else {
+        panic!("the open is done once its record is saved: {settled:?}");
     };
     let record = output.value.as_ref().unwrap()["record"]
         .as_str()
@@ -770,8 +790,8 @@ async fn a_page_whose_keys_have_not_arrived_holds_back_no_other() {
         cluster_id: WORKSPACE.into(),
         record,
     };
-    // The page opens the record the host made for it, as a person opening the
-    // record does: without keys it holds that open record sealed.
+    // The page opens the record it could not before, and acts on it through
+    // the host: saved at once now, answered done.
     browser.peer.send(Cmd::OpenRoute(created.clone())).unwrap();
     let provider = record_provider(&created);
     let new_sheet = browser
@@ -786,33 +806,9 @@ async fn a_page_whose_keys_have_not_arrived_holds_back_no_other() {
         .iter()
         .filter_map(|row| row.action.as_ref())
         .find(|action| action.address.action == "new-sheet")
-        .expect("the host lists the record's actions while the page holds no keys")
+        .expect("the host lists the record's actions")
         .address
         .clone();
-
-    // The host writes to the record, and the page reads none of it: it holds
-    // no keys, so the record it opened stands sealed to it.
-    let acted = browser
-        .invoke(request(
-            &provider,
-            new_sheet.clone(),
-            sheet_named("Before the keys"),
-        ))
-        .await;
-    assert!(
-        matches!(acted.status, ReceiptStatus::Completed { .. }),
-        "{acted:?}"
-    );
-    browser.pump();
-    assert!(
-        browser.documents.get(&created).is_none_or(Vec::is_empty),
-        "a page without its keys read the host's record: {:?}",
-        browser.documents.get(&created)
-    );
-
-    // The keys arrive: the page opens the record it could not before, and acts
-    // on it through the host.
-    drop(held);
     let acted = browser
         .invoke(request(&provider, new_sheet, sheet_named("After the keys")))
         .await;

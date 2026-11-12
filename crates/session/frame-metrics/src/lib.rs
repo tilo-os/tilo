@@ -739,9 +739,6 @@ impl FrameRecorder {
         if !self.enabled {
             return;
         }
-        if profiling {
-            profile::begin_tick(self.seq);
-        }
         let start_us =
             u64::try_from(now.duration_since(self.start).as_micros()).unwrap_or(u64::MAX);
         let period_us = self.prev_start_us.map_or(0, |p| {

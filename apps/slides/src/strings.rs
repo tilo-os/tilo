@@ -38,7 +38,7 @@ pub fn tr(key: &str) -> String {
         if let Some(text) = cache.2.get(key) {
             return text.clone();
         }
-        let text = I18nManager::lookup(key, None);
+        let text = CATALOG.t(key);
         cache.2.insert(key.to_owned(), text.clone());
         text
     })
@@ -47,7 +47,7 @@ pub fn tr(key: &str) -> String {
 /// Look up `key`, interpolating `args` into its placeables.
 pub fn tr_args(key: &str, args: &[(&str, ArgValue)]) -> String {
     ensure();
-    I18nManager::format(key, args)
+    crate::strings::CATALOG.t_args(key, args)
 }
 
 /// Load the catalogue into this thread's manager, once per manager:

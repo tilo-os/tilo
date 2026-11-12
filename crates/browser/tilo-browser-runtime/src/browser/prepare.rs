@@ -31,7 +31,7 @@ pub(super) fn desktop_inputs(
         device: config.device.clone(),
         salt: config
             .peer
-            .and_then(crate::replication::device_of)
+            .and_then(crate::replicated::device_of)
             .unwrap_or_else(|| config.device.clone()),
         workspace: config.workspace.clone(),
         author: config.author(),
@@ -52,7 +52,7 @@ pub(super) fn desktop_inputs(
 pub(super) fn content(config: &Config) -> tilo_content::ContentStore {
     config
         .peer
-        .and_then(crate::replication::content)
+        .and_then(crate::replicated::content)
         .unwrap_or_else(tilo_content::ContentStore::page_files)
 }
 
@@ -105,7 +105,7 @@ pub(super) fn serve_history(
             desktop: shared.clone(),
         }),
         models,
-        changes: crate::replication::changes(),
+        changes: crate::replicated::changes(),
         wake: None,
     });
     surface.set_history_source(Box::new(activity.clone()));
