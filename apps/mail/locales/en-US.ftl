@@ -227,3 +227,4 @@ mail-folder-archive = Archive
 mail-folder-trash = Trash
 mail-folder-junk = Junk
 mail-refresh-offline = Cannot refresh { $folder } for { $account } while IMAP is offline
+mail-first-run-message = Email accounts are added in Settings, under External Accounts.

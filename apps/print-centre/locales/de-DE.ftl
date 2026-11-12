@@ -174,3 +174,4 @@ print-centre-device-answered = Der Drucker hat die letzte Statusabfrage beantwor
 print-centre-device-no-supplies = Dieser Drucker meldet keine Füllstände.
 print-centre-device-unreachable = Live-Details sind nicht verfügbar. Der Drucker ist vielleicht im Ruhezustand oder getrennt.
 print-job-document = Dokument { $number }
+print-centre-cancel-pending-message = Das Dokument wird vom Drucker entfernt. Das lässt sich nicht rückgängig machen.

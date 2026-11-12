@@ -786,7 +786,7 @@ impl MailApp {
             bar: ui::framework::BarCommands::new(),
             first_run: EmptyState::new("No email account yet")
                 .with_icon(Icon::Mail)
-                .with_message("Email accounts are added in Settings, under External Accounts.")
+                .with_message(CATALOG.t("mail-first-run-message"))
                 .with_action("Open External Accounts")
                 .with_action_id("mail.add-account"),
             first_run_node: None,

@@ -14,6 +14,7 @@
 //! [`Banner::paint`] and [`Banner::height`] draw the same banner for a host
 //! that paints into a `Scene`, and hand back where its buttons are.
 
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -89,12 +90,14 @@ fn well(theme: &Theme) -> Color {
 /// What an immediate-mode [`Banner::paint`] shows: severity, leading icon,
 /// title, optional message, up to two actions and whether it offers a
 /// dismiss control.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct BannerContent<'a> {
     pub kind: BannerKind,
     pub icon: Icon,
     pub title: &'a str,
-    pub message: Option<&'a str>,
+    /// The line under the title, in words the caller resolved (a catalogue's
+    /// copy) rather than a literal.
+    pub message: Option<Cow<'a, str>>,
     pub dismissible: bool,
     /// The banner's one main action ("Try again", "Restore").
     pub action: Option<&'a str>,
@@ -123,8 +126,8 @@ impl<'a> BannerContent<'a> {
     }
 
     #[must_use]
-    pub fn with_message(mut self, message: Option<&'a str>) -> Self {
-        self.message = message;
+    pub fn with_message(mut self, message: Option<impl Into<Cow<'a, str>>>) -> Self {
+        self.message = message.map(Into::into);
         self
     }
 
@@ -243,7 +246,7 @@ fn geometry_with(
         text.measure_style(content.title, Some(text_width), &title_style(theme))
             .1,
     );
-    let message_h = content.message.map_or(0.0, |message| {
+    let message_h = content.message.as_deref().map_or(0.0, |message| {
         f64::from(theme.tokens.spacing.s1)
             + f64::from(
                 text.measure_style(message, Some(text_width), &message_style(theme))
@@ -363,7 +366,8 @@ fn paint_body(ctx: &mut PaintCtx<'_>, content: &BannerContent<'_>, place: BodyPl
         text_width,
         title_h,
     } = place;
-    let (kind, icon, title, message) = (content.kind, content.icon, content.title, content.message);
+    let (kind, icon, title) = (content.kind, content.icon, content.title);
+    let message = content.message.as_deref();
     let theme = ctx.theme;
     let on_well = theme.on_ground(well(theme));
     icon.draw(ctx.scene, ctx.transform, icon_rect, kind.icon_ink(&on_well));

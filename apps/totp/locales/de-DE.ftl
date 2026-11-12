@@ -70,3 +70,4 @@ totp-a11y-account = Authenticator-Konto
 totp-a11y-accounts = Authenticator-Konten
 totp-a11y-none = Keine Konten
 totp-a11y-accounts-hint = { $total } Konten. Die Pfeiltasten wechseln das ausgewählte Konto.
+totp-empty-message = Scanne einen QR-Code oder füge einen Einrichtungslink ein, um die Einmalcodes hier zu sehen.

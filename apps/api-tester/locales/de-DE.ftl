@@ -138,3 +138,5 @@ api-tester-view-pretty = Formatiert
 api-tester-view-raw = Rohtext
 api-tester-view-headers = Kopfzeilen
 api-tester-split-label = Anfrage und Antwort in der Größe ändern
+api-tester-no-response-hint = Sende die Anfrage, um zu sehen, was zurückkommt.
+api-tester-waiting-response = Die Antwort des Servers steht noch aus.

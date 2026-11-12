@@ -289,7 +289,7 @@ pub(crate) fn empty_state(unreadable: Option<&str>, intents: &Intents) -> Elemen
             .with_message(reason),
         None => EmptyState::new("No drives found")
             .with_icon(Icon::HardDrive)
-            .with_message("Attach a drive, then rescan."),
+            .with_message(CATALOG.t("disks-empty-drives-hint")),
     };
     Box::new(
         state

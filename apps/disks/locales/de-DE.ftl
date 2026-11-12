@@ -55,3 +55,4 @@ disks-encryption-locked = { $scheme }, gesperrt
 disks-severity-warning = Warnung
 disks-severity-critical = Kritisch
 disks-severity-healthy = OK
+disks-empty-drives-hint = Schließe ein Laufwerk an und suche dann erneut.

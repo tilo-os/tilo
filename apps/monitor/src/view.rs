@@ -1389,9 +1389,8 @@ impl ResourcesPane {
             let state = if matches!(bridge.placeholder, Some(Placeholder::Loading)) {
                 EmptyState::new("Reading this computer's usage").busy()
             } else {
-                EmptyState::new("Usage unavailable").with_message(
-                    "This computer's processor, memory, network and disk use couldn't be read.",
-                )
+                EmptyState::new("Usage unavailable")
+                    .with_message(CATALOG.t("monitor-usage-unavailable-message"))
             };
             drop(bridge);
             self.page = Some(

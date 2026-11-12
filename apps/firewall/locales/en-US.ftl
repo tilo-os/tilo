@@ -92,3 +92,7 @@ firewall-zone-work-description = For work networks where you mostly trust the ot
 firewall-zone-home-description = For home networks where you mostly trust the other computers.
 firewall-zone-internal-description = For internal networks where you mostly trust the other computers.
 firewall-zone-trusted-description = All network connections are accepted.
+firewall-service-unavailable-hint = Start firewalld, then try again. No rules were changed.
+firewall-panic-mode-message = All incoming and outgoing network traffic is dropped.
+firewall-stopped-message = No rules are enforced until you turn it on.
+firewall-nothing-dropped-message = The kernel logged no dropped or rejected packets in the last { $minutes } minutes.

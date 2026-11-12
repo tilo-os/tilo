@@ -453,3 +453,7 @@ browser-quit-keep-downloading = Weiter herunterladen
 browser-quit-cancel-downloads = Downloads abbrechen und beenden
 browser-open = { $address } öffnen
 browser-search-for = Nach { $query } suchen
+browser-history-clear-failed = Der Verlauf wurde nicht gelöscht, weil Browser die Änderung nicht speichern konnte. Der bisherige Verlauf blieb erhalten.
+browser-download-active-hint = Schließe ihn in Downloads in der Bibliothek ab oder brich ihn dort ab, und schließe dann den Tab.
+browser-history-paused-hint = Seiten in diesem Fenster werden nicht im Verlauf gespeichert.
+browser-service-sign-in-hint = Melde dich an, um dieses Konto fertig zu verbinden.

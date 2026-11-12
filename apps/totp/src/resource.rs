@@ -233,7 +233,7 @@ impl ResourceApp for TotpShell {
         // it hosts the add sheet.
         let empty = EmptyState::new("No accounts yet")
             .with_icon(Icon::Shield)
-            .with_message("Scan a QR code or paste a setup link to see its one-time codes here.")
+            .with_message(crate::i18n::t("totp-empty-message"))
             .with_action("Add account")
             .with_action_id("totp-empty-add");
         let empty = match cx.actions().effect(&TotpEffect::AddAccount) {

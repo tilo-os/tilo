@@ -120,3 +120,5 @@ passwords-field-note = Notiz
 passwords-field-notes = Notizen
 passwords-field-tags = Schlagwörter
 passwords-field-custom = Eigene Felder
+passwords-empty-vault-message = Anmeldungen, sichere Notizen, WLAN-Passwörter und API-Schlüssel, die du speicherst, werden verschlüsselt und hier aufbewahrt.
+passwords-empty-content-message = Anmeldungen, sichere Notizen, WLAN-Passwörter und API-Schlüssel, die du speicherst, werden verschlüsselt und hier aufbewahrt. Wähle Neues Element, um das erste hinzuzufügen.

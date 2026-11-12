@@ -759,7 +759,7 @@ fn snapshot_list(model: &Model<'_>, intents: &Intents) -> Element {
         return Box::new(
             EmptyState::new("No snapshots yet")
                 .with_icon(Icon::History)
-                .with_message("Back up now to create the first one."),
+                .with_message(CATALOG.t("backups-empty-snapshots-hint")),
         );
     }
     if model.order == Order::OldestFirst {
@@ -1184,11 +1184,11 @@ pub fn setup(state: &Setup<'_>, intents: &Intents) -> Element {
     let state = match state {
         Setup::Start => EmptyState::new("Protect your important files")
             .with_icon(Icon::Archive)
-            .with_message("Choose a folder to keep a copy of every file in it, checked so you know it is intact.")
+            .with_message(CATALOG.t("backups-setup-start-hint"))
             .with_action("Choose folder…"),
         Setup::ChooseDestination => EmptyState::new("Choose where to keep backups")
             .with_icon(Icon::HardDrive)
-            .with_message("Pick a drive or a folder outside the one you are backing up.")
+            .with_message(CATALOG.t("backups-setup-destination-hint"))
             .with_action("Choose location…"),
         Setup::Running(status) => EmptyState::new("Creating your first backup")
             .with_icon(Icon::Archive)

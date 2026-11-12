@@ -345,7 +345,7 @@ fn containers_empty(engine: &Engine, intents: &Intents) -> Element {
         Box::new(
             EmptyState::new("No containers")
                 .with_icon(Icon::Box)
-                .with_message("Create a container from an image to run it here.")
+                .with_message(CATALOG.t("containers-empty-containers-hint"))
                 .with_action("New container")
                 .on_view(intents.sender(Intent::NewContainer)),
         )
@@ -359,7 +359,7 @@ fn containers_empty(engine: &Engine, intents: &Intents) -> Element {
 pub(crate) fn engine_missing(engine: &Engine, intents: &Intents) -> Element {
     let mut state = EmptyState::new("Podman isn't available")
         .with_icon(Icon::Box)
-        .with_message("Install Podman or start its user service to manage containers here.")
+        .with_message(CATALOG.t("containers-engine-missing-hint"))
         .with_action("Try again")
         .on_effect(intents.sender(Intent::Reconnect));
     if !engine.live
@@ -375,7 +375,7 @@ pub(crate) fn nothing_selected() -> Element {
     Box::new(
         EmptyState::new("No container selected")
             .with_icon(Icon::Box)
-            .with_message("Choose a container to see its logs, usage and settings."),
+            .with_message(CATALOG.t("containers-none-selected-hint")),
     )
 }
 
@@ -928,7 +928,7 @@ pub(crate) fn images_page(
         return Box::new(
             EmptyState::new("No images")
                 .with_icon(Icon::Layers)
-                .with_message("Pull an image to create containers from it.")
+                .with_message(CATALOG.t("containers-empty-images-hint"))
                 .with_action("Pull image")
                 .on_view(intents.sender(Intent::PullImage)),
         );
@@ -999,7 +999,7 @@ pub(crate) fn volumes_page(
         return Box::new(
             EmptyState::new("No volumes")
                 .with_icon(Icon::HardDrive)
-                .with_message("A volume keeps a container's data when the container is removed.")
+                .with_message(CATALOG.t("containers-empty-volumes-hint"))
                 .with_action("New volume")
                 .on_view(intents.sender(Intent::NewVolume)),
         );
@@ -1049,7 +1049,7 @@ pub(crate) fn distrobox_page(
         return Box::new(
             EmptyState::new("No distroboxes")
                 .with_icon(Icon::Terminal)
-                .with_message("Boxes you create with distrobox appear here."),
+                .with_message(CATALOG.t("containers-empty-distroboxes-hint")),
         );
     }
     let rows: Vec<Element> = engine

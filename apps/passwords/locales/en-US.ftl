@@ -120,3 +120,5 @@ passwords-field-note = Note
 passwords-field-notes = Notes
 passwords-field-tags = Tags
 passwords-field-custom = Custom fields
+passwords-empty-vault-message = Logins, secure notes, Wi-Fi passwords and API keys you save are encrypted and kept here.
+passwords-empty-content-message = Logins, secure notes, Wi-Fi passwords and API keys you save are encrypted and kept here. Choose New item to add the first one.

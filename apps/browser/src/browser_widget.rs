@@ -2351,9 +2351,7 @@ impl BrowserWidget {
             && let Err(error) =
                 record.invoke(&crate::history::BrowsingHistory::CLEAR_HISTORY.with(()))
         {
-            let message =
-                "Couldn’t clear history because Browser could not save the change. Previous history was kept."
-                    .to_string();
+            let message = CATALOG.t("browser-history-clear-failed");
             tracing::warn!("browser history clear was not persisted: {error}");
             self.history_clear_error = Some(message.clone());
             self.structure_dirty = true;
@@ -2942,16 +2940,15 @@ impl BrowserWidget {
         }
         if self.close_blocked {
             notices.push(
-                crate::notice::Notice::warning("This tab has an active download").with_message(
-                    "Finish or cancel it in Downloads in the library, then close the tab.",
-                ),
+                crate::notice::Notice::warning("This tab has an active download")
+                    .with_message(CATALOG.t("browser-download-active-hint")),
             );
         }
         // The history notice would only repeat the Library's own control.
         if self.history_paused() && !self.show_library {
             notices.push(
                 crate::notice::Notice::neutral("History paused")
-                    .with_message("Pages in this window are not saved to browsing history."),
+                    .with_message(CATALOG.t("browser-history-paused-hint")),
             );
         }
         if !on_page {

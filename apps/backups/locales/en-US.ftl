@@ -133,3 +133,6 @@ backups-schedule-hourly = Every hour, on the hour
 backups-schedule-hourly-at = Every hour at { $minute } past
 backups-schedule-daily = Every day at { $time }
 backups-schedule-weekly = Every { $weekday } at { $time }
+backups-empty-snapshots-hint = Back up now to create the first one.
+backups-setup-start-hint = Choose a folder to keep a copy of every file in it, checked so you know it is intact.
+backups-setup-destination-hint = Pick a drive or a folder outside the one you are backing up.

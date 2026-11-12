@@ -607,11 +607,11 @@ impl Notice {
         match kind {
             ForecastNotice::UpdateFailed => {
                 BannerContent::new(BannerKind::Error, "Couldn't update the forecast")
-                    .with_message(Some("Check your connection and try again."))
+                    .with_message(Some(crate::i18n::t("weather-notice-retry-message")))
                     .action(RETRY)
             }
             ForecastNotice::Offline => BannerContent::new(BannerKind::Warning, "You're offline")
-                .with_message(Some("This is the last forecast saved on this device.")),
+                .with_message(Some(crate::i18n::t("weather-notice-offline-message"))),
         }
     }
 

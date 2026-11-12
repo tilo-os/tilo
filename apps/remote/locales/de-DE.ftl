@@ -80,3 +80,7 @@ remote-state-no-vnc = Remote kann auf diesem Gerät keine VNC-Sitzungen öffnen.
 remote-state-no-session = Remote kann diese Art von Sitzung auf diesem Gerät nicht öffnen.
 remote-state-no-rdp = Remote öffnet SSH-, VNC- und Tilo-Geräte, aber kein RDP.
 remote-state-invalid-profile = Die gespeicherte Adresse oder Anmeldeart passt nicht zu diesem Protokoll.
+remote-connection-deleted-message = Jemand, mit dem du deine Verbindungen teilst, hat sie entfernt.
+remote-empty-pinned-hint = Hefte die Maschinen an, die du am meisten nutzt, damit sie hier bleiben.
+remote-empty-saved-hint = Speichere eine Maschine, um sie über SSH, VNC oder als Tilo-Gerät zu erreichen.
+remote-rdp-unsupported-message = Wähle SSH oder VNC, um diese Maschine weiter zu nutzen.

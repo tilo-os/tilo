@@ -187,13 +187,13 @@ pub(crate) fn connection_list(
             Box::new(
                 EmptyState::new("No pinned connections")
                     .with_icon(Icon::Pin)
-                    .with_message("Pin the machines you use most to keep them here."),
+                    .with_message(CATALOG.t("remote-empty-pinned-hint")),
             )
         } else {
             Box::new(
                 EmptyState::new("No saved connections")
                     .with_icon(Icon::Monitor)
-                    .with_message("Save a machine to reach it over SSH, VNC or as a Tilo device.")
+                    .with_message(CATALOG.t("remote-empty-saved-hint"))
                     .with_action("New connection")
                     .with_action_id("remote.connection.new")
                     .on_view(queue(requests, Action::NewConnection)),
@@ -348,7 +348,7 @@ fn machine_section(requests: &Requests, fields: &FormFields, model: &FormModel) 
     if model.kind == ConnectionKind::Rdp {
         section = section.content(Box::new(
             Banner::warning("Remote can't open RDP connections")
-                .with_message("Choose SSH or VNC to keep using this machine."),
+                .with_message(CATALOG.t("remote-rdp-unsupported-message")),
         ));
     }
     for problem in &model.problems.other {

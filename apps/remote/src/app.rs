@@ -905,7 +905,7 @@ impl RemoteApp {
             Content::Missing => Box::new(
                 ui::widget::EmptyState::new("This connection was deleted")
                     .with_icon(Icon::Monitor)
-                    .with_message("Someone you share your connections with removed it."),
+                    .with_message(crate::resource::CATALOG.t("remote-connection-deleted-message")),
             ),
         };
         drop(store);

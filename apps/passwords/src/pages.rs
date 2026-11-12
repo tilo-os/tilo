@@ -130,10 +130,7 @@ fn detail(core: &Core, requests: &Requests, actions_in_bar: bool) -> Element {
                 EmptyState::new("Nothing saved yet")
                     .with_id("passwords.content.empty")
                     .with_icon(Icon::Shield)
-                    .with_message(
-                        "Logins, secure notes, Wi-Fi passwords and API keys you save are \
-                         encrypted and kept here. Choose New item to add the first one.",
-                    ),
+                    .with_message(CATALOG.t("passwords-empty-content-message")),
             );
         }
         if core.visible().is_empty() {

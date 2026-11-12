@@ -55,3 +55,4 @@ disks-encryption-locked = { $scheme }, locked
 disks-severity-warning = Warning
 disks-severity-critical = Critical
 disks-severity-healthy = OK
+disks-empty-drives-hint = Attach a drive, then rescan.

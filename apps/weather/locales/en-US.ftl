@@ -62,3 +62,5 @@ weather-add-place = Add a place
 weather-loading = Current conditions are loading
 weather-now-conditions = Current conditions
 weather-air-quality = Air quality
+weather-notice-retry-message = Check your connection and try again.
+weather-notice-offline-message = This is the last forecast saved on this device.

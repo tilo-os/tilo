@@ -554,6 +554,7 @@ TEXT_CONSTRUCTORS = (
     (".with_hint(", 0),
     (".with_subtitle(", 0),
     (".with_body(", 0),
+    (".with_message(", 0),
     (".with_text(", 0),
     (".with_caption(", 0),
     (".with_spoken(", 0),

@@ -133,3 +133,6 @@ backups-schedule-hourly = Jede Stunde zur vollen Stunde
 backups-schedule-hourly-at = Jede Stunde { $minute } Minuten nach der vollen Stunde
 backups-schedule-daily = Jeden Tag um { $time }
 backups-schedule-weekly = Jeden { $weekday } um { $time }
+backups-empty-snapshots-hint = Sichere jetzt, um die erste zu erstellen.
+backups-setup-start-hint = Wähle einen Ordner, um von jeder Datei eine Kopie zu behalten, geprüft, damit du weißt, dass sie unversehrt ist.
+backups-setup-destination-hint = Wähle ein Laufwerk oder einen Ordner außerhalb dessen, was du sicherst.

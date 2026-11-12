@@ -550,7 +550,7 @@ impl ServiceView {
             {
                 Some(
                     crate::notice::Notice::neutral("Sign in to Discord")
-                        .with_message("Sign in to finish connecting this account."),
+                        .with_message(CATALOG.t("browser-service-sign-in-hint")),
                 )
             }
             _ => None,

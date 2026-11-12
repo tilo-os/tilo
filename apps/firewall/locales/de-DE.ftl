@@ -92,3 +92,7 @@ firewall-zone-work-description = Für Arbeitsnetzwerke, in denen du den anderen 
 firewall-zone-home-description = Für Heimnetzwerke, in denen du den anderen Computern meist vertraust.
 firewall-zone-internal-description = Für interne Netzwerke, in denen du den anderen Computern meist vertraust.
 firewall-zone-trusted-description = Alle Netzwerkverbindungen werden angenommen.
+firewall-service-unavailable-hint = Starte firewalld und versuche es dann erneut. Es wurden keine Regeln geändert.
+firewall-panic-mode-message = Der gesamte ein- und ausgehende Netzwerkverkehr wird verworfen.
+firewall-stopped-message = Es werden keine Regeln durchgesetzt, bis du die Firewall einschaltest.
+firewall-nothing-dropped-message = Der Kernel hat in den letzten { $minutes } Minuten keine verworfenen oder abgelehnten Pakete protokolliert.

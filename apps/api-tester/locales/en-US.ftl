@@ -138,3 +138,5 @@ api-tester-view-pretty = Pretty
 api-tester-view-raw = Raw
 api-tester-view-headers = Headers
 api-tester-split-label = Resize the request and the response
+api-tester-no-response-hint = Send the request to see what comes back.
+api-tester-waiting-response = Waiting for the server to respond.
