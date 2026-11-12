@@ -1188,7 +1188,8 @@ pub(crate) fn outcome(
 }
 
 /// A door's refusal as the action protocol says it: the door's own code, so a caller tells "no
-/// such action" apart from "not now" and "not shaped like that" without reading prose.
+/// such action" apart from "not now" and "not shaped like that" without reading prose. A door that
+/// refused for a reason of its own says it in words, its code leading them.
 pub(crate) fn refusal(error: &tilo_actions::DoorError) -> ActionHostError {
     use tilo_actions::DoorError;
     match error {
@@ -1200,11 +1201,8 @@ pub(crate) fn refusal(error: &tilo_actions::DoorError) -> ActionHostError {
             reason: error.to_string(),
         },
         DoorError::ConfirmationRequired => ActionHostError::confirmation_required(),
-        DoorError::Unavailable { reason, .. } => ActionHostError::Unavailable {
-            reason: reason.clone(),
-        },
-        DoorError::Failed(reason) => ActionHostError::Refused {
-            reason: reason.clone(),
+        DoorError::Unavailable { .. } | DoorError::Failed(_) => ActionHostError::Refused {
+            reason: error.to_string(),
         },
     }
 }
