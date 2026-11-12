@@ -228,17 +228,6 @@ FILTER_CONFIG_FILES = (
 )
 # The feature selection of crates/workspace-hack, which every member depends on.
 FEATURE_CONFIG_FILE = ".config/hakari.toml"
-FILTER_PACKAGE = re.compile(r"package\(\s*=?\s*([A-Za-z0-9_.-]+)\s*\)")
-
-
-def filter_packages(expression: str) -> set[str] | None:
-    """The packages a nextest filter expression names, or None when it names none.
-
-    A filter that names no package (`all()`, a bare test or binary filter)
-    selects across every package, so a change to it is a repository-wide input.
-    """
-    names = set(FILTER_PACKAGE.findall(expression))
-    return names or None
 # Vendored crates that carry Tilo patches, with the paths their own tests read.
 # The workspace builds them only as path dependencies, so Cargo selection never
 # runs their tests; check.yml's `vendored` job does
@@ -755,6 +744,19 @@ def resolve_root_manifest(
         details.append(f"{len(changed_deps)} shared dependencies")
     return ResolvedInput(frozenset(seeds), frozenset(),
                          "Cargo.toml changes " + " and ".join(details))
+
+
+FILTER_PACKAGE = re.compile(r"package\(\s*=?\s*([A-Za-z0-9_.-]+)\s*\)")
+
+
+def filter_packages(expression: str) -> set[str] | None:
+    """The packages a nextest filter expression names, or None when it names none.
+
+    A filter that names no package (`all()`, a bare test or binary filter)
+    selects across every package, so a change to it is a repository-wide input.
+    """
+    names = set(FILTER_PACKAGE.findall(expression))
+    return names or None
 
 
 def config_units(path: str, document: dict) -> dict[tuple, tuple[str, ...] | None] | None:
