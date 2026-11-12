@@ -30,8 +30,9 @@ What a person does, on real booted boxes (tools/ci/e2e-remote.sh makes the host)
    a part of the form in the same moment. B's person reads three names in the tab's record and
    which of them set each field. The agent on D names B by its device id, which a door takes
    as well as a name: D does not list B (step 9).
-8. In B's tab, each agent that came from another machine is named with its device, as the note
-   of step 5 is.
+8. In B's tab, each agent that came from another machine is recorded with its device beside
+   its name: the device B's door verified it came from, by its whole key and its name, in the
+   tab's record and in who set each field. B's own agent is recorded with none.
 9. The person's third device lists the second among their devices (`tilo_devices`), as the
    first does, so that `--device <name>` can name it there.
 10. A person at another machine watches that tab: B's person shares the Browser's window with
@@ -929,7 +930,8 @@ ip -o addr show dev "$dev"
         said_fields = json.dumps(fields, ensure_ascii=False)
         said_record = json.dumps(record, ensure_ascii=False)
         res.facts["fields_read"], res.facts["record_read"] = said_fields, said_record
-        who_set = {str(f.get("question")): (f.get("set") or {}).get("by") for f in _fields(fields)}
+        sets = {str(f.get("question")): f.get("set") or {} for f in _fields(fields)}
+        who_set = {question: said.get("by") for question, said in sets.items()}
         res.facts["who_set"] = who_set
         fills = [e for e in _entries(record) if e.get("action") == "fill_form" and e.get("ok")]
         actors: dict[str, str] = {}
@@ -948,10 +950,17 @@ ip -o addr show dev "$dev"
             actors[who] = actor
             if not actor:
                 raise Failed(f"B's tab records what the agent on {who} answered under no name: {mine[0]}")
-            if party.remote:
-                # Whether that name says which machine it came from is a step of its own.
-                device = (party.box.identity.get("this_device") or {}).get("device", "")[:8]
-                self.tab_actors.append({"who": who, "actor": actor, "device": device})
+            # Which machine that actor worked from is a step of its own: what the entry says of
+            # a device beside the actor, and what the review says of one beside who set a field.
+            this = party.box.identity.get("this_device") or {}
+            self.tab_actors.append({
+                "who": who, "actor": actor, "remote": party.remote,
+                "device": this.get("device", ""), "label": this.get("label", ""),
+                "said": {"the tab's record": [mine[0].get("device"), mine[0].get("device_name")],
+                         **{f"the review of {question!r}": [sets.get(question, {}).get("device"),
+                                                            sets.get(question, {}).get("device_name")]
+                            for question in party.reviewed}},
+            })
             for question in party.reviewed:
                 if who_set.get(question) != actor:
                     raise Failed(f"{question!r} is not reviewed as set by the agent on {who} ({actor}): "
@@ -960,15 +969,27 @@ ip -o addr show dev "$dev"
             raise Failed(f"B's tab does not tell the {len(parties)} agents apart: {actors}")
 
     def devices_named(self, res: Result) -> None:
-        """Each agent that worked in B's tab from another machine is named there with its device."""
+        """Each agent that worked in B's tab from another machine is recorded there with its
+        device beside its name, and who set each field it set is reviewed with it: the device's
+        whole key, as that machine's own identity names it, and its name. B's own agent is
+        recorded and reviewed with no device."""
         res.facts["actors"] = self.tab_actors
-        if not self.tab_actors:
+        if not any(seen["remote"] for seen in self.tab_actors):
             raise Failed("B's tab recorded no agent from another machine")
         for seen in self.tab_actors:
-            who, actor, device = seen["who"], seen["actor"], seen["device"]
-            if not device or device not in actor:
-                raise Failed(f"B's tab records the agent on {who} as {actor!r}, which does not name "
-                             f"its device {device}")
+            who, actor, device, label = seen["who"], seen["actor"], seen["device"], seen["label"]
+            for where, (said, name) in seen["said"].items():
+                if not seen["remote"]:
+                    if said or name:
+                        raise Failed(f"{where} says B's own agent {actor!r} worked from another "
+                                     f"device: {said!r} ({name!r})")
+                    continue
+                if len(device) != 64 or said != device:
+                    raise Failed(f"{where} names the agent on {who}, {actor!r}, with the device "
+                                 f"{said!r}, not with its device {device}")
+                if (name or "") != label:
+                    raise Failed(f"{where} calls the device of the agent on {who} {name!r}, not "
+                                 f"{label!r} as that device calls itself")
 
     def person_opens_browser(self, b: Box, res: Result) -> None:
         """B's person opens the Browser from their desk's list of apps, and it is there once
