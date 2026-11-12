@@ -536,9 +536,10 @@ impl WorkspaceMembershipCommand {
                     &action.action,
                 )
                 .map(drop),
-                // A shortcut is checked against what the broker offers the
-                // saver, and its own device's proof of who saved it is what
-                // admission holds it to.
+                // Each is checked where it is written: a preset and a sandbox
+                // capability against the writer's own grants, and a shortcut
+                // against what the broker offers its saver, held to the proof
+                // of who saved it that its workspace's admission asks for.
                 SettingsChange::AssignPreset { .. }
                 | SettingsChange::GrantSandbox { .. }
                 | SettingsChange::RevokeSandbox { .. }
