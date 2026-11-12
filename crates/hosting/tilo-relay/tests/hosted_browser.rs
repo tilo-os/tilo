@@ -363,6 +363,10 @@ enum Asks {
     /// scrolling and submitting are outside effects, and only their answer —
     /// or a key their person let operate the page — runs one.
     Acting,
+    /// [`Self::Acting`], and the window states the departure its run reached:
+    /// the form the click or the submit sends, and the picture of the filled
+    /// page, as the window itself holds it.
+    Departing,
 }
 
 impl Asks {
@@ -377,7 +381,26 @@ impl Asks {
         match self {
             Self::Never => false,
             Self::Submit => action == "submit-page",
-            Self::Acting => !OBSERVES.contains(&action),
+            Self::Acting | Self::Departing => !OBSERVES.contains(&action),
+        }
+    }
+
+    /// What the window states about the departure it holds, when it states
+    /// one: the facts a person's question reads, as the window states them on
+    /// the hold it publishes.
+    fn departure(self) -> Vec<tilo_actions::ActionFacet> {
+        match self {
+            Self::Departing => [
+                ("page", "https://visa.example/apply"),
+                ("kind", "submit"),
+                ("method", "POST"),
+                ("destination", "https://visa.example"),
+                ("picture", "tilo.content:5f2b"),
+            ]
+            .into_iter()
+            .map(|(name, value)| tilo_actions::remote::browser::departure_facet(name, value))
+            .collect(),
+            Self::Never | Self::Submit | Self::Acting => Vec::new(),
         }
     }
 }
@@ -439,7 +462,9 @@ async fn window_session(
             });
             let status = if asks.asks(&request.target.address.action) && !witnessed {
                 ReceiptStatus::Rejected {
-                    error: ActionHostError::ConfirmationRequired,
+                    error: ActionHostError::ConfirmationRequired {
+                        departure: asks.departure(),
+                    },
                 }
             } else {
                 ReceiptStatus::Completed {
@@ -870,6 +895,101 @@ async fn an_agents_reads_and_fills_run_at_once_and_its_submit_is_put_to_the_pers
     );
 }
 
+/// A submission a page action's own run reached: the window answers that it
+/// waits for the person and states the departure it holds, so the question
+/// names what leaves — the page it leaves from, the method, where it goes and
+/// the picture of the filled page — rather than a label for the action.
+#[tokio::test]
+async fn a_submission_a_page_action_reached_is_asked_about_by_what_leaves() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    fixture.list_environment().await;
+    let material = fixture.environments.material();
+    window_session(
+        &fixture.relay.relay,
+        &fixture.user,
+        &material,
+        Asks::Departing,
+    )
+    .await;
+    let caller = subscribe(&fixture.relay.relay, &fixture.user, &fixture.agent).await;
+    let (_endpoint, mut approver) = fixture.approving_device().await;
+
+    let id = InvocationId::new();
+    caller
+        .send(to_host(WS, fixture.home, frame(submit(id))))
+        .unwrap();
+    assert_eq!(
+        receipt_of(next(&caller, "caller").await).status,
+        ReceiptStatus::Accepted,
+        "the submission waits for the person rather than refused"
+    );
+    let question = asked(&mut approver).await;
+    assert_leaves(&question);
+    assert_eq!(
+        *fixture.meter.recorded.lock().unwrap(),
+        0,
+        "a submission nobody allowed has run nothing"
+    );
+}
+
+/// The same, for a click on the page's own submit button: the click's run
+/// reaches the departure the page sends, and the person is asked what leaves.
+#[tokio::test]
+async fn a_click_on_a_submit_button_is_asked_about_by_what_leaves() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    fixture.list_environment().await;
+    let material = fixture.environments.material();
+    window_session(
+        &fixture.relay.relay,
+        &fixture.user,
+        &material,
+        Asks::Departing,
+    )
+    .await;
+    let caller = subscribe(&fixture.relay.relay, &fixture.user, &fixture.agent).await;
+    let (_endpoint, mut approver) = fixture.approving_device().await;
+
+    let id = InvocationId::new();
+    caller
+        .send(to_host(WS, fixture.home, frame(page(id, "click-page"))))
+        .unwrap();
+    assert_eq!(
+        receipt_of(next(&caller, "caller").await).status,
+        ReceiptStatus::Accepted,
+        "the click waits for the person rather than refused"
+    );
+    assert_leaves(&asked(&mut approver).await);
+    assert_eq!(
+        *fixture.meter.recorded.lock().unwrap(),
+        0,
+        "a click nobody allowed has sent nothing"
+    );
+}
+
+/// The question `question` is, as a person reads one about a departure: the
+/// page it leaves from, what it does, the method, where it goes, and the
+/// picture of the filled page.
+fn assert_leaves(question: &tilo_relay::certify::PendingConfirmation) {
+    assert_eq!(
+        question.action_label, "send the form to https://visa.example (POST)",
+        "the person is told what leaves, where, and how"
+    );
+    assert_eq!(question.resource_label, PAGE_RESOURCE);
+    let page = question
+        .page
+        .as_ref()
+        .expect("the question names the page it leaves from");
+    assert_eq!(page.page, "https://visa.example/apply");
+    assert_eq!(page.kind, "submit");
+    assert_eq!(page.method, "POST");
+    assert_eq!(page.destination, "https://visa.example");
+    assert_eq!(
+        page.picture.as_deref(),
+        Some("tilo.content:5f2b"),
+        "and the picture of the filled page, by its content address"
+    );
+}
+
 /// A key whose person let it operate web pages fills, selects and clicks in
 /// the hosted Browser without anyone being asked; the submit the same key
 /// sends still asks them, because submitting is not operating the page.
@@ -1134,7 +1254,7 @@ async fn a_question_nobody_answers_ends_a_page_action_refused() {
     };
     assert_eq!(
         error.code,
-        ActionHostError::ConfirmationRequired.code(),
+        ActionHostError::confirmation_required().code(),
         "the refusal says the person's answer is needed"
     );
     assert_eq!(seen.lock().unwrap().len(), 1, "the window saw it once");

@@ -1170,7 +1170,7 @@ pub(crate) fn outcome(
                 // from one that ran and was refused: what a person reads is
                 // that their answer is missing, not that it failed.
                 code: match error {
-                    ActionHostError::ConfirmationRequired => {
+                    ActionHostError::ConfirmationRequired { .. } => {
                         tilo_actions::remote::CONFIRMATION_REQUIRED_CODE.to_owned()
                     }
                     _ => String::from("refused"),

@@ -91,7 +91,7 @@ impl TaskRunHost {
             .ok_or_else(|| refused("the run's tracker is unavailable".into()))?;
         if !tracker.asks_on_host(&workspace, &current) {
             // Its questions go on its issue: nobody here is asked.
-            return Err(ActionHostError::ConfirmationRequired);
+            return Err(ActionHostError::confirmation_required());
         }
         let question = self.question_about(request)?;
         tracker

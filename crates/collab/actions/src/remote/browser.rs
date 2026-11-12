@@ -61,24 +61,38 @@ pub fn departure_facet(name: &str, value: impl Into<String>) -> crate::ActionFac
     crate::ActionFacet::new(format!("{DEPARTURE_FACET}.{name}"), value)
 }
 
+/// Every departure fact `facets` state, by the name each is stated under, in
+/// the order the facets are written.
+#[must_use]
+pub fn stated_facts(facets: &[crate::ActionFacet]) -> Vec<(String, String)> {
+    let prefix = format!("{DEPARTURE_FACET}.");
+    facets
+        .iter()
+        .filter_map(|facet| {
+            Some((
+                facet.key.strip_prefix(&prefix)?.to_owned(),
+                facet.value.clone(),
+            ))
+        })
+        .collect()
+}
+
 /// Every departure facet `context` carries, by the name it states it under,
 /// in the order the facets are written.
 #[must_use]
 pub fn departure_facts(context: Option<&crate::ActionContext>) -> Vec<(String, String)> {
-    let prefix = format!("{DEPARTURE_FACET}.");
-    context
-        .map(|context| {
-            context
-                .facets
-                .iter()
-                .filter_map(|facet| {
-                    Some((
-                        facet.key.strip_prefix(&prefix)?.to_owned(),
-                        facet.value.clone(),
-                    ))
-                })
-                .collect()
-        })
+    context.map_or_else(Vec::new, |context| stated_facts(&context.facets))
+}
+
+/// The departure facets a failed page action states in its `details`, when it
+/// states them: the same facts the window publishes a hold it started itself
+/// with, so a host asked about one a caller's action reached reads them the
+/// one way.
+#[must_use]
+pub fn departure_stated(details: Option<&serde_json::Value>) -> Vec<crate::ActionFacet> {
+    details
+        .cloned()
+        .and_then(|details| serde_json::from_value(details).ok())
         .unwrap_or_default()
 }
 

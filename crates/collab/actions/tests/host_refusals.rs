@@ -7,7 +7,8 @@ use serde_json::Value;
 use tilo_actions::remote::ActionHostError;
 use tilo_actions::remote::host_account::{NextStep, NextStepKind, Reason, Refusal};
 
-/// One refusal of each kind, in the file's order.
+/// One refusal of each kind, in the file's order — and one that states what
+/// waits for the person, which only a page action's own run reaches.
 fn refusals() -> Vec<ActionHostError> {
     let second_own = Refusal {
         reason: Reason::TooManyWorkspaces {
@@ -26,7 +27,13 @@ fn refusals() -> Vec<ActionHostError> {
         },
         ActionHostError::UnknownAction,
         ActionHostError::NotPermitted,
-        ActionHostError::ConfirmationRequired,
+        ActionHostError::confirmation_required(),
+        ActionHostError::ConfirmationRequired {
+            departure: vec![
+                tilo_actions::remote::browser::departure_facet("kind", "submit"),
+                tilo_actions::remote::browser::departure_facet("picture", "tilo.content:5f2b"),
+            ],
+        },
         ActionHostError::InvalidRequest {
             reason: "`name` is text".to_owned(),
         },

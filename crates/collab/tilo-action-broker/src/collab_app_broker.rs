@@ -5914,7 +5914,7 @@ impl AppBrokerState {
         // Store disclosures must be answered on a trusted host sheet, even
         // when the publisher's connection is admitted as the person themself.
         if requires_store_witness(app, &offered.action) && !witnessed {
-            return Err(ActionHostError::ConfirmationRequired);
+            return Err(ActionHostError::confirmation_required());
         }
         let own = actor.direct().then_some(evidence).flatten();
         // Decided from the arguments, without the app's code: a field edit
@@ -5927,7 +5927,7 @@ impl AppBrokerState {
                 return Ok(None);
             }
         } else if !witnessed && !confirmation_satisfied(&policy, own) {
-            return Err(ActionHostError::ConfirmationRequired);
+            return Err(ActionHostError::confirmation_required());
         }
         self.mint_confirmation_grant(peer_id, offered, argument, actor)
             .and_then(|token| {

@@ -603,7 +603,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
                     error:
                         ActionHostError::NotPermitted
                         | ActionHostError::UnknownAction
-                        | ActionHostError::ConfirmationRequired,
+                        | ActionHostError::ConfirmationRequired { .. },
                 } => Admitted::Refused,
                 _ if was_asked => Admitted::AsksFirst,
                 // It ran: what the action answered is its own.

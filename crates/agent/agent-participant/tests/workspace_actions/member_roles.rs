@@ -566,7 +566,7 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
     assert_eq!(
         invoked(&actions, workspace, &member, &remove()),
         ReceiptStatus::Rejected {
-            error: ActionHostError::ConfirmationRequired
+            error: ActionHostError::confirmation_required()
         },
         "with nobody to ask, it stays refused"
     );

@@ -2089,7 +2089,9 @@ impl Worker {
             .and_then(|entry| entry.about.take());
         if matches!(
             outcome,
-            Err(Outcome::Rejected(ActionHostError::ConfirmationRequired))
+            Err(Outcome::Rejected(
+                ActionHostError::ConfirmationRequired { .. }
+            ))
         ) && let Some(about) = about
             && let Some(receipt) = self.ask_person(workspace_id, &caller, &request, &about)
         {

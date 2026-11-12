@@ -1081,7 +1081,7 @@ impl Workspaces {
         let args = Args::of(&request.argument)?;
         let owner = device.user_public_key == self.inner.host.cert.user_public_key;
         if unconfirmed(&address.action, &args, owner) {
-            return Err(ActionHostError::ConfirmationRequired);
+            return Err(ActionHostError::confirmation_required());
         }
         let call = GovernanceCall {
             workspace: &workspace,

@@ -242,7 +242,7 @@ fn an_attended_action_waits_for_the_persons_confirmation_before_an_agent_runs_it
         matches!(
             &asked,
             PendingPoll::Ready(Err(
-                tilo_actions::remote::ActionHostError::ConfirmationRequired
+                tilo_actions::remote::ActionHostError::confirmation_required()
             ))
         ),
         "the agent waits for the person: {asked:?}"
@@ -1518,7 +1518,7 @@ fn an_agents_change_the_person_asks_about_waits_for_them() {
         assert!(
             matches!(
                 answered,
-                PendingPoll::Ready(Err(ActionHostError::ConfirmationRequired))
+                PendingPoll::Ready(Err(ActionHostError::confirmation_required()))
             ),
             "{answered:?}"
         );

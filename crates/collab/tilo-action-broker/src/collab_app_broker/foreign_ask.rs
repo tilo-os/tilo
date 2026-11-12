@@ -56,7 +56,7 @@ impl AppBrokerState {
     ) -> Pending<Result<Confirmation, ActionHostError>> {
         let Some(service) = self.services.own_device.as_ref() else {
             // Nobody to ask is nobody's confirmation.
-            return Pending::ready(Err(ActionHostError::ConfirmationRequired));
+            return Pending::ready(Err(ActionHostError::confirmation_required()));
         };
         let question = asked_there(self, caller, &binding.workspace, request);
         let asked = match service.ask_person(caller, &question) {
@@ -75,10 +75,10 @@ impl AppBrokerState {
                     Ok(Some(Ok(Confirmation::Witnessed(_)))) => state
                         .witness_confirmation(&binding)
                         .map(Confirmation::Witnessed)
-                        .ok_or(ActionHostError::ConfirmationRequired),
+                        .ok_or(ActionHostError::confirmation_required()),
                     // Denied, timed out, or no witness to name: nothing runs.
                     Ok(Some(Ok(_) | Err(_)) | None) | Err(_) => {
-                        Err(ActionHostError::ConfirmationRequired)
+                        Err(ActionHostError::confirmation_required())
                     }
                 };
                 completer.complete(witness);

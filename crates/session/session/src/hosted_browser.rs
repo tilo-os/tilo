@@ -407,7 +407,9 @@ impl HostedBrowser {
             host.confirm(&caller, &request).then(move |answer| {
                 let answered = Arrived::Answered {
                     request: Box::new(request),
-                    answer: Box::new(answer.unwrap_or(Err(ActionHostError::ConfirmationRequired))),
+                    answer: Box::new(
+                        answer.unwrap_or(Err(ActionHostError::confirmation_required())),
+                    ),
                 };
                 if arrived.send(answered).is_err() {
                     return;

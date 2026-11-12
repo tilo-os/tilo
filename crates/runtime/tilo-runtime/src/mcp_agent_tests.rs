@@ -911,7 +911,7 @@ impl ActionHost for Notes {
         // What the workspace's grants put to the person first: nothing runs
         // until they allow it.
         if *self.asks.lock().unwrap() && request.target.address.action == "delete" {
-            return Pending::ready(Err(ActionHostError::ConfirmationRequired));
+            return Pending::ready(Err(ActionHostError::confirmation_required()));
         }
         if request.target.provider == WORKSPACE {
             *self.running.lock().unwrap() = true;

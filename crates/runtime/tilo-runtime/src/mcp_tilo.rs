@@ -1367,7 +1367,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     json!({"failed": answer.get("failed").and_then(Value::as_str).map_or_else(|| answer.to_string(), str::to_owned)})
                 }
             }
-            Ok(Err(tilo_actions::remote::ActionHostError::ConfirmationRequired)) => {
+            Ok(Err(tilo_actions::remote::ActionHostError::ConfirmationRequired { .. })) => {
                 json!({"asks": format!("{action}: asks the person first")})
             }
             Ok(Err(

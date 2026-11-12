@@ -286,7 +286,7 @@ impl TaskRunHost {
             .admit_task_launch(&run, &binding, &requirement, &mut || Ok(()))
             .map_err(|reason| {
                 if crate::services::NativeTaskActionRequirement::awaits_confirmation(&reason) {
-                    ActionHostError::ConfirmationRequired
+                    ActionHostError::confirmation_required()
                 } else {
                     refused(reason)
                 }
@@ -696,7 +696,7 @@ impl TaskRunHost {
                 // A run with no issue to ask on asks its person on this host's sheet: its caller
                 // is told the step needs confirming, and asks through `confirm`.
                 if asks && self.asks_on_host() {
-                    return Err(ActionHostError::ConfirmationRequired);
+                    return Err(ActionHostError::confirmation_required());
                 }
                 // The run pauses for its person: the question goes on its
                 // issue, as a launched agent puts it there, and the agent

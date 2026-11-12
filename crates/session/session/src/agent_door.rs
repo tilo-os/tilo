@@ -2175,7 +2175,7 @@ impl ActionHost for Host {
         }
         match &self.state {
             Some(state) => state.request_witness(caller, None, request),
-            None => Pending::ready(Err(ActionHostError::ConfirmationRequired)),
+            None => Pending::ready(Err(ActionHostError::confirmation_required())),
         }
     }
 

@@ -1886,7 +1886,7 @@ impl AgentParticipant {
         let (arrived, control) = (Arc::clone(&answer), Arc::clone(&self.control));
         witness.confirm(&caller, &request).then(move |given| {
             *arrived.lock_recover() = Some(given.unwrap_or(Err(
-                tilo_actions::remote::ActionHostError::ConfirmationRequired,
+                tilo_actions::remote::ActionHostError::confirmation_required(),
             )));
             control.wake();
         });

@@ -19,7 +19,29 @@
     "display": "the caller may not invoke this action"
   },
   {
-    "wire": "ConfirmationRequired",
+    "wire": {
+      "ConfirmationRequired": {
+        "departure": []
+      }
+    },
+    "code": "action_confirmation_required",
+    "display": "the action requires confirmation"
+  },
+  {
+    "wire": {
+      "ConfirmationRequired": {
+        "departure": [
+          {
+            "key": "browser.departure.kind",
+            "value": "submit"
+          },
+          {
+            "key": "browser.departure.picture",
+            "value": "tilo.content:5f2b"
+          }
+        ]
+      }
+    },
     "code": "action_confirmation_required",
     "display": "the action requires confirmation"
   },

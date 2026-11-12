@@ -192,6 +192,62 @@ fn a_form_fills_without_asking_and_asks_once_when_it_is_submitted() {
     );
 }
 
+/// A hold a page action's own run reached answers with the departure it holds,
+/// so the host holding a person's window asks them what leaves — the page it
+/// leaves from, what it does, the method, where it goes — and the picture of
+/// the filled page when this window kept one.
+#[test]
+fn a_hold_a_page_action_reached_states_the_departure_it_holds() {
+    let (engine, mut widget, doc, root) =
+        page_in(BrowsingMode::Visitor, "https://visa.example/apply");
+    let content = ui::content::ContentStore::memory();
+    widget.attach_content(content.clone());
+    let mut request = held_submit(2);
+    request.capture = Some(Arc::new(
+        ui::png::encode_rgba8(4, 4, &[200, 60, 60, 255].repeat(16)).expect("a png"),
+    ));
+    engine.hold(request);
+    let submit = start(
+        &mut widget,
+        "submit-page",
+        &serde_json::json!({"element": "d1e9"}),
+    );
+    let update = answer(&mut widget, &doc, &root, submit);
+    let ui::tilo_actions::InvocationUpdate::Failed { error, .. } = &update else {
+        panic!("the submission waits for the person: {update:?}");
+    };
+    let facts = ui::tilo_actions::remote::browser::stated_facts(
+        &ui::tilo_actions::remote::browser::departure_stated(error.details.as_ref()),
+    );
+    let fact = |name: &str| {
+        facts
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.clone())
+    };
+    assert_eq!(
+        fact("page").as_deref(),
+        Some("https://visa.example"),
+        "the host is told the page it leaves from"
+    );
+    assert_eq!(fact("kind").as_deref(), Some("submit"));
+    assert_eq!(fact("method").as_deref(), Some("POST"));
+    assert_eq!(
+        fact("destination").as_deref(),
+        Some("https://visa.example"),
+        "and where it goes"
+    );
+    let picture = fact("picture").expect("the person is shown the filled page");
+    let hash = ui::tilo_actions::content_hash(&picture)
+        .expect("the picture is content, named by its hash");
+    assert!(
+        content
+            .read(hash)
+            .is_some_and(|kept| kept.starts_with(b"\x89PNG")),
+        "and kept where the person reads it"
+    );
+}
+
 #[test]
 fn the_persons_allow_releases_the_held_submission_instead_of_submitting_again() {
     let (engine, mut widget, doc, root) =

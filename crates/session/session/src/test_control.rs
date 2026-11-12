@@ -2023,7 +2023,7 @@ fn action_refusal(error: &ActionHostError) -> Json {
         // it at all; an action the person may not run is another answer.
         ActionHostError::NotPermitted => "not_allowed",
         ActionHostError::StaleRevision => "stale_cursor",
-        ActionHostError::ConfirmationRequired => "needs_confirmation",
+        ActionHostError::ConfirmationRequired { .. } => "needs_confirmation",
         other => other.code(),
     };
     refusal(code, &error.to_string())

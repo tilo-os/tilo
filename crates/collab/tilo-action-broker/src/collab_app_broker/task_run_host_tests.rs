@@ -629,7 +629,7 @@ async fn a_door_runs_question_is_asked_on_the_desk_and_allowed_once() {
                 .unwrap_err();
             assert_eq!(
                 first,
-                tilo_actions::remote::ActionHostError::ConfirmationRequired
+                tilo_actions::remote::ActionHostError::confirmation_required()
             );
             let asking = host.confirm(&caller, &append_request(71));
             let shown = desk.shown(1).await;
@@ -666,7 +666,7 @@ async fn a_door_runs_question_is_asked_on_the_desk_and_allowed_once() {
                 .unwrap_err();
             assert_eq!(
                 next,
-                tilo_actions::remote::ActionHostError::ConfirmationRequired,
+                tilo_actions::remote::ActionHostError::confirmation_required(),
                 "once is once"
             );
             drop(f);

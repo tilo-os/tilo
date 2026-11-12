@@ -822,10 +822,10 @@ impl ActionHost for RuntimeActionHost {
         request: &InvokeRequest,
     ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionHostError>> {
         let Some(session) = &self.session else {
-            return Pending::ready(Err(ActionHostError::ConfirmationRequired));
+            return Pending::ready(Err(ActionHostError::confirmation_required()));
         };
         if session.agent.is_none() {
-            return Pending::ready(Err(ActionHostError::ConfirmationRequired));
+            return Pending::ready(Err(ActionHostError::confirmation_required()));
         }
         if let Err(refusal) = session.check(caller, &self.joined) {
             return Pending::ready(Err(refusal.into()));

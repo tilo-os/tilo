@@ -14,11 +14,14 @@ agent take there, with the person's answering device held by the check
      person is asked nothing and Browser runs every one of them;
   c. `capture-page` answers a picture of the filled form, saved as a PNG;
   d. the person refuses one submission: the window holds it, the call ends
-     refused, and the form stays filled and unsent;
+     refused, and the form stays filled and unsent — and the question they were
+     asked names the page it leaves from, POST, where it goes and the picture
+     of the filled form;
   e. a second form instance is submitted: the person is asked exactly once,
      names the submission, and allows it; the same call returns, and the page
      shows its receipt and reference (`read-page`);
-  f. a click on the submit button is held the same way and asked once;
+  f. a click on the submit button is held and asked the same way; the question
+     names what leaves, just as the submission's did;
   g. a reviewer who joined by invitation reads the agent's run in History;
   h. a key minted with the scope unticked is asked about the page actions
      that act on the page, which is what the scope answers for;
@@ -50,6 +53,7 @@ import json
 import os
 import sys
 import time
+import urllib.parse
 import urllib.request
 
 from tilo import AsyncTilo, ProtocolError, Refused, Run
@@ -144,6 +148,27 @@ async def refusal_of(call: object) -> str:
 
 def code_of(text: str) -> str:
     return text.split(":", 1)[0].strip()
+
+
+def origin_of(url: str) -> str:
+    """The origin of `url`: the page a departure leaves from, as a window
+    reports it."""
+    parts = urllib.parse.urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def check_leaves(question: dict, what: str) -> None:
+    """Say that `question` names what leaves the page: where it leaves from,
+    the method it goes with, where it goes, and the filled page as a picture
+    the person is shown."""
+    page = question.get("page") or {}
+    check(
+        page.get("page") == origin_of(FORM_URL),
+        f"the question about {what} names the page it leaves from ({page})",
+    )
+    check(page.get("method") == "POST", f"the question about {what} names the method ({page})")
+    check(page.get("destination"), f"the question about {what} names where it goes ({page})")
+    check(page.get("picture"), f"the question about {what} shows the filled page ({page})")
 
 
 class Person:
@@ -387,6 +412,7 @@ async def fill_phase(report: dict[str, object]) -> int:
         questions = await person.settle(asked)
         check(len(questions) == 1, f"the person was asked exactly once ({questions})")
         check("submit" in json.dumps(questions[0]).lower(), f"the question names the submission ({questions[0]})")
+        check_leaves(questions[0], "a submission")
         check(refused != "allowed", f"the submission the person refused did not run ({refused})")
         after = await page.read()
         check(RECEIPT not in await page.title(), "the page shows no receipt after a refusal")
@@ -417,6 +443,7 @@ async def fill_phase(report: dict[str, object]) -> int:
         check("released" in json.dumps(clicked_once), f"the click left once the person allowed it ({clicked_once})")
         questions = await person.settle(asked)
         check(len(questions) == 1, f"the person was asked exactly once ({questions})")
+        check_leaves(questions[0], "a click on the submit button")
         clicked = await page.read()
         check(RECEIPT in json.dumps(clicked), "the click's submission left once the person allowed it")
         report["click_receipt"] = True

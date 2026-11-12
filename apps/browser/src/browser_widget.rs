@@ -5473,9 +5473,6 @@ impl BrowserWidget {
                 .map(|(name, value)| (name.to_owned(), value.into()))
                 .collect();
             bound.push(("id".to_owned(), id.clone().into()));
-            if let Some(picture) = held.picture() {
-                bound.push(("picture".to_owned(), picture.into()));
-            }
             let mut send = E::SendHeldRequest { id: id.clone() }
                 .bound()
                 .with_bound(bound)

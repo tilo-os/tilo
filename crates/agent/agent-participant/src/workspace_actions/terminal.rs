@@ -387,7 +387,7 @@ impl Worker {
                 );
                 Err(self
                     .ask_person(workspace_id, caller, request, &about)
-                    .unwrap_or_else(|| refused(ActionHostError::ConfirmationRequired)))
+                    .unwrap_or_else(|| refused(ActionHostError::confirmation_required())))
             }
         }
     }
