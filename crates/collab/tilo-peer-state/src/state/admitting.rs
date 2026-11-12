@@ -149,7 +149,7 @@ impl StatePeer {
                 waiting_for: Some(waiting.clone()),
                 reason: crate::admission::DropReason::Superseded,
             };
-            self.remember_missed(&input);
+            self.remember_missed(&input, envelope.encryption.is_none());
             return Ok(AdmissionReport::new(
                 InputDisposition::RetryLater(waiting),
                 ReceiveOutcome {

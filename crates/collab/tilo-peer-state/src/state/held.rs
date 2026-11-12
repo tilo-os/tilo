@@ -46,7 +46,16 @@ pub(super) struct Missed {
     /// be, its sequence behind the author's. Forgotten once it is applied
     /// or refused, never to make workspace: forgetting it would let a later
     /// write overtake it.
-    behind: std::collections::BTreeMap<(Route, [u8; 32]), u64>,
+    behind: std::collections::BTreeMap<(Route, [u8; 32]), LetGo>,
+}
+
+/// An author's earliest write to a record that was let go unapplied.
+#[derive(Clone, Copy)]
+struct LetGo {
+    sequence: u64,
+    /// Written in the clear: part of the base the record's seal waits behind
+    /// ([`StatePeer::holds_cleartext_of`]). A sealed write let go is no base.
+    cleartext: bool,
 }
 
 impl Missed {
@@ -59,6 +68,11 @@ impl Missed {
 enum Decided {
     Admitted(Vec<DocumentAdmission>, Vec<crate::Released>),
     LetGo(DroppedInput),
+}
+
+/// Whether `message` is a record write in the clear.
+fn in_the_clear(message: &NeighbourMsg) -> bool {
+    matches!(message, NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_none())
 }
 
 fn dropped_input(
@@ -146,7 +160,7 @@ impl StatePeer {
                 Some(prerequisite.clone()),
                 DropReason::TooLarge,
             );
-            self.remember_missed(&input);
+            self.remember_missed(&input, in_the_clear(&message));
             let mut report = deferred(vec![input], lacks_history);
             report.summary.deferred = false;
             return Ok(report);
@@ -166,7 +180,7 @@ impl StatePeer {
                     released.extend(taken);
                 }
                 Decided::LetGo(input) => {
-                    self.remember_missed(&input);
+                    self.remember_missed(&input, in_the_clear(&oldest));
                     dropped.push(input);
                 }
             }
@@ -270,7 +284,9 @@ impl StatePeer {
             .behind
             .iter()
             .any(|((behind, author), earlier)| {
-                behind == route && !self.applied(route, *author, *earlier)
+                behind == route
+                    && earlier.cleartext
+                    && !self.applied(route, *author, earlier.sequence)
             })
     }
     /// Whether `author`'s write `sequence` to `route` is applied here.
@@ -287,8 +303,9 @@ impl StatePeer {
             })
             .is_some_and(|last| last >= sequence)
     }
-    /// Note what `input`, let go unapplied, waited for.
-    pub(super) fn remember_missed(&mut self, input: &DroppedInput) {
+    /// Note what `input`, let go unapplied, waited for; `cleartext` when it
+    /// was written in the clear.
+    pub(super) fn remember_missed(&mut self, input: &DroppedInput, cleartext: bool) {
         if matches!(input.reason, DropReason::Refused(_)) {
             // Decided, not waiting: refused as any delivery of it would be.
             return;
@@ -298,11 +315,19 @@ impl StatePeer {
             record: input.record.clone(),
         };
         if !input.app.is_empty() {
+            let let_go = LetGo {
+                sequence: input.sequence,
+                cleartext,
+            };
             self.missed
                 .behind
                 .entry((route.clone(), input.author))
-                .and_modify(|sequence| *sequence = (*sequence).min(input.sequence))
-                .or_insert(input.sequence);
+                .and_modify(|earliest| {
+                    if let_go.sequence < earliest.sequence {
+                        *earliest = let_go;
+                    }
+                })
+                .or_insert(let_go);
         }
         match input.waiting_for {
             Some(MissingPrerequisite::Certificate) => {
@@ -342,7 +367,7 @@ impl StatePeer {
         sequence: u64,
     ) -> Option<u64> {
         let key = (route.clone(), author);
-        let earlier = *self.missed.behind.get(&key)?;
+        let earlier = self.missed.behind.get(&key)?.sequence;
         if self.applied(route, author, earlier) {
             self.missed.behind.remove(&key);
             return None;
@@ -356,7 +381,7 @@ impl StatePeer {
             return;
         };
         let key = (route.clone(), author);
-        if self.missed.behind.get(&key) == Some(sequence) {
+        if self.missed.behind.get(&key).map(|let_go| let_go.sequence) == Some(*sequence) {
             self.missed.behind.remove(&key);
         }
     }
