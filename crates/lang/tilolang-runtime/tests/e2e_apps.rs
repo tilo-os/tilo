@@ -1752,11 +1752,9 @@ mod cases {
             asked,
             [
                 apps.todo.action("clear_done"),
-                apps.notes.action("new_note"),
-                apps.notes.action("retitle"),
-                apps.notes.action("tag"),
+                apps.notes.action("file_note"),
             ],
-            "one question for the clear, then one per note action, in the order Today wrote them"
+            "one question for the clear, then one for the note, in the order Today wrote them"
         );
         assert_eq!(items(&m.w, &m.list, "items").len(), 1);
         let notes = items(&m.w, &m.notebook, "notes");
@@ -1832,11 +1830,7 @@ mod cases {
         assert_eq!(finished, Value::Int(0), "nothing was finished");
         assert_eq!(
             asked,
-            [
-                apps.notes.action("new_note"),
-                apps.notes.action("retitle"),
-                apps.notes.action("tag"),
-            ],
+            [apps.notes.action("file_note")],
             "no question for a clear that would do nothing"
         );
         assert_eq!(

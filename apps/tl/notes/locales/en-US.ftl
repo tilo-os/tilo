@@ -71,6 +71,9 @@ d-nydyehwn = Delete
 d-zvgl2tzt = Rename
     .doc = Renames a note.
 
+d-gc34cbhl = File a note
+    .doc = Files a note titled `title` and tagged `t` in one step: what another app writes down of what it did (Today's morning) without waiting on the note it made to name it.
+
 d-7ow26bju = Tag
     .doc = Gives a note a tag.
 

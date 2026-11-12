@@ -103,6 +103,28 @@ pub fn task_packages() -> Vec<TaskPackage> {
         .collect()
 }
 
+/// The tilolang apps installed here, by id, each with the id its records are kept under (its
+/// earliest, when it was renamed): what an instance tells another app it uses by.
+fn installed_apps() -> std::collections::BTreeMap<String, String> {
+    let apps = match app_catalogue::apps::read_from_env() {
+        Ok(apps) => apps,
+        Err(error) => {
+            tracing::warn!(%error, "an instance reads no other app: the installed apps are not known");
+            return std::collections::BTreeMap::new();
+        }
+    };
+    let earlier = tilo_action_policy::earlier::held();
+    apps.iter()
+        .filter(|app| runs_in_host(&app.package_id))
+        .map(|app| {
+            (
+                app.package_id.clone(),
+                earlier.records_under(&app.package_id).to_owned(),
+            )
+        })
+        .collect()
+}
+
 /// The one origin (`imap`, `youtube`) the installed app `app` reaches an outside service through,
 /// when it declares one: its instance reaches that origin's connector.
 ///
@@ -331,6 +353,9 @@ impl Hosts {
         if instance.app == PERSON_VIEWS_APP {
             self.with_every_installed_app(&mut module, &key);
         }
+        // A package the app uses that is installed as an app is another app: its instance reads
+        // that app's records from where it keeps them.
+        let uses_packages = !module.imports.is_empty();
         let module = module.encode();
         let module_len = module.len() as u64;
         let module = tilo_render_protocol::shm::sealed_blob("tilolang-module", &module)?;
@@ -359,6 +384,11 @@ impl Hosts {
             formats: ui::format::region::current(),
             record: instance.opens.record,
             reveal: instance.opens.reveal,
+            installed: if uses_packages {
+                installed_apps()
+            } else {
+                std::collections::BTreeMap::new()
+            },
         };
         let fds = InstanceFds {
             broker: instance.collaboration,

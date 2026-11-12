@@ -969,7 +969,7 @@ impl ViewInstance {
             }
         };
         match answer {
-            Invoked::Done(_) => Ok(EditOutcome::Applied),
+            Invoked::Done(_) | Invoked::Sent => Ok(EditOutcome::Applied),
             Invoked::Failed(reason) => Err(RuntimeError::Trap(reason)),
             Invoked::Refused(_) => Ok(EditOutcome::Denied),
             Invoked::Asks(_) => Ok(EditOutcome::NeedsApproval),

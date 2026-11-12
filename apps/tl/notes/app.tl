@@ -141,6 +141,17 @@ action retitle(n: Note, title: Text) (icon: .pencil, label: "Rename") {
     n.title = title
 }
 
+/// Files a note titled `title` and tagged `t` in one step: what another app writes down of
+/// what it did (Today's morning) without waiting on the note it made to name it.
+action file_note(nb: Notebook, title: Text, t: Text) -> Note (
+    icon: .file_plus,
+    label: "File a note",
+) {
+    let made = nb.notes.insert(Note(title: title))
+    made.tags.add(t)
+    made
+}
+
 /// Gives a note a tag.
 action tag(n: Note, t: Text) (icon: .tag, group: "Tags") {
     n.tags.add(t)

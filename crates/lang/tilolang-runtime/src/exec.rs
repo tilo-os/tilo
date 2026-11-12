@@ -1019,6 +1019,7 @@ impl Core {
         };
         Ok(match invoker.invoke(invocation) {
             Invoked::Done(result) => InvokeOutcome::Done(result),
+            Invoked::Sent => InvokeOutcome::Done(Value::Unit),
             Invoked::Failed(reason) => return Err(RuntimeError::Trap(reason)),
             Invoked::Refused(_) | Invoked::Asks(_) => InvokeOutcome::Denied,
         })
@@ -1042,6 +1043,7 @@ impl Core {
         };
         Ok(match answer {
             Invoked::Done(result) => InvokeOutcome::Done(result),
+            Invoked::Sent => InvokeOutcome::Done(Value::Unit),
             Invoked::Failed(reason) => return Err(RuntimeError::Trap(reason)),
             // The door said no, or asks the person first: nothing ran here. A host that asked
             // keeps what it said, and answers the person's decision itself.
@@ -1464,8 +1466,11 @@ impl Core {
                     Ok(None)
                 }
             }
-        // A host that holds no records sends the invocation on to the app that does.
-        } else if self.invoker.borrow().is_some() {
+        // An action of an app this runtime does not run goes to that app; a host that holds
+        // no records sends every invocation on to the app that does.
+        } else if self.invoker.borrow().is_some()
+            && (self.delegates_own.get() || self.foreign_action(&aref.action))
+        {
             let invocation = self.invocation_of(&aref)?;
             match self.delegated_step(&aref.action, &invocation)? {
                 Delegated::Ran(entry) => {
@@ -1845,6 +1850,10 @@ impl Core {
                 action: action.to_owned(),
                 result,
             })),
+            Invoked::Sent => Delegated::Ran(Box::new(JournalEntry::Invoked {
+                action: action.to_owned(),
+                result: self.unanswered(action),
+            })),
             Invoked::Failed(reason) => Delegated::Ran(Box::new(JournalEntry::Failed {
                 action: action.to_owned(),
                 reason,
@@ -1855,6 +1864,23 @@ impl Core {
             })),
             Invoked::Asks(_) => Delegated::Asks,
         })
+    }
+
+    /// The value the code goes on with for the action `action` sent to its app, which answers
+    /// there ([`crate::delegate::Invoked::Sent`]): its result type's empty value, a scalar's
+    /// zero, and nothing for any other.
+    fn unanswered(&self, action: &str) -> Value {
+        let result = self
+            .registry
+            .borrow()
+            .action_package(action)
+            .and_then(|pkg| pkg.action(action).and_then(|meta| meta.result.clone()));
+        match result.as_deref() {
+            Some("Int") => Value::Int(0),
+            Some("Float") => Value::Float(0.0),
+            Some("Bool") => Value::Bool(false),
+            _ => Value::Unit,
+        }
     }
 
     /// `r.f = v` in a program: the field edit of `r`, sent to the host's invoker as an
@@ -1912,7 +1938,7 @@ impl Core {
             }
         };
         let (entry, failed) = match answer {
-            Invoked::Done(_) => (
+            Invoked::Done(_) | Invoked::Sent => (
                 JournalEntry::Invoked {
                     action,
                     result: Value::Unit,

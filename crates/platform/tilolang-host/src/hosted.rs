@@ -23,7 +23,7 @@
 //!   connection.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -41,7 +41,7 @@ use tilolang_tilo::action::{ACTION_TYPE, DynAction};
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
-use tilolang_tilo::instance::record::{InstanceRecord, RecordError};
+use tilolang_tilo::instance::record::{InstanceRecord, ReadRecord, RecordError};
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform, Publication};
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::HOST_RESOURCE;
@@ -49,6 +49,7 @@ use tilolang_tilo::publish::package_resource_id;
 use tilolang_tilo::publish::{
     Caller, Committer, Moved, Planner, Publications, host_resource, publish_package, reached,
 };
+use tilolang_tilo::used::UsedApp;
 use tilolang_tilo::{HostEffect, OpenEffect};
 
 use crate::phrases::Phrases;
@@ -92,6 +93,9 @@ pub struct Spec {
     pub instance: u64,
     /// The participant at the window.
     pub person: String,
+    /// The tilolang apps installed here, by id, each with the id its records are kept under: a
+    /// package the app uses that is one of them is another app, read from its own record.
+    pub installed: BTreeMap<String, String>,
 }
 
 /// What a [`Surface`]'s resources are built from: the published records' revision, the
@@ -316,6 +320,9 @@ pub type Formats = Rc<Cell<tilo_formats::RegionFormats>>;
 /// host, and publishing on its connection.
 struct HostPlatform {
     bundle: Arc<Bundle>,
+    /// The apps installed here ([`Spec::installed`]): a package the app uses that is one of them
+    /// is loaded as another app's.
+    installed: BTreeMap<String, String>,
     /// The words of the window's frames, in the language its package speaks: what its dates and
     /// clocks read in, as the toolkit's own say them in a window.
     phrases: Rc<Phrases>,
@@ -327,7 +334,9 @@ struct HostPlatform {
 
 impl Platform for HostPlatform {
     fn load(&self, host: &Host) -> u64 {
-        if let Err(error) = host.load_bundle(&self.bundle) {
+        if let Err(error) =
+            host.load_bundle_using(&self.bundle, |app| self.installed.contains_key(app))
+        {
             tracing::error!(app = self.bundle.meta.app, %error, "the package did not load");
         }
         0
@@ -629,6 +638,12 @@ pub struct Hosted {
     /// the action back in every unit that holds a change of it, all under one commit, whether
     /// this endpoint's logs still remember the action or only the records do.
     undo_ask: Option<InvocationId>,
+    /// The other apps the app uses, each read from its own record ([`Used`]).
+    used: Vec<Used>,
+    /// What the app's views and actions asked of the other apps' doors, waiting to be sent.
+    asks: Rc<RefCell<Vec<tilolang_tilo::runtime::delegate::Invocation>>>,
+    /// Whether the runtime sends what it changes of another app's resources to [`Self::asks`].
+    asking: bool,
     /// The identity-service connection the instance's connection signs through, held for as
     /// long as the instance runs.
     #[allow(
@@ -682,9 +697,11 @@ impl Hosted {
             .map(|(locale, _)| locale.as_str())
             .collect();
         let phrases = Rc::new(phrases.for_window(&shipped));
-        let record = record.speaking(phrases.locale());
+        let mut record = record.speaking(phrases.locale());
+        let used = used_apps(&spec, &bundle, &mut record);
         let platform = HostPlatform {
             bundle: Arc::clone(&bundle),
+            installed: spec.installed.clone(),
             phrases,
             formats: Rc::clone(formats),
             wake: Arc::clone(&wake),
@@ -734,6 +751,9 @@ impl Hosted {
             search_index_whole: None,
             wake,
             undo_ask: None,
+            used,
+            asks: Rc::default(),
+            asking: false,
             identity: None,
         }
     }
@@ -850,6 +870,8 @@ impl Hosted {
         for event in events {
             changed |= self.delivered(event);
         }
+        changed |= self.read_used();
+        self.send_asks();
         self.publish();
         self.answer_directory();
         self.publish_search_index();
@@ -1271,6 +1293,12 @@ impl Hosted {
     /// what the host does of it. The rest says something the instance does not keep (presence,
     /// cursors, the workspace's context, results of requests it never makes).
     fn delivered(&mut self, event: CollabEvent) -> bool {
+        for used in &mut self.used {
+            if let Some(moved) = used.record.take(&event, self.record.manager_mut()) {
+                used.moved |= moved;
+                return false;
+            }
+        }
         let (id, invocation, resource, action, argument, actor, context) = match event {
             CollabEvent::Invocation {
                 id,
@@ -1284,6 +1312,10 @@ impl Hosted {
             CollabEvent::Handoff { request } => {
                 self.handoff(&request);
                 return true;
+            }
+            CollabEvent::RemoteAction { message } => {
+                said_back(&self.spec.app, &message);
+                return false;
             }
             CollabEvent::InvocationCancellation { id } => {
                 // An invocation runs to its end in the frame it arrives in and is answered
@@ -1332,6 +1364,79 @@ impl Hosted {
         };
         self.answer_invocation(id, update);
         true
+    }
+
+    /// Bring the other apps' readings up to date: what their records took in is read again, and
+    /// the readings the views asked for since are answered. A reading that moved runs the views
+    /// that read it again on the next frame. Whether any did.
+    fn read_used(&mut self) -> bool {
+        if self.used.is_empty() {
+            return false;
+        }
+        let Some(host) = self.instance.host() else {
+            return false;
+        };
+        let runtime = host.runtime();
+        if !self.asking {
+            runtime.set_foreign_invoker(Doors(Rc::clone(&self.asks)));
+            self.asking = true;
+        }
+        let mut moved = false;
+        for used in &mut self.used {
+            if std::mem::take(&mut used.moved) {
+                used.app.host().sync_chunks(used.record.chunks());
+                if let Some(first) = used.record.chunks().first() {
+                    used.app.host().sync_from(first);
+                }
+                moved |= used.app.refresh(runtime);
+            }
+        }
+        let mut apps: Vec<&mut UsedApp> = self.used.iter_mut().map(|used| &mut used.app).collect();
+        moved |= tilolang_tilo::used::answer(runtime, &mut apps);
+        if moved {
+            (self.wake)();
+        }
+        moved
+    }
+
+    /// Send what the views and actions changed of the other apps' resources to those apps'
+    /// doors, each as that app's action on its resource: a change comes back as its next reading.
+    fn send_asks(&mut self) {
+        let asks = std::mem::take(&mut *self.asks.borrow_mut());
+        for invocation in asks {
+            let Some((app, resource, action, argument)) = door_ask(&invocation) else {
+                tracing::warn!(
+                    app = self.spec.app,
+                    ?invocation,
+                    "a change of another app names no resource of it"
+                );
+                continue;
+            };
+            let request = tilo_actions::remote::InvokeRequest {
+                invocation: InvocationId::new(),
+                target: tilo_actions::remote::application_action_target(
+                    &self.spec.workspace,
+                    &app,
+                    resource,
+                    action,
+                ),
+                argument,
+                context: None,
+                confirmation: None,
+                revision: None,
+                on_behalf_of: None,
+                wait_ms: None,
+                appearance: None,
+            };
+            let message = tilo_actions::remote::RemoteActionMessage::Invoke(request);
+            if let Err(error) = self
+                .record
+                .manager_mut()
+                .try_send(CollabRequest::RemoteAction { message })
+            {
+                tracing::warn!(app = self.spec.app, to = app, %error, "a change of another app did not reach its door");
+            }
+        }
     }
 
     /// Hand the broker the outcome of the invocation `id`. An answer the connection does not
@@ -1814,6 +1919,184 @@ impl Hosted {
     /// Write what the record holds to its on-disk copy, as the instance ends.
     pub fn flush(&mut self) {
         self.record.flush();
+    }
+}
+
+/// Another app the app uses, read from its own record.
+struct Used {
+    record: ReadRecord,
+    app: UsedApp,
+    /// Whether the record took in a change its readings have not been read again for.
+    moved: bool,
+}
+
+/// The other apps `bundle`'s app uses ([`Spec::installed`]), each joined on `record`'s connection
+/// and read through its own package.
+fn used_apps(spec: &Spec, bundle: &Bundle, record: &mut InstanceRecord) -> Vec<Used> {
+    let workspace = record.route().cluster_id;
+    bundle
+        .imports
+        .iter()
+        .filter_map(|import| {
+            let records = spec.installed.get(&import.meta.app)?;
+            let packages = packages_of(&bundle.imports, &import.meta);
+            let app = UsedApp::new(&packages, &spec.person)
+                .map_err(|error| {
+                    tracing::error!(app = spec.app, used = import.meta.app, %error, "a used app's package did not load");
+                })
+                .ok()?;
+            let route = crate::route_under(&import.meta, records, workspace, &spec.person);
+            Some(Used {
+                record: ReadRecord::join(route, record.manager_mut()),
+                app,
+                moved: false,
+            })
+        })
+        .collect()
+}
+
+/// The packages `meta`'s app is read through, from `imports`: those it uses, in the order they
+/// load, then its own.
+fn packages_of<'a>(
+    imports: &'a [tilolang_tilo::bundle::Import],
+    meta: &'a tilolang_tilo::runtime::Meta,
+) -> Vec<(&'a [u8], &'a tilolang_tilo::runtime::Meta)> {
+    let mut needed: HashSet<&str> = HashSet::new();
+    let mut pending = vec![meta];
+    while let Some(next) = pending.pop() {
+        for used in &next.uses {
+            if needed.insert(used.as_str())
+                && let Some(import) = imports.iter().find(|import| import.meta.app == *used)
+            {
+                pending.push(&import.meta);
+            }
+        }
+    }
+    imports
+        .iter()
+        .filter(|import| import.meta.app != meta.app && needed.contains(import.meta.app.as_str()))
+        .map(|import| (import.wasm.as_slice(), &import.meta))
+        .chain(std::iter::once((
+            imports
+                .iter()
+                .find(|import| import.meta.app == meta.app)
+                .map_or(&[][..], |import| import.wasm.as_slice()),
+            meta,
+        )))
+        .collect()
+}
+
+/// Where the runtime sends what a view or an action changes of another app's resources: queued
+/// for [`Hosted::send_asks`], and done here; the change comes back as the resource's next reading.
+struct Doors(Rc<RefCell<Vec<tilolang_tilo::runtime::delegate::Invocation>>>);
+
+impl tilolang_tilo::runtime::delegate::Invoker for Doors {
+    fn invoke(
+        &self,
+        invocation: &tilolang_tilo::runtime::delegate::Invocation,
+    ) -> tilolang_tilo::runtime::delegate::Invoked {
+        self.0.borrow_mut().push(invocation.clone());
+        tilolang_tilo::runtime::delegate::Invoked::Sent
+    }
+}
+
+/// `invocation` as its app's door takes it: the app, the resource, the action and its
+/// arguments. An action is invoked on its subject, which its arguments leave out; an edit of a
+/// field is the resource's own field edit. `None` for an action that names no resource.
+fn door_ask(
+    invocation: &tilolang_tilo::runtime::delegate::Invocation,
+) -> Option<(String, String, String, tilo_actions::remote::InvokeArgument)> {
+    use tilolang_tilo::runtime::Value;
+    use tilolang_tilo::runtime::delegate::Invocation;
+    let json = |value: &Value| match value {
+        Value::Text(text) => serde_json::Value::String(text.clone()),
+        Value::Ref(r) => serde_json::Value::String(r.target.id_string()),
+        other => tilolang_tilo::runtime::value::to_json(other).unwrap_or_default(),
+    };
+    match invocation {
+        Invocation::Action {
+            app,
+            action,
+            args,
+            subject: Some(subject),
+            from,
+            ..
+        } => {
+            let subject_id = subject.id_string();
+            let mut arguments: serde_json::Map<String, serde_json::Value> = args
+                .iter()
+                .filter(|(_, value)| {
+                    !matches!(value, Value::Ref(r) if r.target.id_string() == subject_id)
+                        && !matches!(value, Value::Opt(None))
+                })
+                .map(|(name, value)| match value {
+                    Value::Opt(Some(inner)) => (name.clone(), json(inner)),
+                    value => (name.clone(), json(value)),
+                })
+                .collect();
+            if let Some(from) = from {
+                arguments.insert(
+                    tilo_actions::params::FROM_ARGUMENT.to_owned(),
+                    tilo_actions::params::MadeFrom {
+                        resource: from.id_string(),
+                        kind: from.ty.clone(),
+                    }
+                    .to_json(),
+                );
+            }
+            Some((
+                app.clone(),
+                subject_id,
+                action.clone(),
+                tilo_actions::remote::InvokeArgument::Json(arguments),
+            ))
+        }
+        Invocation::Action { .. } => None,
+        Invocation::Edit {
+            app,
+            target,
+            field_id,
+            value,
+            ..
+        } => {
+            let action = match value {
+                Value::Bool(_) => tilolang_tilo::action::EDIT_FLAG_ACTION,
+                _ => tilolang_tilo::action::EDIT_TEXT_ACTION,
+            };
+            let mut arguments = serde_json::Map::new();
+            arguments.insert(
+                "field".to_owned(),
+                serde_json::Value::String(field_id.clone()),
+            );
+            arguments.insert("value".to_owned(), json(value));
+            Some((
+                app.clone(),
+                target.id_string(),
+                action.to_owned(),
+                tilo_actions::remote::InvokeArgument::Json(arguments),
+            ))
+        }
+    }
+}
+
+/// Say what another app's door answered of a change asked of it, when it refused or failed:
+/// the change never came, and its resource reads as it did.
+fn said_back(app: &str, message: &tilo_actions::remote::RemoteActionMessage) {
+    use tilo_actions::remote::{ReceiptStatus, RemoteActionMessage};
+    if let RemoteActionMessage::Receipt(receipt) = message {
+        match &receipt.status {
+            ReceiptStatus::Rejected { error } => {
+                tracing::warn!(
+                    app,
+                    ?error,
+                    "another app's door refused a change asked of it"
+                );
+            }
+            ReceiptStatus::Failed { error } => {
+                tracing::warn!(app, ?error, "a change asked of another app's door failed");
+            }
+            _ => {}
+        }
     }
 }
 

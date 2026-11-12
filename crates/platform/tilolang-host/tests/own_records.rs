@@ -216,6 +216,7 @@ fn member(bus: &Rc<Bus>, workspace: uuid::Uuid, person: &str, bundle: &Arc<Bundl
             workspace: workspace.to_string(),
             instance: 1,
             person: person.to_owned(),
+            installed: std::collections::BTreeMap::new(),
         },
         record,
         Arc::clone(bundle),

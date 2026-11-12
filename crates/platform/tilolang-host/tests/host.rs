@@ -36,6 +36,9 @@ use tilolang_tilo::runtime::Value;
 
 #[path = "host/indexes.rs"]
 mod indexes;
+/// Tasks in a hosted window, and Today reading it from Tasks' own record.
+#[path = "host/tasks.rs"]
+mod tasks;
 #[path = "host/wakes.rs"]
 mod wakes;
 
@@ -77,6 +80,8 @@ struct Broker {
     /// The actions the broker learned, as a peer's log keeps them: what one undo takes back
     /// across the workspace.
     actions: Actions,
+    /// The other routes the connection joined.
+    routes: Rc<RefCell<Vec<RouteSpec>>>,
 }
 
 impl PeerTransport for Broker {
@@ -114,6 +119,15 @@ impl PeerTransport for Broker {
 
     fn take_action_directory_requests(&mut self) -> Vec<ActionDirectoryRequest> {
         std::mem::take(&mut self.directory.borrow_mut().asked)
+    }
+
+    fn join_route(
+        &mut self,
+        route: RouteSpec,
+        _: collaboration::record::RecordKind,
+    ) -> Result<(), String> {
+        self.routes.borrow_mut().push(route);
+        Ok(())
     }
 }
 
@@ -298,6 +312,7 @@ fn spec(number: u64, person: &str, route: &RouteSpec) -> Spec {
         workspace: route.cluster_id.to_string(),
         instance: number,
         person: person.to_owned(),
+        installed: std::collections::BTreeMap::new(),
     }
 }
 
@@ -322,6 +337,7 @@ fn instance_on(
         joined: None,
         directory,
         actions,
+        routes: Rc::default(),
     });
     assert!(manager.send(CollabRequest::Hello {
         app_id: route.app_id.clone(),
@@ -400,6 +416,7 @@ fn opened_from_own_copy_in(
         joined: None,
         directory: Rc::default(),
         actions: Rc::default(),
+        routes: Rc::default(),
     });
     assert!(manager.send(CollabRequest::Hello {
         app_id: route.app_id.clone(),
@@ -420,6 +437,7 @@ fn opened_from_own_copy_in(
             workspace: route.cluster_id.to_string(),
             instance: 1,
             person: person.to_owned(),
+            installed: std::collections::BTreeMap::new(),
         },
         record,
         Arc::new(counter()),
@@ -1109,6 +1127,7 @@ fn a_slow_open_does_not_hold_up_another_instances_frame() {
             workspace: route.cluster_id.to_string(),
             instance: 2,
             person: "grace".to_owned(),
+            installed: std::collections::BTreeMap::new(),
         },
         Arc::new(counter()),
         manager,
@@ -1889,6 +1908,7 @@ fn applier_of(
         joined: None,
         directory: Rc::default(),
         actions: Rc::default(),
+        routes: Rc::default(),
     });
     assert!(manager.send(CollabRequest::Hello {
         app_id: route.app_id.clone(),
@@ -1906,6 +1926,7 @@ fn applier_of(
             workspace: route.cluster_id.to_string(),
             instance: 1 << 62,
             person: person.to_owned(),
+            installed: std::collections::BTreeMap::new(),
         },
         record,
         bundle,
@@ -2577,303 +2598,3 @@ fn reminder_of(hosted: &Hosted, task: &Value) -> String {
 }
 
 const TASKS: &str = "so.tilo.lang.tasks";
-
-/// The node of the form's tree at `key`.
-fn form_node<'a>(window: &'a Window, key: &str) -> Option<&'a patch::Node> {
-    fn at<'a>(node: &'a patch::Node, key: &str) -> Option<&'a patch::Node> {
-        if node.key == key {
-            return Some(node);
-        }
-        node.children.iter().find_map(|child| at(child, key))
-    }
-    at(&window.form.as_ref()?.tree, key)
-}
-
-/// The choices a `choice` node offers, as the value a pick holds and the words it reads as.
-fn choices_of(node: &patch::Node) -> Vec<(String, String)> {
-    let Some(patch::Value::List(cases)) = node.props.get("cases") else {
-        panic!("a choice with cases: {node:?}");
-    };
-    cases
-        .iter()
-        .map(|case| {
-            let patch::Value::List(parts) = case else {
-                panic!("a case: {case:?}");
-            };
-            match parts.as_slice() {
-                [patch::Value::Text(value), patch::Value::Text(label), ..] => {
-                    (value.clone(), label.clone())
-                }
-                other => panic!("a case's value and label: {other:?}"),
-            }
-        })
-        .collect()
-}
-
-/// The palette runs "New task", which asks for nothing: a task needs no title to be made, so no
-/// form stands for it and the press makes one there and then. Returns the task the press made.
-fn a_task_added_from_the_palette(host: &mut TilolangHost, window: &mut Window) -> Value {
-    let new_task = host
-        .instances()
-        .next()
-        .expect("the instance runs")
-        .published()
-        .iter()
-        .find(|action| action.action_label == "New task")
-        .expect("the tasks publish the action that makes one")
-        .address
-        .clone();
-    window.send(&[ToApp::Invoke {
-        address: new_task,
-        argument: None,
-    }]);
-    settle(host, window);
-    assert!(
-        window.form.is_none(),
-        "every argument it takes has a default, so nothing is asked: {:?}",
-        window.form.as_ref().map(|form| form.title.clone())
-    );
-    let task = tasks_of(host.instances().next().expect("the instance runs"))
-        .first()
-        .cloned()
-        .expect("the press made a task");
-    let Value::Ref(made) = &task else {
-        panic!("a task is a resource: {task:?}")
-    };
-    // The person has not said what it does yet, and the task is still named: a name every surface
-    // that names it shows, so it is not blank in a window, a menu or a screen reader.
-    let named = host
-        .instances()
-        .next()
-        .expect("the instance runs")
-        .instance()
-        .host()
-        .expect("the runtime")
-        .runtime()
-        .title(&made.target)
-        .expect("the task is named");
-    assert_eq!(
-        named, "Task",
-        "an untitled task is named by what it is until the person says what it does"
-    );
-    task
-}
-
-/// "Remind me…" asks when, the moments a person names offered to pick from, and one way into the
-/// rest: the entry they type a moment into with the calendar at its end.
-fn a_reminder_asks_when(host: &mut TilolangHost, window: &mut Window) {
-    let remind = host
-        .instances()
-        .next()
-        .expect("the instance runs")
-        .published()
-        .iter()
-        .find(|action| action.action_label == "Remind me…")
-        .expect("the task offers its reminder")
-        .address
-        .clone();
-    window.send(&[ToApp::Invoke {
-        address: remind,
-        argument: None,
-    }]);
-    settle(host, window);
-    assert_eq!(
-        window.form.as_ref().map(|form| form.title.as_str()),
-        Some("Remind me…"),
-        "the reminder's form asks when"
-    );
-    assert_eq!(
-        form_text(window, "form~when").as_deref(),
-        Some(""),
-        "it starts with no moment, the task having no reminder"
-    );
-    assert!(
-        !window.form.as_ref().expect("the form").ready,
-        "a moment is required: nothing reads yet, so submit waits"
-    );
-    assert!(
-        !form_node(window, "form~when~field")
-            .expect("the moment's field")
-            .props
-            .contains_key("label"),
-        "a form of one question says what it asks in its title"
-    );
-    let choices = choices_of(form_node(window, "form~when~quick").expect("the moments offered"));
-    assert!(
-        choices.iter().all(|(_, label)| label != "None"),
-        "a required moment offers no way to leave it unanswered: {choices:?}"
-    );
-    assert_eq!(
-        form_node(window, "form~when~quick")
-            .expect("the moments offered")
-            .props
-            .get("case:as"),
-        Some(&patch::Value::Text("time".to_owned())),
-        "every moment says when it is, at the choice's trailing edge"
-    );
-    let picker = form_node(window, "form~when~pick").expect("one way into the rest");
-    assert_eq!(
-        picker
-            .children
-            .iter()
-            .map(|child| (child.kind.as_str(), child.key.as_str()))
-            .collect::<Vec<_>>(),
-        [
-            ("ui.TextInput", "form~when~text"),
-            ("ui.DateField", "form~when"),
-        ],
-        "a moment is typed into the entry, or picked from the calendar at its end"
-    );
-    assert_eq!(
-        form_node(window, "form~when")
-            .expect("the calendar")
-            .props
-            .get("compact"),
-        Some(&patch::Value::Bool(true)),
-        "the calendar is a chip beside the entry, not a field of its own"
-    );
-    assert!(
-        !window.form.as_ref().expect("the form").confirm,
-        "the moments answer the form on one pick: its footer stands as Cancel alone"
-    );
-    assert_eq!(
-        window.form.as_ref().expect("the form").answers,
-        [form_node(window, "form~when~quick")
-            .expect("its choices")
-            .key
-            .clone()],
-        "picking a moment answers the form by itself"
-    );
-}
-
-/// The person picks a moment from the ones the form offers, and that pick answers the form: the
-/// reminder is set without a second press.
-fn the_moment_picked_answers_the_reminder(
-    host: &mut TilolangHost,
-    window: &mut Window,
-    task: &Value,
-) {
-    let choices = choices_of(form_node(window, "form~when~quick").expect("the moments offered"));
-    let (moment, _) = choices
-        .iter()
-        .find(|(_, label)| label == "Tomorrow morning")
-        .unwrap_or_else(|| panic!("tomorrow morning is offered: {choices:?}"));
-    type_into(window, "form~when~quick", moment);
-    settle(host, window);
-    assert_eq!(
-        form_text(window, "form~when").as_deref(),
-        Some(moment.as_str()),
-        "the field reads as the moment the pick names"
-    );
-    submit_form(window);
-    settle(host, window);
-    assert!(
-        window.form.is_none(),
-        "the form closes once the action runs: {:?}",
-        window.form.as_ref().map(|form| form.error.clone())
-    );
-    assert_eq!(
-        &reminder_of(host.instances().next().expect("the instance runs"), task),
-        moment,
-        "the task is reminded at the moment picked"
-    );
-}
-
-/// The palette runs an action whose arguments it does not give: "New task" takes a title whose
-/// default is empty, so the task is made on the press and reads as its type names an untitled one,
-/// and "Remind me…" asks its moment in a form, the person picking it in one press
-/// (forms-and-diagrams.md §1).
-#[test]
-fn the_palette_makes_a_task_and_asks_the_form_for_a_moment() {
-    let (app, bundle) = shipped(&shipped_dir().join("tasks"));
-    assert_eq!(app, TASKS);
-    let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", &app, bundle);
-    settle(&mut host, &mut window);
-    let task = a_task_added_from_the_palette(&mut host, &mut window);
-    a_reminder_asks_when(&mut host, &mut window);
-    the_moment_picked_answers_the_reminder(&mut host, &mut window, &task);
-}
-
-/// The day the task `task` is due, as its record holds it.
-fn due_of(hosted: &Hosted, task: &Value) -> Option<String> {
-    let Value::Ref(task) = task else {
-        panic!("a task is a resource: {task:?}")
-    };
-    let instance = hosted.instance();
-    let host = instance.host().expect("the runtime");
-    match host.runtime().read(&task.target, "due").expect("its day") {
-        Value::Opt(Some(day)) => match *day {
-            Value::Text(day) => Some(day),
-            other => panic!("a day: {other:?}"),
-        },
-        Value::Opt(None) => None,
-        other => panic!("a day: {other:?}"),
-    }
-}
-
-/// A task typed into Today's entry is due the person's today, and so stands under the day their
-/// window heads Today: nine in the evening where they are is already the next day in UTC, and
-/// their day, not UTC's, is the one their list is of.
-#[test]
-fn a_task_typed_into_todays_entry_is_due_the_persons_today() {
-    tilo_test_env::in_own_process(
-        module_path!(),
-        "a_task_typed_into_todays_entry_is_due_the_persons_today",
-        || {
-            // 11 November, nine in the evening in Los Angeles: the 12th in UTC.
-            let mut zone = tilo_test_env::ScopedEnv::new();
-            zone.set("TZ", "America/Los_Angeles");
-            let _clock = tilo_clock::testing::hold_wall_everywhere(
-                tilo_clock::testing::OwnProcess::of_a_test_in_its_own_process(),
-                tilo_clock::UNIX_EPOCH + tilo_clock::Duration::from_secs(1_794_459_600),
-            );
-            let (app, bundle) = shipped(&shipped_dir().join("tasks"));
-            assert_eq!(app, TASKS);
-            let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", &app, bundle);
-            settle(&mut host, &mut window);
-            let entry = node_with(
-                window.root.as_ref().expect("the window shows"),
-                "placeholder",
-                "New task for today",
-            )
-            .expect("Today's entry stands at the list's foot")
-            .clone();
-            let event = entry
-                .events
-                .get_key_value("submit")
-                .expect("the entry submits what is typed into it")
-                .0
-                .clone();
-            window.send(&[ToApp::Fire {
-                lane: Lane::Root,
-                key: entry.key,
-                event,
-                value: Some(patch::Value::text("File the report")),
-            }]);
-            settle(&mut host, &mut window);
-            let held = host.instances().next().expect("the instance runs");
-            let tasks = tasks_of(held);
-            let [task] = tasks.as_slice() else {
-                panic!("the entry made one task: {tasks:?}");
-            };
-            let due = due_of(held, task);
-            assert_eq!(
-                due.as_deref(),
-                Some("2026-11-11"),
-                "a task typed in their evening is due on their today, not UTC's tomorrow"
-            );
-            // The day a row is grouped under is the day the window heads by its own clock
-            // (`ui::clock::today()`): the day it is due. They are one day, so the row heads
-            // Today and stands in Today's list.
-            let headed_by =
-                chrono::DateTime::<chrono::Local>::from(tilo_clock::to_std(tilo_clock::wall()))
-                    .date_naive()
-                    .to_string();
-            assert_eq!(
-                due.as_deref(),
-                Some(headed_by.as_str()),
-                "and it stands under the day their window heads Today"
-            );
-        },
-    );
-}

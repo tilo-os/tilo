@@ -586,6 +586,7 @@ impl TilolangHost {
                 workspace: request.room,
                 instance: request.instance,
                 person: request.person,
+                installed: request.installed,
             },
             bundle: Arc::new(bundle),
             manager,

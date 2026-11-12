@@ -60,6 +60,9 @@ d-nydyehwn = Löschen
 d-zvgl2tzt = Umbenennen
     .doc = Benennt eine Notiz um.
 
+d-gc34cbhl = Notiz ablegen
+    .doc = Legt in einem Schritt eine Notiz mit dem Titel `title` und dem Schlagwort `t` an: was eine andere App von dem aufschreibt, was sie getan hat (der Morgen in Heute), ohne auf die gemachte Notiz zu warten, um sie zu benennen.
+
 d-7ow26bju = Verschlagworten
     .doc = Gibt einer Notiz ein Schlagwort.
 

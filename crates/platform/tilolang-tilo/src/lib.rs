@@ -50,6 +50,7 @@ pub mod task;
 pub mod task_records;
 pub mod triggers;
 pub mod upgrade;
+pub mod used;
 pub mod views;
 
 pub use action::{Authorship, DynAction, DynEdit, register_actions};

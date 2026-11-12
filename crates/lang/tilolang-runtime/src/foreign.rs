@@ -189,6 +189,32 @@ impl Foreign {
         Ok(links)
     }
 
+    /// What the reading of `target` says the person it was read for has not seen of its items
+    /// ([`crate::store::UNSEEN`]); `None` for a reading that says nothing of it.
+    ///
+    /// # Errors
+    ///
+    /// A message when no reading of it arrived yet, kept as a read waiting on one.
+    pub(crate) fn unseen(&mut self, target: &ResourceRef) -> Result<Option<Json>, String> {
+        let at = Self::key(target);
+        if !self.readings.contains_key(&at) {
+            // The host is asked for its reading, as a field read of one yet to arrive asks.
+            if self.asked.insert(at.clone()) {
+                self.wanted
+                    .insert(at, (target.id_string(), target.ty.clone()));
+            }
+            let why = format!(
+                "no reading of `{}` arrived yet: its app publishes it through the session",
+                target.id_string()
+            );
+            self.remember_waiting(&why);
+            return Err(why);
+        }
+        Ok(self
+            .source(&at)
+            .and_then(|(json, _)| json.get(crate::store::UNSEEN).cloned()))
+    }
+
     /// The resources a view read before their readings came in, each its id and type, since
     /// the last call: what the host asks the session to publish. Each is asked for once.
     pub(crate) fn take_wanted(&mut self) -> Vec<(String, String)> {

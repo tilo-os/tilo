@@ -72,6 +72,7 @@ fn an_idle_hosts_loop_does_not_wake_until_a_window_has_something() {
             workspace: route.cluster_id.to_string(),
             instance: 2,
             person: "grace".to_owned(),
+            installed: std::collections::BTreeMap::new(),
         },
         Arc::new(counter()),
         manager,
