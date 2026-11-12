@@ -122,3 +122,14 @@ backups-restore = Wiederherstellen…
 backups-verify = Dateien prüfen
 backups-restore-labelled = „{ $snapshot }“ wiederherstellen
 backups-restore-from = { $snapshot } von { $when } wiederherstellen
+
+## Was ein Auftrag gerade tut und wann der nächste läuft
+backups-job-backing-up = Sicherung läuft
+backups-job-verifying = Prüfung läuft
+backups-job-restoring = Wiederherstellung läuft
+backups-snapshot = Sicherung
+backups-schedule-on-demand = Wenn du sicherst
+backups-schedule-hourly = Jede Stunde zur vollen Stunde
+backups-schedule-hourly-at = Jede Stunde { $minute } Minuten nach der vollen Stunde
+backups-schedule-daily = Jeden Tag um { $time }
+backups-schedule-weekly = Jeden { $weekday } um { $time }
