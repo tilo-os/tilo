@@ -352,7 +352,9 @@ ASK_AGAIN = "and what is due today?"
 
 # How long the windows must stand still for the second ask to have landed: Chat opens the
 # conversation's window as soon as the send reaches it, so a second window would show by then.
-SECOND_ASK_SETTLES = 6.0
+# That the send itself lands is the session's own test (`session/tests/canvas_ask.rs`: a second
+# ask goes to the agent the first made); what only a live session shows is the window it opens.
+SECOND_ASK_SETTLES = 10.0
 
 
 def screen() -> tuple[float, float]:
@@ -427,8 +429,9 @@ def canvas_run(session: CanvasSession, out: Path, shots: Path) -> dict:
         lambda new: new[0] if new else None)(
         [row for row in session.windows()
          if row.get("app_id") == "so.tilo.chat" and row.get("group") not in conversation_before]), 90)
-    stood = until("the conversation to stand on the canvas",
-                  lambda: placed(session).get("so.tilo.chat", {}).get("place"), 30)
+    stood = until("the conversation to stand on the canvas", lambda: next(
+        (row for row in placed_rows(session)
+         if row.get("group") == conversation.get("group")), {}).get("place"), 30)
     def the_conversation_shown() -> dict | None:
         """The window the ask landed in, once it stands whole on the screen: the canvas pans to
         it wherever Chat opened it."""
@@ -462,6 +465,7 @@ def canvas_run(session: CanvasSession, out: Path, shots: Path) -> dict:
         return now
 
     after_ask = until("the second ask to land in the standing conversation", the_same_windows, 60)
+    until("the conversation to stand whole on the screen again", the_conversation_shown, 30)
     raised = [row for row in after_ask.values() if row.get("active")]
     if not raised:
         raise Failed(f"the second ask left the conversation's window behind: {after_ask}")
