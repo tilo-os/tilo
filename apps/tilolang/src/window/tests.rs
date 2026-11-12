@@ -1035,6 +1035,16 @@ fn a_new_channel_is_in_the_sidebar_before_anyone_writes_and_every_channel_under_
         .is_some(),
         "an empty workspace says so"
     );
+    // It says so in the sidebar, where its channels would be: the screen a narrow window shows
+    // its places on lists nothing, but never shows nothing.
+    let mut empty = Vec::new();
+    for node in slot_of(&workspace.composed(), "sidebar") {
+        empty_states(node, &mut empty);
+    }
+    assert_eq!(
+        empty.first().and_then(|state| state.props.get("title")),
+        Some(&Value::text("No channels yet"))
+    );
     // While there is no channel the empty state carries the only New channel button, so the
     // header does not show the same one twice; its button comes back with the first channel.
     let empty = workspace.key_of("ui.EmptyState", "title", "No channels yet");

@@ -328,17 +328,18 @@ pub fn compose(root: &UiNode, detail: Option<&UiNode>) -> UiNode {
     with_slot(shell, "content", content)
 }
 
-/// Apply the header rules to the composed shell: its bar repeats no action its content offers,
-/// whichever slot the bar's controls stand in. A title the content shows as its own heading is
+/// Apply the header rules to the composed shell: its bar repeats no action its content or its
+/// sidebar offers (an empty sidebar's "New channel"), whichever slot the bar's controls stand in. A title the content shows as its own heading is
 /// the shell's business, not the host's: the shell leaves it to the heading and takes it back
 /// once that scrolls away.
 #[must_use]
 pub fn header_rules(mut shell: UiNode) -> UiNode {
-    let content = slot_children(&shell, "content").to_vec();
     let mut shown: Vec<String> = Vec::new();
     let mut bound: Vec<(String, String)> = Vec::new();
-    for node in &content {
-        offered(node, &mut shown, &mut bound);
+    for slot in ["content", "sidebar"] {
+        for node in slot_children(&shell, slot) {
+            offered(node, &mut shown, &mut bound);
+        }
     }
     let repeated = |node: &UiNode, event: &str| -> bool {
         let label = match node.props.get("label") {
@@ -746,6 +747,21 @@ mod tests {
             actions,
             ["find"],
             "an overview bar keeps only what it alone offers"
+        );
+
+        // The same where the sidebar lists nothing and its empty state makes the first one.
+        let listing_nothing = shell(
+            "channels",
+            vec![
+                ("actions", vec![button("new", "New channel")]),
+                ("sidebar", vec![empty("none")]),
+                ("content", vec![node("EmptyState", "unopened", &[])]),
+            ],
+            &[],
+        );
+        assert!(
+            slot_children(&header_rules(listing_nothing), "actions").is_empty(),
+            "the sidebar's empty state holds the one New channel"
         );
 
         let filled = shell(
