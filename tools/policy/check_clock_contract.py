@@ -37,7 +37,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from judged import Judged, add_staged_argument, judged  # noqa: E402
-from rust_source import is_test_file, line_number, production_source  # noqa: E402
+from rust_source import code_only, is_test_file, line_number, production_source  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -130,7 +130,9 @@ def audit_sources(files: Judged, scope: Path) -> list[Violation]:
     for relative, source in files.sources(scope, errors="strict"):
         if is_test_file(relative.relative_to(scope)):
             continue
-        text = production_source(source)
+        # Comments and literals blanked too: a message naming a clock is not a
+        # read of one.
+        text = code_only(production_source(source))
         tokio_imported = TOKIO_INSTANT_IMPORT.search(text) is not None
         for found in READ.finditer(text):
             qualified = re.sub(r"\s+", "", found.group("path"))

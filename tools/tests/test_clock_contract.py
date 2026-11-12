@@ -61,6 +61,8 @@ class ClockContractTests(unittest.TestCase):
                     "pub fn shifted(at: std::time::SystemTime) -> std::time::SystemTime {\n"
                     "    at + std::time::Duration::from_secs(60)\n"
                     "}\n"
+                    "/// A message about Instant::now(), not a read of it.\n"
+                    "pub fn says() -> &'static str { \"Instant::now() panics in a page\" }\n"
                     "#[cfg(test)]\n"
                     "mod tests {\n"
                     "    fn at() -> std::time::SystemTime { std::time::SystemTime::now() }\n"
