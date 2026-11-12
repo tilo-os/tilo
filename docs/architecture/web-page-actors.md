@@ -142,6 +142,23 @@ by naming them through `fill-page-files`, which checks each. Whose chooser it
 is goes by whose click or key the page heard last: the person's own, or an
 action's.
 
+**A server's sign-in is asked of the person.** A page behind a server's
+password is held by the engine until it is answered, and the window asks in
+the system's one password prompt, over the page. The prompt names the origin
+that asks, in full; what the server calls itself is shown as the server's own
+words and never as who asks, and a password that would cross the network
+unprotected is said to. Only the tab's own document and what it loads from
+its own origin can ask: a challenge for something a page loads from another
+site is cancelled, so no site can raise a prompt that looks like another's.
+The same question is a row of the window with two actions, to answer and to
+cancel, so a person, a screen reader and an agent answer the one question the
+request waits on. The password is a secret throughout: it is in no row, no
+answer and no printed command, the tab's record keeps only that one was sent,
+and an agent that would give one asks the person first, as for any secret it
+gives a page. What a person typed stays in the prompt until it is sent. The
+question ends with its page, its tab or its time, and no challenge is ever
+left to the engine's own window.
+
 ## Reading
 
 Acting on a page starts with reading it, and reading is where an agent's time
@@ -168,6 +185,14 @@ read the same tree, and an element inside a component is acted on like any
 other. A component that keeps its tree closed cannot be read; it is listed in
 a line that says so, never left out silently. Code is read as code, with its
 lines kept.
+
+A page is waited for by what it says. A wait may name words the page must
+say, and words it must no longer say, such as a spinner's. It ends when a
+read of the page says so or when its time is up, and answers which it was,
+with the line that says the words. Without words a wait ends when the page
+has loaded and stopped changing, which a page that only shows "Loading..."
+while a timer runs has done long before what it loads arrives; so a wait for
+words never answers that the page settled.
 
 A frame is its own document, of the page's site or of another. The page's
 read shows what the frames it shows hold, under the line that lists each,
