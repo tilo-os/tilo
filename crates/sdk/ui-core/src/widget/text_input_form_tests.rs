@@ -785,3 +785,67 @@ fn a_submit_is_answered_with_the_words_it_caught_even_after_an_entry_emptied_its
         "the submit is answered with the words it caught, not the emptied field"
     );
 }
+
+/// An entry that sent its words keeps the keyboard and takes the very next typing: one message
+/// after another is typed and sent through the one field, as a person does in Chat's composer.
+/// `ui.TextInput(entry: true, bind: draft)` is that field: Enter submits what it holds and the
+/// field clears itself, and what is typed next must land in it as a new draft rather than be
+/// lost or drawn over the sent words.
+#[test]
+fn an_entry_that_submitted_takes_the_next_typing_at_once() {
+    let _settled = crate::motion::testing::settled();
+    let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let submitted = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let (change_sink, submit_sink) = (changes.clone(), submitted.clone());
+    let mut ti = TextInput::local()
+        .with_id("composer")
+        .with_entry(true)
+        .on_change_view(move |value| change_sink.borrow_mut().push(value.to_owned()))
+        .on_submit_view(move |text| submit_sink.borrow_mut().push(text.to_owned()));
+    ti.set_focus(true);
+    let mut doc = AutoCommit::new();
+    for word in ["first", "second"] {
+        for ch in word.chars() {
+            assert!(
+                drive(
+                    &mut ti,
+                    &mut doc,
+                    &char_key(&ch.to_string()),
+                    mods(false, false)
+                ),
+                "the entry took {ch:?} with the keyboard in it"
+            );
+            let _ = crate::testing::answer_controls(&mut ti);
+        }
+        assert_eq!(ti.value(), word, "the field draws what was typed");
+        assert!(drive(
+            &mut ti,
+            &mut doc,
+            &named_key(NamedKey::Enter),
+            mods(false, false)
+        ));
+        let _ = crate::testing::answer_controls(&mut ti);
+        assert_eq!(ti.value(), "", "the entry let go of what it sent");
+        assert!(
+            Widget::is_focused(&ti),
+            "the entry keeps the keyboard after submitting"
+        );
+    }
+    assert_eq!(
+        submitted.borrow().as_slice(),
+        ["first", "second"],
+        "each send carried the words it held, and the next words are a new message"
+    );
+    assert_eq!(
+        changes.borrow().last().map(String::as_str),
+        Some(""),
+        "the field's latest report is the empty field, which empties the draft it binds: {:?}",
+        changes.borrow()
+    );
+    assert!(
+        changes.borrow().iter().any(|text| text == "first")
+            && changes.borrow().iter().any(|text| text == "second"),
+        "each word reached the draft it binds as it was typed: {:?}",
+        changes.borrow()
+    );
+}
