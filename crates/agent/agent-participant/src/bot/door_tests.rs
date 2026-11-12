@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::task::{Context, Poll, Waker};
 
-use tilo_actions::remote::RemoteActionTarget;
+use tilo_actions::remote::{CatalogueRow, RemoteActionTarget};
 
 use super::*;
 
@@ -44,7 +44,7 @@ impl DoorParticipant for FakeParticipant {
         WORKSPACE
     }
 
-    fn offered(&self) -> Vec<(DocumentRoute, Vec<tilo_actions::door::ActionDescriptor>)> {
+    fn offered(&self) -> Vec<(DocumentRoute, Vec<CatalogueRow>)> {
         Vec::new()
     }
 

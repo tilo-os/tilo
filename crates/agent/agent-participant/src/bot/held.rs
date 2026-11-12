@@ -19,7 +19,8 @@ use std::collections::BTreeMap;
 
 use collab_types::DocumentMutation;
 use serde_json::{Map, Value};
-use tilo_actions::door::{ActionAddress, ActionDescriptor, DoorError};
+use tilo_actions::door::{ActionAddress, DoorError};
+use tilo_actions::remote::CatalogueRow;
 use tilo_actions::{ActionContext, ActionInvoker, ActionOutput};
 use tilo_peer_state::document_frame::DocumentRoute;
 
@@ -245,12 +246,12 @@ impl DoorParticipant for HeldRecords {
         &self.workspace
     }
 
-    fn offered(&self) -> Vec<(DocumentRoute, Vec<ActionDescriptor>)> {
+    fn offered(&self) -> Vec<(DocumentRoute, Vec<CatalogueRow>)> {
         // A record held beside another is offered through it: the chain
         // its app publishes, as in a window.
         self.replicas
             .iter()
-            .map(|(route, replica)| (route.clone(), replica.survey()))
+            .map(|(route, replica)| (route.clone(), replica.survey_rows()))
             .collect()
     }
 

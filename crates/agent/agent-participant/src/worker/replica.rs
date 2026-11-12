@@ -386,15 +386,27 @@ impl ConfinedReplica {
         }
     }
 
-    /// One page of [`Self::survey`] as `query` lists it: how many operations
-    /// it admits in all, and those from the `offset`th on, at most `take`.
-    /// Only the page crosses from the worker: a record holding thousands of
-    /// items costs a page what a record of ten does.
+    /// Every operation the record publishes now, each in the row of the
+    /// resource holding it: [`crate::Replica::survey_rows`].
+    #[must_use]
+    pub fn survey_rows(&self) -> Vec<tilo_actions::remote::CatalogueRow> {
+        let reply = self.call(&mut self.lock(), &Request::SurveyRows);
+        match reply {
+            Ok(Reply::Page { rows, .. }) => serde_json::from_str(&rows).unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// One page of [`Self::survey_rows`] as `query` lists it: how many
+    /// operations it admits in all, and those from the `offset`th on, at most
+    /// `take`, each row where it stands. Only the page crosses from the
+    /// worker: a record holding thousands of items costs a page what a record
+    /// of ten does.
     pub fn survey_page(
         &self,
         query: &tilo_actions::remote::CatalogueQuery,
         (offset, take): (usize, usize),
-    ) -> (usize, Vec<ActionDescriptor>) {
+    ) -> (usize, Vec<tilo_actions::remote::CatalogueRow>) {
         let Ok(query) = serde_json::to_string(query) else {
             return (0, Vec::new());
         };
@@ -408,9 +420,9 @@ impl ConfinedReplica {
             },
         );
         match reply {
-            Ok(Reply::Page { total, descriptors }) => (
+            Ok(Reply::Page { total, rows }) => (
                 usize::try_from(total).unwrap_or(usize::MAX),
-                serde_json::from_str(&descriptors).unwrap_or_default(),
+                serde_json::from_str(&rows).unwrap_or_default(),
             ),
             _ => (0, Vec::new()),
         }

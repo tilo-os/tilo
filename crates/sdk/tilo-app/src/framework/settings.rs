@@ -296,6 +296,24 @@ impl ViewStorage {
         self.chains.answer(me, payload, live)
     }
 
+    /// Answer a read of a chain the views opened
+    /// ([`super::chain::CHAIN_READ_TYPE`]): what its parts hold, read here.
+    pub(crate) fn chain_read(&self, payload: &[u8]) -> Result<tilo_actions::ActionOutput, String> {
+        let chain = serde_json::from_slice::<serde_json::Value>(payload)
+            .ok()
+            .and_then(|args| {
+                args.get("chain")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+            .ok_or("a chain read names the chain it reads")?;
+        let value = self.chains.read(&chain, payload)?;
+        Ok(tilo_actions::ActionOutput {
+            value: Some(value),
+            resources: Vec::new(),
+        })
+    }
+
     pub(crate) fn storage(&self) -> &AppStorage {
         &self.storage
     }

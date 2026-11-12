@@ -51,11 +51,18 @@ impl Worker {
             let row = |descriptor| {
                 CatalogueRow::for_action(provider.clone(), route.app_id.clone(), descriptor)
             };
+            // The worker's rows keep the resource each stands under, so a
+            // query naming one resource of the record lists its children.
+            let kept = |mut held: CatalogueRow| {
+                held.provider.clone_from(&provider);
+                held.app_id.clone_from(&route.app_id);
+                held
+            };
             let window = (skip, wanted.saturating_sub(rows.len()));
             match self.listed_page(workspace_id, bounded, route, state, query, window) {
                 Ok((held, listed)) => {
                     skip = skip.saturating_sub(held);
-                    rows.extend(listed.into_iter().map(&row));
+                    rows.extend(listed.into_iter().map(kept));
                 }
                 Err(error) => {
                     tracing::warn!(%error, record = %route.record, "workspace actions: a record did not mount");
@@ -88,7 +95,7 @@ impl Worker {
 
     /// [`Self::listed`], one page of it as `query` lists it: how many
     /// operations it admits in all, and those in `window` (an offset and
-    /// how many).
+    /// how many), each row where it stands.
     fn listed_page(
         &mut self,
         workspace_id: u64,
@@ -97,7 +104,7 @@ impl Worker {
         state: &WorkspaceState,
         query: &CatalogueQuery,
         window: (usize, usize),
-    ) -> Result<(usize, Vec<tilo_actions::ActionDescriptor>), String> {
+    ) -> Result<(usize, Vec<tilo_actions::remote::CatalogueRow>), String> {
         match bounded {
             Some(who) => self
                 .bounded_page(workspace_id, who, (route, state), query, window)

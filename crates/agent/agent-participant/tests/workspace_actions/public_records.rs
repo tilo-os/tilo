@@ -57,10 +57,21 @@ fn address_of(replica: &Replica, action: &str) -> ActionAddress {
 /// joining the workspace: a host that has not joined yet says so, and the
 /// caller asks again, as a page does.
 async fn catalogue(page: &mut Browser, provider: &str) -> Result<CataloguePage, ActionHostError> {
+    catalogue_under(page, provider, None).await
+}
+
+/// [`catalogue`] of one resource's children: what the host lists where
+/// `parent` stands.
+async fn catalogue_under(
+    page: &mut Browser,
+    provider: &str,
+    parent: Option<&str>,
+) -> Result<CataloguePage, ActionHostError> {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let query = CatalogueQuery {
             provider: Some(provider.to_owned()),
+            parent_resource: parent.map(str::to_owned),
             max_results: 256,
             ..CatalogueQuery::default()
         };
@@ -150,16 +161,33 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
         !page.rows.is_empty(),
         "the note publishes its actions to the member"
     );
-    let named = page.rows.iter().any(|row| {
+    // The note is a page of the record: it is listed where it stands, under
+    // the notebook the record publishes.
+    let Some(notebook) = page
+        .rows
+        .iter()
+        .find(|row| row.resource.id == "notes.notebook")
+        .map(|row| row.resource.id.clone())
+    else {
+        panic!("the host lists the notebook the note is in: {page:?}");
+    };
+    let pages = catalogue_under(&mut member, &provider, Some(&notebook))
+        .await
+        .expect("the host serves the record the member wrote");
+    let named = pages.rows.iter().any(|row| {
         [
             Some(&row.resource.kind),
+            Some(&row.resource.label),
             row.action.as_ref().map(|action| &action.resource_label),
         ]
         .into_iter()
         .flatten()
         .any(|label| label.contains(TITLE))
     });
-    assert!(named, "the host lists the note the member wrote: {page:?}");
+    assert!(
+        named,
+        "the host lists the note the member wrote among the notebook's pages: {pages:?}"
+    );
 
     // Act: the host makes a note of its own in the member's record, and the
     // member's page is sent the change as an ordinary durable one.

@@ -213,35 +213,58 @@ fn got(
     }
 }
 
-/// The actions `caller` is listed on the record `provider` names.
+/// The actions `caller` is listed on the record `provider` names, at every
+/// level of it: a listing holds the actions of the resources directly under
+/// the one it names, so the record is walked as an agent walks it.
 fn listed(
     actions: &tilo_agent_participant::WorkspaceActions,
     workspace: u64,
     caller: &Caller,
     provider: &str,
 ) -> Vec<tilo_actions::ActionDescriptor> {
-    let query = CatalogueQuery {
-        provider: Some(provider.to_owned()),
-        max_results: 500,
-        ..CatalogueQuery::default()
-    };
-    match served(
-        actions,
-        workspace,
-        caller,
-        RemoteActionMessage::CatalogueRequest {
-            correlation: 1,
-            query,
-        },
-    ) {
-        RemoteActionMessage::CatalogueResponse { result, .. } => result
-            .unwrap()
-            .rows
-            .into_iter()
-            .filter_map(|row| row.action)
-            .collect(),
-        other => panic!("expected a catalogue, got {other:?}"),
+    let mut listed = Vec::new();
+    let mut under: Vec<Option<String>> = vec![None];
+    let mut visited: std::collections::HashSet<Option<String>> = std::collections::HashSet::new();
+    // A record's tree is shallow; a cap keeps a mistake from listing it
+    // forever.
+    let mut asked = 0_u32;
+    while let Some(parent) = under.pop() {
+        if !visited.insert(parent.clone()) {
+            continue;
+        }
+        asked = asked.saturating_add(1);
+        assert!(
+            asked <= 64,
+            "the record {provider} lists more levels than a tree has"
+        );
+        let query = CatalogueQuery {
+            provider: Some(provider.to_owned()),
+            parent_resource: parent,
+            max_results: 500,
+            ..CatalogueQuery::default()
+        };
+        let rows = match served(
+            actions,
+            workspace,
+            caller,
+            RemoteActionMessage::CatalogueRequest {
+                correlation: 1,
+                query,
+            },
+        ) {
+            RemoteActionMessage::CatalogueResponse { result, .. } => result.unwrap().rows,
+            other => panic!("expected a catalogue, got {other:?}"),
+        };
+        for row in rows {
+            if row.has_children {
+                under.push(Some(row.resource.id.clone()));
+            }
+            if let Some(action) = row.action {
+                listed.push(action);
+            }
+        }
     }
+    listed
 }
 
 fn json(value: serde_json::Value) -> InvokeArgument {

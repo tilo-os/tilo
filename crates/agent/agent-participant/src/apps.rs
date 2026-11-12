@@ -566,13 +566,31 @@ impl Replica {
     }
 
     /// [`Self::survey`] as the rows a catalogue lists it in, kept to answer
-    /// its pages ([`Self::page_of`]).
+    /// its pages ([`Self::page_of`]): each operation in the row of the
+    /// resource holding it, so a caller naming one resource of the record
+    /// reads the operations on its children and not the record's own.
     #[must_use]
     pub fn survey_rows(&self) -> Vec<tilo_actions::remote::CatalogueRow> {
-        self.survey()
+        let resources = self.view.resources();
+        let in_chains = chain_resources(&resources);
+        tilo_actions::door::survey_placed(&resources)
             .into_iter()
-            .map(|descriptor| {
-                tilo_actions::remote::CatalogueRow::for_action("", self.app_id(), descriptor)
+            .filter_map(|placed| {
+                let tilo_actions::door::PlacedAction {
+                    parent,
+                    has_children,
+                    action,
+                } = placed;
+                let action = self.offered(action, &in_chains)?;
+                Some(tilo_actions::remote::CatalogueRow::for_placed_action(
+                    "",
+                    self.app_id(),
+                    tilo_actions::door::PlacedAction {
+                        parent,
+                        has_children,
+                        action,
+                    },
+                ))
             })
             .collect()
     }
@@ -580,13 +598,13 @@ impl Replica {
     /// What `surveyed` ([`Self::survey_rows`]) lists as `query` asks, on a
     /// host that `can_render` or not: how many operations it admits, and
     /// those from the `offset`th on, at most `take`. Only the page is
-    /// handed back.
+    /// handed back, each row where it stands.
     #[must_use]
     pub fn page_of(
         surveyed: &[tilo_actions::remote::CatalogueRow],
         query: &tilo_actions::remote::CatalogueQuery,
         (can_render, (offset, take)): (bool, (usize, usize)),
-    ) -> (usize, Vec<ActionDescriptor>) {
+    ) -> (usize, Vec<tilo_actions::remote::CatalogueRow>) {
         let mut total = 0usize;
         let mut page = Vec::new();
         for row in surveyed {
@@ -597,7 +615,7 @@ impl Replica {
                 continue;
             }
             if total >= offset && page.len() < take {
-                page.push(descriptor.clone());
+                page.push(row.clone());
             }
             total = total.saturating_add(1);
         }

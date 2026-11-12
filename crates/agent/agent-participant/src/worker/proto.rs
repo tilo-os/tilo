@@ -89,6 +89,10 @@ pub(crate) enum Request {
     },
     /// Every operation the held record publishes now.
     Survey,
+    /// Every operation the held record publishes now, each in the row of the
+    /// resource holding it: what a caller listing one resource of the record
+    /// reads its children by.
+    SurveyRows,
     /// One page of what the held record publishes, as a catalogue query
     /// lists it: the operations the JSON `CatalogueQuery` admits, from the
     /// `offset`th on, at most `take` of them, with how many it admits in
@@ -220,8 +224,9 @@ pub(crate) enum Reply {
     /// JSON `Vec<ActionDescriptor>`.
     Descriptors(String),
     /// One page of a survey: how many operations the query admits in all,
-    /// and the JSON `Vec<ActionDescriptor>` of those on the page.
-    Page { total: u64, descriptors: String },
+    /// and the JSON `Vec<CatalogueRow>` of those on the page, each in the
+    /// row of the resource holding it.
+    Page { total: u64, rows: String },
     /// JSON `Option<Vec<Vec<String>>>`: the keys a change writes, or none for
     /// a record the worker holds nothing of.
     Keys(String),
