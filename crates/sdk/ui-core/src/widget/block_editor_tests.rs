@@ -2953,3 +2953,36 @@ fn a_link_to_a_resource_offers_opening_it_where_it_lives() {
 
 #[path = "block_editor_selection_keys_tests.rs"]
 mod selection_keys;
+
+/// The image buttons the editor lists and the ones it hands out to change are the same buttons
+/// in block order: a route a person's assistive technology follows by index reaches the picture
+/// it was walked to, not whichever picture the attachments happened to be stored under.
+#[test]
+fn image_buttons_are_listed_and_handed_out_in_block_order() {
+    let bytes = crate::png::encode_rgba8(4, 2, &[255; 4 * 2 * 4]).unwrap();
+    let fetch: crate::image_store::Fetcher = std::sync::Arc::new(move |_| Some(bytes.clone()));
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![
+        Block::paragraph("![First](assets/first.png)"),
+        Block::paragraph("Text between the pictures"),
+        Block::paragraph("![Second](assets/second.png)"),
+    ]);
+    editor.set_image_store(Some(crate::ImageStore::new(&fetch)));
+    let mut renderer = TextRenderer::new();
+    layout_image_editor(&mut editor, 1000.0, &mut renderer);
+    let listed: Vec<*const ()> = editor
+        .children()
+        .into_iter()
+        .map(|child| std::ptr::from_ref(child).cast::<()>())
+        .collect();
+    let handed: Vec<*const ()> = editor
+        .children_mut()
+        .into_iter()
+        .map(|child| std::ptr::from_ref(&*child).cast::<()>())
+        .collect();
+    assert_eq!(listed.len(), 2, "each picture stands as one button");
+    assert_eq!(
+        listed, handed,
+        "the buttons are handed out in the order the list walks them"
+    );
+}

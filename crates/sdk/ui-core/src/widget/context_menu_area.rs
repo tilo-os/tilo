@@ -341,6 +341,23 @@ enum Opening {
     Item,
 }
 
+/// The children an area stands over its content, in the order a route reaches them: the open
+/// menu, then the emoji picker an emoji bar opened over it. Written once — the read-only list,
+/// the walk and the list handed out to change all expand it — so a child a route reaches by its
+/// index is the child the walk found, however the list is asked for.
+macro_rules! over_content {
+    ($area:ident $(, $mut:tt)?) => {{
+        let mut over: Vec<&$($mut)? (dyn Widget + '_)> = Vec::new();
+        if $area.menu.is_open() {
+            over.push(&$($mut)? $area.menu);
+        }
+        if let Some((picker, _)) = &$($mut)? $area.picker {
+            over.push(picker);
+        }
+        over
+    }};
+}
+
 #[crate::component::not_a_component(part, "what the `ui.ContextMenu` attachment wraps its view in")]
 pub struct ContextMenuArea {
     content: Element,
@@ -881,22 +898,17 @@ impl super::Decorator for ContextMenuArea {
     }
 
     // An open menu is part of the tree, so assistive technology and
-    // inspection see it.
+    // inspection see it, and so is the picker an emoji bar opened over it.
     fn children(&self) -> Vec<&dyn Widget> {
         let mut children = self.content.children();
-        if self.menu.is_open() {
-            children.push(&self.menu);
-        }
-        if let Some((picker, _)) = &self.picker {
-            children.push(picker);
-        }
+        children.extend(over_content!(self));
         children
     }
 
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         self.content.for_each_child(visitor);
-        if self.menu.is_open() {
-            visitor(&self.menu);
+        for child in over_content!(self) {
+            visitor(child);
         }
     }
 
@@ -915,11 +927,8 @@ impl super::Decorator for ContextMenuArea {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let open = self.menu.is_open();
         let mut children = self.content.children_mut();
-        if open {
-            children.push(&mut self.menu);
-        }
+        children.extend(over_content!(self, mut));
         children
     }
 }
@@ -1114,6 +1123,51 @@ mod tests {
     }
 
     type Chosen = Rc<std::cell::RefCell<Vec<&'static str>>>;
+
+    /// The picker an emoji bar opened stands over the menu, so it is one of the children a
+    /// route reaches by index — in the list the walk reads and in the one an action is
+    /// dispatched through, at the same place.
+    #[test]
+    fn the_emoji_picker_over_the_menu_is_a_child_a_route_reaches() {
+        let (mut area, _, _) = opening_menu();
+        let mut picker = crate::widget::EmojiPicker::framed();
+        picker.open_at(None, Rect::new(0.0, 0.0, 400.0, 400.0), &Theme::dark());
+        let place = picker.rect();
+        area.picker = Some((picker, crate::component::Event::None));
+        let picker_at = area
+            .picker
+            .as_ref()
+            .map(|(picker, _)| std::ptr::from_ref(picker).cast::<()>());
+
+        let listed: Vec<*const ()> = area
+            .children()
+            .into_iter()
+            .map(|child| std::ptr::from_ref(child).cast::<()>())
+            .collect();
+        let mut walked: Vec<*const ()> = Vec::new();
+        area.for_each_child(&mut |child| walked.push(std::ptr::from_ref(child).cast::<()>()));
+        let handed: Vec<*const ()> = area
+            .children_mut()
+            .into_iter()
+            .map(|child| std::ptr::from_ref(&*child).cast::<()>())
+            .collect();
+        assert_eq!(
+            listed, walked,
+            "the walk visits the children the list names"
+        );
+        assert_eq!(
+            listed, handed,
+            "children_mut hands out the children the walk found, so an action a route addresses \
+             reaches the child it was walked to"
+        );
+        assert_eq!(listed.last().copied(), picker_at, "the picker stands last");
+        let index = listed.len() - 1;
+        assert_eq!(
+            crate::a11y_child_route::rect(&area, &crate::a11y_child_route::encode(&[index], None)),
+            Some(place),
+            "the index names the picker, where it stands over the menu"
+        );
+    }
 
     /// Content that a right-click changes, as a canvas picking the mark
     /// under it does: the next frame rebuilds the tree.

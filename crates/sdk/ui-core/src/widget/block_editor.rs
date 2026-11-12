@@ -10212,22 +10212,30 @@ impl Widget for BlockEditor {
         self.rect
     }
 
+    /// The image buttons, in block order: the ones a route reaches by index and the ones
+    /// handed out to change are the same buttons in the same order, and an attachment no
+    /// block stands is in neither.
     fn children(&self) -> Vec<&dyn Widget> {
-        self.blocks
-            .iter()
-            .filter_map(|block| {
-                self.image_attachments
-                    .get(&block.id)
-                    .map(|image| image.button() as &dyn Widget)
-            })
-            .collect()
+        let mut children: Vec<&dyn Widget> = Vec::new();
+        for block in &self.blocks {
+            if let Some(image) = self.image_attachments.get(&block.id) {
+                children.push(image.button());
+            }
+        }
+        children
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.image_attachments
-            .values_mut()
-            .map(|image| image.button_mut() as &mut dyn Widget)
-            .collect()
+        // The attachments are kept by id, so each is placed by the block it belongs to: the
+        // same block order `children` reads them in.
+        let mut placed: Vec<(usize, &mut (dyn Widget + '_))> = Vec::new();
+        for (id, image) in &mut self.image_attachments {
+            if let Some(index) = self.blocks.iter().position(|block| block.id == *id) {
+                placed.push((index, image.button_mut()));
+            }
+        }
+        placed.sort_unstable_by_key(|(index, _)| *index);
+        placed.into_iter().map(|(_, button)| button).collect()
     }
 
     /// The one leaf the block stack is measured through, and the image
