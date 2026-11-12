@@ -239,6 +239,12 @@ mod portable_committed {
         pub fn refuse(&self) {
             match self.never {}
         }
+        pub fn is_whole(&self) -> bool {
+            match self.never {}
+        }
+        pub fn was_refused(&self) -> bool {
+            match self.never {}
+        }
         pub fn take_into<D, T, E>(
             &self,
             _document: &mut D,

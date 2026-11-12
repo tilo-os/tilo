@@ -3003,6 +3003,9 @@ mod manual_composition_tests;
 mod number_input_layout_tests;
 
 #[cfg(test)]
+#[path = "app/committed_document_tests.rs"]
+mod committed_document_tests;
+#[cfg(test)]
 #[path = "app/context_menu_input_tests.rs"]
 mod context_menu_input_tests;
 #[cfg(test)]

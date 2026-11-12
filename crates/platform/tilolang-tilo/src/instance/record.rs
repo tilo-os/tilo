@@ -94,6 +94,9 @@ pub struct InstanceRecord {
     /// refused them for good (a change above its size limit). They are kept in the record and
     /// its on-disk copy, never dropped.
     unshared: Option<String>,
+    /// Why the workspace's copy of the record could not be read here, waiting for the window to
+    /// say it: the route went on with the record this device holds, and nothing says it twice.
+    unreadable: Option<String>,
     /// The words its history verbs speak in.
     words: HostWords,
     /// The on-disk copies of the chunks this replica holds, each a document of its own written
@@ -219,6 +222,7 @@ impl InstanceRecord {
             sent,
             joined: BTreeSet::new(),
             unshared: None,
+            unreadable: None,
             words: HostWords::new("en-US"),
             writers,
             governs: true,
@@ -1448,6 +1452,9 @@ impl InstanceRecord {
     /// presence, the route's state) to `other`, in the order they came.
     pub fn receive_and(&mut self, instance: &mut Instance, other: impl FnMut(CollabEvent)) -> bool {
         let changed = self.take_in(other);
+        if let Some(why) = self.unreadable.take() {
+            instance.unshared(why);
+        }
         if changed {
             instance.sync_chunks(&self.chunks);
         }
@@ -1477,9 +1484,11 @@ impl InstanceRecord {
 
     /// Take in what the record's route brought, with no instance to bring up to date: a record
     /// held only to apply changes at its origin. Events that are no change of the record are
-    /// dropped. Whether the record changed.
+    /// dropped, and so is what a window would have said about them. Whether the record changed.
     pub fn take_in_record(&mut self) -> bool {
-        self.take_in(|_| {})
+        let changed = self.take_in(|_| {});
+        self.unreadable = None;
+        changed
     }
 
     /// Apply `action`, which the door built for `invoker` (an agent task the broker admitted),
@@ -1534,6 +1543,18 @@ impl InstanceRecord {
                         .unwrap_or_default();
                     let Some(applied) = read.take_into(self.open_chunk(chunk), load_mutation)
                     else {
+                        if read.was_refused() && read.is_whole() {
+                            // The workspace's copy of the record cannot be read
+                            // here. The reader goes on from the revision it read
+                            // and the record keeps what this device holds; the
+                            // window says once that it is the copy on this
+                            // device the person is looking at.
+                            self.unreadable = Some(
+                                "The shared copy of this record couldn't be read here. \
+                                 Your changes stay on this device."
+                                    .to_owned(),
+                            );
+                        }
                         continue;
                     };
                     (chunk, before, applied)

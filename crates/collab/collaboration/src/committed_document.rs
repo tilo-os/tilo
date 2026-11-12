@@ -518,13 +518,25 @@ impl CommittedDocument {
             .as_ref()
             .is_none_or(|base| document.get_missing_deps(base).is_empty())
     }
-    /// The owner cannot apply these changes: the reader drops them and reads
-    /// the document whole. Never for a whole document.
+    /// The owner cannot read this capture: the reader stops waiting on it.
+    /// The changes since a revision are dropped and the document is read
+    /// whole instead; a whole document leaves nothing further to read, so the
+    /// reader says so once and goes on from that revision, the owner keeping
+    /// its own document.
     pub fn refuse(&self) {
-        if self.base.is_some() {
-            self.refused.store(true, Ordering::Release);
-            self.merge_wake.notify_one();
-        }
+        self.refused.store(true, Ordering::Release);
+        // A permit is kept when the reader is not waiting yet, so a refusal
+        // between its check and its wait is never missed.
+        self.merge_wake.notify_one();
+    }
+    /// Whether this is the whole document, rather than the changes since a
+    /// revision: the only read an owner that cannot apply it has left.
+    pub fn is_whole(&self) -> bool {
+        self.base.is_none()
+    }
+    /// Whether the owner refused this capture ([`Self::refuse`]).
+    pub fn was_refused(&self) -> bool {
+        self.refused.load(Ordering::Acquire)
     }
     pub fn is_current(&self) -> bool {
         self.valid.load(Ordering::Acquire)
@@ -541,7 +553,10 @@ impl CommittedDocument {
     /// ([`Self::applied`]), so the reader confirms it and the route opens
     /// again. Changes the owner holds no base of, or cannot read, are
     /// refused ([`Self::refuse`]) and said why: the reader reads the
-    /// document whole instead. `None` when nothing was merged.
+    /// document whole instead. A whole document it cannot read is refused
+    /// the same way, and the reader says so once and moves on: the owner
+    /// keeps its own document and the route goes on publishing it. `None`
+    /// when nothing was merged.
     pub fn take_into<D: automerge::ReadDoc, T, E: std::fmt::Display>(
         &self,
         document: &mut D,
@@ -561,7 +576,7 @@ impl CommittedDocument {
                 Some(merged)
             }
             Ok(Err(error)) => {
-                tracing::warn!(%error, "committed history refused: the owner cannot read it");
+                tracing::warn!(%error, whole = self.is_whole(), "committed history refused: the owner cannot read it");
                 self.refuse();
                 None
             }
@@ -1848,9 +1863,24 @@ pub(super) async fn install(
                     .clear_stage(&key, &staged.merged);
                 if staged.refused.load(Ordering::Acquire) && !staged.merged.load(Ordering::Acquire)
                 {
-                    // The owner lacks the changes' base (or a new owner
-                    // needs the whole document): read it whole.
-                    revision = None;
+                    if staged.is_whole() {
+                        // The owner cannot read what the workspace holds of
+                        // this record. Handing the same bytes over again
+                        // cannot end differently, so the reader keeps the
+                        // revision it read and goes on from there: the route
+                        // publishes what the owner does hold again, later
+                        // changes still reach it, and the capture is said to
+                        // be unreadable here: once, for this one.
+                        tracing::warn!(
+                            route = %key,
+                            "committed history could not be read; the owner keeps its own record"
+                        );
+                        set_read_ready(&inbound, &ready, true);
+                    } else {
+                        // The owner lacks the changes' base (or a new owner
+                        // needs the whole document): read it whole.
+                        revision = None;
+                    }
                 }
             }
             let refresh = inbound.state.document_reads.refresh_requested(&key);

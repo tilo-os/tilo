@@ -243,6 +243,7 @@ history-local-action-retry = Erneut versuchen
 history-local-action-unrecorded = Deine Änderungen in diesem Fenster sind gespeichert, aber dein Verlauf zeichnet sie nicht auf.
 
 history-sync-refused = Dieser Arbeitsbereich hat eine Änderung nicht angenommen. Alles andere wird weiter synchronisiert; die Änderung bleibt auf diesem Gerät.
+history-sync-unreadable = Die geteilte Fassung dieses Eintrags konnte hier nicht gelesen werden. Deine eigenen Änderungen bleiben auf diesem Gerät und werden weiter gespeichert.
 history-sync-remote-waiting = Entfernte Änderungen werden übernommen, sobald die aktuelle Bearbeitung abgeschlossen ist.
 history-sync-owner-closed = Der Besitzer des Dokuments wurde geschlossen oder hat gewechselt. Verbinde dich neu, bevor du den Nachfolger synchronisierst.
 

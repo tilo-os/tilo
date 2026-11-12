@@ -174,7 +174,7 @@ impl CollabTransport for Crowded {
 struct Window {
     instance: Instance,
     workspace: InstanceRecord,
-    _patches: End,
+    patches: End,
 }
 
 fn window(
@@ -232,7 +232,7 @@ fn window_over(
     Window {
         instance,
         workspace,
-        _patches: window_end,
+        patches: window_end,
     }
 }
 
@@ -497,7 +497,7 @@ fn grace_over(
     Window {
         instance,
         workspace,
-        _patches: patches,
+        patches,
     }
 }
 
@@ -669,4 +669,71 @@ fn another_persons_edit_reaches_a_window_as_the_workspaces_committed_read() {
         grace.workspace.receive(&mut grace.instance);
         grace.workspace.manager().document_route_publishable(&route)
     });
+}
+
+/// The workspace's copy of a record arrives as bytes no document of this app is. The window keeps
+/// what its person wrote, says once that the shared copy could not be read here, and the record
+/// goes on being the workspace's: nothing is left waiting on a copy it cannot take.
+#[test]
+fn an_unreadable_workspace_copy_leaves_the_window_its_own_record() {
+    use tilo_render_protocol::patch::{self, NoticeKind, ToUi, Transport as _, Words};
+    let workspace_id = uuid::Uuid::new_v4();
+    let route = RouteSpec::app(APP, workspace_id);
+    let platform = Rc::new(Counter {
+        ids: RefCell::new(String::new()),
+    });
+    let (ada, root) = ada_window(&route, &platform);
+    let (manager, broker) = CollaborationManager::native_refresh_fixture_for_test(
+        APP,
+        workspace_id,
+        ada.workspace.doc().clone().save(),
+    );
+    let profile = tempfile::tempdir().unwrap();
+    let documents: Rc<dyn durable_store::DurableStore> =
+        Rc::new(app_state::FsStore::new(profile.path()));
+    let mut grace = grace_over(manager, &documents, &platform);
+    assert!(
+        grace.workspace.manager().document_route_publishable(&route),
+        "the record is the workspace's once read"
+    );
+    add_one(&mut grace, &root, "grace");
+    let mine = grace.workspace.doc().clone().get_heads();
+
+    // The workspace's copy of the record is not a document this app reads.
+    broker.replace_history(vec![0xff; 16]);
+    let mut said: Vec<(Words, NoticeKind)> = Vec::new();
+    tilo_test_env::wait_until("the window to say the copy could not be read", || {
+        grace.workspace.receive(&mut grace.instance);
+        grace.instance.update();
+        while let Some(batch) = grace.patches.recv().unwrap() {
+            for message in patch::decode_batch::<ToUi>(&batch).unwrap() {
+                if let ToUi::Notice { words, kind, .. } = message {
+                    said.push((words, kind));
+                }
+            }
+        }
+        !said.is_empty()
+    });
+    tilo_test_env::wait_until("the record to be the workspace's again", || {
+        grace.workspace.receive(&mut grace.instance);
+        grace.workspace.manager().document_route_publishable(&route)
+    });
+    assert_eq!(
+        value_at(&grace.instance, &root),
+        1,
+        "the window keeps its own edit"
+    );
+    let mut held = grace.workspace.doc().clone();
+    assert!(
+        mine.iter()
+            .all(|head| held.get_change_by_hash(head).is_some()),
+        "the record this device holds is the one it had"
+    );
+    assert_eq!(said.len(), 1, "the person is told once");
+    assert_eq!(said[0].1, NoticeKind::Error, "as a failure, not a note");
+    assert!(
+        matches!(&said[0].0, Words::Plain(text) if text.contains("couldn't be read here")),
+        "in words about the shared copy: {:?}",
+        said[0].0
+    );
 }
