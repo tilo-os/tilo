@@ -167,6 +167,9 @@ def main() -> int:
         check("the sound's volume action says there is no output to set", before is not None,
               (before or "it set a level with no output")
               .removeprefix("actions_invoke refused: ")[:160])
+        # The panel shows what the session published; let the frame it asked
+        # for after the press land before it is the picture a person sees.
+        time.sleep(1)
         shot = session.snapshot(SHOTS / "01-no-audio-device.png")
         print(f"  shot {shot}")
 
@@ -189,6 +192,9 @@ def main() -> int:
               landed, sink_volume(env))
         check("the panel's sound row is live again",
               (chrome(session).get("surfaces") or {}).get("quick-settings") is not None)
+        # The panel draws the level its sound reading now holds: one frame
+        # after the reading reached it, which is the picture a person sees.
+        time.sleep(2)
         shot = session.snapshot(SHOTS / "02-audio-back.png")
         print(f"  shot {shot}")
     except Failed as error:

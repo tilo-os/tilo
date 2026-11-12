@@ -157,11 +157,14 @@ impl Default for QuickSettingsState {
             network: Network::default(),
             bluetooth: Bluetooth::default(),
             vpn: Vpn::default(),
-            brightness: 0.6,
+            // No level until a reading says one: a machine before its
+            // brightness is read is not at any brightness, and a panel that
+            // invented one would show what nothing measured.
+            brightness: 0.0,
             brightness_available: false,
             displays: Vec::new(),
             focused_display: None,
-            volume_available: true,
+            volume_available: false,
             status: crate::status::SystemStatus::default(),
             firmware_updates: None,
             night_light: night_light_shows(),
@@ -258,10 +261,11 @@ impl QuickSettingsState {
     pub fn fixture() -> Self {
         Self {
             // The controls as they come, not as this machine's settings happen to have them: what
-            // a screenshot, a test or a panel run on its own shows.
+            // a screenshot or a test shows.
             arrangement: settings_store::hardware::QuickSettingsConfig::default(),
             brightness: 0.6,
             brightness_available: true,
+            volume_available: true,
             status: crate::status::SystemStatus {
                 volume: Some(media::audio::default_node::VolumeState {
                     level: 0.4,
@@ -278,10 +282,6 @@ impl QuickSettingsState {
     /// it.
     #[must_use]
     pub fn unread() -> Self {
-        Self {
-            brightness_available: false,
-            volume_available: false,
-            ..Self::fixture()
-        }
+        Self::default()
     }
 }

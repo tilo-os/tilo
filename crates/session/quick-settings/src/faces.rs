@@ -1206,6 +1206,33 @@ mod tests {
         );
     }
 
+    /// A panel whose device has not been read shows nothing measured: no
+    /// brightness, no level, no pack and no link, rather than a stand-in a
+    /// person would take for this machine's.
+    #[test]
+    fn nothing_of_the_device_is_invented_before_a_reading() {
+        let state = QuickSettingsState::unread();
+        assert_eq!(state.brightness, 0.0);
+        assert!(!state.can_set_brightness());
+        assert!(!state.volume_available);
+        assert_eq!(state.status.volume, None);
+        assert_eq!(state.status.battery, None);
+        assert_eq!(state.status.link, None);
+        assert!(!state.network.wifi.available);
+
+        let sliders = Sliders::of(&state);
+        let ids: Vec<String> = sliders.rows.iter().map(|row| row.id.clone()).collect();
+        assert_eq!(
+            ids,
+            ["qs-volume"],
+            "no brightness row stands at a level nobody set"
+        );
+        let volume = &sliders.rows[0];
+        assert!(!volume.available);
+        assert!(volume.value.is_empty(), "and no level");
+        assert_eq!(said(&volume.device), vec![t("qs-sound-no-device")]);
+    }
+
     #[test]
     fn each_slider_names_what_it_sets_and_the_value_it_stands_at() {
         let mut state = QuickSettingsState::fixture();

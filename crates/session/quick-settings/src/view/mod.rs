@@ -121,9 +121,9 @@ impl Parts {
     }
 }
 
-/// What the panel reads and changes: the session's published resources when
-/// the session started it ([`Live`]); a screenshot's stand-in; or, for a
-/// panel run on its own, one with stand-in readings.
+/// What the panel reads and changes: the session's published resources,
+/// which a panel run on its own reaches as soon as a session serves them; or
+/// a screenshot's or test's stand-ins, lent to it.
 fn host_of(cx: &ViewCx<QuickSettings>) -> Rc<dyn PanelHost> {
     if let Some(crate::host::Lent(host)) = cx.take_lent::<crate::host::Lent>() {
         return host;
@@ -131,17 +131,14 @@ fn host_of(cx: &ViewCx<QuickSettings>) -> Rc<dyn PanelHost> {
     if let Some(fixture) = cx.fixture::<FixtureHost>() {
         return fixture;
     }
-    if let Some(host) = Live::of(cx.waker()) {
-        return host;
-    }
-    Rc::new(FixtureHost::new(QuickSettingsState::fixture()))
+    Live::of(cx.waker())
 }
 
 /// The whole panel.
 pub(crate) fn panel(cx: &ViewCx<QuickSettings>) -> Element {
     let host = host_of(cx);
-    let readings = Readings::new(QuickSettingsState::fixture());
-    host.attach(readings.feed());
+    let readings = host.readings().readings();
+    readings.built_again();
     answer_effects(cx, &host, &readings);
     let parts = Parts::new(&readings);
     let showing = cx.value(QuickSettings::showing);

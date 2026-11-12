@@ -3,7 +3,7 @@
 //! The panel is a process of its own: what it shows arrives as the
 //! session's published readings ([`crate::live`]), and what a press does goes
 //! back to them. It reaches both through a [`PanelHost`]: readings in
-//! ([`PanelHost::attach`]), effects out ([`PanelHost::run`]). A screenshot or
+//! ([`PanelHost::feed`]), effects out ([`PanelHost::run`]). A screenshot or
 //! a test lends a [`FixtureHost`] instead, so the panel renders headless with
 //! stand-in readings.
 
@@ -47,9 +47,9 @@ impl Showing {
 
 /// The panel's side of what shows it.
 pub trait PanelHost {
-    /// Keep `feed` current: set it now, and again whenever a reading
-    /// changes.
-    fn attach(&self, feed: Feed);
+    /// The readings the panel shows, kept current by the host: the
+    /// session's, or a fixture's stand-ins.
+    fn readings(&self) -> Feed;
     /// The panel shows `showing` now.
     fn showing(&self, showing: &Showing);
     /// Carry out `effect`. An error is the effect's answer to whoever
@@ -69,8 +69,7 @@ pub struct Lent(pub Rc<dyn PanelHost>);
 /// The host of a screenshot or a test: stand-in readings for each scenario,
 /// and effects recorded instead of carried out.
 pub struct FixtureHost {
-    readings: QuickSettingsState,
-    feed: RefCell<Option<Feed>>,
+    readings: crate::readings::Readings,
     ran: RefCell<Vec<QsEffect>>,
     shown: RefCell<Vec<Showing>>,
 }
@@ -79,8 +78,7 @@ impl FixtureHost {
     #[must_use]
     pub fn new(readings: QuickSettingsState) -> Self {
         Self {
-            readings,
-            feed: RefCell::new(None),
+            readings: crate::readings::Readings::new(readings),
             ran: RefCell::new(Vec::new()),
             shown: RefCell::new(Vec::new()),
         }
@@ -100,16 +98,13 @@ impl FixtureHost {
 
     /// Change what the device reads, as a host would.
     pub fn update(&self, change: impl FnOnce(&mut QuickSettingsState)) {
-        if let Some(feed) = self.feed.borrow().as_ref() {
-            feed.update(change);
-        }
+        self.readings.update(change);
     }
 }
 
 impl PanelHost for FixtureHost {
-    fn attach(&self, feed: Feed) {
-        feed.set(&self.readings);
-        *self.feed.borrow_mut() = Some(feed);
+    fn readings(&self) -> Feed {
+        self.readings.feed()
     }
 
     fn showing(&self, showing: &Showing) {
@@ -120,14 +115,12 @@ impl PanelHost for FixtureHost {
         // The arrangement is a published action like any other: a fixture
         // carries it out on the readings it keeps, so arranging can be seen
         // without a desktop.
-        if let Some(feed) = self.feed.borrow().as_ref() {
-            feed.update(|state| {
-                arrange(&mut state.arrangement, &effect);
-                if effect == QsEffect::DismissRefusal {
-                    state.refusal = None;
-                }
-            });
-        }
+        self.readings.update(|state| {
+            arrange(&mut state.arrangement, &effect);
+            if effect == QsEffect::DismissRefusal {
+                state.refusal = None;
+            }
+        });
         self.ran.borrow_mut().push(effect);
         Ok(())
     }
