@@ -280,6 +280,19 @@ replaces a find, a fill and a check per control, and it reports per answer.
 An answer that opens a new question ("Which country?") is said, and the form
 is not sent while a required question is empty.
 
+**A form on a page built of components asks what a person sees.** A form's
+questions are the fields drawn in it, found along the tree a read follows: a
+field inside a component, a field the page hands a form component, and a
+form that itself stands inside a component are asked like any other, each
+named by the label its component draws. A component that is a field itself
+and draws no input of its own is a yes-or-no question when it says it is a
+checkbox or a switch; otherwise it is listed as out of reach, with the
+reason, and an answer for it is refused by name, never placed somewhere
+else. A button a component draws is pressed, and the answer says whether the
+form then sent, whether the page took the sending for itself, or that
+nothing was sent. A page without components is read as it always was, so a
+form remembered from an earlier visit keeps its signature.
+
 **Fallback is per field, never silent.** What the form action cannot place
 is named with the reason and the ref its own action takes: a secret goes
 through the secret fill and its consent, a file through the file action, an
