@@ -99,8 +99,6 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     container:
-      # The goldens' step checks this is the image they were rendered on
-      # (.config/visual-goldens-image).
       image: ${{ needs.builder.outputs.image }}
     env:
       # Both native slots have the memory for four compiler processes;
@@ -194,10 +192,7 @@ jobs:
       # so every nightly reports each suite's own result.
       - name: Verify visual goldens on an idle renderer
         if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
-        env:
-          BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
         run: >-
-          bash tools/ci/golden-image.sh check "$BUILDER_IMAGE" &&
           bash tools/ci/measure.sh "nightly isolated visual goldens" --
           bash scripts/ci-run.sh "cargo nextest visual goldens" --
           bash tools/test-env.sh cargo nextest run --workspace --locked --profile ci

@@ -473,14 +473,10 @@ jobs:
             --label "affected shard ${{ matrix.shard }} (${{ matrix.arch }})" target/ci/junit/affected.xml
 
       # The shard's visual goldens, run after its suite has drained so the
-      # software renderer is idle, as nightly does. They compare only on the
-      # image they were rendered on; once the builder has moved on they wait
-      # for a refresh (nightly fails until then) instead of failing every pull
-      # request that touches a rendering package.
+      # software renderer is idle, as nightly does.
       - name: Visual goldens of shard ${{ matrix.shard }}
         if: matrix.test_packages != ''
         env:
-          BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
           TILO_REQUIRE_GPU: "1"
         run: |
           # The packages with goldens (.config/nextest-filters.toml).
@@ -488,10 +484,6 @@ jobs:
             *" -p tilo-ui "*|*" -p ebook "*) ;;
             *) exit 0 ;;
           esac
-          if ! bash tools/ci/golden-image.sh check "$BUILDER_IMAGE" 2>goldens-image.txt; then
-            echo "::warning::$(tr '\n' ' ' < goldens-image.txt)"
-            exit 0
-          fi
           bash tools/ci/measure.sh "visual goldens shard ${{ matrix.shard }}" -- \
             bash scripts/ci-run.sh "cargo nextest visual goldens (shard ${{ matrix.shard }})" -- \
             cargo nextest run --locked --profile ci --tests \
