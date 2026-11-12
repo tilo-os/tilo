@@ -201,7 +201,8 @@ enum AddCommand {
         #[command(flatten)]
         options: AddOptions,
     },
-    /// Add a Fluent translation catalog under locales/.
+    /// Register a Fluent translation catalog under locales/, writing it from the source locale
+    /// when it is not there yet.
     Locale {
         /// BCP-47-style locale, for example de, en-GB, or zh-Hant-TW.
         locale: String,

@@ -1171,7 +1171,16 @@ fn locale_artifact_writes(app_dir: &Path, locale: &str, force: bool) -> Result<V
     }
     let relative = PathBuf::from("locales").join(format!("{locale}.ftl"));
     let path = app_dir.join(relative);
-    protect_destination(&path, force)?;
+    // A catalog that is already there is a translation someone wrote: register
+    // it and leave its text alone, rather than make `--force` the only way to
+    // reach it, which would replace the translation with the source copy.
+    let keeps_catalog = path.exists() && !force;
+    if keeps_catalog && !path.is_file() {
+        bail!(
+            "{} is not a catalog file; {locale:?} has no translation to register",
+            path.display()
+        );
+    }
 
     let registry_path = app_dir.join("src/locales.rs");
     let registry = match std::fs::read_to_string(&registry_path) {
@@ -1215,11 +1224,14 @@ fn locale_artifact_writes(app_dir: &Path, locale: &str, force: bool) -> Result<V
         &registry_path,
     )?;
 
-    let mut writes = vec![PendingWrite {
-        path,
-        source: translation_catalog_template(locale, &source_catalog),
-        description: "locale catalog",
-    }];
+    let mut writes = Vec::new();
+    if !keeps_catalog {
+        writes.push(PendingWrite {
+            path,
+            source: translation_catalog_template(locale, &source_catalog),
+            description: "locale catalog",
+        });
+    }
     if registry_source != registry {
         writes.push(PendingWrite {
             path: registry_path,
@@ -10074,7 +10086,7 @@ fn app_readme(spec: &AppSpec) -> String {
     }
     let _ = writeln!(
         out,
-        "\nUser-facing strings start in `locales/en-US.ftl`. `tilo-app add locale de-DE` creates and registers a complete editable copy of that message contract. After changing the source, `tilo-app locale sync` adds missing units without replacing translations; `tilo-app doctor` reports differences deliberately left for a translator while the toolkit falls back to the source catalog."
+        "\nUser-facing strings start in `locales/en-US.ftl`. `tilo-app add locale de-DE` registers the locale: it writes a complete editable copy of that message contract, or keeps the catalog already at `locales/de-DE.ftl` and registers it without touching its text. After changing the source, `tilo-app locale sync` adds missing units without replacing translations; `tilo-app doctor` reports differences deliberately left for a translator while the toolkit falls back to the source catalog."
     );
     let _ = writeln!(out, "\nApp id: `{}`", spec.app_id);
     if spec.app_id.starts_with("local.dev.") {

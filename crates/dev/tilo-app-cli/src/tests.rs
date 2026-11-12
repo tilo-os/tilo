@@ -1803,7 +1803,8 @@ fn add_artifact_protects_work_and_stays_inside_the_app() {
 /// add locale registers immediately and protects app-owned setup; the Fluent contract reports
 /// missing and stale entries; an invalid source is rejected before publishing; locale sync
 /// preserves translations and can resolve drift, validates every catalog before publishing any;
-/// an app-owned registry is never rewritten.
+/// a catalog that is already there is registered without replacing its text; an app-owned
+/// registry is never rewritten.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -2103,6 +2104,39 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
             std::fs::read(de_path).unwrap(),
             de_before,
             "a later parse failure must prevent earlier catalog publication"
+        );
+    }
+
+    // Phase: an_existing_catalog_is_registered_without_replacing_its_text.
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("reading-list");
+        create_app(request(app.clone())).unwrap();
+        // A translation that arrived without `tilo-app add locale`: registering
+        // it must not be a choice between hand-editing the generated registry
+        // and overwriting the translator's work with the source copy.
+        let catalog = app.join("locales/de-DE.ftl");
+        let translated = "### Deutsch.\n\nstarter-title = Meine Tilo-App\n";
+        std::fs::write(&catalog, translated).unwrap();
+        let outcome = add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Locale {
+                locale: "de-DE".into(),
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+        assert_eq!(
+            outcome.files.as_slice(),
+            std::slice::from_ref(&app.join("src/locales.rs")),
+            "a catalog that is already there is registered, not rewritten"
+        );
+        assert_eq!(std::fs::read_to_string(&catalog).unwrap(), translated);
+        let registry = std::fs::read_to_string(app.join("src/locales.rs")).unwrap();
+        assert!(
+            registry.contains(r#"ui::embedded_catalog!(pub static CATALOG, ["de-DE", "en-US"]);"#),
+            "the existing translation is registered: {registry}"
         );
     }
 
