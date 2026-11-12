@@ -842,6 +842,8 @@ struct Workspace {
     /// The workspace's records in the session's replica, once a write to one
     /// named the workspace.
     records: Option<WorkspaceRecords>,
+    /// What the host says for the runs it executes here ([`run_voice`]).
+    runs: run_voice::Runs,
 }
 
 impl Workspace {
@@ -878,6 +880,7 @@ impl Workspace {
         }));
         peer.send(Cmd::Join(workspace_id))?;
         Ok(Self {
+            runs: run_voice::Runs::new(workspace_id, member.endpoint.host_cert.device_public_key),
             peer,
             events,
             awaited,
@@ -1158,8 +1161,6 @@ struct Worker {
     /// first, by workspace: the thread answers others meanwhile.
     joining: HashMap<u64, VecDeque<Waiting>>,
     clock: u64,
-    /// What the host says for the runs it executes ([`run_voice`]).
-    voices: run_voice::RunVoices,
     /// What the apps call the records the host changes, read in a confined
     /// worker kept for the next ([`publish`]).
     titles: crate::worker::ConfinedTitles,
@@ -1262,7 +1263,6 @@ impl Worker {
             bounded: BTreeMap::new(),
             beside: HashMap::new(),
             channels_opened: HashSet::new(),
-            voices: run_voice::RunVoices::default(),
             titles: crate::worker::ConfinedTitles::default(),
             joining: HashMap::new(),
             clock: 0,
@@ -1272,7 +1272,7 @@ impl Worker {
 
     fn run(mut self, jobs: &mpsc::Receiver<(Instant, Job)>) {
         loop {
-            let due = match (self.joining_until(), self.voices.next_due()) {
+            let due = match (self.joining_until(), run_voice::next_due(&self.workspaces)) {
                 (Some(joining), Some(voice)) => Some(joining.min(voice)),
                 (joining, voice) => joining.or(voice),
             };
@@ -1287,9 +1287,7 @@ impl Worker {
                     self.admit(queued, job);
                     // Requests that keep coming never hold back a run's word:
                     // the page forgets a member it has not heard from.
-                    if self
-                        .voices
-                        .next_due()
+                    if run_voice::next_due(&self.workspaces)
                         .is_some_and(|due| due <= Instant::now())
                     {
                         self.tick_voices();
@@ -1473,11 +1471,12 @@ impl Worker {
     }
 
     /// Say again what the runs this host speaks for owe by now
-    /// ([`run_voice::RunVoices::tick`]), each on its workspace's session.
+    /// ([`run_voice::Runs::tick`]), each on its workspace's session.
     fn tick_voices(&mut self) {
-        let workspaces = &self.workspaces;
-        self.voices
-            .tick(|workspace_id| workspaces.get(&workspace_id).map(|held| &held.peer));
+        let now = tilo_session_client::presence::now_ms();
+        for workspace in self.workspaces.values_mut() {
+            workspace.runs.tick(&workspace.peer, now);
+        }
     }
 
     /// Run the requests that waited in vain for their workspace or its keys:
