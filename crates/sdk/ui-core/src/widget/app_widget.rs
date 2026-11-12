@@ -340,6 +340,20 @@ mod component_adapter {
         /// sync, and a status that keeps its size (Saving, then Saved after
         /// each keystroke's write) re-solves no layout.
         save_status_shown: bool,
+        /// What the root's last pass read, as it stood once the pass ended:
+        /// a pass that would read the same is skipped
+        /// ([`crate::component_inputs`]). `None` until the first pass, and
+        /// whenever a pass read something the framework cannot follow.
+        witness: Option<crate::component_inputs::Witness>,
+        /// The root asked for its next sync whatever its witness says: it
+        /// was laid out anew, its update or a deadline changed it.
+        owes_sync: bool,
+        /// A sync ran since the last settle: what it took up is written by
+        /// the next settle.
+        owes_settle: bool,
+        /// The size the root was last laid out at: a new size is input its
+        /// next sync takes up.
+        laid_out: Option<vello::kurbo::Size>,
     }
 
     impl BoundAppWidget {
@@ -348,7 +362,251 @@ mod component_adapter {
                 component,
                 relayout: false,
                 save_status_shown: false,
+                witness: None,
+                owes_sync: true,
+                owes_settle: true,
+                laid_out: None,
             }
+        }
+
+        /// What the root's next pass would read, now.
+        #[inline(never)]
+        fn inputs_now(&self, outer: &AutoCommit) -> crate::component_inputs::Now {
+            let binding = self.component.callback_binding();
+            crate::component_inputs::Now {
+                revision: binding.lifetime.revision(),
+                document: binding
+                    .read_document(outer, |document, _| crate::doc::settle_mark(document))
+                    .ok(),
+                standing: Self::standing(&self.component, &binding),
+            }
+        }
+
+        fn standing(
+            component: &AppComponent,
+            binding: &crate::bound_dispatch::CallbackBinding,
+        ) -> crate::component_inputs::Standing {
+            crate::component_inputs::Standing {
+                owner: crate::bound_dispatch::OwnerStanding {
+                    permissions: binding.permissions.borrow().directory_witness(),
+                    save: component.record_save_now().ok_or_else(String::new),
+                },
+                locale: crate::i18n::I18nManager::revision(),
+            }
+        }
+
+        /// Whether the root's next pass would read only what its last one
+        /// read: nothing reached the component, nothing it follows moved,
+        /// and it asked for nothing. A component whose record is still
+        /// opening reads what this cannot follow.
+        fn at_rest(&self, outer: &AutoCommit) -> bool {
+            if self.owes_sync || crate::component_inputs::forced() {
+                return false;
+            }
+            let Some(witness) = &self.witness else {
+                return false;
+            };
+            let binding = self.component.callback_binding();
+            if binding.records.is_opening(&binding.checkout.id) {
+                return false;
+            }
+            let Some(root) = self.component.root.as_deref() else {
+                return false;
+            };
+            let Ok(_entry) = binding.enter() else {
+                return false;
+            };
+            let now = crate::time::now();
+            if Self::busy(root) || root.next_wake_deadline().is_some_and(|due| due <= now) {
+                return false;
+            }
+            drop(_entry);
+            let moved = witness.moved(&self.inputs_now(outer));
+            if let Some(why) = moved {
+                // Named for a profile: why this component's pass runs.
+                drop(tilo_resource::profiling::Phase::start(why));
+            }
+            moved.is_none()
+        }
+
+        /// The root's sync, from the component's record.
+        fn sync_root(&mut self, state: &AutoCommit) {
+            let binding = self.component.callback_binding();
+            if binding.records.is_opening(&binding.checkout.id) {
+                // The record is still opening off the frame: the root shows before it
+                // (`HostContext::record_opening`) and reads nothing of it.
+                if let Some(root) = self.component.root.as_deref_mut() {
+                    root.sync(state, &automerge::ROOT);
+                }
+                return;
+            }
+            let sync_root = |component: &mut AppComponent| {
+                binding
+                    .read_document(state, |document, record_root| {
+                        if let Some(root) = component.root.as_deref_mut() {
+                            root.sync(document, record_root);
+                        }
+                    })
+                    .unwrap_or(());
+            };
+            sync_root(&mut self.component);
+            // The record's durability, sampled once the root has synced. A
+            // change is shown by syncing the root again with it, so the frame
+            // needs no rebuilt tree (which repaints the whole window).
+            if self.component.project_record_save_status() {
+                sync_root(&mut self.component);
+            }
+        }
+
+        /// The root's settle: what its widgets took up is written to the
+        /// record, and shown in the same frame.
+        fn settle_root(&mut self, edits: &mut crate::widget::Edits<'_>) {
+            let binding = self.component.callback_binding();
+            binding
+                .with_settlement(edits.document_mut(), |document, record_root| {
+                    let Some(root) = self.component.root.as_deref_mut() else {
+                        return;
+                    };
+                    let before = crate::doc::settle_mark(document);
+                    root.settle(&mut crate::widget::Edits::lend(document), record_root);
+                    let _ = binding.drain_owned_tree(root, document);
+                    // What it wrote shows in this same frame.
+                    if crate::doc::settle_mark(document) != before {
+                        root.update(document, record_root);
+                        root.sync(document, record_root);
+                    }
+                })
+                .unwrap_or(());
+        }
+
+        /// A debug build's proof that a component at rest skipped nothing:
+        /// its sync runs anyway, and must leave what it shows, its record and
+        /// its layout as they were. A difference fails a test; any other
+        /// debug build logs it. What the check's own sync wrote is part of
+        /// the next witness, as any pass's is.
+        #[cfg(debug_assertions)]
+        fn verify_rest(&mut self, state: &AutoCommit) {
+            let shown = |widget: &Self| {
+                (
+                    // Read inside the component's scope, as every callback is.
+                    widget
+                        .in_root(|root| crate::headless::widget_inspection_json(root))
+                        .unwrap_or_default(),
+                    widget
+                        .component
+                        .callback_binding()
+                        .read_document(state, |document, _| crate::doc::settle_mark(document))
+                        .ok(),
+                    widget
+                        .in_root(|root| root.layout_needs_measure() || root.is_layout_dirty())
+                        .unwrap_or_default(),
+                    // What a sync asks of its host without showing it.
+                    {
+                        let binding = widget.component.callback_binding();
+                        (
+                            binding.queued_controls.borrow().len(),
+                            binding.search_requests.borrow().len(),
+                            widget.component.replacement_waits(),
+                        )
+                    },
+                )
+            };
+            // Work off the frame that lands while the check's own pass runs
+            // (a save the store finished) wakes the component for its next
+            // frame: what the pass shows of it was not owed yet.
+            let crossed = self.component.callback_binding().lifetime.crossed();
+            let ((before, after), reads) = tilo_resource::profiling::unobserved(|| {
+                let binding = self.component.callback_binding();
+                let before = shown(self);
+                let ((), reads) = crate::component_inputs::reading(&binding.lifetime, || {
+                    self.sync_root(state);
+                });
+                ((before, shown(self)), reads)
+            });
+            self.witness_pass(state, reads);
+            let consistent =
+                before == after || self.component.callback_binding().lifetime.crossed() != crossed;
+            if consistent {
+                return;
+            }
+            let differs = before
+                .0
+                .bytes()
+                .zip(after.0.bytes())
+                .position(|(was, now)| was != now)
+                .unwrap_or_else(|| before.0.len().min(after.0.len()));
+            let excerpt = |text: &str| {
+                let start = text.floor_char_boundary(differs.saturating_sub(200));
+                let end = text.floor_char_boundary(differs.saturating_add(200).min(text.len()));
+                text.get(start..end).unwrap_or_default().to_owned()
+            };
+            let message = format!(
+                "a component at rest skipped a sync that changed what it shows ({}): \
+                 record moved {}, layout dirty {} -> {}, asked of its host (controls, \
+                 searches, replacement) {:?} -> {:?}, semantics were `{}`, are `{}`",
+                self.component.callback_binding().app_id,
+                before.1 != after.1,
+                before.2,
+                after.2,
+                before.3,
+                after.3,
+                excerpt(&before.0),
+                excerpt(&after.0),
+            );
+            assert!(
+                consistent || !cfg!(any(test, feature = "test-support")),
+                "{message}"
+            );
+            tracing::error!("{message}");
+        }
+
+        /// Whether the root still works through its passes: what its
+        /// record's store owes, motion, a presentation still settling (an
+        /// image decoding). Such a pass proves nothing: what ends the work
+        /// (time passing) moves nothing the witness reads, so the pass after
+        /// it ended runs too.
+        fn busy(root: &dyn AppWidget) -> bool {
+            root.needs_idle_sync() || root.needs_animation_frame() || root.has_pending_visual_work()
+        }
+
+        /// Note what the pass that just ran read: `reads` outside the
+        /// component, and what stands now.
+        fn witness_pass(&mut self, outer: &AutoCommit, reads: crate::component_inputs::Reads) {
+            if self.in_root(|root| Self::busy(root)).unwrap_or(true) {
+                self.witness = None;
+                return;
+            }
+            let now = self.inputs_now(outer);
+            let reads = match self.witness.take() {
+                // A settle after its sync: what both read.
+                Some(previous) if self.owes_settle => previous.reads.join(reads),
+                // What earlier passes read and this one did not read again.
+                Some(previous) => reads.carry(previous.reads),
+                None => reads,
+            };
+            self.witness = match (now.revision, now.document) {
+                (Some(revision), Some(document)) => Some(crate::component_inputs::Witness {
+                    revision,
+                    document,
+                    standing: crate::component_inputs::Standing {
+                        // What the root was told of its save, not what the
+                        // store says now: a save that moved on after the
+                        // root was told, even during this pass, is shown by
+                        // the next one.
+                        owner: crate::bound_dispatch::OwnerStanding {
+                            save: self
+                                .component
+                                .sampled_record_save()
+                                .cloned()
+                                .ok_or_else(String::new),
+                            ..now.standing.owner
+                        },
+                        ..now.standing
+                    },
+                    reads,
+                }),
+                _ => None,
+            };
         }
 
         /// Run `f` on the component's root inside the component's record
@@ -360,6 +618,8 @@ mod component_adapter {
             f: impl FnOnce(&mut (dyn Widget + 'static), &mut crate::widget::Edits<'_>, &ObjId) -> R,
         ) -> R {
             let binding = self.component.callback_binding();
+            // An action or an outside event: input the next sync takes up.
+            binding.note_input();
             binding
                 .with_document(edits.document_mut(), |document, record_root| {
                     let Some(root) = self.component.root.as_deref_mut() else {
@@ -436,6 +696,7 @@ mod component_adapter {
             state: &AutoCommit,
             _path: &ObjId,
         ) -> bool {
+            self.owes_sync = true;
             let binding = self.component.callback_binding();
             binding
                 .read_document(state, |document, record_root| {
@@ -456,6 +717,8 @@ mod component_adapter {
 
     impl FloatingSurfaceProvider for BoundAppWidget {
         fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
+            // Input the root's next sync takes up.
+            self.owes_sync = true;
             self.in_root_mut(|root| root.on_floating_surface_ime_source_changed(id));
         }
 
@@ -475,10 +738,14 @@ mod component_adapter {
         }
 
         fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
+            // Input the root's next sync takes up.
+            self.owes_sync = true;
             self.in_root_mut(|root| root.on_floating_surface_focus_changed(id, focused));
         }
 
         fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
+            // Input the root's next sync takes up.
+            self.owes_sync = true;
             self.in_root_mut(|root| root.on_floating_surface_event_source(id));
         }
 
@@ -488,6 +755,8 @@ mod component_adapter {
             event: &winit::event::WindowEvent,
             ctx: &mut crate::widget::EventCtx<'_>,
         ) -> bool {
+            // Input the root's next sync takes up.
+            self.owes_sync = true;
             self.in_root_mut(|root| root.floating_surface_event(id, event, ctx))
                 .unwrap_or_default()
         }
@@ -573,6 +842,8 @@ mod component_adapter {
             &mut self,
             message: &crate::floating_surface::FloatingSurfaceHostMessage,
         ) {
+            // Input the root's next sync takes up.
+            self.owes_sync = true;
             self.in_root_mut(|root| root.on_floating_surface_host_message(message));
         }
     }
@@ -586,6 +857,8 @@ mod component_adapter {
         }
 
         fn on_audience_presentation_changed(&mut self, active: bool) {
+            // Input the root's next sync takes up.
+            self.owes_sync = true;
             self.in_root_mut(|root| root.on_audience_presentation_changed(active));
         }
 
@@ -609,12 +882,16 @@ mod component_adapter {
             state: &mut crate::widget::Edits<'_>,
             _path: &ObjId,
         ) -> bool {
+            // Input the root's next sync takes up.
+            self.owes_sync = true;
             self.with_root_edits(state, |root, edits, record_root| {
                 root.handle_audience_presentation_event(event, edits, record_root)
             })
         }
 
         fn on_audience_presentation_closed(&mut self) {
+            // Input the root's next sync takes up.
+            self.owes_sync = true;
             self.in_root_mut(|root| root.on_audience_presentation_closed());
         }
     }
@@ -634,6 +911,8 @@ mod component_adapter {
         }
 
         fn on_fullscreen_changed(&mut self, active: bool) {
+            // Input the root's next sync takes up.
+            self.owes_sync = true;
             self.in_root_mut(|root| root.on_fullscreen_changed(active));
         }
     }
@@ -859,59 +1138,57 @@ mod component_adapter {
             self.in_root_mut(|root| root.native_view_frame_start());
         }
         fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+            self.owes_sync = true;
             self.in_root_mut(|root| root.set_platform_conventions(conventions));
         }
         fn set_interaction_environment(
             &mut self,
             environment: crate::interaction::InteractionEnvironment,
         ) {
+            self.owes_sync = true;
             self.in_root_mut(|root| root.set_interaction_environment(environment));
         }
         fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
             let (state, _) = crate::doc::document_ref(state, path);
-            let binding = self.component.callback_binding();
-            if binding.records.is_opening(&binding.checkout.id) {
-                // The record is still opening off the frame: the root shows before it
-                // (`HostContext::record_opening`) and reads nothing of it.
-                if let Some(root) = self.component.root.as_deref_mut() {
-                    root.sync(state, &automerge::ROOT);
-                }
+            if self.at_rest(state) {
+                #[cfg(debug_assertions)]
+                self.verify_rest(state);
                 return;
             }
-            let sync_root = |component: &mut AppComponent| {
-                binding
-                    .read_document(state, |document, record_root| {
-                        if let Some(root) = component.root.as_deref_mut() {
-                            root.sync(document, record_root);
-                        }
-                    })
-                    .unwrap_or(());
-            };
-            sync_root(&mut self.component);
-            // The record's durability, sampled once the root has synced. A
-            // change is shown by syncing the root again with it, so the frame
-            // needs no rebuilt tree (which repaints the whole window).
-            if self.component.project_record_save_status() {
-                sync_root(&mut self.component);
-            }
+            let _profile = tilo_resource::profiling::Phase::start("ui.component.sync");
+            let binding = self.component.callback_binding();
+            let ((), reads) = crate::component_inputs::reading(&binding.lifetime, || {
+                self.sync_root(state);
+            });
+            self.owes_sync = false;
+            self.witness_pass(state, reads);
+            self.owes_settle = true;
         }
         fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, _path: &ObjId) {
+            // Owed by a sync of this frame or the last: what it writes is
+            // what that sync took up, and the witness follows it, unless
+            // something reached the component since that sync, which only
+            // the next sync takes up.
+            let owed = self.owes_settle
+                && self.witness.as_ref().is_some_and(|witness| {
+                    witness
+                        .moved(&self.inputs_now(edits.document_mut()))
+                        .is_none()
+                });
+            if !owed && self.at_rest(edits.document_mut()) {
+                return;
+            }
             let binding = self.component.callback_binding();
-            binding
-                .with_settlement(edits.document_mut(), |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return;
-                    };
-                    let before = crate::doc::settle_mark(document);
-                    root.settle(&mut crate::widget::Edits::lend(document), record_root);
-                    let _ = binding.drain_owned_tree(root, document);
-                    // What it wrote shows in this same frame.
-                    if crate::doc::settle_mark(document) != before {
-                        root.update(document, record_root);
-                        root.sync(document, record_root);
-                    }
-                })
-                .unwrap_or(());
+            let ((), reads) = crate::component_inputs::reading(&binding.lifetime, || {
+                self.settle_root(edits);
+            });
+            // The settle after a sync writes what that sync took up and syncs
+            // the root again with it: the witness follows. Any other settle
+            // leaves it to the sync it precedes, which reads what moved.
+            if owed {
+                self.witness_pass(edits.document_mut(), reads);
+            }
+            self.owes_settle = false;
         }
         fn update(
             &mut self,
@@ -941,10 +1218,17 @@ mod component_adapter {
                     .unwrap_or(false)
             };
             let component = &mut self.component;
-            crate::presence::frame::frame(|presence| {
+            let changed = crate::presence::frame::frame(|presence| {
                 presence.with_permissions(permissions.clone(), || update(component))
             })
-            .unwrap_or_else(|| update(component))
+            .unwrap_or_else(|| update(component));
+            // A change of the root's own is what its next sync shows, and
+            // what anything published from it follows.
+            if changed {
+                self.owes_sync = true;
+                binding.note_input();
+            }
+            changed
         }
         fn build_layout(
             &mut self,
@@ -952,6 +1236,9 @@ mod component_adapter {
             theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
+            // Controls built with the layout are synced before they are
+            // measured, whatever the root read before.
+            self.owes_sync = true;
             let Some(child) = self.in_root_mut(|root| root.build_layout(taffy, theme, node_map))
             else {
                 return taffy.leaf_node(taffy::Style::default());
@@ -977,12 +1264,17 @@ mod component_adapter {
             node: NodeId,
             origin: vello::kurbo::Point,
         ) {
+            let rect = crate::widget::layout_rect(taffy, node, origin);
+            // A new size is input the root's next sync takes up.
+            if self.laid_out != Some(rect.size()) {
+                self.laid_out = Some(rect.size());
+                self.owes_sync = true;
+            }
             self.in_root_mut(|root| {
                 if let Ok(children) = taffy.children(node)
                     && let Some(child) = children.first()
                 {
-                    let origin = crate::widget::layout_rect(taffy, node, origin).origin();
-                    root.apply_layout(taffy, *child, origin);
+                    root.apply_layout(taffy, *child, rect.origin());
                 }
             });
         }
@@ -1014,6 +1306,14 @@ mod component_adapter {
         }
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
             let binding = self.component.callback_binding();
+            // Whether this event alone panned a view: the host reads the
+            // same answer once dispatch ends, so it is handed back.
+            let panned_before = crate::widget::take_view_only_pan();
+            let declared_pan = self
+                .component
+                .root
+                .as_deref()
+                .is_some_and(|root| root.view_only_scroll(event));
             binding
                 .with_document(ctx.state.document_mut(), |document, record_root| {
                     let Some(root) = self.component.root.as_deref_mut() else {
@@ -1039,6 +1339,21 @@ mod component_adapter {
                     let _ = binding.drain_owned_tree(root, document);
                 })
                 .unwrap_or(());
+            // An event a widget took is input the next sync takes up. One
+            // nobody took changed nothing a sync reads but what says so
+            // itself: its record, its local state.
+            //
+            // A wheel that only moved a scroller's view (the root declares
+            // it, or the scroller says so) shows through the scroller alone;
+            // an edit it made moves the record, focus it moved is input of
+            // its own.
+            let panned = crate::widget::take_view_only_pan();
+            if panned || panned_before {
+                crate::widget::note_view_only_pan();
+            }
+            if *ctx.handled && !(panned || declared_pan) {
+                binding.note_input();
+            }
         }
         fn children(&self) -> Vec<&dyn Widget> {
             self.component
@@ -1076,6 +1391,7 @@ mod component_adapter {
             self.in_root(|root| root.tooltip()).flatten()
         }
         fn set_focus(&mut self, focused: bool) {
+            self.owes_sync = true;
             self.in_root_mut(|root| root.set_focus(focused));
         }
         fn wants_tab_input(&self) -> bool {
@@ -1093,6 +1409,7 @@ mod component_adapter {
                 .flatten()
         }
         fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
+            self.owes_sync = true;
             self.in_root_mut(|root| root.focus_synthetic_accessibility(path))
                 .unwrap_or_default()
         }
@@ -1152,6 +1469,7 @@ mod component_adapter {
         }
 
         fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
+            self.owes_sync = true;
             self.in_root_mut(|root| root.start_deferred_text())
                 .flatten()
         }
@@ -1160,6 +1478,7 @@ mod component_adapter {
             &mut self,
             text: &str,
         ) -> Option<crate::webview::text_input::Receipt> {
+            self.owes_sync = true;
             self.in_root_mut(|root| root.commit_deferred_text(text))
                 .flatten()
         }
@@ -1212,6 +1531,7 @@ mod component_adapter {
             path: &crate::widget::ModelPath,
         ) -> bool {
             let (state, _) = crate::doc::document_ref(state, path);
+            self.owes_sync = true;
             let binding = self.component.callback_binding();
             binding
                 .read_document(state, |document, record_root| {
@@ -1230,6 +1550,7 @@ mod component_adapter {
             self.in_root(|root| root.appearance_intent()).flatten()
         }
         fn set_motion_reduced(&mut self, reduced: bool) {
+            self.owes_sync = true;
             self.in_root_mut(|root| root.set_motion_reduced(reduced));
         }
         fn needs_idle_sync(&self) -> bool {
@@ -1271,10 +1592,16 @@ mod component_adapter {
             let Ok(_entry) = binding.enter() else {
                 return true;
             };
-            self.component
+            let served = self
+                .component
                 .root
                 .as_deref_mut()
-                .is_none_or(|root| root.serve_deadline(now))
+                .is_none_or(|root| root.serve_deadline(now));
+            if served {
+                self.owes_sync = true;
+                binding.note_input();
+            }
+            served
         }
         fn next_wake_deadline(&self) -> Option<Instant> {
             let binding = self.component.callback_binding();
@@ -1305,7 +1632,10 @@ mod component_adapter {
             let Some(root) = self.component.root.as_deref_mut() else {
                 return relayout;
             };
-            root.take_structure_change().join(relayout)
+            let change = root.take_structure_change().join(relayout);
+            // Widgets mounted or rebuilt are synced before they are measured.
+            self.owes_sync |= change != StructureChange::None;
+            change
         }
         fn needs_redraw(&self) -> bool {
             self.save_status_shown
@@ -1371,6 +1701,7 @@ mod component_adapter {
                 return crate::widget::start_in_children(self, op, doc, path);
             }
             let binding = self.component.callback_binding();
+            binding.note_input();
             let result = binding
                 .with_document(doc.document_mut(), |document, record_root| {
                     let Some(root) = self.component.root.as_deref_mut() else {

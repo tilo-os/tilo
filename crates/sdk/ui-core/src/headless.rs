@@ -285,6 +285,18 @@ pub struct FrameOutput<'a> {
 mod caller_palette;
 mod capture;
 mod inspection;
+
+/// What `widget` shows, as the frame harness's inspection reads it: a
+/// skipped pass is checked against it ([`crate::component_inputs`]).
+#[cfg(debug_assertions)]
+pub(crate) fn widget_inspection_json(widget: &dyn Widget) -> String {
+    serde_json::to_string(&inspection::collect_inspection(
+        widget,
+        "",
+        &mut HashMap::new(),
+    ))
+    .unwrap_or_default()
+}
 use inspection::{
     audit_inspection_node, collect_inspection, collect_named_targets, collect_targets,
     compare_bool, compare_contains, compare_optional_bool, compare_text, compare_text_selection,
@@ -442,6 +454,9 @@ pub struct FrameHarness {
     /// What each frame's control refresh discovered: a component's shared forest is filtered and
     /// surveyed only where it changed.
     bound_resources: crate::bound_dispatch::BoundResourceCache,
+    /// Each component's undo status as last read, while nothing it follows
+    /// moved.
+    undo_statuses: crate::bound_dispatch::UndoStatusCache,
     /// Advanced whenever something a component's declarations may follow
     /// moved since the last publication ([`Self::bound_resource_key`]), so
     /// nothing local is taken from an earlier frame, yet a frame that only
@@ -1110,7 +1125,7 @@ impl FrameHarness {
         // A host on its own frame clock takes a wake in its next frame, as a live window's redraw
         // request does; input arriving before it is dispatched against the last frame.
         if !self.coalesce_input_frames && self.take_wake() {
-            self.relayout();
+            self.woken();
         }
         self.readmit_owner_service_layout()
     }
@@ -1527,6 +1542,7 @@ impl FrameHarness {
             window_scope: None,
             window_app: None,
             bound_resources: crate::bound_dispatch::BoundResourceCache::default(),
+            undo_statuses: crate::bound_dispatch::UndoStatusCache::default(),
             bound_resource_frames: 0,
             bound_resource_key: None,
             local_changes: 0,
@@ -2333,9 +2349,13 @@ impl FrameHarness {
                     .as_ref()
                     .is_none_or(|history| history.validate_root(self.root.as_ref()).is_ok());
                 let before = shown(self);
-                self.host_tick();
-                self.sync_frame();
-                self.publish_undo_status();
+                // Every component's pass runs, whatever its own witness
+                // says: what a component at rest skipped is checked too.
+                crate::component_inputs::forcing(|| {
+                    self.host_tick();
+                    self.sync_frame();
+                    self.publish_undo_status();
+                });
                 let replaced = self.composition_changed();
                 (before, shown(self), replaced, resting && standing)
             })
@@ -2487,7 +2507,7 @@ impl FrameHarness {
                 {
                     return status.clone();
                 }
-                let status = binding.undo_status(&mut self.state.doc).unwrap_or_default();
+                let status = self.undo_statuses.status(binding, &mut self.state.doc);
                 bound_statuses.push((binding.clone(), status.clone()));
                 status
             });
@@ -3085,6 +3105,22 @@ impl FrameHarness {
         reason = "one exclusive sync/build/admission/measure/apply sequence keeps layout ownership explicit"
     )]
     pub fn relayout(&mut self) {
+        self.invalidate_local();
+        // Asked for after changing anything, so every component syncs too,
+        // whatever its witness says ([`crate::component_inputs`]); a frame
+        // an event or an idle pass asks for syncs only those something
+        // reached.
+        let _forcing = crate::component_inputs::Forcing::begin();
+        self.run_frame();
+    }
+
+    /// A wake reached the host: work off the frame landed (a worker's
+    /// reply, another replica's change arriving in a record, a search's
+    /// answer), as a host told of it by the wake notifier it mounted its
+    /// windows with. The frame it asks for runs, and only the windows the
+    /// wake reached, or whatever they follow, sync
+    /// ([`crate::component_inputs`]).
+    pub fn woken(&mut self) {
         self.invalidate_local();
         self.run_frame();
     }
@@ -8651,13 +8687,34 @@ impl FrameHarness {
     /// sends. `None` when no widget of that type opts in to `as_any_mut`.
     pub fn widget_mut<T: 'static>(&mut self) -> Option<&mut T> {
         self.invalidate_local();
-        fn find<T: 'static>(widget: &mut dyn Widget) -> Option<&mut T> {
-            if widget.as_any_mut().is_some_and(|any| any.is::<T>()) {
-                return widget.as_any_mut()?.downcast_mut::<T>();
+        /// The widget of type `ty`, and the component whose widget it is:
+        /// what the caller does with it is input that component takes up.
+        /// One copy for every type asked for.
+        fn find(
+            widget: &mut dyn Widget,
+            ty: std::any::TypeId,
+            owner: Option<crate::bound_dispatch::CallbackBinding>,
+        ) -> Option<(
+            &mut dyn Widget,
+            Option<crate::bound_dispatch::CallbackBinding>,
+        )> {
+            let owner = widget.callback_binding().or(owner);
+            if widget
+                .as_any_mut()
+                .is_some_and(|any| (*any).type_id() == ty)
+            {
+                return Some((widget, owner));
             }
-            widget.children_mut().into_iter().find_map(find::<T>)
+            widget
+                .children_mut()
+                .into_iter()
+                .find_map(|child| find(child, ty, owner.clone()))
         }
-        find::<T>(self.root.as_mut())
+        let (found, owner) = find(self.root.as_mut(), std::any::TypeId::of::<T>(), None)?;
+        if let Some(owner) = owner {
+            owner.note_input();
+        }
+        found.as_any_mut()?.downcast_mut::<T>()
     }
 
     fn invoke_address(

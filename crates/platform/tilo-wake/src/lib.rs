@@ -349,6 +349,14 @@ impl WakeHandle {
         Self { route: None }
     }
 
+    /// What tells this handle's scope from every other open one, `None` for
+    /// a detached handle.
+    pub fn scope_key(&self) -> Option<usize> {
+        self.route
+            .as_ref()
+            .map(|route| route.as_ptr().cast::<()>() as usize)
+    }
+
     /// Whether the handle was captured outside every scope: nothing it
     /// publishes reaches an owner.
     pub const fn is_detached(&self) -> bool {

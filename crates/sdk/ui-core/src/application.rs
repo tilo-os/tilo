@@ -17,6 +17,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+mod component_inputs;
 mod host;
 mod open_file;
 pub mod registry;
@@ -1592,12 +1593,6 @@ impl AppComponent {
     /// so the window presents the new state instead of keeping the old one.
     pub(crate) fn take_save_status_changed(&mut self) -> bool {
         std::mem::take(&mut self.save_status_changed)
-    }
-
-    /// The durability last delivered, as sampled.
-    #[cfg(test)]
-    pub(crate) fn sampled_record_save(&self) -> Option<&crate::record::RecordSaveStatus> {
-        self.record_save.as_ref()
     }
 
     pub fn new(

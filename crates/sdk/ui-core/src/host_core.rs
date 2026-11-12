@@ -712,6 +712,11 @@ pub(crate) trait HostCore {
     ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
         self.widget_reached();
         let document = self.document();
+        // The host reaching a component's widget is input that component's
+        // next sync takes up.
+        if let Some(binding) = document.bindings.binding_ref(node) {
+            binding.note_input();
+        }
         // SAFETY: exclusive host access prevents overlapping target references.
         unsafe {
             crate::bound_dispatch::mutate_bound_node(

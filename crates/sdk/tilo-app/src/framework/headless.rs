@@ -1560,10 +1560,15 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// Run the frame the app runs after an event: edits the views and
-    /// effects submitted are applied, and what they change is drawn.
+    /// effects submitted are applied, and what they change is drawn. Every
+    /// component syncs and settles, as after an event that reached it: a
+    /// test may have changed what its views read past the framework
+    /// ([`ui_core::component_inputs`]).
     pub fn settle(&mut self) {
-        self.harness()
-            .wait_until(ui_core::time::Duration::ZERO, |_| true);
+        ui_core::component_inputs::forcing(|| {
+            self.harness()
+                .wait_until(ui_core::time::Duration::ZERO, |_| true);
+        });
     }
 
     /// What the live window does once input stops, and no more: what its

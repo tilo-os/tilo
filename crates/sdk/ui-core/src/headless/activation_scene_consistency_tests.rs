@@ -953,7 +953,9 @@ fn selected_late_blur_is_refused_before_frame_is_accepted() {
     );
     assert_retired_activation(&f);
     f.selected.blur_after_draw.set(false);
-    f.frame.try_relayout().unwrap();
+    // The fixture's switch is no input the framework follows: this frame
+    // stands for the one input past it would ask for.
+    crate::component_inputs::forcing(|| f.frame.try_relayout()).unwrap();
     let node = f.frame.named_target_nodes()["activation-selected"];
     assert!(
         f.frame

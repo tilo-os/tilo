@@ -1456,7 +1456,9 @@ impl SearchCache {
             self.builds = self.builds.saturating_add(1);
         }
         if indexes_off_frame(&entries) {
-            let (send, arriving) = std::sync::mpsc::channel();
+            // The index landing wakes the window that asked: it is an
+            // answer its next sync takes up, never one a frame polls for.
+            let (send, arriving) = ui_core::wake::waking_channel();
             let building = entries.clone();
             let spawned = ui_core::background::Background::current().spawn(
                 "resource-search-index",
@@ -2438,7 +2440,8 @@ impl RootApp for ResourceRoot {
 
     fn record_save_status(&mut self, status: RecordSaveStatus) {
         self.save.record(&status, ui_core::time::now());
-        self.saved.set(status);
+        // Sampled on every sync: only a new status is a change.
+        self.saved.set_if_changed(status);
     }
 
     // The workspace refused what this record sent, and the record withdrew it:

@@ -1208,6 +1208,8 @@ pub(crate) fn activate_bound_search(
     let mut visit = |current: &CallbackBinding,
                      widget: &mut dyn crate::widget::AppWidget,
                      _: &tilo_actions::ActionRegistry| {
+        // Opening a search hit is input the component takes up.
+        current.note_input();
         result = Some(
             current
                 .with_document(doc, |doc, path| {
@@ -1339,6 +1341,53 @@ pub(crate) fn directory_witness(
 #[derive(Default)]
 pub(crate) struct BoundResourceCache(RefCell<Vec<CachedBoundResources>>);
 
+/// What a component's undo status was read at ([`CallbackBinding::undo_inputs`]).
+#[derive(Clone, PartialEq)]
+struct UndoInputs {
+    revision: u64,
+    generation: u64,
+    document: (Vec<ChangeHash>, usize),
+}
+
+/// Each component's undo status as last read, kept while nothing it follows
+/// moved: a frame tells every undo control its status, and reading it opens
+/// the component's record, which a window nothing reached need not do on
+/// every frame another window draws.
+#[derive(Default)]
+pub(crate) struct UndoStatusCache(
+    RefCell<Vec<(CallbackBinding, UndoInputs, crate::undo::UndoStatus)>>,
+);
+
+impl UndoStatusCache {
+    /// `binding`'s undo status: as last read while nothing it follows moved,
+    /// else read now.
+    pub(crate) fn status(
+        &self,
+        binding: &CallbackBinding,
+        outer: &mut AutoCommit,
+    ) -> crate::undo::UndoStatus {
+        let inputs = binding.undo_inputs(outer);
+        if let Some(inputs) = &inputs
+            && let Some((_, _, status)) = self
+                .0
+                .borrow()
+                .iter()
+                .find(|(seen, read, _)| seen.same_component(binding) && read == inputs)
+        {
+            return status.clone();
+        }
+        let status = binding.undo_status(outer).unwrap_or_default();
+        let mut entries = self.0.borrow_mut();
+        entries.retain(|(seen, _, _)| {
+            !seen.same_component(binding) && !seen.closing.get() && seen.lifetime.is_active()
+        });
+        if let Some(inputs) = inputs {
+            entries.push((binding.clone(), inputs, status.clone()));
+        }
+        status
+    }
+}
+
 /// One bound owner's admission generation and record frontier, read on each
 /// side of an input dispatch (the native App) or of a frame (the frame
 /// harness, which also reads the owner's standing: [`bound_owner_standing`]).
@@ -1355,9 +1404,9 @@ pub(crate) struct BoundOwnerMark {
 /// record and its widgets: what its permissions mean now (a grant expires
 /// with time) and its record's durability, which its root shows once synced.
 #[derive(PartialEq)]
-struct OwnerStanding {
-    permissions: Result<crate::permissions::DirectoryPermissionWitness, String>,
-    save: Result<crate::record::RecordSaveStatus, String>,
+pub(crate) struct OwnerStanding {
+    pub(crate) permissions: Result<crate::permissions::DirectoryPermissionWitness, String>,
+    pub(crate) save: Result<crate::record::RecordSaveStatus, String>,
 }
 
 impl BoundOwnerMark {
@@ -1475,7 +1524,12 @@ impl BoundResourceCache {
 struct CachedBoundResources {
     snapshot: BoundResourceSnapshot,
     generation: u64,
-    local_generation: u64,
+    /// What local input the snapshot was published after: the owner's
+    /// input revision and what its declarations read outside it, which
+    /// move only with what reached that owner
+    /// ([`crate::component_inputs`]); the host's frame count for an owner
+    /// without one.
+    local: LocalInputs,
     /// The language the snapshot's names were resolved in: a resource is
     /// named when it is published, so an owner that keeps serving its record
     /// is published again once the person changes language.
@@ -1487,6 +1541,25 @@ struct CachedBoundResources {
     /// filtering gave for the subtrees it shares
     /// ([`crate::published::SharedResource::filtered`]).
     filter_token: u64,
+}
+
+/// What a cached snapshot's declarations followed besides the record
+/// ([`CachedBoundResources::local`]).
+enum LocalInputs {
+    Owner(u64, crate::component_inputs::Reads),
+    Frames(u64),
+}
+
+impl LocalInputs {
+    /// Whether a snapshot published after `self` still holds for an owner
+    /// at `revision` in host frame `frames`.
+    fn hold(&self, revision: Option<u64>, frames: u64) -> bool {
+        match (self, revision) {
+            (Self::Owner(was, reads), Some(now)) => *was == now && reads.stand().is_ok(),
+            (Self::Frames(was), None) => *was == frames,
+            _ => false,
+        }
+    }
 }
 
 #[allow(
@@ -1574,7 +1647,9 @@ pub(crate) fn discover_cached_bound_resources(
                 .find(|entry| {
                     entry.snapshot.binding.same_component(binding)
                         && generation == Some(entry.generation)
-                        && entry.local_generation == local_generation
+                        && entry
+                            .local
+                            .hold(binding.lifetime.revision(), local_generation)
                         && entry.locale == locale
                         && entry.permissions == permissions
                         && entry.revisions == revisions
@@ -1603,25 +1678,30 @@ pub(crate) fn discover_cached_bound_resources(
                             (token, Rc::clone(&entry.snapshot.controls), last)
                         },
                     );
-                let resources: Rc<[SharedResource]> = binding
-                    .read_document(doc, |doc, _| {
-                        let mut resources = Vec::new();
-                        owned(widget, doc, binding, &mut resources, &mut Vec::new(), true);
-                        resources
-                            .iter()
-                            .filter_map(|resource| {
-                                // A root rebuilt as it was takes the last one's
-                                // filtering: its actions are not asked about again.
-                                if let Some(last) = last.as_ref().and_then(|last| {
-                                    last.iter().find(|last| last.id() == resource.id())
-                                }) {
-                                    inherit_filtered(binding, filter_token, last, resource);
-                                }
-                                filter_shared(binding, filter_token, resource)
-                            })
-                            .collect()
-                    })
-                    .map_err(|error| format!("{error:?}"))?;
+                let (resources, reads) =
+                    crate::component_inputs::reading(&binding.lifetime, || {
+                        binding.read_document(doc, |doc, _| {
+                            let mut resources = Vec::new();
+                            owned(widget, doc, binding, &mut resources, &mut Vec::new(), true);
+                            resources
+                                .iter()
+                                .filter_map(|resource| {
+                                    // A root rebuilt as it was takes the last one's
+                                    // filtering: its actions are not asked about again.
+                                    if let Some(last) = last.as_ref().and_then(|last| {
+                                        last.iter().find(|last| last.id() == resource.id())
+                                    }) {
+                                        inherit_filtered(binding, filter_token, last, resource);
+                                    }
+                                    filter_shared(binding, filter_token, resource)
+                                })
+                                .collect::<Rc<[SharedResource]>>()
+                        })
+                    });
+                let resources = resources.map_err(|error| format!("{error:?}"))?;
+                // Taken once the reading ended: what the reading itself moved
+                // (work it woke the owner for) is in the snapshot.
+                let revision = binding.lifetime.revision();
                 // Each row was filtered using current permission checks. Do
                 // not cache a mixed projection if time/policy changed while
                 // those checks were running.
@@ -1638,7 +1718,9 @@ pub(crate) fn discover_cached_bound_resources(
                     entries.push(CachedBoundResources {
                         snapshot: snapshot.clone(),
                         generation,
-                        local_generation,
+                        local: revision.map_or(LocalInputs::Frames(local_generation), |revision| {
+                            LocalInputs::Owner(revision, reads)
+                        }),
                         locale,
                         permissions,
                         revisions,
@@ -2879,6 +2961,10 @@ pub(crate) fn invoke_resource_action(
         route: reroute,
     } = request;
     let _entry = target.binding.enter()?;
+    // An action invoked on the component, by whatever asked (a control, the
+    // semantic tree, an agent, the palette), is input its next sync takes
+    // up: a handler may only queue what that sync shows (a note to open).
+    target.binding.note_input();
     let mut result = None;
     let mut accepted = false;
     let mut delivery = |binding: &CallbackBinding,
@@ -4431,6 +4517,20 @@ impl CallbackBinding {
         }
         Ok(changed)
     }
+    /// What the component's undo status follows besides its widgets: its
+    /// input revision, the admission generation of its record and the
+    /// record's frontier. `None` while any of it cannot be read, so a status
+    /// is read afresh ([`UndoStatusCache`]).
+    fn undo_inputs(&self, outer: &AutoCommit) -> Option<UndoInputs> {
+        Some(UndoInputs {
+            revision: self.lifetime.revision()?,
+            generation: self.generation().ok()??,
+            document: self
+                .read_document(outer, |document, _| crate::doc::settle_mark(document))
+                .ok()?,
+        })
+    }
+
     pub(crate) fn undo_status(
         &self,
         outer: &mut AutoCommit,
@@ -4760,6 +4860,12 @@ impl CallbackBinding {
         #[cfg(test)]
         document_admission_probe::record(self);
         self.with_record_frame(outer, true, callback)
+    }
+    /// Input reached the component outside its own passes (an event, an
+    /// action, focus): its input revision moves, so its next pass runs
+    /// ([`crate::component_inputs`]).
+    pub(crate) fn note_input(&self) {
+        self.lifetime.note_change();
     }
     /// Lend typed edits without opening a mutation merely because a frame polls.
     /// The executor activates this owner when a typed action actually writes.

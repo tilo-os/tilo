@@ -3303,7 +3303,14 @@ impl RecordStore {
             .get(id)
             .and_then(|parked| parked.doc.as_ref())
             .ok_or(RecordOpenError::MissingRecord)?;
+        // A component's pass that reads it reads it again once it moved.
+        crate::component_inputs::read_record(self, id, document);
         Ok(read(document))
+    }
+
+    /// What tells this store from another holding the same records.
+    pub(crate) fn key(&self) -> usize {
+        std::rc::Rc::as_ptr(&self.0).cast::<()>() as usize
     }
 
     /// One exclusive record admission for the document and owned action frame.
@@ -3919,7 +3926,9 @@ impl RecordStore {
         let set = self.0.try_borrow().ok()?;
         set.not_lent(id).ok()?;
         let parked = set.open.get(id)?;
-        Some(read(parked.doc.as_ref()?, &parked.history))
+        let document = parked.doc.as_ref()?;
+        crate::component_inputs::read_record(self, id, document);
+        Some(read(document, &parked.history))
     }
 
     /// Every record this store holds.

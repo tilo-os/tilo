@@ -197,7 +197,9 @@ impl DispatchCore {
     /// Name this resource `label`, as history, the palette and an agent read
     /// it: the name its app gives the state it holds now.
     pub(crate) fn name_resource(&self, label: &str) {
-        self.resource_label.set(label.to_owned());
+        // Named again by every publication: only a new name is a change
+        // anyone reading it takes up.
+        self.resource_label.set_if_changed(label.to_owned());
     }
 }
 
