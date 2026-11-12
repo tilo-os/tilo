@@ -5,7 +5,7 @@ name: CI / affected packages
 # Each push plans from the head of the newest earlier push run on main whose
 # window really ran, so a window covers every commit whose own run was dropped,
 # and a push that cannot open the window skips instead of leaving fifteen runs
-# queued behind one another (see the `supersede` job).
+# queued behind one another (see the `supersede` job), ending as cancelled.
 # `stable` is moved by hand when a release is cut; nothing here writes it.
 #
 # Affected reverse dependencies are checked on native x86; changed packages,
@@ -67,8 +67,8 @@ jobs:
   #     job.
   #   * does an older run hold it, or is it still deciding whether to claim it?
   #     Then its commits and this one's are the same next window, and this run
-  #     skips every job -- a clean success, not a failure, because nothing here
-  #     was tested and nothing was lost.
+  #     skips every job, and `untested` ends it as cancelled: nothing here was
+  #     tested, so it must not read as a success, and nothing was lost.
   #   * are older runs still waiting to start? Then they are cancelled, and this
   #     run's plan starts below them, so their commits are measured here.
   # The run that holds the window keeps it until it is done, so exactly one
@@ -87,6 +87,7 @@ jobs:
       image: registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89
     outputs:
       superseded: ${{ steps.window.outputs.superseded }}
+      window: ${{ steps.window.outputs.window }}
       base: ${{ steps.window.outputs.base }}
     steps:
       - name: Check out the window decision
@@ -956,8 +957,39 @@ jobs:
           read -r -a pins <<< "$PINS"
           ./os/dev/verify-snapshot-pins.sh "${pins[@]}"
 
+  # A superseded run tested nothing for its head beyond its page build (`web`), so it must
+  # not read as a success: this job cancels the run once those results are in,
+  # and fails it when one of them failed or the cancellation is refused
+  # (tools/ci/push_window.py --close). The run named in its summary measures
+  # these commits.
+  untested:
+    needs: [supersede, web]
+    if: ${{ always() && needs.supersede.outputs.superseded == 'true' }}
+    runs-on: runner
+    timeout-minutes: 15
+    container:
+      image: registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89
+    steps:
+      - name: Check out the window decision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+          filter: blob:none
+
+      - name: End this untested run as cancelled
+        env:
+          HEAD_RESULTS: ${{ needs.web.result }}
+          WINDOW_RUN: ${{ needs.supersede.outputs.window }}
+          RUN_NUMBER: ${{ github.run_number }}
+          API_URL: ${{ github.api_url }}
+          REPOSITORY: ${{ github.repository }}
+          CI_TOKEN: ${{ github.token }}
+          CI_SPARE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          WORKFLOW: check.yml
+        run: python3 tools/ci/push_window.py --close
+
   checks:
-    # A superseded run has nothing to aggregate; it still finishes successfully.
+    # A superseded run has nothing to aggregate; `untested` ends it instead.
     if: ${{ always() && needs.supersede.outputs.superseded != 'true' }}
     needs: [supersede, web, builder, select, security, test, check, clippy, android, wasm, suites, vendored, pins]
     runs-on: runner-quality
