@@ -21,13 +21,15 @@
 //! Stop ends it alone.
 
 mod environments;
+mod seats;
 mod service_steps;
 
 use environments::Origin;
+pub(crate) use seats::Seats;
 pub(crate) use service_steps::invoke_service_step;
 use service_steps::{arguments_of, change_through};
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -331,186 +333,6 @@ fn read_bindings(path: &Path) -> (HashMap<BindingKey, String>, Lost) {
         }
     }
     (answers, lost)
-}
-
-/// The agents the person admitted at this door, as their desk seats them: one presence per agent,
-/// from the moment the person lets its first client in until the last of its connections ends. A
-/// shell shows each as its own presence on the bar.
-pub(crate) struct Seats {
-    inner: std::sync::Mutex<Inner>,
-}
-
-#[derive(Default)]
-struct Inner {
-    /// Bumped on every change, so a reading made before it is not mistaken for the desk now.
-    revision: u64,
-    /// The number the door gives each connection it serves.
-    next: u64,
-    /// The connections the door is serving, by that number: the person's Stop on an agent takes
-    /// every one of its own.
-    connections: BTreeMap<u64, Connection>,
-}
-
-struct Connection {
-    /// The agent the person admitted it as: empty until they answer.
-    agent: String,
-    /// What the client called itself, as the sheet showed it.
-    client: String,
-    /// The workspace it works in, by name.
-    workspace: String,
-    /// The environment's door it came in by, by number: none for the session's own. It ends with
-    /// that environment.
-    door: Option<u64>,
-    /// The connection itself, shut when the person stops its seat.
-    stream: Option<UnixStream>,
-}
-
-impl Seats {
-    pub(crate) fn new() -> Arc<Self> {
-        Arc::new(Self {
-            inner: std::sync::Mutex::new(Inner::default()),
-        })
-    }
-
-    /// A connection by the environment's door `door` (none for any other), before the person
-    /// answers for it: nothing of it shows until it is admitted.
-    fn joining(&self, door: Option<u64>) -> u64 {
-        let mut inner = self.inner.lock_recover();
-        inner.next = inner.next.wrapping_add(1);
-        let seat = inner.next;
-        inner.connections.insert(
-            seat,
-            Connection {
-                agent: String::new(),
-                client: String::new(),
-                workspace: String::new(),
-                door,
-                stream: None,
-            },
-        );
-        seat
-    }
-
-    /// The person admitted connection `seat` as `agent` , a client that calls itself `client` ,
-    /// working in `workspace` : what the bar shows from now on.
-    fn admitted(&self, seat: u64, agent: &str, client: &str, workspace: &str) {
-        let mut inner = self.inner.lock_recover();
-        let Some(connection) = inner.connections.get_mut(&seat) else {
-            // It ended while the person was answering: nothing is served.
-            return;
-        };
-        agent.clone_into(&mut connection.agent);
-        client.clone_into(&mut connection.client);
-        workspace.clone_into(&mut connection.workspace);
-        inner.revision = inner.revision.wrapping_add(1);
-    }
-
-    /// How the desk shows connection `seat` 's agent ("Claude Code in dev #1"), once admitted.
-    fn shown(&self, seat: u64) -> Option<String> {
-        self.inner
-            .lock_recover()
-            .connections
-            .get(&seat)
-            .map(|connection| connection.client.clone())
-            .filter(|shown| !shown.is_empty())
-    }
-
-    /// The connection `seat` names, which ending its seat closes.
-    fn attached(&self, seat: u64, stream: &UnixStream) {
-        let copy = match stream.try_clone() {
-            Ok(copy) => Some(copy),
-            Err(error) => {
-                // Without its own handle the seat cannot end this connection;
-                // the client keeps it until it leaves by itself.
-                tracing::warn!(%error, "an agent seat's connection could not be duplicated");
-                None
-            }
-        };
-        if let Some(connection) = self.inner.lock_recover().connections.get_mut(&seat) {
-            connection.stream = copy;
-        }
-    }
-
-    /// The connection `seat` names ended; its agent's seat goes with its last.
-    fn left(&self, seat: u64) {
-        let mut inner = self.inner.lock_recover();
-        if inner.connections.remove(&seat).is_none() {
-            return;
-        }
-        inner.revision = inner.revision.wrapping_add(1);
-    }
-
-    /// End every connection served as `agent` , as the person's Stop on its seat does. Whether
-    /// there was one.
-    pub(crate) fn stop(&self, agent: &str) -> bool {
-        self.end(|connection| connection.agent == agent)
-    }
-
-    /// End every connection that came in by the environment's door `door`, as that environment
-    /// ends.
-    fn stop_door(&self, door: u64) -> bool {
-        self.end(|connection| connection.door == Some(door))
-    }
-
-    /// End every connection `ending` picks. Whether there was one.
-    fn end(&self, ending: impl Fn(&Connection) -> bool) -> bool {
-        let ended: Vec<Connection> = {
-            let mut inner = self.inner.lock_recover();
-            let seats: Vec<u64> = inner
-                .connections
-                .iter()
-                .filter(|(_, connection)| ending(connection))
-                .map(|(seat, _)| *seat)
-                .collect();
-            if seats.is_empty() {
-                return false;
-            }
-            let ended = seats
-                .into_iter()
-                .filter_map(|seat| inner.connections.remove(&seat))
-                .collect();
-            inner.revision = inner.revision.wrapping_add(1);
-            ended
-        };
-        for connection in ended {
-            if let Some(stream) = connection.stream {
-                let _ = stream.shutdown(std::net::Shutdown::Both);
-            }
-        }
-        true
-    }
-
-    /// The agents seated here now, as the desk's shell lists them.
-    pub(crate) fn readings(&self) -> Vec<tilo_session_core::shell::AgentReading> {
-        let inner = self.inner.lock_recover();
-        // One presence per agent, in the order their keys come: a client with two connections shows
-        // once.
-        let mut agents: BTreeMap<String, tilo_session_core::shell::AgentReading> = BTreeMap::new();
-        for connection in inner.connections.values() {
-            if connection.agent.is_empty() {
-                continue;
-            }
-            agents.entry(connection.agent.clone()).or_insert_with(|| {
-                tilo_session_core::shell::AgentReading {
-                    key: connection.agent.clone(),
-                    name: connection.client.clone(),
-                    state: "running".to_owned(),
-                    doing: connection.workspace.clone(),
-                    mark: String::new(),
-                    unseen: 0,
-                    seat: true,
-                }
-            });
-        }
-        drop(inner);
-        agents.into_values().collect()
-    }
-
-    /// What the seats were made from, without making them: changes only when an agent was admitted
-    /// or left.
-    pub(crate) fn revision(&self) -> u64 {
-        self.inner.lock_recover().revision
-    }
 }
 
 /// The door's listener, bound and ready, before the session serves it.
@@ -918,7 +740,8 @@ impl Loop {
         if let Some(agent) = ahead {
             let (agent, shown) = self.agent_of(&agent, &facts);
             tracing::info!(client = %facts.client, pid = facts.pid, %agent, %workspace, "agent door: what the person said ahead of time admits this client");
-            self.seats.admitted(seat, &agent, &shown, &name);
+            self.seats
+                .admitted(seat, &agent, &shown, (workspace.as_str(), name.as_str()));
             let _ = decide.send(Consent::Admit {
                 workspace,
                 agent,
@@ -1055,7 +878,7 @@ impl Loop {
             waiting.seat,
             &waiting.proposed,
             &waiting.shown,
-            &waiting.workspace_name,
+            (&waiting.workspace, &waiting.workspace_name),
         );
         // What is remembered is the agent, at its place: each later connection the answer admits
         // is an instance of its own.
@@ -1853,6 +1676,54 @@ pub(crate) struct Host {
     /// it ([`crate::door_runs`]). `None` for the person's own connection, and where the
     /// workspace does not confine its agents to runs.
     run: Option<Arc<DoorRun>>,
+    /// The seat an admitted agent's connection sits at: each step it takes says there what it is
+    /// doing. `None` for the person's own connection.
+    seat: Option<Arc<SeatAt>>,
+}
+
+/// The seat one admitted agent's connection sits at, and the apps of what it was offered.
+struct SeatAt {
+    seats: Arc<Seats>,
+    seat: u64,
+    /// What tells the loop the seat moved.
+    wake: Wake,
+    /// The app each provider it was offered is of, by provider: what names the app a step of its
+    /// is in.
+    apps: std::sync::Mutex<HashMap<String, String>>,
+}
+
+impl SeatAt {
+    /// Most providers a seat keeps the app of: a client that lists more is told its apps afresh.
+    const APPS: usize = 4_096;
+
+    /// The agent was offered `rows`.
+    fn offered(&self, rows: &[tilo_actions::remote::CatalogueRow]) {
+        let mut apps = self.apps.lock_recover();
+        if apps.len() > Self::APPS {
+            apps.clear();
+        }
+        for row in rows.iter().filter(|row| !row.app_id.is_empty()) {
+            apps.insert(row.provider.clone(), row.app_id.clone());
+        }
+    }
+
+    /// The agent takes the step `request` names: everyone in its workspace reads it beside its
+    /// face.
+    fn acting(&self, request: &InvokeRequest) {
+        let app = self
+            .apps
+            .lock_recover()
+            .get(&request.target.provider)
+            .cloned();
+        let line = tilo_session_client::narration::lines::doing(
+            app.as_deref().unwrap_or_default(),
+            &request.target.address.action,
+            None,
+        );
+        if self.seats.acting(self.seat, line, app) {
+            (self.wake)();
+        }
+    }
 }
 
 /// The run one admitted agent's connection works in: its task agent's host on the broker, and the
@@ -1918,7 +1789,20 @@ impl Host {
             answered: Arc::default(),
             session_actions: None,
             run: None,
+            seat: None,
         }
+    }
+
+    /// The same door, for the agent seated at `seat` of `seats`: what it does is said there, and
+    /// `wake` tells the loop.
+    fn seated(mut self, seats: &Arc<Seats>, seat: u64, wake: &Wake) -> Self {
+        self.seat = Some(Arc::new(SeatAt {
+            seats: Arc::clone(seats),
+            seat,
+            wake: Arc::clone(wake),
+            apps: std::sync::Mutex::default(),
+        }));
+        self
     }
 
     /// The same door, working in `run`: an admitted agent's.
@@ -1992,6 +1876,9 @@ impl Host {
             && self.session.branches_elsewhere(&request, workspace)
         {
             return Pending::ready(Err(ActionHostError::NotPermitted));
+        }
+        if !person && let Some(seat) = &self.seat {
+            seat.acting(&request);
         }
         if person && (own || self.state.is_none()) {
             return self.invoke_person_step(caller, request);
@@ -2125,6 +2012,7 @@ impl ActionHost for Host {
         };
         if let Some(workspace) = confined {
             let session = Arc::clone(&self.session);
+            let seat = self.seat.clone();
             let page = match &self.state {
                 Some(state) => state.action_query(caller, &query),
                 None => Pending::ready(Ok(CataloguePage::from_rows(
@@ -2139,6 +2027,9 @@ impl ActionHost for Host {
                         !session.window_elsewhere(&row.resource.id, &workspace)
                             && !session.window_elsewhere(&row.parent_resource, &workspace)
                     });
+                    if let Some(seat) = &seat {
+                        seat.offered(&page.rows);
+                    }
                     page
                 })
             });
@@ -2580,7 +2471,7 @@ fn serve_admitted(
     facts: Facts,
     (broker, remote): (Arc<AppBrokerState>, Option<Arc<Remote>>),
     session: &Arc<SessionDoors>,
-    (requests, wake, seats): (&Sender<Request>, &Wake, &Seats),
+    (requests, wake, seats): (&Sender<Request>, &Wake, &Arc<Seats>),
 ) {
     let tasks = Arc::new(TaskHosts::new(&session.person, Arc::clone(session)));
     let admitted = Arc::clone(&tasks);
@@ -2606,6 +2497,7 @@ fn serve_admitted(
             let Some((workspace, person, seated)) = starting.lock_recover().take() else {
                 return Ok(host);
             };
+            let host = host.seated(seats, seat, wake);
             // The run is named as the desk shows its agent: what its history is listed under and
             // what its questions to the person call it.
             let seated = seats.shown(seat).unwrap_or(seated);
@@ -2770,7 +2662,7 @@ mod tests {
             "nothing shows before the answer"
         );
         let shown = seats.revision();
-        seats.admitted(asked, "claude-code", "Claude Code", "Studio");
+        seats.admitted(asked, "claude-code", "Claude Code", ("w1", "Studio"));
         seats.attached(asked, &served);
         assert!(seats.revision() > shown, "the desk is told");
         let readings = seats.readings();
@@ -2782,7 +2674,7 @@ mod tests {
         // One agent, two connections: the bar shows one presence, and the person's Stop ends both.
         let (second_served, second_client) = UnixStream::pair().unwrap();
         let other = seats.joining(None);
-        seats.admitted(other, "claude-code", "Claude Code", "Studio");
+        seats.admitted(other, "claude-code", "Claude Code", ("w1", "Studio"));
         seats.attached(other, &second_served);
         assert_eq!(seats.readings().len(), 1, "one presence per agent");
         assert!(seats.stop("claude-code"), "the person's Stop");

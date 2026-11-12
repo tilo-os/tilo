@@ -390,14 +390,42 @@ impl Presence {
             .collect()
     }
 
-    /// Whether anyone but `own` is here in a workspace this session takes part in.
+    /// Whether anyone but `own` and the agents it speaks for is here in a workspace this session
+    /// takes part in.
     #[must_use]
     pub fn anyone_else_here(&self, own: EndpointId) -> bool {
+        let own = *own.as_bytes();
         self.plane.borrow().workspaces.iter().any(|held| {
             held.board
                 .here()
-                .any(|member| member.publisher != *own.as_bytes())
+                .any(|member| member.publisher != own && member.spoken_by != Some(own))
         })
+    }
+
+    /// Speak for `runs`, the agents this device executes, each as `(workspace, run, face)`: each
+    /// is here in its workspace as a member of its own, listed beside everyone else and said to
+    /// everyone there sealed as every presence is. A run said before and missing now leaves.
+    /// Whether who is here changed.
+    pub fn speak_for(&self, runs: &[(String, String, ShellPresence)]) -> bool {
+        let changed: Vec<String> = {
+            let mut plane = self.plane.borrow_mut();
+            plane
+                .workspaces
+                .iter_mut()
+                .filter_map(|held| {
+                    let here: Vec<(String, ShellPresence)> = runs
+                        .iter()
+                        .filter(|(workspace, _, _)| *workspace == held.id)
+                        .map(|(_, run, face)| (run.clone(), face.clone()))
+                        .collect();
+                    held.board.speak_for(&here).then(|| held.id.clone())
+                })
+                .collect()
+        };
+        for workspace in &changed {
+            self.due_in(workspace);
+        }
+        !changed.is_empty()
     }
 
     /// Who is here in the workspace in front, as every surface that draws them reads them: the
@@ -641,12 +669,6 @@ impl Presence {
             .iter()
             .flat_map(Workspace::calls)
             .collect()
-    }
-
-    /// This device's own word as the boards hold it, for a host that draws the roster.
-    #[must_use]
-    pub fn own_word_here(&self) -> presence::Own {
-        self.own_word()
     }
 }
 

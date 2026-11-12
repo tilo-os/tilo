@@ -866,8 +866,8 @@ async fn an_agent_through_tilo_mcp_is_seen_once_as_the_hosts_run() {
 /// governs (a Lounge's), a member's agent through `tilo mcp`'s path is seen
 /// once, named and narrated, as the run that host speaks for, by the member's
 /// own page, though the host is no member of the workspace's live plane and
-/// never holds its keys. A member device that claims the host's word for a
-/// run, on the host's track or on the plane, is not heard.
+/// never holds its keys. A member device that says a run on the host's track
+/// is not heard, and one it says on the plane is its own, never the host's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
     use tilo_peer_state::join::MemberRole;
@@ -977,7 +977,16 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
     loop {
         browser.pump();
         let here = browser.here();
-        let agents: Vec<_> = here.iter().filter(|member| member.agent).collect();
+        assert!(
+            here.iter()
+                .filter(|member| member.label == "Impostor")
+                .all(|member| member.spoken_by.as_deref() != Some(spoken_by.as_str())),
+            "a member device speaks in the host's place: {here:?}"
+        );
+        let agents: Vec<_> = here
+            .iter()
+            .filter(|member| member.agent && member.label != "Impostor")
+            .collect();
         let narrated = agents.first().is_some_and(|agent| {
             browser
                 .narrated

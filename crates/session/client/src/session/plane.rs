@@ -821,12 +821,6 @@ impl Task {
                 );
                 continue;
             }
-            // A run's word is the host's own, signed outside the plane.
-            if heard.track == Track::Presence
-                && super::host_voice::plane_speaks_for_a_run(&heard.body)
-            {
-                continue;
-            }
             self.reports.emit(&crate::Event::LivePlane {
                 ws: workspace_id,
                 from: heard.sender,

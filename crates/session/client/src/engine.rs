@@ -1017,39 +1017,6 @@ impl Engine {
         })
     }
 
-    /// [`Self::record`] of a sealed record, opened with `keys` rather than this device's channel
-    /// service: what a caller that holds a channel's keys itself reads back.
-    pub fn record_opened_with(
-        &self,
-        workspace: WorkspaceId,
-        (app, record): (&str, &str),
-        keys: &channel_crypto::ChannelContentKeys,
-    ) -> Result<Option<Vec<u8>>, String> {
-        let read = self.read_in(
-            workspace,
-            (app, record),
-            Holding::default(),
-            MAX_DOCUMENT_BYTES,
-            History {
-                open: &mut |write| {
-                    let metadata = write.encryption.ok_or("the write is not sealed")?;
-                    let ciphertext = collab_types::sealed_ciphertext(write)
-                        .map_err(|error| error.to_string())?;
-                    keys.open_content(write.artifact, &metadata, &ciphertext)
-                        .map(|plaintext| plaintext.to_vec())
-                        .map_err(|error| error.to_string())
-                },
-                kept: &mut KeptRecord::default(),
-            },
-        )?;
-        Ok(match read {
-            RecordReading::Captured { bytes, .. } => Some(bytes),
-            RecordReading::Changes { .. }
-            | RecordReading::Unchanged(_)
-            | RecordReading::Pending => None,
-        })
-    }
-
     /// The keys of `route`'s record in `workspace` here: those its host handed this device, else
     /// its channel's — taking part in it asks the workspace's devices for access the first time,
     /// and its governance answers with the group — and while the channel asks again, the ones it

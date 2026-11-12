@@ -8,7 +8,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use collab_types::presence::Presence as Frame;
+use collab_types::presence::{Presence as Frame, ShellPresence};
 use iroh_base::{EndpointAddr, EndpointId};
 use neighbour_wire::NeighbourMsg;
 use tilo_desktop_model::DesktopTree;
@@ -256,6 +256,14 @@ impl Client {
     /// board hears what that host says for the runs it executes, one member per run.
     pub fn set_workspace_host(&self, workspace: &str, host: Option<[u8; 32]>) {
         if self.presence.set_host(workspace, host) {
+            self.touched();
+        }
+    }
+
+    /// Speak for the agents this device executes ([`Presence::speak_for`]), and hand the host who
+    /// is here when that changed.
+    pub fn speak_for(&self, runs: &[(String, String, ShellPresence)]) {
+        if self.presence.speak_for(runs) {
             self.touched();
         }
     }
