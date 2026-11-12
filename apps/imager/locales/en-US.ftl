@@ -2688,3 +2688,20 @@ installer-error-unknown-filesystem = Unknown filesystem: { $filesystem }
 installer-keyboard-map-name = { $layout } keyboard layout
 ## The window bar's Rescan
 imager-rescan-drives = Rescan drives
+
+## Where a release runs, and the filesystem it installs
+imager-release-target-arm64 = Generic ARM64
+imager-release-target-x86-64 = Generic x86-64
+imager-release-target-media = Generic media
+imager-release-target-profile = { $profile } only
+imager-filesystem-btrfs = Btrfs
+imager-filesystem-ext4 = Ext4
+imager-filesystem-xfs = XFS
+installer-network-via = Internet via { $ssid } (saved for first boot)
+installer-network-available = Internet available
+installer-network-offline-available = { $connectivity }. Offline installation remains available.
+installer-connectivity-full = Connected to the internet
+installer-connectivity-portal = Sign-in required
+installer-connectivity-limited = Limited connectivity
+installer-connectivity-offline = Offline
+installer-connectivity-unknown = Connectivity not checked

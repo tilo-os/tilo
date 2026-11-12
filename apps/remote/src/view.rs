@@ -127,7 +127,7 @@ fn connection_row(
 ) -> ListRow {
     let mut list_row = ListRow::new(format!("remote.connection:{}", row.id), &row.name)
         .icon(kind_icon(row.kind))
-        .leading_tooltip(row.kind.label())
+        .leading_tooltip(CATALOG.t(row.kind.label_message()))
         .secondary(&row.address)
         .meta(&row.meta)
         .selected(row.selected)
@@ -307,7 +307,10 @@ fn offered_kinds(current: ConnectionKind) -> Vec<ConnectionKind> {
 fn protocol_field(requests: &Requests, model: &FormModel) -> Field {
     let kinds = offered_kinds(model.kind);
     let selected = kinds.iter().position(|k| *k == model.kind).unwrap_or(0);
-    let segments = kinds.iter().map(|k| Segment::new(k.label())).collect();
+    let segments = kinds
+        .iter()
+        .map(|k| Segment::new(CATALOG.t(k.label_message())))
+        .collect();
     let queue_to = Rc::clone(requests);
     let protocol =
         ToggleGroup::new(segments, selected).on_view("remote.form.protocol", move |index| {
@@ -347,7 +350,7 @@ fn machine_section(requests: &Requests, fields: &FormFields, model: &FormModel) 
     let mut section = FormSection::new("Machine").field(protocol_field(requests, model));
     if model.kind == ConnectionKind::Rdp {
         section = section.content(Box::new(
-            Banner::warning("Remote can't open RDP connections")
+            Banner::warning(CATALOG.t("remote-rdp-unsupported-title"))
                 .with_message(CATALOG.t("remote-rdp-unsupported-message")),
         ));
     }
@@ -440,7 +443,10 @@ fn sign_in_fields(
     }
     if methods.len() > 1 {
         let selected = methods.iter().position(|a| *a == model.auth).unwrap_or(0);
-        let segments = methods.iter().map(|a| Segment::new(a.label())).collect();
+        let segments = methods
+            .iter()
+            .map(|a| Segment::new(CATALOG.t(a.label_message())))
+            .collect();
         let queue_to = Rc::clone(requests);
         let auth = ToggleGroup::new(segments, selected).on_view("remote.form.auth", move |index| {
             if let Some(method) = methods.get(index) {

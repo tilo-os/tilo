@@ -175,3 +175,6 @@ print-centre-device-no-supplies = This printer does not report supply levels.
 print-centre-device-unreachable = Live details are unavailable. The printer may be asleep or disconnected.
 print-job-document = Document { $number }
 print-centre-cancel-pending-message = It will be removed from the printer. This cannot be undone.
+
+## A document waiting to be cancelled
+print-centre-cancel-pending-title = Cancel this document?

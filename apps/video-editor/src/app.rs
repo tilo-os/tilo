@@ -189,9 +189,10 @@ const BIN_BREAKPOINT: f64 = 900.0;
 /// reader, which is two descriptions of one state.
 const PREVIEW_EMPTY_TITLE: &str = "No clip at playhead";
 const PREVIEW_EMPTY_HINT: &str = "Move the playhead over a clip to see it";
-/// The marker list's add button, shared by the paint and the accessibility
-/// tree so a reader is offered the control the screen actually shows.
-const ADD_MARKER_LABEL: &str = "Add marker at playhead";
+/// The catalogue message naming the marker list's add button, shared by the
+/// paint and the accessibility tree so a reader is offered the control the
+/// screen actually shows.
+const ADD_MARKER_LABEL: &str = "video-editor-marker-add";
 /// The key the add button is addressed by, before hashing. A constant rather
 /// than a literal at each site so the node and the router cannot drift apart.
 const ADD_MARKER_KEY: &str = "add marker";

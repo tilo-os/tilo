@@ -58,8 +58,7 @@ pub(crate) const SELECTED_WORD: &str = "harrier";
 /// The sticky note the review lands on, and the comment pinned to it.
 pub(crate) const NOTE: &str = "sample-note";
 pub(crate) const NOTE_COMMENT: &str = "sample-note-comment";
-pub(crate) const NOTE_COMMENT_BODY: &str =
-    "Should we name the harrier's species here, as the later sections do?";
+pub(crate) const NOTE_COMMENT_BODY: &str = "pdf-viewer-sample-comment";
 const HIGHLIGHT: &str = "sample-highlight";
 
 /// Fixed date stamped on the demonstration signature, so captures stay the
@@ -229,7 +228,7 @@ pub fn sample_review() -> Vec<Edit<PdfMarkup>> {
             NOTE_COMMENT,
             Some(NOTE),
             "Alice",
-            NOTE_COMMENT_BODY,
+            &crate::t(NOTE_COMMENT_BODY),
             false,
             &[
                 (

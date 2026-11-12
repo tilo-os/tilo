@@ -323,3 +323,12 @@ video-editor-split = Split
 video-editor-delete-button = Delete
 video-editor-video-track = Video track
 video-editor-audio-track = Audio track
+
+## An empty timeline, and the marker list
+video-editor-timeline-empty-title = Nothing on the timeline
+video-editor-timeline-import-media = Import media, then drag it here.
+video-editor-timeline-drag-clip = Drag a clip from the media bin onto a track.
+video-editor-timeline-import = Import media
+video-editor-timeline-show-media = Show media
+video-editor-marker-add = Add marker at playhead
+video-editor-go-to-clip = Go to clip

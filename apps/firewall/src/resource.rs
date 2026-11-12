@@ -20,6 +20,7 @@ use ui::widget::Element;
 
 use crate::app::{Notice, Tone};
 use crate::backend::Backend;
+use crate::locales::CATALOG;
 pub use crate::model::Firewall;
 use crate::model::{FirewallConfig, ZoneKind};
 use ui::capability_door::Door;
@@ -139,7 +140,7 @@ impl Firewall {
             .zones
             .iter()
             .map(|zone| {
-                Derived::new(zone.kind.title())
+                Derived::new(CATALOG.t(zone.kind.title_message()))
                     .of_kind("zone")
                     .identified(zone.kind.name())
                     .with(Self::DELETE_RULE.bind(firewall::DeleteRule::paths().zone, zone.kind))
@@ -152,8 +153,11 @@ impl Firewall {
             .zones
             .iter()
             .map(|zone| {
-                SearchEntry::new(zone.kind.title(), format!("{} rules", zone.rules.len()))
-                    .anchored(format!("firewall.zone:{}", zone.kind.name()))
+                SearchEntry::new(
+                    CATALOG.t(zone.kind.title_message()),
+                    format!("{} rules", zone.rules.len()),
+                )
+                .anchored(format!("firewall.zone:{}", zone.kind.name()))
             })
             .collect()
     }

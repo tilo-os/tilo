@@ -193,3 +193,10 @@ music-show-in-player = Show in player
 ## The window bar's slots
 music-back = Back
 music-new-playlist = New playlist
+
+## Home before there is music
+music-home-empty-title = Add music
+music-home-empty-message = Choose Open audio file to play a file from this device, or connect Spotify or YouTube Music.
+music-home-empty-action = Connect a source
+music-first-run-online = Find a song, album or artist, or open an audio file.
+music-first-run-offline = This version can't find music online yet. Choose Open audio file to play a file from this device.

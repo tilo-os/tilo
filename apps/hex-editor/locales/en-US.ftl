@@ -45,3 +45,7 @@ hex-editor-empty-hint = Inspect and edit any file byte by byte, or start an empt
 hex-editor-edit-mode = Edit mode
 hex-editor-hide-inspector = Hide inspector
 hex-editor-show-inspector = Show inspector
+
+## The endianness strip
+hex-editor-little-endian = Little endian
+hex-editor-big-endian = Big endian

@@ -289,3 +289,6 @@ onboarding-migration-resume-unavailable = Für deine aktuelle Identität gibt es
 onboarding-portable-applications-unavailable = Deine Apps konnten nicht wiederhergestellt werden. Du kannst es erneut versuchen, ohne deine vorhandenen Dateien zu ersetzen.
 onboarding-browser-unavailable = Deine Browserdaten warten noch. Versuche es erneut oder mach vorerst weiter.
 onboarding-backup-unavailable = Auf diesem Gerät kann keine Sicherung deiner persönlichen Identität erstellt werden.
+
+## A sample recovery key shown by a review render
+onboarding-sample-recovery-words = abandon ability able about above absent absorb abstract absurd abuse access accident account accuse achieve acid acoustic acquire across act action actor actress actual

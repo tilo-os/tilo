@@ -232,7 +232,7 @@ impl BrowserWindow {
         {
             // The window's custody is fixed when it opens: what it publishes
             // its page actions as stays true for as long as it is open.
-            return Err(crate::browsing_mode::NO_ACCOUNT_CUSTODY.into());
+            return Err(crate::CATALOG.t(crate::browsing_mode::NO_ACCOUNT_CUSTODY));
         }
         match &effect {
             BrowserEffect::ListServiceSessions => {

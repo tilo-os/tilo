@@ -24,3 +24,6 @@ speed-test-down = { $rate } Mbps herunter
 speed-test-up-and-ping = { $rate } Mbps hoch, { $ping } ms Ping
 speed-test-measures-against = Misst gegen { $server }
 speed-test-measures-nearest = Misst gegen den nächsten Cloudflare-Server
+
+## A test that stopped
+speed-test-interrupted = Test unterbrochen

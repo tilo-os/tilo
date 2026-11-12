@@ -471,7 +471,7 @@ fn the_firewalls_controls_are_in_the_window_bar() {
     let zone = app.state().config().default_zone;
     assert_eq!(
         bar.location.map(|location| location.label).as_deref(),
-        Some(zone.title())
+        Some(crate::locales::CATALOG.t(zone.title_message()).as_str())
     );
     let actions: Vec<(&str, bool, bool)> = bar
         .actions

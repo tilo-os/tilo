@@ -93,3 +93,6 @@ containers-none-selected-hint = Choose a container to see its logs, usage and se
 containers-empty-images-hint = Pull an image to create containers from it.
 containers-empty-volumes-hint = A volume keeps a container's data when the container is removed.
 containers-empty-distroboxes-hint = Create a box with distrobox to run it here.
+
+## Why an engine action cannot run
+containers-engine-offline-message = Container engine actions are unavailable in demo mode

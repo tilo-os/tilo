@@ -223,6 +223,10 @@ pub fn grant_set_sentence(grants: &[tilo_action_policy::Grant], apps: &dyn AppDi
                 _ => None,
             }
         }
+
+        fn everything(&self) -> String {
+            t("workspace-settings-scope-everything")
+        }
     }
     tilo_action_policy::sentences(grants, &Named(apps))
 }
@@ -239,6 +243,10 @@ pub fn node_phrase(node: &tilo_action_policy::TreePath, apps: &dyn AppDirectory)
                 Level::Resource | Level::Item => self.0.resource_label(id),
                 _ => None,
             }
+        }
+
+        fn everything(&self) -> String {
+            t("workspace-settings-scope-everything")
         }
     }
     let below_workspace = node.within_workspace();

@@ -1384,6 +1384,67 @@ class CopyLanguageTests(unittest.TestCase):
                 "an action's label names it in its menu row and in the action "
                 "directory, so a helper that sets one paints its callers' words")
 
+    def test_words_another_crate_writes_for_a_window_are_copy_where_written(self):
+        root = self._root({
+            "crates/backend/src/disk.rs": "\n".join([
+                "pub enum Filesystem { Btrfs, Ext4 }",
+                "impl Filesystem {",
+                "    pub fn label(&self) -> &'static str {",
+                "        match self {",
+                '            Self::Btrfs => "Btrfs",',
+                '            Self::Ext4 => "Ext4",',
+                "        }",
+                "    }",
+                "}",
+            ]) + "\n",
+            "apps/demo/src/lib.rs": "\n".join([
+                "fn row(filesystem: Filesystem) -> Bound {",
+                "    Node::new(Role::List).with_description(filesystem.label())",
+                "}",
+            ]) + "\n",
+        })
+        self.assertEqual(
+            [(file, text) for file, _, text in copy.source_copy_literals(root)],
+            [("crates/backend/src/disk.rs", "Btrfs")],
+            "the window paints the backend's words, so the backend is where "
+            "the source language is written and where the catalogue goes")
+
+    def test_a_name_the_painting_crate_defines_itself_is_not_another_crates(self):
+        root = self._root({
+            "crates/backend/src/tool.rs": "\n".join([
+                "pub fn kind_label(kind: Kind) -> &'static str {",
+                '    "Stored in a database"',
+                "}",
+            ]) + "\n",
+            "apps/demo/src/lib.rs": "\n".join([
+                "fn kind_label() -> &'static str {",
+                '    "A page of notes"',
+                "}",
+                "fn row() -> Bound {",
+                "    Node::new(Role::List).with_description(kind_label())",
+                "}",
+            ]) + "\n",
+        })
+        self.assertEqual(
+            [text for _, _, text in copy.source_copy_literals(root)],
+            ["A page of notes"],
+            "the call is the window's own helper, judged as one")
+
+    def test_another_types_constant_is_not_the_crates_constant(self):
+        root = self._root({
+            "apps/demo/src/lib.rs": "\n".join([
+                'const TITLE: &str = "Disks";',
+                "fn row() -> Bound {",
+                "    Row::new(RowShape::TITLE)",
+                "}",
+            ]) + "\n",
+        })
+        self.assertEqual(
+            [text for _, _, text in copy.source_copy_literals(root)],
+            [],
+            "`RowShape::TITLE` names another type's own TITLE, not the "
+            "constant the crate defines")
+
     def test_the_tree_passes(self):
         self.assertEqual(
             copy.check(copy.ROOT, copy.GLOSSARY, copy.BASELINE, copy.SAVE_EXCEPTIONS,

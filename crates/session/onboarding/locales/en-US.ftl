@@ -289,3 +289,6 @@ onboarding-migration-resume-unavailable = There is no deferred file migration av
 onboarding-portable-applications-unavailable = Your apps could not be restored. You can retry without replacing your existing files.
 onboarding-browser-unavailable = Your browser data is still waiting. Try again or continue for now.
 onboarding-backup-unavailable = A personal identity backup can’t be created on this device.
+
+## A sample recovery key shown by a review render
+onboarding-sample-recovery-words = abandon ability able about above absent absorb abstract absurd abuse access accident account accuse achieve acid acoustic acquire across act action actor actress actual

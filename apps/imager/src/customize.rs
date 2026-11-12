@@ -16,6 +16,7 @@ use ui::local_state::LocalState;
 use ui::widget::{Dropdown, Field, Form, FormSection, TextInput};
 
 use crate::model::{Filesystem, InstallProfile};
+use crate::resource::CATALOG;
 use crate::resource::Imager;
 
 const KEYBOARDS: &[(&str, &str)] = &[
@@ -112,6 +113,17 @@ impl CzField {
     }
 }
 
+/// The catalogue message naming `filesystem` as the form shows it: the
+/// filesystem's own name, the same in every language, resolved here so a
+/// translated window paints it through the catalogue like any other word.
+fn filesystem_message(filesystem: Filesystem) -> &'static str {
+    match filesystem {
+        Filesystem::Btrfs => "imager-filesystem-btrfs",
+        Filesystem::Ext4 => "imager-filesystem-ext4",
+        Filesystem::Xfs => "imager-filesystem-xfs",
+    }
+}
+
 /// The value `field` holds in `profile`, as the form shows it.
 fn shown_value(profile: &InstallProfile, field: CzField) -> String {
     match field {
@@ -121,7 +133,7 @@ fn shown_value(profile: &InstallProfile, field: CzField) -> String {
         CzField::Locale => profile.locale.clone(),
         CzField::Timezone => profile.timezone.clone(),
         CzField::Keyboard => keyboard_label(&profile.keyboard).to_string(),
-        CzField::Filesystem => profile.filesystem.label().to_string(),
+        CzField::Filesystem => CATALOG.t(filesystem_message(profile.filesystem)),
     }
 }
 
@@ -146,7 +158,7 @@ pub(crate) fn profile_value(field: CzField, value: &str) -> Option<String> {
             .or_else(|| {
                 Filesystem::all()
                     .into_iter()
-                    .find(|filesystem| filesystem.label() == value)
+                    .find(|filesystem| CATALOG.t(filesystem_message(*filesystem)) == value)
             })
             .map(|filesystem| filesystem.key().to_string()),
         CzField::Hostname | CzField::FullName | CzField::Username => Some(value.to_string()),
@@ -264,7 +276,7 @@ pub(crate) fn form(
         .collect();
     let filesystems = Filesystem::all()
         .into_iter()
-        .map(|filesystem| filesystem.label().to_string())
+        .map(|filesystem| CATALOG.t(filesystem_message(filesystem)))
         .collect();
     let locales = install_profile_model::locales()
         .map(str::to_string)

@@ -457,3 +457,6 @@ browser-history-clear-failed = Der Verlauf wurde nicht gelöscht, weil Browser d
 browser-download-active-hint = Schließe ihn in Downloads in der Bibliothek ab oder brich ihn dort ab, und schließe dann den Tab.
 browser-history-paused-hint = Seiten in diesem Fenster werden nicht im Verlauf gespeichert.
 browser-service-sign-in-hint = Melde dich an, um dieses Konto fertig zu verbinden.
+
+## A window without the person's accounts
+browser-no-account-custody = Dieses Fenster surft ohne deine Anmeldungen. Öffne die Seite in einem eigenen Browser-Fenster, um dort deine Konten zu nutzen

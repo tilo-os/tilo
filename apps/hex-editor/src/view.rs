@@ -74,7 +74,7 @@ use ui::tilo_resource::ActionDecl;
 use crate::actions::{HexEffect, HexPanel};
 use crate::model::{BufferEdit, Column, Endian, HexModel};
 use crate::resource::HexEditor;
-use layout::{CellMetrics, ENDIAN_LABELS, Geo};
+use layout::{CellMetrics, ENDIAN_MESSAGES, Geo};
 use ui::widget::toggle_group::Segment;
 
 /// What a cancelled chooser answers.
@@ -116,8 +116,8 @@ fn empty_state() -> EmptyState {
 
 /// A segmented strip over `labels`: the strip keeps the segment the person
 /// picks, and the view reads it ([`Editor::apply_strip_picks`]).
-fn strip(id: &str, labels: &[&str]) -> ToggleGroup {
-    ToggleGroup::new(labels.iter().map(|l| Segment::new(*l)).collect(), 0)
+fn strip(id: &str, labels: &[String]) -> ToggleGroup {
+    ToggleGroup::new(labels.iter().map(|l| Segment::new(l.clone())).collect(), 0)
         .with_id(id)
         .control_size(ControlSize::Small)
         .with_style(SegmentedStyle::Segmented)
@@ -244,7 +244,11 @@ impl Editor {
                 .right()
                 .docked_width(f64::from(ui::tokens::Metrics::BASE.inspector_width)),
             inspector_entry: ui::framework::BarCommands::new(),
-            endian_group: strip("hex.endian", &ENDIAN_LABELS).fill(),
+            endian_group: strip(
+                "hex.endian",
+                &ENDIAN_MESSAGES.map(|message| crate::resource::CATALOG.t(message)),
+            )
+            .fill(),
             endian_shown: 0,
             empty: empty_state(),
             inspector_scroll: 0.0,

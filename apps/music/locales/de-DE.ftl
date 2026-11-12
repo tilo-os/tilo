@@ -193,3 +193,10 @@ music-show-in-player = Im Player anzeigen
 ## Die Plätze der Fensterleiste
 music-back = Zurück
 music-new-playlist = Neue Wiedergabeliste
+
+## Home before there is music
+music-home-empty-title = Musik hinzufügen
+music-home-empty-message = Wähle Audiodatei öffnen, um eine Datei von diesem Gerät abzuspielen, oder verbinde Spotify oder YouTube Music.
+music-home-empty-action = Quelle verbinden
+music-first-run-online = Finde einen Titel, ein Album oder eine Künstlerin oder öffne eine Audiodatei.
+music-first-run-offline = Diese Version findet Musik noch nicht online. Wähle Audiodatei öffnen, um eine Datei von diesem Gerät abzuspielen.

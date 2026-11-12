@@ -920,17 +920,18 @@ impl Widget for Music {
                 page_content.push(
                     AccessNode::new(Role::Group)
                         .with_hashed_key("home-empty")
-                        .with_name(super::HOME_EMPTY_TITLE)
-                        .with_description(super::HOME_EMPTY_MESSAGE)
+                        .with_name(crate::i18n::t(super::HOME_EMPTY_TITLE))
+                        .with_description(crate::i18n::t(super::HOME_EMPTY_MESSAGE))
                         .with_children(vec![
                             AccessNode::new(Role::Button)
-                                .with_name(super::HOME_EMPTY_ACTION)
+                                .with_name(crate::i18n::t(super::HOME_EMPTY_ACTION))
                                 .with_description(crate::i18n::t("music-a11y-choose-source"))
                                 .with_action_target("music.connect-source"),
                         ]),
                 );
             } else {
                 let (message, offers_search) = super::first_run_copy(super::ONLINE_CATALOGUE);
+                let message = crate::i18n::t(message);
                 let search = offers_search.then(|| {
                     AccessNode::new(Role::Button)
                         .with_name(crate::i18n::t("music-a11y-search"))
@@ -2760,11 +2761,14 @@ impl Music {
             && !self.catalogue_connected
             && super::ONLINE_CATALOGUE
         {
+            let title = crate::i18n::t(super::HOME_EMPTY_TITLE);
+            let message = crate::i18n::t(super::HOME_EMPTY_MESSAGE);
+            let action_label = crate::i18n::t(super::HOME_EMPTY_ACTION);
             let content = EmptyStateContent {
                 icon: Some(Icon::Music),
-                message: Some(super::HOME_EMPTY_MESSAGE),
-                action_label: Some(super::HOME_EMPTY_ACTION),
-                ..EmptyStateContent::new(super::HOME_EMPTY_TITLE)
+                message: Some(&message),
+                action_label: Some(&action_label),
+                ..EmptyStateContent::new(&title)
             };
             let action = Action::SpotifyEffect(crate::actions::MusicEffect::Sources);
             return self.empty_page(ctx, body, y, &content, Some(action));
@@ -2774,9 +2778,10 @@ impl Music {
         if self.lib.playlists.is_empty() && self.lib.albums.is_empty() && self.lib.tracks.is_empty()
         {
             let (message, offers_search) = super::first_run_copy(super::ONLINE_CATALOGUE);
+            let message = crate::i18n::t(message);
             let content = EmptyStateContent {
                 icon: Some(Icon::Music),
-                message: Some(message),
+                message: Some(&message),
                 action_label: offers_search.then_some("Search music"),
                 ..EmptyStateContent::new("Your music starts here")
             };

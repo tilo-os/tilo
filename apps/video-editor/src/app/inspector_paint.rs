@@ -401,7 +401,8 @@ impl VideoEditorApp {
                     rect.y0,
                 );
             }
-            let face = ButtonFace::new(rect, ADD_MARKER_LABEL)
+            let label = crate::resource::CATALOG.t(ADD_MARKER_LABEL);
+            let face = ButtonFace::new(rect, &label)
                 .icon(Icon::Plus)
                 .control_size(control_size_for(rect, theme))
                 .hovered(rect.contains(self.last_mouse));

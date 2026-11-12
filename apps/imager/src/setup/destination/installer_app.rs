@@ -82,7 +82,9 @@ use imager_backend::destination::backend::{InstallBackend, SystemBackend};
 use imager_backend::destination::disks::{Disk, GuidedAlongsidePlan};
 use imager_backend::destination::install::{InstallOptions, PowerAction};
 use imager_backend::destination::layouts;
-use imager_backend::destination::network::{InstallerNetwork, NetworkPhase};
+use imager_backend::destination::network::{
+    Connection, ConnectivityState, InstallerNetwork, NetworkPhase,
+};
 use imager_backend::destination::online_accounts::AccountsController;
 use imager_backend::destination::power_readiness::current_insufficient_battery_percent;
 use imager_backend::destination::probes;
@@ -350,6 +352,35 @@ fn captions(keys: &[&str]) -> Vec<String> {
     keys.iter()
         .map(|key| crate::setup::strings::t(key))
         .collect()
+}
+
+/// What the network step says of the connection it has, in the person's
+/// language.
+fn network_summary(network: &InstallerNetwork) -> String {
+    match network.connection() {
+        Connection::Via(ssid) => {
+            CATALOG.t_args("installer-network-via", &[("ssid", ArgValue::Text(ssid))])
+        }
+        Connection::Available => CATALOG.t("installer-network-available"),
+        Connection::Partial(state) => CATALOG.t_args(
+            "installer-network-offline-available",
+            &[(
+                "connectivity",
+                ArgValue::Text(CATALOG.t(connectivity_message(state))),
+            )],
+        ),
+    }
+}
+
+/// The catalogue message naming a connectivity state as a person reads it.
+fn connectivity_message(state: ConnectivityState) -> &'static str {
+    match state {
+        ConnectivityState::Full => "installer-connectivity-full",
+        ConnectivityState::Portal => "installer-connectivity-portal",
+        ConnectivityState::Limited => "installer-connectivity-limited",
+        ConnectivityState::Offline => "installer-connectivity-offline",
+        ConnectivityState::Unknown => "installer-connectivity-unknown",
+    }
 }
 
 /// Position of `step` in the breadcrumb (0-based). Keyboard is first so the
@@ -3332,7 +3363,7 @@ impl InstallerApp {
         }
         summary.push(Property::new(
             CATALOG.t("installer-property-network"),
-            self.network.connection_summary(),
+            network_summary(&self.network),
         ));
         children.push(Box::new(
             PropertyList::new(summary).with_id("installer.review.summary"),

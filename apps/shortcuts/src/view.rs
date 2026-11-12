@@ -596,11 +596,15 @@ fn notice(ui: &Ui) -> Element {
                 Some(Notice::Saved(name)) => {
                     Box::new(Banner::success(format!("Saved “{name}”")).dismissible())
                 }
-                Some(Notice::Deleted(name)) => {
-                    Box::new(Banner::info(format!("Deleted “{name}”")).dismissible())
-                }
+                Some(Notice::Deleted(name)) => Box::new(
+                    Banner::info(
+                        crate::locales::CATALOG
+                            .t_args("shortcuts-deleted", &[("name", name.clone().into())]),
+                    )
+                    .dismissible(),
+                ),
                 Some(Notice::Failed(reason)) => Box::new(
-                    Banner::error("Could not finish")
+                    Banner::error(crate::locales::CATALOG.t("shortcuts-not-finished"))
                         .with_message(reason.clone())
                         .dismissible(),
                 ),

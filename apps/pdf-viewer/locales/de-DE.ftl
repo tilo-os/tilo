@@ -281,3 +281,6 @@ pdf-drawn-signed = Signiert am { $date }
 ## What the window shows
 pdf-viewer-untitled = Unbenanntes Dokument
 pdf-viewer-page-unreadable = Seite { $page } lässt sich nicht lesen: { $detail }
+
+## The sample document's own note
+pdf-viewer-sample-comment = Sollten wir die Art der Weihe hier nennen, wie es die späteren Abschnitte tun?

@@ -93,3 +93,6 @@ containers-none-selected-hint = Wähle einen Container, um seine Protokolle, Nut
 containers-empty-images-hint = Lade ein Image, um daraus Container zu erstellen.
 containers-empty-volumes-hint = Ein Volume bewahrt die Daten eines Containers auf, wenn der Container entfernt wird.
 containers-empty-distroboxes-hint = Erstelle eine Box mit distrobox, um sie hier laufen zu lassen.
+
+## Why an engine action cannot run
+containers-engine-offline-message = Aktionen der Container-Engine sind im Demo-Modus nicht verfügbar

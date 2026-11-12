@@ -299,3 +299,6 @@ ebook-query-no-remote = Keine Treffer in { $store }.
 
 ## Der Hinweis im Notiz-Editor
 ebook-annotation-hint = Wähle Text im Buch aus, um ihn zu markieren oder eine Notiz hinzuzufügen.
+
+## The store the library searches
+ebook-store-name = Project Gutenberg

@@ -57,11 +57,19 @@ pub fn problem_lines(steps: &[Step], problems: &BTreeMap<String, Vec<String>>) -
     let mut lines = Vec::new();
     for (path, reasons) in problems {
         let place = match path.as_str() {
-            "" => String::from("Shortcut"),
-            "output" => String::from("Result"),
+            "" => crate::locales::CATALOG.t("shortcuts-problem-shortcut"),
+            "output" => crate::locales::CATALOG.t("shortcuts-problem-result"),
             path => step_at(steps, path)
                 .and_then(|step| step_number(steps, &step.id))
-                .map_or_else(|| String::from("A step"), |number| format!("Step {number}")),
+                .map_or_else(
+                    || crate::locales::CATALOG.t("shortcuts-problem-a-step"),
+                    |number| {
+                        crate::locales::CATALOG.t_args(
+                            "shortcuts-problem-step",
+                            &[("number", number.to_string().into())],
+                        )
+                    },
+                ),
         };
         lines.extend(reasons.iter().map(|reason| format!("{place}: {reason}")));
     }

@@ -1483,3 +1483,7 @@ profile-agent-now = Now
 task-programs-resource = Task programs
 task-programs-run = Run a program
 task-programs-run-detail = Runs a tilolang program as a step of the task's run, as the agent working the task, and answers what it read or changed.
+
+## What a grant covers when it covers the whole tree
+workspace-settings-scope-everything = Everything
+activity-grant-everything = Everything

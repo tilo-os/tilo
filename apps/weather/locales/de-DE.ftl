@@ -70,3 +70,6 @@ weather-refresh-forecast = Vorhersage aktualisieren
 
 ## Die Vorhersageseite, solange die Vorhersage unterwegs ist
 weather-loading-forecast = Die Vorhersage wird geladen
+
+## The forecast's own button
+weather-retry = Erneut versuchen

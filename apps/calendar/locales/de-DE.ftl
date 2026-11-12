@@ -258,3 +258,6 @@ calendar-open-settings = Einstellungen öffnen
 
 ## Der Hinweis im leeren Notizfeld eines Termins
 calendar-notes-placeholder = Notizen hinzufügen
+
+## A new event's empty fields
+calendar-title-placeholder = Neuer Termin

@@ -11,6 +11,7 @@
 //! its verbs or field edits, submitted through the window's dispatcher: the
 //! same door Ctrl+K and agents take.
 
+use crate::account_editor::CATALOG;
 use crate::resource::Contacts;
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -62,7 +63,7 @@ const ALL_DESTINATION: &str = "all";
 
 /// What an empty book says to someone who may only view it, in place of a
 /// New contact that would only be refused.
-const VIEW_ONLY_MESSAGE: &str = "You can view this address book, but not add to it.";
+const VIEW_ONLY_MESSAGE: &str = "contacts-view-only-message";
 const FAVORITES_DESTINATION: &str = "favorites";
 const GROUP_DESTINATION: &str = "group:";
 
@@ -1493,7 +1494,7 @@ impl ContactsApp {
             Some(_) => (Some("No one is in this group".to_owned()), None, None),
             None if self.store.is_empty() && (self.list_alone || creating) => {
                 let message = if self.read_only() {
-                    Some(VIEW_ONLY_MESSAGE.to_owned())
+                    Some(CATALOG.t(VIEW_ONLY_MESSAGE))
                 } else if creating {
                     Some("The contact you're adding appears here once you save it.".to_owned())
                 } else {
@@ -1598,7 +1599,7 @@ impl ContactsApp {
                 ContentKey::FirstRun { read_only: true } => empty_pane(
                     &self.shared,
                     "No contacts yet",
-                    Some(VIEW_ONLY_MESSAGE),
+                    Some(&CATALOG.t(VIEW_ONLY_MESSAGE)),
                     None,
                 ),
                 ContentKey::Nothing => empty_pane(&self.shared, "No contact selected", None, None),

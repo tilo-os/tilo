@@ -1028,7 +1028,7 @@ impl BooksApp {
                 ("book", ui::i18n::ArgValue::Text(book.title.clone())),
                 (
                     "store",
-                    ui::i18n::ArgValue::Text(crate::store::STORE_LABEL.to_owned()),
+                    ui::i18n::ArgValue::Text(crate::resource::CATALOG.t(crate::store::STORE_LABEL)),
                 ),
             ],
         )

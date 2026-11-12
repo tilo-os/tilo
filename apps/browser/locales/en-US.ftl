@@ -457,3 +457,6 @@ browser-history-clear-failed = Couldn’t clear history because Browser could no
 browser-download-active-hint = Finish or cancel it in Downloads in the library, then close the tab.
 browser-history-paused-hint = Pages in this window are not saved to browsing history.
 browser-service-sign-in-hint = Sign in to finish connecting this account.
+
+## A window without the person's accounts
+browser-no-account-custody = This window browses without your sign-ins. Open the page in a Browser window of your own to use your accounts there

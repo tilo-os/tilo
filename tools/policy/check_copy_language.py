@@ -48,11 +48,14 @@ breaks a rule fails outright.
 A crate that ships a translation paints what a person reads through its
 catalogue: an English literal handed to a copy builder there ships the source
 language inside a translated window, so it fails unless
-`copy_source_literals.toml` says why no catalogue has to carry it (what an
-agent is told a tool does, a key's name, a capture label). A label is painted
-as much when a closure or a conditional picks the literal
-(`map_or_else(|| "Search", …)`, `if open { "Shown" } else { "Hidden" }`) as
-when the builder is handed it directly, so both count.
+`copy_source_literals.toml` says why no catalogue has to carry it: a name
+spelled the same in every language, a key's name as the keyboard prints it,
+what a tool answers an agent, a sample a capture poses. A window's own label is
+never one of those — it is painted from the catalogue, in every language the
+crate ships — so a label that reaches a person has no allowance to hide
+behind. A label is painted as much when a closure or a conditional picks the
+literal (`map_or_else(|| "Search", …)`, `if open { "Shown" } else {
+"Hidden" }`) as when the builder is handed it directly, so both count.
 
 A surface — an app's window or a session role's — paints through the toolkit's
 text constructors (`Text::new`, `Button::new`, `ButtonFace::new`,
@@ -110,6 +113,15 @@ Two more ways a word reaches a window without the constructor coming first:
   paused")`, `.unavailable(…, "Open a web page first")`): the action directory
   and the palette show those as the rows a person reads before invoking
   anything.
+
+A word another workspace crate writes is the same defect: the window paints
+the value a function of a crate that draws no window of its own hands back
+(the imager paints a filesystem's name from the backend that writes the disk).
+A call inside a painted place, to a name the painting crate does not define and
+whose every definition in those crates returns words, is checked where those
+words are written — so the fix is the painter's catalogue, not a second copy of
+the word in the window. A name the toolkit also defines is the toolkit's own
+helper, and the toolkit's crates stay outside the sweep.
 A sentence built around a value is copy as much as a plain one: a `format!`
 whose template reads as English and whose result reaches one of those calls —
 as an argument, or through the local it is stored in — fails, because a German
@@ -647,6 +659,18 @@ TEXT_CONSTRUCTORS = (
 # window a person opens.
 SURFACE_ROOTS = ("apps/", "crates/session/")
 
+# Crates a window's words can be written in without painting a window of their
+# own: the imager paints a filesystem's name from the backend that writes the
+# disk. A call to one of their functions inside a painted place hands the same
+# source language to a German window as a literal would. The toolkit's own
+# crates are outside that sweep (a widget's demo paints sample content).
+LIBRARY_SKIP = ("crates/sdk/", "crates/session/")
+
+
+def library_source(unit: str) -> bool:
+    """Whether `unit` is a workspace crate that paints no window of its own."""
+    return unit.startswith("crates/") and not unit.startswith(LIBRARY_SKIP)
+
 # The fields of a struct that carry words a person reads (a row's title, a
 # notice's detail), as opposed to a person's own content of the same name (a
 # note's title).
@@ -1111,6 +1135,26 @@ def named_position(code: str, begin: int, end: int, name: str) -> int:
 def named_in(code: str, begin: int, end: int, name: str) -> bool:
     """Whether `name` is used as a whole identifier inside `[begin, end)`."""
     return named_position(code, begin, end, name) >= 0
+
+
+def constant_used(code: str, begin: int, end: int, name: str) -> bool:
+    """Whether the crate's constant `name` is used inside `[begin, end)`.
+
+    `RowShape::TITLE` names another type's own `TITLE`, not the constant this
+    crate defines: only a bare name, `Self::name`, or a module path
+    (`super::name`, `crate::module::name`) reaches the constant.
+    """
+    at = named_position(code, begin, end, name)
+    while at >= 0:
+        before = code[:at].rstrip()
+        if before.endswith("::"):
+            qualifier = before[:-2].rstrip()
+            segment = qualifier.rsplit("::", 1)[-1].rsplit(".", 1)[-1]
+            if segment[:1].isupper() and segment != "Self":
+                at = named_position(code, at + len(name), end, name)
+                continue
+        return True
+    return False
 
 
 def function_scopes(code: str) -> list[tuple[int, int]]:
@@ -1891,6 +1935,32 @@ def words_returned_in(code: str, begin: int, end: int,
     return found
 
 
+# The name of any call, worked out once per place a surface paints: another
+# crate's library holds hundreds of functions, so they are looked up rather
+# than each one searched for.
+CALL_NAME = re.compile(r"(?<![\w$])([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+
+
+def words_called_in(code: str, begin: int, end: int,
+                    returning: dict[str, list[tuple[str, int, str]]],
+                    own: set[str]) -> list[tuple[str, int, str]]:
+    """The words another crate's function hands back inside `[begin, end)`.
+
+    A name the painting crate defines itself is its own helper, which the
+    crate's own table already judges; only a call that must resolve outside
+    reaches another crate's words.
+    """
+    found = []
+    for hand in CALL_NAME.finditer(code, begin, end):
+        name = hand.group(1)
+        if name in own:
+            continue
+        words = returning.get(name)
+        if words:
+            found.extend(words)
+    return found
+
+
 # The setter that gives a node its name for assistive technology, and the `let`
 # that destructures what a method hands back: `let (role, name, state) =
 # self.semantics(hit)?`.
@@ -2040,6 +2110,37 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
         for crate in windows:
             if location.startswith(f"{crate}/"):
                 by_crate.setdefault(crate, []).append(path)
+    libraries = returning_words(
+        root,
+        [path for path in sources
+         if library_source(path.relative_to(root).as_posix())],
+    )
+    # A name the toolkit also defines is the toolkit's helper: a widget's own
+    # words are outside the sweep, and a call by that name resolves there.
+    toolkit_names: set[str] = set()
+    for path in sources:
+        if path.relative_to(root).as_posix().startswith("crates/sdk/"):
+            toolkit_names.update(FUNCTION.findall(path.read_text(errors="replace")))
+    for name in toolkit_names:
+        libraries.pop(name, None)
+    unit_files: dict[str, list[Path]] = {}
+    for path in sources:
+        location = path.relative_to(root).as_posix()
+        for unit in units:
+            if location.startswith(f"{unit}/"):
+                unit_files.setdefault(unit, []).append(path)
+                break
+    owned: dict[str, set[str]] = {}
+
+    def own_names(unit: str) -> set[str]:
+        """The functions the unit itself defines: a call by one of those names
+        is its own helper, not another crate's."""
+        if unit not in owned:
+            names: set[str] = set()
+            for path in unit_files.get(unit, ()):
+                names.update(FUNCTION.findall(path.read_text(errors="replace")))
+            owned[unit] = names
+        return owned[unit]
     helpers: dict[str, dict[str, set[tuple[int, int | None]]]] = {}
     struct_fields: dict[str, dict[str, dict[int, set[tuple[str, str]]]]] = {}
     returning: dict[str, dict[str, list[tuple[str, int, str]]]] = {}
@@ -2056,6 +2157,7 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
         window = crate is not None
         if not builder_unit and not window:
             continue
+        own = own_names(crate or unit.split("/src/", 1)[0])
         text = path.read_text(errors="replace")
         builders = tuple(b for b in COPY_BUILDERS if b in text) if builder_unit else ()
         wire = tuple(b for b in WIRE_MESSAGE_BUILDERS if b in text) if builder_unit else ()
@@ -2096,10 +2198,13 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
                         hits.append(literal)
             if (pattern := mappers.get(crate)) and pattern.search(code, begin, close):
                 return
+            # Words another crate writes and this window paints: the same
+            # source language in a German window as a literal here.
+            found.extend(words_called_in(code, begin, close, libraries, own))
             # Words a constant reaches this painted place with: the constant's
             # own definition is where the source language is written.
             for name, words in (constants.get(crate) or {}).items():
-                if named_in(code, begin, close, name):
+                if constant_used(code, begin, close, name):
                     found.extend(words)
 
         bindings = (copy_bindings(code, starts, by_start, kept)

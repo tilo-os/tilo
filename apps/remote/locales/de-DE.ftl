@@ -95,3 +95,22 @@ remote-actual-size = Originalgröße
 remote-fit-to-window = An Fenster anpassen
 remote-full-screen = Vollbild
 remote-disconnect = Trennen
+
+## What a connection is called
+remote-kind-ssh = SSH
+remote-kind-vnc = VNC
+remote-kind-rdp = RDP
+remote-kind-tilo = Tilo-Gerät
+remote-auth-password = Passwort
+remote-auth-public-key = Öffentlicher Schlüssel
+remote-auth-device-identity = Geräteidentität
+remote-readiness-ready = Bereit
+remote-readiness-elsewhere = Hier nicht verfügbar
+remote-readiness-no-rdp = RDP wird nicht unterstützt
+remote-readiness-editing = Muss angepasst werden
+remote-issue-ssh-auth = SSH-Profile unterstützen Authentifizierung per Passwort oder öffentlichem Schlüssel.
+remote-issue-vnc-auth = VNC-Profile unterstützen nur Authentifizierung per Passwort.
+remote-issue-rdp-auth = RDP-Profile unterstützen nur Authentifizierung per Passwort.
+remote-issue-tilo-auth = Tilo-Geräteprofile müssen die Geräteidentität verwenden.
+remote-issue-tilo-endpoint = Der Knoten eines Tilo-Geräts muss die exakte Endpunkt-ID des Geräts sein.
+remote-rdp-unsupported-title = Remote kann keine RDP-Verbindungen öffnen

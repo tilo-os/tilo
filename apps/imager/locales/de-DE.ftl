@@ -1833,3 +1833,20 @@ installer-error-unknown-filesystem = Unbekanntes Dateisystem: { $filesystem }
 installer-keyboard-map-name = Tastaturbelegung { $layout }
 ## „Laufwerke erneut suchen“ in der Fensterleiste
 imager-rescan-drives = Laufwerke erneut suchen
+
+## Where a release runs, and the filesystem it installs
+imager-release-target-arm64 = Generisch ARM64
+imager-release-target-x86-64 = Generisch x86-64
+imager-release-target-media = Generisches Medium
+imager-release-target-profile = Nur { $profile }
+imager-filesystem-btrfs = Btrfs
+imager-filesystem-ext4 = Ext4
+imager-filesystem-xfs = XFS
+installer-network-via = Internet über { $ssid } (für den ersten Start gespeichert)
+installer-network-available = Internet verfügbar
+installer-network-offline-available = { $connectivity }. Die Offline-Installation bleibt möglich.
+installer-connectivity-full = Mit dem Internet verbunden
+installer-connectivity-portal = Anmeldung erforderlich
+installer-connectivity-limited = Eingeschränkte Verbindung
+installer-connectivity-offline = Offline
+installer-connectivity-unknown = Verbindung nicht geprüft

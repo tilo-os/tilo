@@ -146,3 +146,6 @@ contacts-bar-importing = Wird importiert…
 contacts-import = Kontakte importieren
 contacts-export = Kontakte exportieren
 contacts-review-duplicate = Mögliches Duplikat prüfen
+
+## A book someone may only read
+contacts-view-only-message = Du kannst dieses Adressbuch ansehen, aber nichts hinzufügen.

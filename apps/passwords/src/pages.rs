@@ -541,7 +541,10 @@ fn review(core: &Core) -> Element {
     let mut facts = vec![
         Property::new(CATALOG.t("passwords-checked"), health.total.to_string())
             .with_kind(TextKind::Numeric),
-        Property::new(CATALOG.t("passwords-checked-against"), CHECKED_AGAINST),
+        Property::new(
+            CATALOG.t("passwords-checked-against"),
+            CATALOG.t(CHECKED_AGAINST),
+        ),
     ];
     if let Some(custody) = core.custody {
         facts.push(Property::new(
@@ -556,9 +559,10 @@ fn review(core: &Core) -> Element {
     titled_page(&CATALOG.t("passwords-review"), None, groups)
 }
 
-/// What the review compares against: only this vault, wherever it is kept (a
-/// browser's storage or the device), so the words name the vault, not a place.
-const CHECKED_AGAINST: &str = "Only the passwords in this vault";
+/// The catalogue message saying what the review compares against: only this
+/// vault, wherever it is kept (a browser's storage or the device), so the
+/// words name the vault, not a place.
+const CHECKED_AGAINST: &str = "passwords-checked-against-vault";
 
 fn app_access(core: &Core, requests: &Requests) -> Element {
     if core.app_grants.is_empty() && core.app_proposals.is_empty() {

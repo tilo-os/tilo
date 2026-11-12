@@ -416,7 +416,7 @@ impl VideoEditorApp {
         if let Some(rect) = self.go_to_clip_button(&self.regions()) {
             buttons.push(
                 AccessNode::new(Role::Button)
-                    .with_name(super::go_to_clip::GO_TO_CLIP_LABEL)
+                    .with_name(crate::resource::CATALOG.t(super::go_to_clip::GO_TO_CLIP_LABEL))
                     .with_bounds(rect)
                     .with_key(ui::a11y::hash_key(&super::go_to_clip::GO_TO_CLIP_KEY))
                     .with_state(AccessState::new().focusable(true)),
@@ -619,7 +619,7 @@ impl VideoEditorApp {
                 }
                 InspectorRow::AddMarker => {
                     let node = AccessNode::new(Role::Button)
-                        .with_name(ADD_MARKER_LABEL)
+                        .with_name(crate::resource::CATALOG.t(ADD_MARKER_LABEL))
                         .with_hashed_key(ADD_MARKER_KEY)
                         .with_state(AccessState::new().focusable(true).focused(focused));
                     if let Some((_, kids)) = current.as_mut() {

@@ -299,3 +299,6 @@ ebook-query-no-remote = No matches in { $store }.
 
 ## The note editor's hint
 ebook-annotation-hint = Select text in the book to highlight it or add a note.
+
+## The store the library searches
+ebook-store-name = Project Gutenberg

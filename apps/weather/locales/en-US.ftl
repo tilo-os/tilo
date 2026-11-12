@@ -70,3 +70,6 @@ weather-refresh-forecast = Refresh forecast
 
 ## The forecast page while the forecast is on its way
 weather-loading-forecast = Loading the forecast
+
+## The forecast's own button
+weather-retry = Retry

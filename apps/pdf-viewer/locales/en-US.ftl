@@ -278,3 +278,6 @@ pdf-drawn-signed = Signed { $date }
 ## What the window shows
 pdf-viewer-untitled = Untitled document
 pdf-viewer-page-unreadable = Page { $page } cannot be read: { $detail }
+
+## The sample document's own note
+pdf-viewer-sample-comment = Should we name the harrier's species here, as the later sections do?

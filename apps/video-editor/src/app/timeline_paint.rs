@@ -608,10 +608,11 @@ impl VideoEditorApp {
         // use, so the three empty surfaces of one window are one design.
         // Its words ask for a step, so it carries the button for it.
         if let Some(empty) = self.timeline_empty(r) {
+            let words = empty.words();
             ui::widget::EmptyState::paint(
                 &mut ui::paint::PaintCtx::new(scene, tf, tr, theme),
                 empty.area,
-                &empty.content(),
+                &empty.content(&words),
                 self.last_mouse,
             );
         }

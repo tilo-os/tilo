@@ -138,3 +138,11 @@ shortcuts-evidence = You did these { $steps } { $steps ->
     [one] time
    *[other] times
 } in a row.
+
+## Where a problem is, and what became of the last change
+shortcuts-problem-shortcut = Shortcut
+shortcuts-problem-result = Result
+shortcuts-problem-a-step = A step
+shortcuts-problem-step = Step { $number }
+shortcuts-deleted = Deleted “{ $name }”
+shortcuts-not-finished = Could not finish

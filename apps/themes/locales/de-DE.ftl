@@ -126,3 +126,17 @@ themes-preview-label-desktop = Vorschau von { $theme }
 themes-preview-label-list = Listenvorschau von { $theme }
 themes-preview-label-dialog = Dialogvorschau von { $theme }
 themes-preview-label-presence = Anwesenheitsfarben von { $theme }
+
+## The preview's own sample window
+themes-app-title = Theme Studio
+themes-preview-inbox = Posteingang
+themes-preview-move-title = In den Papierkorb legen?
+themes-preview-move-body = Die Datei bleibt 30 Tage wiederherstellbar.
+themes-preview-keep-copy = Kopie behalten
+themes-preview-cancel = Abbrechen
+themes-preview-move = Verschieben
+themes-preview-document = Quartalsbericht
+themes-preview-shared = Geteilt mit Ada und Bo
+themes-preview-edited = Vor 2 Minuten bearbeitet
+themes-preview-field = Budgetnotizen
+themes-preview-share = Teilen

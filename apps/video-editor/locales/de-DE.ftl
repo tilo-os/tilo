@@ -323,3 +323,12 @@ video-editor-split = Teilen
 video-editor-delete-button = Löschen
 video-editor-video-track = Videospur
 video-editor-audio-track = Tonspur
+
+## An empty timeline, and the marker list
+video-editor-timeline-empty-title = Nichts auf der Zeitleiste
+video-editor-timeline-import-media = Importiere Medien und ziehe sie hierher.
+video-editor-timeline-drag-clip = Ziehe einen Clip aus der Medienablage auf eine Spur.
+video-editor-timeline-import = Medien importieren
+video-editor-timeline-show-media = Medien anzeigen
+video-editor-marker-add = Marke an der Abspielposition setzen
+video-editor-go-to-clip = Zum Clip springen
