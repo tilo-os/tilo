@@ -1132,6 +1132,9 @@ inputs = [
   "tools/with-test-environment.sh",
   "scripts/headless-examples/startup-frame-timeline.py",
   "scripts/headless-examples/_control.py",
+  # The one place that picks a session's private runtime directory, which the
+  # timeline asks for where its sockets go.
+  "dist/dev/nested-session.sh",
   # The NetHost grant vectors apps must answer like environments do.
   "crates/collab/collab-types/tests/net_host_vectors.txt",
   # The session script that starts the compositor without huge pages.

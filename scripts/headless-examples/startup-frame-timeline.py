@@ -17,13 +17,34 @@ import re
 import shutil
 import signal
 import subprocess
-import tempfile
 import time
 
 from _control import call
 
+REPO = pathlib.Path(__file__).resolve().parents[2]
+# The one place that picks a session's private runtime directory.
+SESSION_LAUNCHER = REPO / "dist" / "dev" / "nested-session.sh"
 APP = "io.tilo.startup-frame-probe"
 POLL_SECONDS = 0.02
+
+
+def runtime_directory(state: pathlib.Path) -> pathlib.Path:
+    """The private runtime directory a session on `state` uses.
+
+    The launcher picks it (a login's XDG_RUNTIME_DIR, the user's /run/user
+    seat, or a short directory of its own) and prints it, so no second copy of
+    that rule lives here. A socket path must fit the kernel's limit, which is
+    why it is never left to whatever depth this run's artifacts land at."""
+    printed = subprocess.run(
+        [str(SESSION_LAUNCHER), "--print-runtime", "--state", str(state)],
+        capture_output=True, text=True, check=True,
+    )
+    runtime = printed.stdout.strip()
+    if not runtime:
+        raise SystemExit("the session launcher named no runtime directory")
+    runtime = pathlib.Path(runtime)
+    runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return runtime
 
 
 class ProductionSeed:
@@ -212,12 +233,15 @@ def main() -> None:
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=False)
     print(f"ARTIFACTS {out}", flush=True)
-    # Keep AF_UNIX endpoints short and private; large binaries/evidence stay on disk.
-    runtime = pathlib.Path(tempfile.mkdtemp(prefix="tilo-startup-"))
-    runtime.chmod(0o700)
     profile = out / "profile"
     for name in ("home", "config", "data", "state", "cache", "identity", "system"):
         (profile / name).mkdir(parents=True, mode=0o700)
+    if not SESSION_LAUNCHER.is_file():
+        raise RuntimeError(f"no session launcher at {SESSION_LAUNCHER}")
+    # The private runtime directory the launcher names for this fixture's
+    # state: short and private wherever the artifacts land, and the same place
+    # a session on that state puts its sockets.
+    runtime = runtime_directory(profile / "state")
     env = dict(os.environ)
     env.update(HOME=str(profile / "home"), XDG_CONFIG_HOME=str(profile / "config"),
                XDG_DATA_HOME=str(profile / "data"), XDG_STATE_HOME=str(profile / "state"),

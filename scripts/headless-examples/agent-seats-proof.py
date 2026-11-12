@@ -34,6 +34,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from real_apps import Agent  # noqa: E402
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
+# The one place that picks a session's private runtime directory.
+SESSION_LAUNCHER = REPO / "dist" / "dev" / "nested-session.sh"
 # The nightly step points this at the binary Cargo built for the run.
 SHELL = pathlib.Path(os.environ.get("TILO_SHELL_BINARY", REPO / "target" / "debug" / "tilo-session"))
 # What each client calls itself: the door proposes each as this agent id.
@@ -59,17 +61,40 @@ def until(check, timeout: float = 40.0):
     return False
 
 
+def runtime_directory(state: pathlib.Path) -> pathlib.Path:
+    """The private runtime directory a session on `state` uses.
+
+    The launcher picks it (a login's XDG_RUNTIME_DIR, the user's /run/user
+    seat, or a short directory of its own) and prints it, so no second copy of
+    that rule lives here. A socket path must fit the kernel's limit, which is
+    why it is never left to whatever depth this proof's scratch home sits at."""
+    printed = subprocess.run(
+        [str(SESSION_LAUNCHER), "--print-runtime", "--state", str(state)],
+        capture_output=True, text=True, check=True,
+    )
+    runtime = printed.stdout.strip()
+    if not runtime:
+        raise SystemExit("the session launcher named no runtime directory")
+    runtime = pathlib.Path(runtime)
+    runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return runtime
+
+
 class Desk:
     """A headless session on a scratch home of its own, driven at its socket."""
 
     def __init__(self) -> None:
         self.dir = pathlib.Path(tempfile.mkdtemp(prefix="tilo-agent-seats-proof-"))
-        self.runtime = self.dir / "run"
+        self.state = self.dir / "state"
         self.home = self.dir / "home"
         self.identity = self.dir / "identity"
-        for path in (self.runtime, self.home, self.identity):
+        for path in (self.home, self.identity):
             path.mkdir(parents=True, exist_ok=True)
         self.identity.chmod(0o700)
+        # The desk's state is this scratch directory's, as a launcher's state
+        # is a session's: the runtime directory its sockets go in comes from
+        # there, from the one place that picks it.
+        self.runtime = runtime_directory(self.state)
         self.control = self.runtime / "control.sock"
         self.door = self.runtime / "agent.sock"
         self.env = {
@@ -82,7 +107,7 @@ class Desk:
             "XDG_RUNTIME_DIR": str(self.runtime),
             "XDG_DATA_HOME": str(self.dir / "data"),
             "XDG_CACHE_HOME": str(self.dir / "cache"),
-            "XDG_STATE_HOME": str(self.dir / "state"),
+            "XDG_STATE_HOME": str(self.state),
             "XDG_CONFIG_HOME": str(self.dir / "config"),
         }
         self.env.pop("DISPLAY", None)
@@ -163,9 +188,10 @@ class Desk:
 
 
 def main() -> int:
-    if not SHELL.exists():
-        print(f"FAIL: no session binary at {SHELL}", file=sys.stderr)
-        return 1
+    for path, what in ((SHELL, "session binary"), (SESSION_LAUNCHER, "session launcher")):
+        if not path.exists():
+            print(f"FAIL: no {what} at {path}", file=sys.stderr)
+            return 1
 
     desk = Desk()
     agents: list[Agent] = []
@@ -274,6 +300,9 @@ def main() -> int:
         for agent in agents:
             agent.close()
         desk.stop()
+        # The runtime directory the launcher named for this desk's state is
+        # this run's, like the scratch home it belongs to.
+        shutil.rmtree(desk.runtime, ignore_errors=True)
         shutil.rmtree(desk.dir, ignore_errors=True)
 
     print()
