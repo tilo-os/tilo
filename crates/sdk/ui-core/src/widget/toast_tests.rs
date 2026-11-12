@@ -674,3 +674,25 @@ fn a_time_without_an_app_follows_the_body() {
     assert_eq!(attributed.time, "just now");
     assert_eq!(attributed.body, "Launch notes");
 }
+
+/// A card's action stands off the card as a secondary button stands off the window: on the dark
+/// card's ground, the window's raised tier is all but the ground itself, so the face is stepped
+/// off the card's own ground instead.
+#[test]
+fn a_card_action_stands_off_the_card_in_dark() {
+    use crate::a11y::relative_luminance;
+    for theme in [Theme::dark(), Theme::light()] {
+        let colors = &theme.tokens.colors;
+        let window = (relative_luminance(colors.surfaces.raised)
+            - relative_luminance(colors.surfaces.content))
+        .abs();
+        let ground = crate::widget::floating_surface::card_ground(&theme);
+        let (fill, _, _) = ButtonFace::new(Rect::ZERO, "Open card").colors(&on_card(&theme));
+        let card = (relative_luminance(fill) - relative_luminance(ground)).abs();
+        assert!(
+            card >= window * 0.75,
+            "the action's face stands off the card ({card:.4}) about as a secondary button \
+             stands off the window ({window:.4})"
+        );
+    }
+}
