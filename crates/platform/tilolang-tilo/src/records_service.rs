@@ -184,22 +184,26 @@ impl RecordService {
         Ok(true)
     }
 
-    /// The record of the package `app` the session runs itself (`share`d here): its app's
-    /// committed document and the packages a reader of it loads (the package's and each it
-    /// uses), as a task's host reads it. `None` for any other app.
+    /// The record of the app `app` this service keeps: its app's committed document and the
+    /// packages a reader of it loads (the package's and each it uses), as a task's host reads
+    /// it. `None` for an app whose package this service does not run.
+    ///
+    /// Every tilolang app this session runs is one: an app it hosts keeps its record in this
+    /// service's one document (`docs/architecture/apps.md` §8 step 2, `one-app-model.md` §4),
+    /// and so does a package it `share`s itself (the shell). A task reads them all alike, by
+    /// the app, and starts no app to read a record this session holds.
     #[must_use]
     pub fn service_record(&self, app: &str) -> Option<tilo_service::Record> {
-        let wasm = self.shared.get(app)?;
-        let meta = crate::runtime::Meta::from_wasm(wasm)?;
-        let mut packages = vec![std::sync::Arc::clone(wasm)];
-        for used in &meta.uses {
+        let package = self.host.package(app)?;
+        let mut packages = vec![std::sync::Arc::clone(&package.wasm)];
+        for used in &package.meta.uses {
             if let Some(package) = self.host.package(used) {
                 packages.push(std::sync::Arc::clone(&package.wasm));
             }
         }
         Some(tilo_service::Record {
             app: app.to_owned(),
-            id: crate::own_record(&meta, &self.person).unwrap_or_default(),
+            id: crate::own_record(&package.meta, &self.person).unwrap_or_default(),
             document: self.record.clone().save(),
             packages,
         })
@@ -847,8 +851,16 @@ impl Service for RecordService {
     }
 
     fn records(&self) -> Vec<tilo_service::Record> {
-        self.shared
-            .keys()
+        let mut apps: Vec<String> = self
+            .host
+            .packages()
+            .into_iter()
+            .map(|package| package.meta.app)
+            .collect();
+        apps.extend(self.shared.keys().cloned());
+        apps.sort();
+        apps.dedup();
+        apps.iter()
             .filter_map(|app| self.service_record(app))
             .collect()
     }

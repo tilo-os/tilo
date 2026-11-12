@@ -173,10 +173,11 @@ pub trait Service {
     /// place has nothing to note.
     fn note_beside(&mut self, _beside: &str) {}
 
-    /// The record of the app `app` this service keeps, when the session runs the app's package
-    /// itself (the shell) and its records are the person's as any app's: what a connection the
-    /// session admits — a REPL, an agent's task — reads and changes by the app, as it does
-    /// Notes'. `None` for a service that keeps no record, or none of that app.
+    /// The record of the app `app` this service keeps: what a connection the session admits — a
+    /// REPL, an agent's task — reads and changes by the app, as it does Notes'. A service that
+    /// keeps the session's one record of every tilolang app answers each app's (the shell's
+    /// records service, which runs the apps the session hosts); `None` for a service that keeps
+    /// no record, or none of that app.
     fn record(&self, _app: &str) -> Option<Record> {
         None
     }
