@@ -42,3 +42,7 @@ disks-swap = Auslagerungsspeicher
 disks-filesystem-at = { $filesystem } unter { $path }
 disks-in-use = In Benutzung
 disks-not-in-use = Nicht in Benutzung
+
+disks-severity-warning = Warnung
+disks-severity-critical = Kritisch
+disks-severity-healthy = OK

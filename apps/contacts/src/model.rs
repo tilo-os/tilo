@@ -519,7 +519,7 @@ impl Contact {
         } else if !self.org.trim().is_empty() {
             self.org.trim().to_string()
         } else {
-            "Unnamed contact".to_string()
+            crate::account_editor::CATALOG.t("contacts-unnamed")
         }
     }
 

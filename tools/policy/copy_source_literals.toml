@@ -354,3 +354,8 @@ reason = "What the transcript command answers an agent that named a format it do
 file = "apps/file-explorer/src/files_app.rs"
 text = "Personal cloud"
 reason = "A label a capture scenario paints, which no one reads."
+
+[[allow]]
+file = "crates/sdk/tilo-app/src/framework/chain.rs"
+text = "What this holds as typed data: the items of its parts, the newest part first, a page at \\\n         a time with `cursor` passing on where a page ended; an item's own content when the read \\\n         is of that item."
+reason = "What the chain read tool answers an agent, never shown in a window."

@@ -734,12 +734,13 @@ fn attribute_table(attrs: &[SmartAttr]) -> DataTable<SmartAttr> {
     table
 }
 
-fn severity_label(severity: AttrSeverity) -> &'static str {
-    match severity {
-        AttrSeverity::Ok => "OK",
-        AttrSeverity::Warn => "Warning",
-        AttrSeverity::Crit => "Critical",
-    }
+fn severity_label(severity: AttrSeverity) -> String {
+    let message = match severity {
+        AttrSeverity::Ok => "disks-severity-healthy",
+        AttrSeverity::Warn => "disks-severity-warning",
+        AttrSeverity::Crit => "disks-severity-critical",
+    };
+    crate::locales::CATALOG.t(message)
 }
 
 /// What a partition is for, in words, when it serves something the person

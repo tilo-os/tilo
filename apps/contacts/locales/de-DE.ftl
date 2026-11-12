@@ -130,3 +130,5 @@ contacts-field-city = Adresse { $number } Ort
 contacts-field-region = Adresse { $number } Region
 contacts-field-postal-code = Adresse { $number } Postleitzahl
 contacts-field-country = Adresse { $number } Land
+
+contacts-unnamed = Unbenannter Kontakt

@@ -130,3 +130,5 @@ contacts-field-city = Address { $number } city
 contacts-field-region = Address { $number } region
 contacts-field-postal-code = Address { $number } postal code
 contacts-field-country = Address { $number } country
+
+contacts-unnamed = Unnamed contact

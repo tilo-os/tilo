@@ -42,3 +42,7 @@ disks-swap = Swap space
 disks-filesystem-at = { $filesystem } at { $path }
 disks-in-use = In use
 disks-not-in-use = Not in use
+
+disks-severity-warning = Warning
+disks-severity-critical = Critical
+disks-severity-healthy = OK
