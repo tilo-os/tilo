@@ -572,15 +572,26 @@ fn compacted_at(
         .unwrap()
 }
 
-/// The host's side of the link: the history it holds, what it relayed in its order, and the
-/// most writes its history of the chat ever held.
+/// The host's side of the link: the history it holds, what it relayed in its order, the most
+/// writes its history of the chat ever held, and the most runs the device kept what it knows of
+/// that history in.
 struct Host {
     peer: crate::StatePeer,
     relayed: Vec<NeighbourMsg>,
     longest: usize,
+    mirrored_runs: usize,
 }
 
 impl Host {
+    fn new(peer: crate::StatePeer) -> Self {
+        Self {
+            peer,
+            relayed: Vec::new(),
+            longest: 0,
+            mirrored_runs: 0,
+        }
+    }
+
     /// Take `message` as the host does, or refuse it.
     fn take(&mut self, message: &NeighbourMsg, now: SystemTime) -> bool {
         let NeighbourMsg::AppDocument { envelope, .. } = message else {
@@ -628,6 +639,16 @@ async fn delivered(
         owner
             .retire_answered(workspace, &BTreeMap::from([(id, answer)]))
             .unwrap();
+        let (in_record, runs) = owner
+            .with_current(workspace, |view| {
+                Ok(crate::owner::publication::hosted_in_record(view))
+            })
+            .unwrap();
+        assert!(
+            in_record < crate::owner::publication::MAX_ENTRIES,
+            "the record holds {in_record} of the host's writes itself"
+        );
+        host.mirrored_runs = host.mirrored_runs.max(runs);
         if until_refused && !refused.is_empty() {
             return refused;
         }
@@ -673,6 +694,9 @@ fn holds_every_write(
     assert!(lost.is_empty(), "{when}: the device lost {lost:?}");
 }
 
+/// The compactions the host refused, and the most runs the host's writes took beside the record.
+type Returned = (Vec<NeighbourMsg>, usize);
+
 /// How a device's time away from its host goes.
 struct Away {
     /// Writes it makes while away.
@@ -688,14 +712,11 @@ struct Away {
 /// compacts) at the host; back, it sends everything, `refuse` picking writes the host refuses
 /// whatever they are, then writes linked past the record's bound. Every member ends up reading
 /// every change, and the host never refuses one of the device's writes nor holds more than the
-/// record's bound. Answers the compactions the host refused.
-async fn returns(away: Away, mut refuse: impl FnMut(&NeighbourMsg) -> bool) -> Vec<NeighbourMsg> {
+/// record's bound, nor does the device's record hold the host's writes it keeps beside it. Answers
+/// the compactions the host refused, and the most runs those writes took.
+async fn returns(away: Away, mut refuse: impl FnMut(&NeighbourMsg) -> bool) -> Returned {
     let (fixture, host, governor_key) = governed_fixture_at(tilo_clock::wall());
-    let mut host = Host {
-        peer: host,
-        relayed: Vec::new(),
-        longest: 0,
-    };
+    let mut host = Host::new(host);
     let other = enrolled_with(fixture.clone());
     let joined = enrolled_with(fixture);
     let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
@@ -788,7 +809,7 @@ async fn returns(away: Away, mut refuse: impl FnMut(&NeighbourMsg) -> bool) -> V
         written,
         "the device reads every change after a restart"
     );
-    refused
+    (refused, host.mirrored_runs)
 }
 
 /// Writes a device makes offline in the time a peer compacts the host's history: enough for
@@ -803,7 +824,7 @@ async fn a_device_whose_offline_compactions_a_peers_compaction_overtook_sends_th
         peers_first: true,
     };
     assert!(
-        returns(away, |_| false).await.is_empty(),
+        returns(away, |_| false).await.0.is_empty(),
         "the host takes every compaction"
     );
 }
@@ -816,9 +837,43 @@ async fn a_backlog_past_the_bound_after_a_peers_compaction_reaches_the_host_whol
         peers_first: true,
     };
     assert!(
-        returns(away, |_| false).await.is_empty(),
+        returns(away, |_| false).await.0.is_empty(),
         "the host takes every compaction"
     );
+}
+
+#[tokio::test]
+async fn a_compaction_refused_amid_a_backlog_goes_again_before_the_hosts_history_fills() {
+    // The host refuses the second compaction of a backlog several times the record's bound:
+    // the device's next one would come most of a bound later.
+    let mut compactions = 0;
+    let away = Away {
+        writes: 3 * 256,
+        peer_compacts: false,
+        peers_first: true,
+    };
+    let (refused, _) = returns(away, |message| {
+        is_compaction(message) && {
+            compactions += 1;
+            compactions == 2
+        }
+    })
+    .await;
+    assert_eq!(refused.len(), 1, "the host refused one compaction");
+}
+
+#[tokio::test]
+async fn what_a_device_knows_of_its_hosts_history_stays_beside_its_record() {
+    // The peer's writes at the host, before the device folded them, are what the device knows
+    // of the host's history while its backlog drains.
+    let away = Away {
+        writes: 3 * 256,
+        peer_compacts: false,
+        peers_first: true,
+    };
+    let (refused, runs) = returns(away, |_| false).await;
+    assert!(refused.is_empty(), "the host takes every compaction");
+    assert!(runs > 0, "the host's writes went to runs beside the record");
 }
 
 #[tokio::test]
@@ -830,7 +885,7 @@ async fn a_compaction_the_host_refused_leaves_the_device_in_step() {
         peer_compacts: true,
         peers_first: false,
     };
-    let raced = returns(away, |_| false).await;
+    let (raced, _) = returns(away, |_| false).await;
     assert!(
         !raced.is_empty(),
         "the host refused a compaction drafted before the peer's"
@@ -842,7 +897,7 @@ async fn a_compaction_the_host_refused_leaves_the_device_in_step() {
         peer_compacts: false,
         peers_first: true,
     };
-    let refused = returns(away, |message| {
+    let (refused, _) = returns(away, |message| {
         is_compaction(message) && std::mem::take(&mut first)
     })
     .await;

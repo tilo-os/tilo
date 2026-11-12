@@ -194,9 +194,6 @@ struct SharedOwner {
     /// How many more passes each workspace takes before a compaction that
     /// drafted nothing is tried again.
     compaction_wait: Mutex<BTreeMap<WorkspaceId, usize>>,
-    /// The sealed records whose compaction the host refused: each compacts again at once, so
-    /// the host's history meets its next compaction before its bound.
-    refused_compactions: Mutex<BTreeSet<(WorkspaceId, String, String)>>,
 }
 #[derive(Default)]
 struct Current {
@@ -558,7 +555,6 @@ impl NativeWorkspaceOwner {
             kept_here: Mutex::new(Vec::new()),
             history_keys: Mutex::new(None),
             compaction_wait: Mutex::new(BTreeMap::new()),
-            refused_compactions: Mutex::new(BTreeSet::new()),
         }))
     }
     /// Restore every enrolled workspace of `authority`, the record `store` last
@@ -601,7 +597,6 @@ impl NativeWorkspaceOwner {
             kept_here: Mutex::new(Vec::new()),
             history_keys: Mutex::new(None),
             compaction_wait: Mutex::new(BTreeMap::new()),
-            refused_compactions: Mutex::new(BTreeSet::new()),
         })))
     }
     #[must_use]
