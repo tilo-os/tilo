@@ -300,9 +300,9 @@ impl Photos {
             self.timeline_projection_filter = projection_filter;
             self.library_total = self.timeline_projection.len();
         }
-        // Markers are rebuilt from exact pixel day offsets during draw, once
-        // the real viewport and responsive geometry are known.
-        self.timeline_index_markers.clear();
+        // Markers stand from the last draw until the next: they are built from
+        // exact pixel day offsets, so only a draw knows them. A sync clears
+        // nothing, or the index would read as gone until the window paints.
         let visible_ids: HashSet<_> = self
             .timeline_projection
             .visible_photos(self.timeline_scroll_y, self.timeline_viewport_height)
