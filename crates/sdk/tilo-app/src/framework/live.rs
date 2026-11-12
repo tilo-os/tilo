@@ -130,7 +130,7 @@ impl<R: Resource> Clone for Live<R> {
             changes: Rc::clone(&self.changes),
             places: Rc::clone(&self.places),
             generation: self.generation.clone(),
-            held: self.held.clone(),
+            held: Cell::new(self.held.get()),
         }
     }
 }
