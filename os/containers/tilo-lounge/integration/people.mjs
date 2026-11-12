@@ -87,6 +87,7 @@ const failed = async (message, tab) => {
     if (lines.length) console.error(`--- ${name} said:\n${lines.join('\n')}`);
   }
   console.error(`FAIL: ${message}`);
+  if (!message.includes('the machine: ')) console.error(`the machine as it failed: ${waits.machine().text}`);
   process.exit(1);
 };
 
