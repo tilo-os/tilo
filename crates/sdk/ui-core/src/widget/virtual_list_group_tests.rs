@@ -384,6 +384,29 @@ fn the_keyboard_walks_the_headings_and_folds_their_groups() {
     assert_eq!(focused_heading(&list), Some("Done"));
 }
 
+/// A row whose item has not arrived names no group yet: it stands under the heading over the
+/// rows before it, and that heading counts it, so the count is the rows it stands over.
+#[test]
+fn a_heading_counts_the_row_on_its_way_that_stands_under_it() {
+    let mut list = grouped(vec![heading("Today"), None, heading("Tomorrow")]);
+    let _ = settle(&mut list);
+    let tree = Widget::accessibility(&list).expect("list semantics");
+    let headings: Vec<_> = tree
+        .children
+        .iter()
+        .filter(|child| child.role == crate::a11y::Role::Button)
+        .map(|child| (child.name.clone().unwrap_or_default(), child.value.clone()))
+        .collect();
+    assert_eq!(
+        headings,
+        [
+            ("Today".to_owned(), Some("2".to_owned())),
+            ("Tomorrow".to_owned(), Some("1".to_owned()))
+        ],
+        "each heading counts the rows standing under it"
+    );
+}
+
 #[test]
 fn a_heading_is_a_disclosure_in_the_lists_accessibility_children() {
     let mut list = week();

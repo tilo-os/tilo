@@ -524,20 +524,22 @@ impl<M: ListModel> VirtualList<M> {
             )
     }
 
-    /// How many rows the band's group holds, as the model says.
+    /// How many rows stand under the band's heading: its group's, and each row after them that
+    /// names no group of its own — one whose item has not arrived yet stands there too, under
+    /// the heading the person reads it by — until the next heading. The count is what the
+    /// heading shows over, never a row less.
     pub(super) fn heading_rows(&self, band: &Band) -> usize {
         let len = self.model.len();
         let tail = self.tail_title.as_deref();
-        let same = |index: usize| {
-            super::groups::group_of(&self.model, index, tail)
-                .is_some_and(|group: Group| group.heading == band.heading)
-        };
+        let group = |index: usize| super::groups::group_of(&self.model, index, tail);
+        let same =
+            |index: usize| group(index).is_some_and(|group: Group| group.heading == band.heading);
         let mut start = band.index.min(len);
         while start > 0 && same(start - 1) {
             start -= 1;
         }
         let mut end = start;
-        while end < len && same(end) {
+        while end < len && group(end).is_none_or(|group: Group| group.heading == band.heading) {
             end += 1;
         }
         end - start
