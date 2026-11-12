@@ -1388,7 +1388,19 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         }
 
         let destructive = verb.options.destructive;
-        let step = verb.options.step.as_ref().map_or_else(
+        // What kind of step it takes: what its declaration names, else what
+        // its shape says — a verb that takes something away is a deletion, one
+        // that acts on an item of a collection changes that item.
+        let step_variant = verb.options.step.clone().or_else(|| {
+            if destructive {
+                Some(syn::Ident::new("Delete", proc_macro2::Span::call_site()))
+            } else if verb.options.item.is_some() {
+                Some(syn::Ident::new("Edit", proc_macro2::Span::call_site()))
+            } else {
+                None
+            }
+        });
+        let step = step_variant.as_ref().map_or_else(
             || quote!(::core::option::Option::None),
             |kind| quote!(::core::option::Option::Some(#krate::__private::StepKind::#kind)),
         );

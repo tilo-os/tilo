@@ -311,7 +311,7 @@ impl Notebook {
     }
 
     /// Move note up
-    #[action(item = pages, icon = "arrow-up")]
+    #[action(item = pages, icon = "arrow-up", step = "move")]
     pub fn move_up(&mut self, page: &Id) -> Result<(), Refusal> {
         let (parent, siblings, at) = self.siblings_of(page)?;
         let above = at
@@ -323,7 +323,7 @@ impl Notebook {
     }
 
     /// Move note down
-    #[action(item = pages, icon = "arrow-down")]
+    #[action(item = pages, icon = "arrow-down", step = "move")]
     pub fn move_down(&mut self, page: &Id) -> Result<(), Refusal> {
         let (parent, siblings, at) = self.siblings_of(page)?;
         if at.saturating_add(1) >= siblings.len() {
@@ -636,7 +636,7 @@ impl Notebook {
     /// titled `title` (case and spacing aside); with no title, the one note
     /// you made. An agent names notes by the titles it reads, so it need
     /// not look the note's id up first; answers the note's id and resource.
-    #[action(answers, audience = "agents")]
+    #[action(answers, audience = "agents", step = "write")]
     pub fn append_to_note(
         &mut self,
         cx: &mut ActionCx,
