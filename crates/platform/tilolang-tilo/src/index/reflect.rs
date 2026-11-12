@@ -92,6 +92,20 @@ impl Stamp {
         self.version.order()
     }
 
+    /// Whether this is the version of the same invocation as `other`: who made it, when and by
+    /// which action, over how many items and from what ([`Ends::same_invocation`]).
+    #[must_use]
+    pub fn same_invocation(&self, other: &Self) -> bool {
+        let (held, other) = (&self.version, &other.version);
+        held.who == other.who
+            && held.at == other.at
+            && held.action == other.action
+            && held.run == other.run
+            && held.count == other.count
+            && held.from.as_ref().map(ResourceRef::id_string)
+                == other.from.as_ref().map(ResourceRef::id_string)
+    }
+
     /// Whether this version comes before `other`.
     #[must_use]
     pub fn before(&self, other: &Self) -> bool {
@@ -588,14 +602,7 @@ impl Ends {
     /// [`PROVISIONAL`] and the change that made it is not known yet.
     #[must_use]
     pub fn same_invocation(&self, other: &Self) -> bool {
-        let (held, other) = (&self.last.version, &other.last.version);
-        held.who == other.who
-            && held.at == other.at
-            && held.action == other.action
-            && held.run == other.run
-            && held.count == other.count
-            && held.from.as_ref().map(ResourceRef::id_string)
-                == other.from.as_ref().map(ResourceRef::id_string)
+        self.last.same_invocation(&other.last)
     }
 
     /// The newest version of it, as a mark of the resource reads it: what it did to the

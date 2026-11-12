@@ -11,7 +11,7 @@ use tilolang_runtime::store::{ChangeSummary, FieldKey, ListingChange};
 
 use super::{
     Chunks, Doc, Ends, Inner, ItemTouches, TiloStore, changed_by, collections_by_doc, everything,
-    mirror_of, name_version_changes, note_derived, note_versions, record_splices,
+    mirror_of, name_version_changes, note_derived, note_versions, record_splices, told_differently,
     write_as_a_known_actor,
 };
 use crate::action::DynEdit;
@@ -111,12 +111,7 @@ impl TiloStore {
         }
         let before = inner.index.clone();
         let from = inner.chunks.heads();
-        let old_snapshots: BTreeMap<AppId, Arc<idx::Snapshot>> = inner
-            .apps
-            .iter()
-            .filter(|(_, held)| held.answers())
-            .map(|(app, held)| (app.clone(), Arc::clone(&held.snapshot)))
-            .collect();
+        let old_snapshots = inner.answering();
         // What the splices below are measured from is the listing as those who read the mirror
         // had it before this change: the store's own writes are the mirror's open transaction,
         // which every read holds, so an item one of them placed was already read at its place
@@ -133,8 +128,9 @@ impl TiloStore {
         let arrived = doc
             .committed_document()
             .get_changes(inner.chunks.seen(chunk));
-        let committed = committed_edits(&arrived);
-        let mut items = inner.drop_committed_local(chunk, &committed);
+        let (committed, every_one_an_action) = committed_edits(&arrived);
+        let taken = inner.drop_committed_local(chunk, &committed);
+        let mut items = taken.items;
         inner.rollback(chunk);
         let (changed, ends, placed) = inner.apply_new_changes(chunk, &arrived, &before);
         inner.chunks.set_seen(chunk, heads);
@@ -197,37 +193,77 @@ impl TiloStore {
         for (key, ids) in moved {
             items.entry(key).or_default().extend(ids);
         }
-        let makers = changed.by;
+        // The record's changes are the store's own writes and nothing else, and those who read
+        // the mirror were told what each changed when its action committed: the mirror and the
+        // overlay showed it as the record now has it. What they are told now is only what reads
+        // differently: the versions, which name the change that made them.
+        let told = taken.told
+            && every_one_an_action
+            && wholes.is_empty()
+            && !changed.unplaced
+            && !changed.layout;
         let docs = named(changed.docs, items.keys(), wholes, notified, &ends);
         if changed.unplaced || changed.layout {
             inner.changed();
         } else {
             inner.changed_within(&docs, &items);
         }
-        let mut listings = inner.splices_since(&old_snapshots, &old_overlay, &items);
-        let mut collections = collections_by_doc(items.keys());
+        let (docs, listings, collections) = if told {
+            (
+                told_differently(&ends, &taken.versions),
+                BTreeMap::new(),
+                BTreeMap::new(),
+            )
+        } else {
+            (
+                docs,
+                inner.splices_since(&old_snapshots, &old_overlay, &items),
+                collections_by_doc(items.keys()),
+            )
+        };
         if changed.unplaced {
             inner.notify_all();
         } else {
-            for (doc, fields) in docs {
-                let listings = listings.remove(&doc).unwrap_or_default();
-                let collections = collections.remove(&doc).unwrap_or_default();
-                inner.notify(&ChangeSummary {
-                    doc: doc.clone(),
-                    fields,
-                    collections,
-                    listings,
-                    // Who the record's change names as its maker: a window tells its own
-                    // person's change by it, and keeps the rows it changed where they stand.
-                    by: makers.get(&doc).cloned().flatten(),
-                });
-            }
+            inner.tell_synced(docs, (listings, collections), &changed.by);
         }
         true
     }
 }
 
 impl Inner {
+    /// The snapshot each index that answers reads now, by its app.
+    fn answering(&self) -> BTreeMap<AppId, Arc<idx::Snapshot>> {
+        self.apps
+            .iter()
+            .filter(|(_, held)| held.answers())
+            .map(|(app, held)| (app.clone(), Arc::clone(&held.snapshot)))
+            .collect()
+    }
+
+    /// Tell those who read the mirror what a sync changed: per document, the fields `docs` names,
+    /// with how its collections' listings moved and which collections' items did, and who the
+    /// record's change names as its maker (`makers`): a window tells its own person's change by
+    /// it, and keeps the rows it changed where they stand.
+    fn tell_synced(
+        &mut self,
+        docs: BTreeMap<DocId, Vec<FieldKey>>,
+        (mut listings, mut collections): (
+            BTreeMap<DocId, Vec<ListingChange>>,
+            BTreeMap<DocId, Vec<FieldKey>>,
+        ),
+        makers: &crate::reads::By,
+    ) {
+        for (doc, fields) in docs {
+            self.notify(&ChangeSummary {
+                listings: listings.remove(&doc).unwrap_or_default(),
+                collections: collections.remove(&doc).unwrap_or_default(),
+                by: makers.get(&doc).cloned().flatten(),
+                doc,
+                fields,
+            });
+        }
+    }
+
     /// Apply `changes`, the record's changes since the mirror's heads, to the mirror of `chunk`,
     /// when it holds no change of its own: what they changed, the versions they made of each
     /// resource they changed ([`idx::reflect::ends_of`]), and where they placed the items they
@@ -301,17 +337,18 @@ impl Inner {
 /// The edits `changes` carry, in order, each with the change carrying it: what the store's own
 /// writes are the record's by ([`Inner::drop_committed_local`]). Every change of a tilolang
 /// action records the action it made, and so the edits it wrote; a change that records none —
-/// the record's own genesis, a merge — took none of the store's writes.
-fn committed_edits(changes: &[automerge::Change]) -> Vec<(automerge::ChangeHash, DynEdit)> {
-    changes
-        .iter()
-        .flat_map(|change| {
-            let hash = change.hash();
-            idx::reflect::edits_of(change)
-                .into_iter()
-                .map(move |edit| (hash, edit))
-        })
-        .collect()
+/// the record's own genesis, a merge — took none of the store's writes. Also whether every one
+/// of `changes` records some.
+fn committed_edits(changes: &[automerge::Change]) -> (Vec<(automerge::ChangeHash, DynEdit)>, bool) {
+    let mut every = true;
+    let mut out = Vec::new();
+    for change in changes {
+        let hash = change.hash();
+        let edits = idx::reflect::edits_of(change);
+        every &= !edits.is_empty();
+        out.extend(edits.into_iter().map(|edit| (hash, edit)));
+    }
+    (out, every)
 }
 
 /// The documents a sync tells those who read the mirror of, per document: the fields the
