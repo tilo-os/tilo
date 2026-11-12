@@ -92,7 +92,7 @@ grep -qx 'hello-from-the-guest' <<<"$ran" \
 # The host says which VMs it holds, and the placer which machine runs them.
 held=$(vm_host status)
 printf '%s\n' "$held" >&2
-grep -q 'ws-local *small *Running' <<<"$held" || die 'the host does not hold the workspace VM it woke'
+grep -q '^ws-local/default  *small  *Running' <<<"$held" || die 'the host does not hold the workspace VM it woke'
 podman logs tilo-sh-vm-placer > "$state/placer.log" 2>&1 || true
 sed -n '1,10p' "$state/placer.log" >&2
 grep -q 'placing on vm-host-0, at most 1' "$state/placer.log" \
