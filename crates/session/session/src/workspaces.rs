@@ -1507,6 +1507,7 @@ impl crate::Shared {
             .map(|cert| tilo_relay_session::workspaces::PersonalDevice {
                 cert,
                 revoked: false,
+                browser: None,
             })
             .collect();
         }

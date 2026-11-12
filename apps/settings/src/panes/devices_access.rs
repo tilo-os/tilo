@@ -8,7 +8,9 @@
 //! - **Devices**: the person's computers, phones and browsers, as the host's
 //!   identity actions answer them ([`identity_admin::DEVICES`]), each
 //!   revocable as no longer used, lost or stolen
-//!   ([`identity_admin::REVOKE`]).
+//!   ([`identity_admin::REVOKE`]). A browser keeps one key per open tab,
+//!   since a key has one writer; one browser's keys are one entry, which
+//!   says how many tabs it holds and is revoked as one.
 //! - **Agents**: what the agent door let in ([`agent_door::DOOR`], followed
 //!   live), grouped by the app that connected (Claude Code, an MCP client,
 //!   a script's key), each saying where it runs, what it reaches, until when,
@@ -58,6 +60,14 @@ pub enum DevicesAccessEffect {
     RevokeDevice {
         #[param("The device's key, in hex")]
         device: String,
+        #[param("retired, lost, stolen or compromised", choices = REVOKE_REASONS)]
+        reason: String,
+    },
+    /// End every tab's access of one browser of the person's, for good.
+    #[effect(job, row, destructive, label = "Revoke browser")]
+    RevokeBrowser {
+        #[param("The browser's id, as the device list names it")]
+        browser: String,
         #[param("retired, lost, stolen or compromised", choices = REVOKE_REASONS)]
         reason: String,
     },
@@ -173,14 +183,27 @@ impl DevicesAccessArea {
     /// surface, offering what can be done to it now.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let model = self.model().borrow();
+        // A browser's tabs are revoked together, from its one row.
         let devices = model
             .devices
             .iter()
-            .filter(|device| !device.current && !device.revoked)
+            .filter(|device| {
+                (device.browser.is_none() || device.kind == KeyKind::Agent)
+                    && !device.current
+                    && !device.revoked
+            })
             .map(device_row);
+        let browsers = model.entries().into_iter().filter_map(|entry| match entry {
+            Entry::Browser(browser) if browser.revocable() => Some(browser_row(&browser)),
+            Entry::Browser(_) | Entry::Device(_) => None,
+        });
         let grants = model.door.grants.iter().map(grant_row);
         let asking = model.asking.iter().map(asking_row);
-        devices.chain(grants).chain(asking).collect()
+        devices
+            .chain(browsers)
+            .chain(grants)
+            .chain(asking)
+            .collect()
     }
 }
 
@@ -225,9 +248,60 @@ struct AskingAnswer {
     asking: Vec<Asking>,
 }
 
-/// An action the person took, until the host settles it.
+/// One entry of the Devices list: a device, or one browser's tab devices.
+enum Entry<'a> {
+    Device(&'a DeviceView),
+    Browser(BrowserEntry<'a>),
+}
+
+/// One browser of the person's: the key of each of its tabs, under the
+/// browser's id.
+struct BrowserEntry<'a> {
+    id: &'a str,
+    /// In the order the list names them, so the last is the newest.
+    keys: Vec<&'a DeviceView>,
+}
+
+impl BrowserEntry<'_> {
+    /// It holds this device: the page is one of its tabs.
+    fn current(&self) -> bool {
+        self.keys.iter().any(|key| key.current)
+    }
+
+    /// The keys whose access has not ended.
+    fn live(&self) -> impl Iterator<Item = &DeviceView> {
+        self.keys.iter().copied().filter(|key| !key.revoked)
+    }
+
+    /// Every tab's access ended.
+    fn revoked(&self) -> bool {
+        self.live().next().is_none()
+    }
+
+    /// Whether its keys can be revoked from here: a tab can't revoke its
+    /// own key, so this browser is revoked from another device.
+    fn revocable(&self) -> bool {
+        !self.current() && !self.revoked()
+    }
+
+    /// What the list calls it: this browser, else what its newest key
+    /// that still has access is named.
+    fn label(&self) -> String {
+        if self.current() {
+            return t("settings-access-this-browser");
+        }
+        self.live()
+            .last()
+            .or_else(|| self.keys.last().copied())
+            .map(|key| key.label.clone())
+            .unwrap_or_default()
+    }
+}
+
+/// An action the person took, until the host settles it: one call for a
+/// device, one per tab for a browser.
 struct Pending {
-    call: ui::InvocationCall,
+    calls: Vec<ui::InvocationCall>,
     reply: Option<EffectReply>,
 }
 
@@ -315,6 +389,18 @@ impl AccessModel {
                 }
                 crate::device_fleet::revoke(remote, &key, reason)
             }
+            DevicesAccessEffect::RevokeBrowser { browser, reason } => {
+                let keys = self.browser_keys(browser)?;
+                if !REVOKE_REASONS.contains(&reason.as_str()) {
+                    return Err(t("settings-access-reason-unknown"));
+                }
+                let calls = keys
+                    .iter()
+                    .map(|key| crate::device_fleet::revoke(remote, key, reason))
+                    .collect();
+                self.pending.push(Pending { calls, reply });
+                return Ok(());
+            }
             DevicesAccessEffect::RevokeAgent { grant } => {
                 self.grant(grant)?;
                 remote.invoke(
@@ -353,8 +439,35 @@ impl AccessModel {
                 )
             }
         };
-        self.pending.push(Pending { call, reply });
+        self.pending.push(Pending {
+            calls: vec![call],
+            reply,
+        });
         Ok(())
+    }
+
+    /// The keys of the browser `browser` names whose access has not ended:
+    /// every one of its tabs'. This browser is revoked from another device.
+    fn browser_keys(&self, browser: &str) -> Result<Vec<[u8; 32]>, String> {
+        let tabs: Vec<&DeviceView> = self
+            .devices
+            .iter()
+            .filter(|listed| {
+                listed.kind == KeyKind::Device && listed.browser.as_deref() == Some(browser)
+            })
+            .collect();
+        if tabs.iter().any(|tab| tab.current) {
+            return Err(t("settings-access-browser-is-this"));
+        }
+        let keys: Vec<[u8; 32]> = tabs
+            .iter()
+            .filter(|tab| !tab.revoked)
+            .map(|tab| tab.key)
+            .collect();
+        if keys.is_empty() {
+            return Err(t("settings-access-no-such-device"));
+        }
+        Ok(keys)
     }
 
     /// The key of the device `device` names, among those listed.
@@ -405,9 +518,20 @@ impl AccessModel {
         }
         let mut settled = false;
         for pending in std::mem::take(&mut self.pending) {
-            match crate::device_fleet::settled(&pending.call) {
-                Some(answer) => {
-                    if let Some(reply) = pending.reply {
+            // Settled once every call is; the first refusal is the answer.
+            let answers: Option<Vec<_>> = pending
+                .calls
+                .iter()
+                .map(crate::device_fleet::settled)
+                .collect();
+            match answers {
+                Some(answers) => {
+                    let failed = answers.iter().position(Result::is_err);
+                    let answer = match failed {
+                        Some(at) => answers.into_iter().nth(at),
+                        None => answers.into_iter().last(),
+                    };
+                    if let (Some(reply), Some(answer)) = (pending.reply, answer) {
                         reply.finish(answer);
                     }
                     settled = true;
@@ -474,6 +598,30 @@ impl AccessModel {
         ordered
     }
 
+    /// The Devices section's entries, in [`Self::listed_devices`]' order:
+    /// a browser's tab devices are one entry, where its first one is listed.
+    fn entries(&self) -> Vec<Entry<'_>> {
+        let mut entries: Vec<Entry<'_>> = Vec::new();
+        let mut browsers: Vec<&str> = Vec::new();
+        for device in self.listed_devices() {
+            match device.browser.as_deref() {
+                None => entries.push(Entry::Device(device)),
+                Some(id) if !browsers.contains(&id) => {
+                    browsers.push(id);
+                    let keys = self.devices.iter().filter(|key| {
+                        key.kind == KeyKind::Device && key.browser.as_deref() == Some(id)
+                    });
+                    entries.push(Entry::Browser(BrowserEntry {
+                        id,
+                        keys: keys.collect(),
+                    }));
+                }
+                Some(_) => {}
+            }
+        }
+        entries
+    }
+
     /// The keys acting for the person that the record holds and no
     /// revocation ended: what Agents lists where no door answers.
     fn agent_keys(&self) -> impl Iterator<Item = &DeviceView> {
@@ -512,13 +660,16 @@ impl AccessModel {
         if !self.devices_asked.answered {
             return section(&title, rows(vec![note(&t("settings-access-reading"))]));
         }
-        let ordered = self.listed_devices();
-        if ordered.is_empty() {
+        let entries = self.entries();
+        if entries.is_empty() {
             return section(&title, rows(vec![note(&t("settings-access-no-devices"))]));
         }
-        let items = ordered
-            .into_iter()
-            .map(|device| device_item(cx, device))
+        let items = entries
+            .iter()
+            .map(|entry| match entry {
+                Entry::Device(device) => device_item(cx, device),
+                Entry::Browser(browser) => browser_item(cx, browser),
+            })
             .collect();
         section(&title, rows(items))
     }
@@ -703,6 +854,90 @@ fn device_item(cx: &ViewCx<Settings>, device: &DeviceView) -> Item {
         &format!("settings.access.device.{key}"),
         &device.label,
         &details,
+        menu,
+    )))
+}
+
+fn browser_row(browser: &BrowserEntry<'_>) -> LiveRow {
+    let mut row = LiveRow::typed::<Device>(
+        format!("settings.device-browser:{}", browser.id),
+        browser.label(),
+    );
+    for reason in REVOKE_REASONS {
+        row = row.operation(
+            SettingsEffect::from(DevicesAccessEffect::RevokeBrowser {
+                browser: browser.id.to_owned(),
+                reason: reason.to_owned(),
+            })
+            .bound(),
+        );
+    }
+    row
+}
+
+/// What a browser's entry says under its name, a line each: how many tabs
+/// it holds, whether its access ended, and its keys.
+fn browser_lines(browser: &BrowserEntry<'_>) -> Vec<String> {
+    let mut details = Vec::new();
+    let live: Vec<&DeviceView> = browser.live().collect();
+    if live.is_empty() {
+        details.push(t("settings-access-revoked"));
+    } else {
+        details.push(t_args(
+            "settings-access-browser-tabs",
+            &[("count", live.len().into())],
+        ));
+    }
+    // Each tab's key by its first three bytes: enough to tell them apart.
+    let shown = if live.is_empty() {
+        browser.keys.clone()
+    } else {
+        live
+    };
+    let fingerprints: Vec<&str> = shown
+        .iter()
+        .map(|key| key.fingerprint.get(..8).unwrap_or(&key.fingerprint))
+        .collect();
+    details.push(t_args(
+        "settings-access-browser-keys",
+        &[("fingerprints", fingerprints.join(", ").into())],
+    ));
+    details
+}
+
+fn browser_item(cx: &ViewCx<Settings>, browser: &BrowserEntry<'_>) -> Item {
+    let label = browser.label();
+    let menu: Option<Element> = browser.revocable().then(|| {
+        let live = browser_row(browser).into_resource();
+        let dispatcher = cx.dispatcher();
+        let mut menu = RowMenu::new(
+            format!("settings.access.browser.more.{}", browser.id),
+            &t_args("settings-row-more", &[("name", label.clone().into())]),
+        );
+        for reason in REVOKE_REASONS {
+            menu = menu.destructive(
+                t(match reason {
+                    "lost" => "settings-access-revoke-lost",
+                    "stolen" => "settings-access-revoke-stolen",
+                    "compromised" => "settings-access-revoke-compromised",
+                    _ => "settings-access-revoke-retired",
+                }),
+                crate::on_row::invocation(
+                    &dispatcher,
+                    &live,
+                    DevicesAccessEffect::RevokeBrowser {
+                        browser: browser.id.to_owned(),
+                        reason: reason.to_owned(),
+                    },
+                ),
+            );
+        }
+        Box::new(menu) as Element
+    });
+    row(Box::new(thing_row(
+        &format!("settings.access.browser.{}", browser.id),
+        &label,
+        &browser_lines(browser),
         menu,
     )))
 }

@@ -499,6 +499,7 @@ fn fleet_fixture() -> Vec<ui::tilo_actions::remote::identity_admin::FleetDevice>
         revoked: false,
         can_host,
         kind: ui::tilo_actions::remote::identity_admin::KeyKind::Device,
+        browser: None,
     };
     vec![
         device(
@@ -560,6 +561,7 @@ pub(crate) fn access_fixture(
         revoked,
         can_host: false,
         kind: ui::tilo_actions::remote::identity_admin::KeyKind::Device,
+        browser: None,
     };
     Some(AccessSample {
         devices: vec![

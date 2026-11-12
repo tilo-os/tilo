@@ -194,7 +194,10 @@ pub const KEEP_PERSONAL: &str = "room.personal.keep";
 /// The caller's person's workspace list ([`PersonalList`]): the one their
 /// devices kept here, with the workspaces this host keeps for them, each
 /// naming its host and how to reach it. Any certified key of the person's
-/// reads it; an agent's grant reads only what its scope reaches.
+/// reads it; an agent's grant reads only what its scope reaches. A page
+/// asking it may name its browser's tab devices (argument `browser`, a
+/// [`PersonalBrowser`]): they join the person's devices, and the list marks
+/// them as that browser's.
 pub const LIST_PERSONAL: &str = "room.personal";
 /// The most workspaces a kept list names.
 pub const MAX_PERSONAL_WORKSPACES: usize = 4096;
@@ -225,6 +228,40 @@ pub struct PersonalDevice {
     /// says nothing here: the host answers it from its own revocations.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub revoked: bool,
+    /// The browser profile the key is a tab of (its id, 32 lowercase hex
+    /// characters), when a page of that browser said so
+    /// ([`PersonalBrowser`]). Each tab of a browser is its own device, since
+    /// one key has one writer, so a browser shows as all of its tabs' keys
+    /// together: one entry, taken back as one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<String>,
+}
+
+/// The most tab keys one browser profile names ([`PersonalBrowser`]).
+pub const MAX_BROWSER_DEVICES: usize = 64;
+
+/// One browser profile's tab devices, as a page of it names them when it
+/// asks for the person's record ([`LIST_PERSONAL`]'s `browser` argument):
+/// the profile's random id and the certificate of each tab's key, newest
+/// last. Every tab of the profile shares what it names, so whichever tab
+/// asks names them all.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersonalBrowser {
+    /// 32 lowercase hex characters.
+    pub id: String,
+    /// At most [`MAX_BROWSER_DEVICES`].
+    pub certs: Vec<tilo_user_identity::DeviceCert>,
+}
+
+impl PersonalBrowser {
+    /// Whether `id` is a browser profile's id: 32 lowercase hex characters.
+    #[must_use]
+    pub fn is_id(id: &str) -> bool {
+        id.len() == 32
+            && id
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    }
 }
 
 /// One workspace of a person's list.

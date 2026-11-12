@@ -158,10 +158,36 @@ fn fleet(value: Option<&Value>, own: &[u8; 32]) -> Value {
                 "revoked": device.get("revoked").and_then(Value::as_bool).unwrap_or(false),
                 "can_host": flag("can_act_as_host"),
                 "kind": kind,
+                "browser": device.get("browser"),
             }))
         })
         .collect();
     Value::Array(devices)
+}
+
+// The page keeps its browser profile's tab devices where every tab of it
+// reads them; storage a browser blocks throws, which reads as none.
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = localStorage, js_name = getItem, catch)]
+    fn local_item(key: &str) -> Result<Option<String>, wasm_bindgen::JsValue>;
+}
+
+/// The ask of the person's record: naming this browser's tab devices, as the
+/// page keeps them (`tilo-browser-devices`: the profile's id and each tab
+/// key's certificate), so the host lists them as one browser. Passed as the
+/// page wrote it; the host checks every certificate. Without them, asked as
+/// any device asks.
+fn browser_devices() -> InvokeArgument {
+    let kept = local_item("tilo-browser-devices").ok().flatten();
+    match kept.and_then(|kept| serde_json::from_str::<Value>(&kept).ok()) {
+        Some(browser) if browser.is_object() => {
+            let mut argument = serde_json::Map::new();
+            argument.insert("browser".to_owned(), browser);
+            InvokeArgument::Json(argument)
+        }
+        _ => InvokeArgument::None,
+    }
 }
 
 /// A key's short form people compare between screens: its first six bytes.
@@ -204,7 +230,7 @@ impl ActionHost for PageIdentity {
                         provider: HOST_ACTIONS_PROVIDER.to_owned(),
                         address: ActionAddress::new(HOST_ROOMS_RESOURCE, LIST_PERSONAL),
                     },
-                    argument: InvokeArgument::None,
+                    argument: browser_devices(),
                     ..request
                 };
                 let own = self.own;

@@ -497,6 +497,11 @@ impl Workspaces {
     ) -> Result<Value, ActionHostError> {
         if operation == HostOperation::ReadPersonalList {
             self.note_own_device(device);
+            // A page names its browser's tab keys; one it can't name as the
+            // contract says still reads the list.
+            if let Ok(Some(browser)) = args.object("browser") {
+                self.note_browser(device, browser);
+            }
             let here = self.listed(device).await;
             return answer(&self.personal(device, &here));
         }

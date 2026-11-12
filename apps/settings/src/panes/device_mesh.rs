@@ -2869,6 +2869,7 @@ mod tests {
             revoked: false,
             can_host,
             kind: ui::tilo_actions::remote::identity_admin::KeyKind::Device,
+            browser: None,
         };
         pane.personal_devices = vec![
             device(THIS_DEVICE, "Ada's Laptop", true, false),

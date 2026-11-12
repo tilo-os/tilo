@@ -2871,6 +2871,13 @@ settings-access-script-key-on = Schlüssel für ein Skript auf { $place }
 settings-access-revoke-compromised = Widerrufen: sein Schlüssel ist womöglich anderen bekannt
 settings-access-devices-unlisted = Deine Geräte können hier noch nicht aufgeführt werden.
 settings-access-agents-unlisted = Die Agenten, die du hereingelassen hast, können hier noch nicht aufgeführt werden.
+settings-access-this-browser = Dieser Browser
+settings-access-browser-tabs = { $count ->
+    [one] 1 Tab
+   *[other] { $count } Tabs
+}
+settings-access-browser-keys = Schlüssel { $fingerprints }
+settings-access-browser-is-this = Widerrufe diesen Browser von einem anderen deiner Geräte aus.
 
 ## Fenster- und Barrierefreiheits-Texte
 settings-a11y-apple-password = Apple-ID-Passwort
