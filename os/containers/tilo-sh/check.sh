@@ -299,6 +299,16 @@ if [[ $hosted == 1 ]]; then
     || fail "the startup person could not be held from the recovery key their page made (see $work/startup)"
   [[ -n $relay_address ]] || fail 'the VM host names no relay address for Browser sessions'
 
+  # A Linux command in the VM needs the card the check puts on file in step
+  # 14: without it a person's own command waits for the card rather than
+  # running, and the step that runs one would sit there. Naming the commands
+  # without the steps that add the card says so instead.
+  if runs_any 15 16 17 18 && ! runs_any 13 14; then
+    python3 -c 'import json,sys; sys.exit(0 if sys.argv[2] in (json.load(open(sys.argv[1])).get("accounts") or {}) else 1)' \
+        "$plans" "$vm_account" \
+      || fail "the plans file $plans names no card for $vm_account: run steps 13 and 14 too (TILO_SH_ONLY=10,13-18)"
+  fi
+
   if runs_any 8 10 12; then
     step '8. the visa test page, where a VM may reach it'
     form_dir=$work/form
@@ -368,6 +378,7 @@ if [[ $hosted == 1 ]]; then
   # run them (integration/hosted-terminal.py).
   hosted_terminal() { # PHASE
     HOSTED_TERMINAL_CLI=$tilo HOSTED_TERMINAL_DOOR=$door \
+      HOSTED_TERMINAL_PLANS=$plans HOSTED_TERMINAL_ACCOUNT=$vm_account \
       sdk_python "$here/integration/hosted-terminal.py" "$door" "$key" "$work/hosted" "$1"
   }
   launch=$SECONDS
@@ -450,41 +461,37 @@ print(found.group(1) if found else "")' "$hosted_workspace" <<<"$(vm_host status
   if runs_step 13; then
     step '13. a Linux command in a workspace without a card on file is refused'
     hosted_terminal --refused || fail "the plans rule did not hold for a Linux command (see $work/hosted/refused.json)"
-    echo "ok: a Linux command without a card is refused, saying where a card is added"
+    echo "ok: a Linux command without a card is refused in $((SECONDS - at))s, saying where a card is added"
   fi
 
   if runs_step 14; then
-    step '14. the provider puts the account on file, and the page action it refused runs'
-    set +e
-    hosted_run --release 2>&1 | tee "$work/hosted-release.log"
-    release_status=${PIPESTATUS[0]}
-    set -e
-    [[ $release_status == 0 ]] || fail "the account on file did not release the Browser's page action (see $work/hosted-release.log)"
-    echo "ok: the card on file releases the Browser's next page action"
+    step '14. the provider puts the account on file, and what it refused runs'
+    hosted_terminal --card || fail "the card on file did not release what it refused (see $work/hosted/terminal.json)"
+    echo "ok: the card on file released the Browser's page action and the account's Linux commands in $((SECONDS - at))s"
   fi
 
   if runs_step 15; then
     step "15. the workspace's Terminal runs a command in its VM"
     hosted_terminal --terminal || fail "the workspace's Terminal did not run a command in its VM (see $work/hosted/terminal-run.json)"
-    echo "ok: the Terminal ran in the VM, recorded as the run it became and in History"
+    echo "ok: the Terminal ran in the VM in $((SECONDS - at))s, recorded as the run it became and in History"
   fi
 
   if runs_step 16; then
     step "16. an agent's key runs a command in the VM through the tilo command"
     hosted_terminal --agent || fail "the agent's command did not run in the VM (see $work/hosted/terminal.json)"
-    echo "ok: a key scoped to the workspace ran a command through the tilo command, and History names it"
+    echo "ok: a key scoped to the workspace ran a command through the tilo command in $((SECONDS - at))s, and History names it"
   fi
 
   if runs_step 17; then
     step '17. the Linux session and the Browser session are isolated'
     hosted_terminal --isolated || fail "the tenant's commands and the Browser's session are not held apart (see $work/hosted/isolation.json)"
-    echo "ok: the Linux session runs as the tenant, and neither account reads the other's files"
+    echo "ok: the Linux session ran as the tenant in $((SECONDS - at))s, and neither account read the other's files"
   fi
 
   if runs_step 18; then
     step '18. a Linux GUI app in a hosted workspace: none is wired yet'
     hosted_terminal --gui || fail "the VM's display was not what this step holds it to (see $work/hosted/gui.json)"
-    echo 'ok: the workspace has no Linux desktop, so it has no app window to open yet (Browser it does)'
+    echo "ok: the workspace has no Linux desktop ($((SECONDS - at))s to hold it to that), so it has no app window to open yet (Browser it does)"
   fi
 fi
 
@@ -510,8 +517,10 @@ report = {
     "entry_ms_median": statistics.median(entries) if entries else None,
 }
 work = os.path.dirname(path)
-# The hosted Browser's own numbers, when this stack ran with its VM host.
-for name, key in (("hosted/report.json", "hosted"), ("vm/vm-proofs.json", "vm")):
+# The hosted Browser's and its Linux commands' own numbers, when this stack
+# ran with its VM host.
+for name, key in (("hosted/report.json", "hosted"), ("vm/vm-proofs.json", "vm"),
+                  ("hosted/terminal.json", "linux")):
     where = os.path.join(work, name)
     if os.path.isfile(where):
         report[key] = json.load(open(where))

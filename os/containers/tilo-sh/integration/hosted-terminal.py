@@ -10,6 +10,9 @@ printed and who ran it. History keeps it as that person's or agent's run.
   --refused   a Linux command from an agent's run, while the provider's plans
               file names no card for the account: refused at once, in words
               that say what would let it through, and nothing runs in the VM;
+  --card      the provider puts the account on file, and what the card
+              releases runs: the Browser window's next page action, where this
+              run opened one, which the free allowance refused a moment ago;
   --terminal  the workspace's Terminal, run as the person's own backend key:
               a file made, the directory read back, `uname` answered in the
               VM, and the run kept as a structured record of its session and
@@ -24,14 +27,21 @@ printed and who ran it. History keeps it as that person's or agent's run.
               no display server, so there is none to open yet, and this says
               so instead of faking one.
 
-usage: hosted-terminal.py DOOR SERVER_KEY OUT_DIR [--refused|--terminal|--agent|--isolated|--gui]
+usage: hosted-terminal.py DOOR SERVER_KEY OUT_DIR [--refused|--card|--terminal|--agent|--isolated|--gui]
 
 SERVER_KEY is the startup's own key (`tilo keys create`, named for the backend
 that asked for it). OUT_DIR is the hosted Browser's work directory: its
 `open.json` names the workspace, and the key its agent was minted, which is
-the key scoped to that one workspace. HOSTED_TERMINAL_CLI is the `tilo`
-command `--agent` runs; HOSTED_TERMINAL_DOOR is the door it points at
-(default: DOOR). Prints one JSON line, and keeps what it read in OUT_DIR.
+the key scoped to that one workspace. Without it — a run of these steps alone
+— the first phase makes a workspace of the startup's own and mints its key,
+which is a workspace's Linux commands and no Browser.
+
+HOSTED_TERMINAL_CLI is the `tilo` command `--agent` runs, and
+HOSTED_TERMINAL_DOOR the door it points at (default: DOOR).
+HOSTED_TERMINAL_PLANS is the plans file the provider writes and the account
+HOSTED_TERMINAL_ACCOUNT is named in it (default: the account the local stack
+places its workspaces' VMs for). Prints one JSON line, and keeps what it read
+in OUT_DIR.
 """
 
 from __future__ import annotations
@@ -44,7 +54,11 @@ import subprocess
 import sys
 import time
 
+from pathlib import Path
+
 from tilo import AsyncTilo, ProtocolError, Refused, Run
+
+import plans
 
 DOOR, SERVER_KEY, OUT = sys.argv[1:4]
 
@@ -58,8 +72,10 @@ CLI = os.environ.get("HOSTED_TERMINAL_CLI", "tilo")
 CLI_DOOR = os.environ.get("HOSTED_TERMINAL_DOOR", DOOR)
 
 # The account the stack's relay places its workspaces' VMs for: the one the
-# plans file admits by.
-ACCOUNT = "acct-tilo-sh"
+# plans file admits by (os/containers/tilo-sh/vm-host.sh). The provider names
+# the plans file it writes.
+ACCOUNT = os.environ.get("HOSTED_TERMINAL_ACCOUNT", "acct-tilo-sh")
+PLANS = os.environ.get("HOSTED_TERMINAL_PLANS", "")
 # The guest's unprivileged account, which its Browser session runs as and its
 # tenant's commands do not (os/Containerfile.hosted-guest).
 BROWSER_USER = "tilo-browser"
@@ -137,15 +153,33 @@ async def outcome(call: object) -> object:
     return answer
 
 
-def opened() -> dict[str, object]:
-    """The workspace and its agent's key, as the hosted Browser's open left them."""
-    with open(os.path.join(OUT, "open.json")) as state:
-        return json.load(state)
-
-
 def client(key: str) -> AsyncTilo:
     """A client of the door as the key's agent."""
     return AsyncTilo(key=key, door=DOOR)
+
+
+async def state() -> dict[str, object]:
+    """The workspace these commands run in, and the key minted for it.
+
+    The hosted Browser's open names one (`open.json`: the workspace it opened
+    a window in, and its agent's key). Without it — a run of these steps on
+    their own — a workspace of the startup's own is made, with an agent's key
+    for it: a Linux command needs no Browser, and its VM is the same one."""
+    for name in ("open.json", "terminal-open.json"):
+        path = os.path.join(OUT, name)
+        if os.path.isfile(path):
+            with open(path) as opened:
+                return json.load(opened)
+    backend = client(SERVER_KEY)
+    try:
+        made = await backend.workspaces.create("A workspace's Linux commands")
+        minted = await backend.workspace(made.id).keys.mint(name=AGENT_KEY_NAME)
+    finally:
+        await backend.aclose()
+    kept = {"workspace": made.id, "key": minted.token, "made": True}
+    write_json("terminal-open.json", kept)
+    say("made", f"the workspace {made.id}, with a key for its agent")
+    return kept
 
 
 async def find_run(workspace: object, run: str) -> tuple[str, dict]:
@@ -181,9 +215,9 @@ async def history_named(workspace: object, name: str) -> list[dict]:
 
 async def refused() -> dict[str, object]:
     """The plans rule: a Linux action needs a card on file."""
-    state = opened()
-    workspace = str(state["workspace"])
-    agent = client(str(state["key"]))
+    kept = await state()
+    workspace = str(kept["workspace"])
+    agent = client(str(kept["key"]))
     try:
         aws = agent.workspace(workspace)
         say("the agent asks the workspace's Terminal for a command, in its own run")
@@ -235,10 +269,49 @@ async def refused() -> dict[str, object]:
         await agent.aclose()
 
 
+async def card() -> dict[str, object]:
+    """The provider puts the account on file, and what the card releases runs.
+
+    The card is the account's, and one file says so: the plans file the VM
+    host admits Linux actions by and the relay counts page actions by. So the
+    Browser's page action the free allowance refused a moment ago runs here
+    too, when this run opened a Browser window to hold it to."""
+    kept = await state()
+    check(PLANS and os.path.isfile(PLANS), f"the plans file is where the provider writes it ({PLANS})")
+    plans.add_account(PLANS, ACCOUNT)
+    say("the provider put the account on file", f"{ACCOUNT} in {PLANS}, with a card")
+    report: dict[str, object] = {"account": ACCOUNT, "plans": PLANS}
+    windows = Path(OUT, "open.json")
+    if windows.is_file():
+        workspace = str(kept["workspace"])
+        agent = client(str(kept["key"]))
+        try:
+            aws = agent.workspace(workspace)
+            listing = await aws.ls("browser")
+            open_windows = [str(row.path) for row in listing.rows if "@" in str(row.path)]
+            check(open_windows, f"the workspace's Browser window is open ({open_windows})")
+            page = f"browser@{open_windows[0].split('/', 1)[0].split('@', 1)[1]}/page#read-page"
+            began = time.perf_counter()
+            answer = await outcome(aws.do(page))
+            seconds = time.perf_counter() - began
+            refused = isinstance(answer, dict) and "refused" in answer
+            check(
+                not refused,
+                f"the page action the allowance refused runs once the card is on file "
+                f"({seconds:.2f} s): {json.dumps(answer, default=str)[:300]}",
+            )
+            report["page_action_seconds"] = round(seconds, 2)
+        finally:
+            await agent.aclose()
+    else:
+        say("no Browser", "this run opened none, so only the Linux command it releases is held (the next step)")
+    return report
+
+
 async def terminal() -> dict[str, object]:
     """The workspace's Terminal, and the command that never ran in it."""
-    state = opened()
-    workspace = str(state["workspace"])
+    kept = await state()
+    workspace = str(kept["workspace"])
     person = client(SERVER_KEY)
     try:
         ows = person.workspace(workspace)
@@ -337,9 +410,9 @@ def run_cli(workspace: str, key: str, command: str) -> tuple[int, str, str]:
 
 async def agent() -> dict[str, object]:
     """An agent's key, through the `tilo` command, and its History."""
-    state = opened()
-    workspace = str(state["workspace"])
-    key = str(state["key"])
+    kept = await state()
+    workspace = str(kept["workspace"])
+    key = str(kept["key"])
     say("the agent's key runs a command in the VM through the tilo command")
     began = time.perf_counter()
     code, out, err = run_cli(workspace, key, AGENT_COMMAND)
@@ -395,8 +468,8 @@ async def agent() -> dict[str, object]:
 
 async def isolated() -> dict[str, object]:
     """The Linux session's account, and the Browser session's, apart."""
-    state = opened()
-    workspace = str(state["workspace"])
+    kept = await state()
+    workspace = str(kept["workspace"])
     person = client(SERVER_KEY)
     try:
         ows = person.workspace(workspace)
@@ -443,8 +516,8 @@ async def isolated() -> dict[str, object]:
 
 async def gui() -> dict[str, object]:
     """Whether a hosted workspace has a Linux GUI app to open at all."""
-    state = opened()
-    workspace = str(state["workspace"])
+    kept = await state()
+    workspace = str(kept["workspace"])
     person = client(SERVER_KEY)
     try:
         ows = person.workspace(workspace)
@@ -474,13 +547,14 @@ async def gui() -> dict[str, object]:
 async def main() -> int:
     os.makedirs(OUT, exist_ok=True)
     phase = sys.argv[4] if len(sys.argv) > 4 else "--all"
-    report: dict[str, object] = {"workspace": opened()["workspace"]}
+    report: dict[str, object] = {"workspace": (await state())["workspace"]}
     previous = os.path.join(OUT, "terminal.json")
     if os.path.isfile(previous):
         with open(previous) as saved:
             report.update(json.load(saved))
     phases = {
         "--refused": refused,
+        "--card": card,
         "--terminal": terminal,
         "--agent": agent,
         "--isolated": isolated,

@@ -26,12 +26,12 @@ agent take there, with the person's answering device held by the check
   h. a key minted with the scope unticked is asked about the page actions
      that act on the page, which is what the scope answers for;
   i. past the plans file's free page actions the next one is refused with
-     `no_payment_method` and a step to add a card (`--fill` ends there);
-  j. the provider puts the account on file, and the page action the allowance
-     refused runs (`--release`, which the step before a Linux command in the
-     same workspace's VM uses too: the card is the account's).
+     `no_payment_method` and a step to add a card. The card is the account's,
+     so the step after this one adds it (integration/plans.py) and holds what
+     it releases: this window's next page action, and a Linux command in the
+     same workspace's VM.
 
-usage: hosted-visa.py DOOR SERVER_KEY OUT_DIR FORM_URL [--open|--fill|--release]
+usage: hosted-visa.py DOOR SERVER_KEY OUT_DIR FORM_URL [--open|--fill]
 
 SERVER_KEY is the startup's server key (`tilo keys create`). OUT_DIR keeps
 what it found: the capture, the page as the agent read it back, the reviewer's
@@ -40,9 +40,7 @@ names the stack's reviewer helper (integration/reviewer.py); the person is
 answered for by HOSTED_VISA_APPROVER (`tilo-approve`), in the identity root
 HOSTED_VISA_ROOT, through the host HOSTED_VISA_RELAY names as
 `KEY@HOST:PORT`; HOSTED_VISA_UNSCOPED_KEY is a key of the same person that may
-not operate web pages in Browser; HOSTED_VISA_PLANS is the plans file the
-relay counts page actions by, and HOSTED_VISA_ACCOUNT the account it counts
-them for.
+not operate web pages in Browser.
 
 Prints one JSON line with the timings and what it asserted.
 """
@@ -64,8 +62,6 @@ DOOR, SERVER_KEY, OUT, FORM_URL = sys.argv[1:5]
 
 RUN_TITLE = "Fill Jane Doe's visa application"
 REVIEWER_EMAIL = "rosa@example.com"
-PLANS = os.environ.get("HOSTED_VISA_PLANS", "")
-ACCOUNT = os.environ.get("HOSTED_VISA_ACCOUNT", "")
 APPROVER = os.environ.get("HOSTED_VISA_APPROVER", "")
 UNSCOPED_KEY = os.environ.get("HOSTED_VISA_UNSCOPED_KEY", "")
 PERSON_ROOT = os.environ.get("HOSTED_VISA_ROOT", "")
@@ -315,24 +311,6 @@ def post_invitee(link: str) -> dict:
         return json.load(answer)
 
 
-def add_account_to_plans() -> None:
-    """The provider adds the account to the plans file: the relay reads it
-    again for the next page action."""
-    check(PLANS and os.path.isfile(PLANS), f"the plans file is where the relay reads it ({PLANS})")
-    with open(PLANS) as plans:
-        document = json.load(plans)
-    document.setdefault("accounts", {})[ACCOUNT] = {
-        "plan": "local",
-        "max_running": 2,
-        "max_vms": 5,
-        "sizes": ["small", "default"],
-        "card": {"brand": "visa", "last4": "4242"},
-    }
-    with open(PLANS, "w") as plans:
-        json.dump(document, plans, indent=2)
-    say("   the provider added", f"{ACCOUNT} to {PLANS} with a card on file")
-
-
 async def open_phase(report: dict[str, object]) -> int:
     """The workspace, its agent's key, and Browser opened in its VM."""
     backend = AsyncTilo(key=SERVER_KEY, door=DOOR)
@@ -515,8 +493,8 @@ async def fill_phase(report: dict[str, object]) -> int:
     )
     report["metered_refusal"] = refused
     # The provider's card is added next, and the step that adds it holds what
-    # it releases: the Browser's next page action (`--release`) and a Linux
-    # command in the workspace's VM (integration/hosted-terminal.py).
+    # it releases: this window's next page action and a Linux command in the
+    # workspace's VM (integration/hosted-terminal.py).
 
     report["questions_asked"] = person.answered()
     write_json("questions.json", person.asked)
@@ -528,29 +506,6 @@ async def fill_phase(report: dict[str, object]) -> int:
             await client.aclose()
         except (ProtocolError, Refused):
             pass
-    return 0
-
-
-async def release_phase(report: dict[str, object]) -> int:
-    """The provider puts the account on file, and the page action the
-    allowance refused runs.
-
-    The card is the provider's, written into the plans file the relay reads
-    for every page action, so the window that was refused a moment ago is
-    served now. What the same card does for a Linux command in the workspace's
-    VM is the next step's (integration/hosted-terminal.py)."""
-    with open(os.path.join(OUT, "open.json")) as opened:
-        state = json.load(opened)
-    agent = AsyncTilo(key=state["key"], door=DOOR)
-    try:
-        aws = agent.workspace(state["workspace"])
-        add_account_to_plans()
-        page = Page(aws, str(state["window"]))
-        allowed = await refusal_of(page.do("read-page"))
-        check(allowed == "allowed", f"with the account on file the next page action runs ({allowed})")
-        report["released"] = True
-    finally:
-        await agent.aclose()
     return 0
 
 
@@ -568,14 +523,10 @@ async def main() -> int:
         status = await open_phase(report)
     elif phase == "--fill":
         status = await fill_phase(report)
-    elif phase == "--release":
-        status = await release_phase(report)
     else:
         status = await open_phase(report)
         if status == 0:
             status = await fill_phase(report)
-        if status == 0:
-            status = await release_phase(report)
     write_json("report.json", report)
     print(json.dumps(report), flush=True)
     return status
