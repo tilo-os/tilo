@@ -395,7 +395,10 @@ impl Mount {
         let layout_ms = started.elapsed().as_secs_f64() * 1000.0;
         let input = self.frame.frame_render_input();
         let theme_generation = self.theme_seen;
-        let viewport = self.viewport.requested().logical_size();
+        let requested = self.viewport.requested();
+        let viewport = requested.logical_size();
+        // Pictures are drawn at the density of the screen showing them.
+        let device_scale = f64::from(requested.dpr);
         let presented = MOUNTS.with_borrow_mut(|mounts| {
             let shown = mounts.get_mut(&self.id)?;
             let publish_theme = shown.theme_published != Some(theme_generation);
@@ -409,6 +412,7 @@ impl Mount {
                     scene: input.scene,
                     background: input.background,
                     viewport,
+                    device_scale,
                     layout_ms,
                     theme: publish_theme.then(|| self.frame.theme()),
                 });

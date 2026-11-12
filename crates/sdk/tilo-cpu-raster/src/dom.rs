@@ -78,6 +78,11 @@ pub struct Islands<'a> {
     /// Widgets that must stay elements (a native scroll container, a field
     /// the page shows): no subtree holding one becomes an image unasked.
     pub keep: Option<&'a std::collections::HashSet<u64>>,
+    /// Device pixels per CSS point the page shows this frame at: an island is
+    /// rasterized at that density and placed back at its size in points, so a
+    /// picture is as crisp as the screen showing it (`0.0`, the default, is
+    /// one pixel per point).
+    pub device_scale: f64,
     /// The part of the scene the page shows, which an image is cut to.
     pub viewport: Rect,
 }
@@ -95,13 +100,21 @@ struct Island {
     last: u64,
 }
 
-/// An island of this frame: the index of its widget's end mark, its image
-/// and where the image stands.
+/// An island of this frame: the index of its widget's end mark, its image,
+/// where the image stands and the density it was drawn at.
 struct PlannedIsland {
     end: usize,
     id: u32,
     rect: Rect,
+    scale: f64,
 }
+
+/// The most device pixels one island's image may hold. A picture is drawn at
+/// the screen's own density so it is crisp on a phone, but a window-sized one
+/// at three device pixels per point would hold tens of megabytes for
+/// something the page already paints from an image; above this its density
+/// drops instead, never below one pixel per point.
+pub const ISLAND_PIXELS: u64 = 4_000_000;
 
 /// The CPU rasterizer that draws islands, made the first time one is shown.
 struct IslandRaster {
@@ -277,11 +290,13 @@ impl DomEncoder {
             *in_island = Some(island.end);
             sep(out);
             let rect = island.rect;
+            // The image is drawn at the screen's density: the matrix puts it
+            // back at the widget's size in points.
             image_op(
                 out,
                 rect,
                 Some(island.id),
-                Affine::translate((rect.x0, rect.y0)),
+                Affine::translate((rect.x0, rect.y0)) * Affine::scale(1.0 / island.scale),
                 1.0,
             );
         }
@@ -359,7 +374,9 @@ impl DomEncoder {
             }
         }
         for (key, end, begin, ops) in chosen {
-            if let Some(island) = self.island(key, ops, islands.viewport, images) {
+            if let Some(island) =
+                self.island(key, ops, islands.viewport, islands.device_scale, images)
+            {
                 planned.insert(begin, PlannedIsland { end, ..island });
             }
         }
@@ -377,6 +394,7 @@ impl DomEncoder {
         key: u64,
         ops: std::ops::Range<usize>,
         viewport: Rect,
+        device_scale: f64,
         images: &mut Vec<NewImage>,
     ) -> Option<PlannedIsland> {
         use std::hash::{Hash, Hasher};
@@ -460,9 +478,20 @@ impl DomEncoder {
             shown.x1.ceil(),
             shown.y1.ceil(),
         );
+        // The density it is drawn at: the screen's, unless that would hold
+        // more pixels than an island may.
+        let points = rect.width() * rect.height();
+        let scale = if points > 0.0 {
+            device_scale
+                .max(1.0)
+                .min((ISLAND_PIXELS as f64 / points).sqrt())
+                .max(1.0)
+        } else {
+            1.0
+        };
         let (width, height) = (
-            u16::try_from(rect.width() as i64).ok()?,
-            u16::try_from(rect.height() as i64).ok()?,
+            u16::try_from((rect.width() * scale) as i64).ok()?,
+            u16::try_from((rect.height() * scale) as i64).ok()?,
         );
         if width == 0 || height == 0 {
             return None;
@@ -470,6 +499,7 @@ impl DomEncoder {
         [rect.x0, rect.y0, rect.x1, rect.y1]
             .map(f64::to_bits)
             .hash(&mut hasher);
+        scale.to_bits().hash(&mut hasher);
         let hash = hasher.finish();
         let frame = self.frame;
         if let Some(held) = self.islands.get_mut(&key)
@@ -480,6 +510,7 @@ impl DomEncoder {
                 end: 0,
                 id: held.id,
                 rect,
+                scale,
             });
         }
         let raster = self.raster.get_or_insert_with(|| {
@@ -502,6 +533,7 @@ impl DomEncoder {
             &drawn,
             rect,
             vello_cpu::color::AlphaColor::TRANSPARENT,
+            scale,
             &mut raster.scratch,
             &mut stats,
         );
@@ -539,7 +571,12 @@ impl DomEncoder {
             rgba,
             replaces,
         });
-        Some(PlannedIsland { end: 0, id, rect })
+        Some(PlannedIsland {
+            end: 0,
+            id,
+            rect,
+            scale,
+        })
     }
 
     pub fn encode(&mut self, encoding: &Encoding) -> DomFrame {

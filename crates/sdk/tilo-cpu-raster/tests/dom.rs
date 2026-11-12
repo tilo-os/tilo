@@ -87,6 +87,66 @@ fn an_image_is_handed_over_once_and_named_by_its_id() {
     assert!(again.ops.contains(&format!(",{},", given.id)));
 }
 
+/// A picture on a screen of its own density: its image holds that many
+/// device pixels, and its matrix places it back at the widget's size in
+/// points. Another density is another image.
+#[test]
+fn a_picture_is_drawn_at_the_screens_density() {
+    use std::collections::HashSet;
+    use tilo_cpu_raster::dom::Islands;
+    let chart = || {
+        let mut scene = Scene::new();
+        begin(&mut scene, 0xc4, 0.0);
+        square(&mut scene, 20.0);
+        square(&mut scene, 40.0);
+        scene.encoding_mut().encode_mark(MarkKind::End);
+        scene
+    };
+    let pictures: HashSet<u64> = [0xc4].into();
+    let one = Islands {
+        pictures: Some(&pictures),
+        viewport: Rect::new(0.0, 0.0, 100.0, 100.0),
+        device_scale: 1.0,
+        ..Islands::default()
+    };
+    let dense = Islands {
+        device_scale: 2.0,
+        ..one
+    };
+    let scaled = DomEncoder::new().encode_with(chart().encoding(), &dense);
+    assert_eq!(scaled.images.len(), 1);
+    assert_eq!(
+        (scaled.images[0].width, scaled.images[0].height),
+        (60, 20),
+        "two device pixels per point"
+    );
+    let ops: Vec<serde_json::Value> = serde_json::from_str(&scaled.ops).unwrap();
+    let image_op = ops.iter().find(|op| op[0] == "i").unwrap();
+    let matrix: Vec<f64> = (6..12).map(|i| image_op[i].as_f64().unwrap()).collect();
+    assert_eq!(
+        matrix,
+        vec![0.5, 0.0, 0.0, 0.5, 20.0, 0.0],
+        "half, at its place"
+    );
+    let mut encoder = DomEncoder::new();
+    assert_eq!(
+        encoder.encode_with(chart().encoding(), &dense).images.len(),
+        1
+    );
+    assert!(
+        encoder
+            .encode_with(chart().encoding(), &dense)
+            .images
+            .is_empty(),
+        "drawn the same at the same density: the page's image stands"
+    );
+    assert_eq!(
+        encoder.encode_with(chart().encoding(), &one).images.len(),
+        1,
+        "another density is another image"
+    );
+}
+
 /// A picture, or a widget of many draws, is one image of what it drew; drawn
 /// the same again, the page's image stands, and drawn anew it replaces it.
 #[test]
@@ -107,6 +167,7 @@ fn a_picture_is_one_image_until_it_changes() {
         pictures: Some(&pictures),
         keep: None,
         viewport: Rect::new(0.0, 0.0, 100.0, 100.0),
+        device_scale: 1.0,
     };
     let mut encoder = DomEncoder::new();
     let kinds = |ops: &str| -> Vec<String> {

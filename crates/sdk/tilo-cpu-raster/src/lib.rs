@@ -727,6 +727,7 @@ impl CpuRasterizer {
             ops,
             region.to_rect(),
             base,
+            1.0,
             &mut self.scratch,
             stats,
         );

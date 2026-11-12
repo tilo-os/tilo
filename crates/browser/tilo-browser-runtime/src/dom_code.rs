@@ -19,6 +19,8 @@ pub(crate) struct Frame<'a> {
     pub scene: &'a vello::Scene,
     pub background: ui::peniko::Color,
     pub viewport: (u32, u32),
+    /// Device pixels per CSS point the page shows this frame at.
+    pub device_scale: f64,
     pub layout_ms: f64,
     /// The theme, when the page does not hold its variables yet.
     pub theme: Option<&'a ui::Theme>,
@@ -67,6 +69,7 @@ impl DomPresent for Presenter {
                     f64::from(frame.viewport.0),
                     f64::from(frame.viewport.1),
                 ),
+                device_scale: frame.device_scale,
             },
         );
         let theme = frame.theme.map(|theme| {
