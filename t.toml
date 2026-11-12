@@ -474,6 +474,16 @@ image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" 
 requires = ["arch=x86_64"]
 outputs = ["/target/docs/generated/typescript-sdk.md"]
 
+# The developer docs served at https://tilo.sh/docs/ (tools/docs/build-site.sh): the pages of
+# docs/tilo-sh/pages.toml with the reference pages the two checks above generated from the code, so the
+# web entry's image ships the docs of the commit it is built from.
+[[check]]
+name = "docs-site"
+run = "bash tools/docs/build-site.sh /target/docs/site /target/docs/generated"
+needs = ["docs-reference", "docs-reference-sdk"]
+outputs = ["/target/docs/site/**"]
+git = true
+
 [[check]]
 name = "fmt"
 run = "cargo fmt --check"
@@ -4746,16 +4756,6 @@ on = ["dispatch"]
 # find those files missing. And both Containerfiles stamp the commit into the image with an `ARG`
 # that the packaging script passes the commit to — a build arg is a fixed string in t.toml, while
 # a per-commit one would rerun the config steps of every commit.
-
-# The developer docs served at https://tilo.sh/docs/ (tools/docs/build-site.sh): the pages of
-# docs/tilo-sh/pages.toml with the reference pages docs-reference generated from the code, so the
-# web entry's image ships the docs of the commit it is built from.
-[[check]]
-name = "docs-site"
-run = "bash tools/docs/build-site.sh /target/docs/site /target/docs/generated"
-needs = ["docs-reference"]
-outputs = ["/target/docs/site/**"]
-git = true
 
 [[check]]
 name = "image-web-entry-context"

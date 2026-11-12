@@ -117,6 +117,20 @@ class DocExampleTests(unittest.TestCase):
         self.assertEqual([example.id for example in book.examples], ["create-a-workspace"])
         self.assertEqual(book.examples[0].languages, ("python", "typescript", "sh"))
 
+    def test_a_generated_page_is_left_to_its_generator(self) -> None:
+        self.book(MANIFEST + """
+            [[page]]
+            slug = "python-sdk"
+            source = "sdk/tilo/__init__.py"
+            generator = "tools/reference.py"
+            section = "Reference"
+            nav = "Python SDK"
+            description = "Generated."
+        """)
+        self.write("sdk/tilo/__init__.py", '"""```python\nnot a page\n```"""\n')
+        status, output = self.check()
+        self.assertEqual(status, 0, output)
+
     def test_consecutive_blocks_are_one_example(self) -> None:
         book = self.load()
         self.assertEqual(book.problems, ())

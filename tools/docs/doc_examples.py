@@ -239,6 +239,10 @@ def load(root: Path, manifest_path: str = MANIFEST) -> Book:
     problems: list[str] = []
     firsts: dict[str, str] = {}
     for page in manifest.pages:
+        if page.generator:
+            # Written from code at build time; its generator marks every
+            # signature it shows a fragment.
+            continue
         if not tree.exists(page.source):
             problems.append(f"{page.source}: does not exist")
             continue
