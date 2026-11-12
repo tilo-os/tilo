@@ -20,15 +20,13 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
-mod common;
-
 use std::time::Duration;
 
 use serde_json::{Map, json};
 use tilo_session::{Options, Session};
 use tilo_surface_host::shell_part::DESK_RESOURCE;
 
-use common::{
+use crate::common::{
     CANVAS_ENTRY, HEIGHT, MAIL, PERSON, Repl, SUBJECT, WIDTH, on_screen, placed_resources,
     preset_menu, press, press_sheet, private_home, seeded_session, type_text, until,
 };
@@ -392,7 +390,7 @@ fn step_8_a_dock_press_opens_its_item_and_the_bar_shows_the_windows_actions() {
     // stands on the bar's row, not on the window's. A note whose body also says "Pin" (its own
     // header) would satisfy a search for the word anywhere; what this step proves is that the bar
     // holds it, so it presses the bar's menu and reads the row it opens.
-    let name = common::window_name_of(&session, &note);
+    let name = crate::common::window_name_of(&session, &note);
     // The bar draws the window the arrangement names once the shell has read it: the place is
     // published as the session arranges it, and the next frame carries it to the bar.
     until(
@@ -466,7 +464,7 @@ fn step_9_a_theme_switch_changes_looks_only() {
             ]),
         )
         .expect("the theme is kept");
-        let drawn = common::wait_for(
+        let drawn = crate::common::wait_for(
             &mut session,
             format!("the desk to draw in {theme}"),
             |session: &mut Session| {

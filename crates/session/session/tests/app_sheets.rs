@@ -18,8 +18,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::path::Path;
 use std::time::Duration;
 
@@ -187,7 +185,7 @@ fn row(session: &Session, title: &str) -> Option<ResourceSpec> {
 /// Run the session until `done` holds, or fail saying what never happened.
 #[track_caller]
 fn until(session: &mut Session, what: &str, mut done: impl FnMut(&Session) -> bool) {
-    common::wait_for(session, what, |session| done(session).then_some(()));
+    crate::common::wait_for(session, what, |session| done(session).then_some(()));
 }
 
 /// Press the question's `action` , as the person does.

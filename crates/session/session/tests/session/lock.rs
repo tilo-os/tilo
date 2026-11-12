@@ -480,7 +480,7 @@ fn colours(frame: &image::RgbaImage) -> std::collections::BTreeSet<[u8; 4]> {
 #[track_caller]
 fn door_picture(session: &mut Session, door: &Path, home: &Path, name: &str) -> image::RgbaImage {
     let path = home.join(format!("{name}.png"));
-    let asked = super::common::control(
+    let asked = crate::common::control(
         session,
         door,
         &serde_json::json!({

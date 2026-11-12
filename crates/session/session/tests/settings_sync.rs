@@ -15,8 +15,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

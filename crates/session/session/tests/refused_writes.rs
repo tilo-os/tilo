@@ -21,13 +21,7 @@
               until their sessions end"
 )]
 
-mod common;
-
-// A site admits its members' records through an Automerge worker: this binary is that worker, as
-// the session's own is.
-tilo_automerge_isolate::test_worker!();
-
-use common::people::{
+use crate::common::people::{
     Device, show, titles_at, titles_on, two_people_at_a_site, wait_shown, waited, windows,
 };
 use serde_json::{Value, json};

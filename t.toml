@@ -96,7 +96,7 @@ env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "
 # The apps the session's tests start (`tilo_test_env::sibling_binary`), as the session-siblings
 # setup in .config/nextest.toml names them for both packages, and for the session the four the
 # chat-siblings and tasks-siblings setups name (Chat, the launcher that starts it beside the
-# session, the runtime it runs on, for `chat_2x2`, and Tasks for `closed_tasks`): built once by
+# session, the runtime it runs on, for `it`'s `chat_2x2`, and Tasks for its `closed_tasks`): built once by
 # this family's build and kept with its test binaries,
 # each shard is handed them (NEXTEST_BIN_EXE_<bin>) and the setups build nothing. The app host's
 # trust test installs with the installer it finds beside its own build (`tilo-install`), which

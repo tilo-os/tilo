@@ -14,8 +14,6 @@
     reason = "test fixtures: a failed step is the assertion, and the session outlives every call"
 )]
 
-mod common;
-
 use std::cell::RefCell;
 use std::io::Write as _;
 use std::os::fd::AsFd as _;
@@ -861,7 +859,7 @@ fn the_volume_and_brightness_keys_work_with_no_quick_settings_panel() {
     // The repeat is one per turn the compositor dispatches, however long a turnaround takes on a
     // busy machine: the test holds the key until the sound has been raised more than once, rather
     // than for a span of the host's clock.
-    common::wait_for(&mut session, "a held volume key to ramp the sound", |_| {
+    crate::common::wait_for(&mut session, "a held volume key to ramp the sound", |_| {
         (repeats(&asked) > 3).then_some(())
     });
     key(&mut session, keys::VOLUME_UP, false);
@@ -2702,7 +2700,7 @@ fn a_copy_is_kept_across_a_restart_and_pasted_into_the_app_in_front() {
 
     // A new session — the person's next login — still has the copy: the history is in this device's
     // settings, not in the session's memory.
-    let mut session = crate::session();
+    let mut session = crate::session::session();
     assert_eq!(copy_key(&session, copy), key);
     let mut client = mapped(&mut session, "org.example.Terminal");
     pump(&mut session, &mut [&mut client], |_, clients| {

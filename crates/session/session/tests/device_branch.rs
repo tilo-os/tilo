@@ -23,13 +23,7 @@
               until their sessions end"
 )]
 
-mod common;
-
-// A site admits its members' records through an Automerge worker: this binary
-// is that worker, as the session's own is.
-tilo_automerge_isolate::test_worker!();
-
-use common::people::{Device, Person, Site, show, two_devices_of_one_person, wait_shown};
+use crate::common::people::{Device, Person, Site, show, two_devices_of_one_person, wait_shown};
 use tilo_relay_protocol::workspaces::WorkspaceRole;
 
 /// The app whose window is opened on the desks here.
@@ -250,7 +244,7 @@ fn a_copy_started_while_the_host_is_away_refuses_its_apps_actions_saying_why() {
 const CHAT: &str = "so.tilo.chat";
 
 /// A row the desk lists of Chat's `open-direct-conversation`, by its provider and id.
-fn chat_row(device: &common::people::Device) -> (String, String) {
+fn chat_row(device: &crate::common::people::Device) -> (String, String) {
     let mut found = None;
     tilo_test_env::wait_until(format!("{} listing Chat's actions", device.label), || {
         found = device.actions()["answer"]["actions"]

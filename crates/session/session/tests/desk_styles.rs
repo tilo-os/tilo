@@ -19,8 +19,6 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
-mod common;
-
 use std::time::Duration;
 
 use tilo_compositor::{KeyRepeat, OutputConfig};
@@ -65,14 +63,14 @@ fn desk(session: &Session) -> DeskReading {
 /// Run frames until `done` holds.
 #[track_caller]
 fn until(session: &mut Session, done: impl FnMut(&mut Session) -> bool) {
-    common::until(session, "the shell's answer", done);
+    crate::common::until(session, "the shell's answer", done);
 }
 
 /// Choose the style the switch lists as `label` (its doc line, or its view's name when it names
 /// none) the way a person does: open the bar's style menu and press the style there.
 #[track_caller]
 fn choose(session: &mut Session, label: &str) {
-    common::show_preset(session, label);
+    crate::common::show_preset(session, label);
 }
 
 /// A scratch directory a test writes a style package into, removed when the test ends.
@@ -97,7 +95,7 @@ impl Scratch {
         std::fs::create_dir_all(&dir).expect("a directory for the style package");
         std::fs::write(dir.join("app.ids"), "").expect("an empty ids lock");
         std::fs::write(dir.join("app.tl"), source).expect("the style package");
-        common::dev_apps::install_package(&dir, store)
+        crate::common::dev_apps::install_package(&dir, store)
     }
 }
 
@@ -122,7 +120,7 @@ fn style_state(session: &Session, style: &str) -> Option<(bool, String)> {
 #[test]
 fn the_four_shipped_styles_are_listed_and_drawn() {
     let _settled = ui::motion::testing::settled();
-    common::app_store();
+    crate::common::app_store();
     let mut session = session();
     // Frames until the shell has drawn its bar: a part reports its placement once it has, and
     // the bar's own style switch names the style the person shows.
@@ -175,7 +173,7 @@ fn the_four_shipped_styles_are_listed_and_drawn() {
 #[test]
 fn a_style_from_another_installed_package_is_listed_and_draws_the_desk() {
     let _settled = ui::motion::testing::settled();
-    let store = common::app_store();
+    let store = crate::common::app_store();
     // The person's own style package, written into a scratch directory and installed into the
     // store as any package is: a view of the arrangement and nothing else, its one line naming
     // it in the switch.
@@ -203,7 +201,7 @@ view timeline(a: shell.Arrangement) {
 "#,
     )
     .expect("the style package");
-    let installed = common::dev_apps::install_package(&source, store);
+    let installed = crate::common::dev_apps::install_package(&source, store);
     assert_eq!(installed, "atest.timeline", "the style package installs");
 
     let mut session = session();
@@ -236,7 +234,7 @@ view timeline(a: shell.Arrangement) {
     // text, not a menu title. Open the bar's style menu, press the person's style, and read the
     // desk's answer.
     let mut since = usize::MAX;
-    common::wait_for(&mut session, "the timeline to draw the desk", |session| {
+    crate::common::wait_for(&mut session, "the timeline to draw the desk", |session| {
         if session
             .accessible_labels()
             .iter()
@@ -248,10 +246,10 @@ view timeline(a: shell.Arrangement) {
             since = since.saturating_add(1);
             return None;
         }
-        if common::on_screen(session, "Timeline of the desk").is_some() {
-            common::press(session, "Timeline of the desk");
-        } else if let Some(menu) = common::preset_menu(session) {
-            common::press(session, &menu);
+        if crate::common::on_screen(session, "Timeline of the desk").is_some() {
+            crate::common::press(session, "Timeline of the desk");
+        } else if let Some(menu) = crate::common::preset_menu(session) {
+            crate::common::press(session, &menu);
         }
         since = 0;
         None
@@ -272,7 +270,7 @@ view timeline(a: shell.Arrangement) {
 #[test]
 fn a_style_whose_package_does_not_load_shows_the_strips_and_a_notice_and_keeps_the_choice() {
     let _settled = ui::motion::testing::settled();
-    let store = common::app_store();
+    let store = crate::common::app_store();
     let scratch = Scratch::new("desk-style-broken");
     let installed = scratch.install("broken", WORKING_STYLE, store);
     assert_eq!(installed, "atest.broken", "the style package installs");
@@ -286,7 +284,7 @@ fn a_style_whose_package_does_not_load_shows_the_strips_and_a_notice_and_keeps_t
         style_state(session, "atest.broken:broken").is_some()
     });
     choose(&mut session, "A broken style of the desk");
-    let (_, reason) = common::wait_for(
+    let (_, reason) = crate::common::wait_for(
         &mut session,
         "the broken style to be marked not loading",
         |session| style_state(session, "atest.broken:broken").filter(|(loads, _)| !*loads),
@@ -429,7 +427,7 @@ view trapping(a: shell.Arrangement) {
 #[test]
 fn a_style_whose_view_traps_shows_the_strips_and_a_notice() {
     let _settled = ui::motion::testing::settled();
-    let store = common::app_store();
+    let store = crate::common::app_store();
     let scratch = Scratch::new("desk-style-trapping");
     let installed = scratch.install("trapping", TRAPPING, store);
     assert_eq!(installed, "atest.trapping", "the style package installs");
@@ -439,7 +437,7 @@ fn a_style_whose_view_traps_shows_the_strips_and_a_notice() {
         style_state(session, "atest.trapping:trapping").is_some()
     });
     choose(&mut session, "A trapping style of the desk");
-    let (_, reason) = common::wait_for(
+    let (_, reason) = crate::common::wait_for(
         &mut session,
         "the trapping style to be marked not loading",
         |session| style_state(session, "atest.trapping:trapping").filter(|(loads, _)| !*loads),
@@ -470,7 +468,7 @@ fn a_style_whose_view_traps_shows_the_strips_and_a_notice() {
 #[test]
 fn a_fixed_style_package_brings_the_style_back_live() {
     let _settled = ui::motion::testing::settled();
-    let store = common::app_store();
+    let store = crate::common::app_store();
     let scratch = Scratch::new("desk-style-fixed");
     let installed = scratch.install("fixed", TRAPPING, store);
     assert_eq!(installed, "atest.trapping", "the style package installs");
@@ -480,7 +478,7 @@ fn a_fixed_style_package_brings_the_style_back_live() {
         style_state(session, "atest.trapping:trapping").is_some()
     });
     choose(&mut session, "A trapping style of the desk");
-    common::wait_for(
+    crate::common::wait_for(
         &mut session,
         "the trapping style to be marked not loading",
         |session| style_state(session, "atest.trapping:trapping").filter(|(loads, _)| !*loads),

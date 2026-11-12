@@ -15,8 +15,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::collections::BTreeMap;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
@@ -1124,7 +1122,7 @@ fn seated_agents(session: &Session) -> Vec<String> {
 #[test]
 fn a_program_asking_to_work_as_an_agent_is_admitted_from_the_sheet() {
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let socket = root.path().join("agent.sock");
     let questions = Questions::new();
     let mut session = crate::common::headless(Options {
@@ -1209,7 +1207,7 @@ fn a_program_asking_to_work_as_an_agent_is_admitted_from_the_sheet() {
 #[test]
 fn a_program_the_person_refuses_works_nowhere() {
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let socket = root.path().join("agent.sock");
     let questions = Questions::new();
     let mut session = crate::common::headless(Options {

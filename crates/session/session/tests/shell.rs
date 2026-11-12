@@ -17,9 +17,7 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
-mod common;
-
-use common::{LAUNCHER_SEARCH, OVERVIEW_SEARCH, WORKSPACE_NAME, press, type_text};
+use crate::common::{LAUNCHER_SEARCH, OVERVIEW_SEARCH, WORKSPACE_NAME, press, type_text};
 use std::collections::HashMap;
 use std::io::BufRead as _;
 use std::rc::Rc;
@@ -83,7 +81,7 @@ fn waiting(session: &Session) -> usize {
 /// Run frames until `done` holds.
 #[track_caller]
 fn until(session: &mut Session, done: impl FnMut(&mut Session) -> bool) {
-    common::until(session, "the shell's answer", done);
+    crate::common::until(session, "the shell's answer", done);
 }
 
 /// Whether the bar says `words` : a control's label carries what it shows and what it opens ("Show
@@ -189,7 +187,7 @@ fn the_bar_shows_the_time_the_workspace_its_strip_and_the_person_the_session_pub
         assert!(says(&session, &desk.strip), "the bar names the strip");
     }
     // The bar draws in its band: its controls stand on the desk there.
-    let _shot = common::wait_for(&mut session, "the bar in its band", |session| {
+    let _shot = crate::common::wait_for(&mut session, "the bar in its band", |session| {
         session.step(Duration::from_millis(16)).expect("step");
         let shot = keep(session, "shell-bar-empty-desk");
         (band_colours(&shot) > 8).then_some(shot)
@@ -240,7 +238,7 @@ fn choosing_a_workspace_from_the_bars_menu_brings_it_to_the_front() {
     });
     keep(&mut session, "shell-bar-workspace-menu");
     press(&mut session, &first.workspace);
-    common::until(&mut session, "the first workspace in front", |session| {
+    crate::common::until(&mut session, "the first workspace in front", |session| {
         session.handle().read(|tree| tree.active.0.to_string()) == first_key
     });
     assert_eq!(
@@ -276,7 +274,7 @@ fn the_workspaces_menu_stands_while_the_desk_changes_under_it() {
             &serde_json::Map::new(),
         )
         .unwrap();
-    common::wait_for(
+    crate::common::wait_for(
         &mut session,
         "the workspace made under the menu",
         |session| {
@@ -294,7 +292,7 @@ fn the_workspaces_menu_stands_while_the_desk_changes_under_it() {
     );
     // And still chooses: the workspace in front is the one the person presses there.
     press(&mut session, &first);
-    common::until(
+    crate::common::until(
         &mut session,
         "the workspace chosen under the menu in front",
         |session| desk(session).workspace == first,
@@ -810,7 +808,7 @@ fn the_launcher_opens_from_the_bar_and_searches_windows() {
     until(&mut session, |session| here(session) == "launcher");
     // The launcher's doors are what it draws: the surface being up says where the desk is, and its
     // labels are the doors a person sees.
-    common::wait_for(&mut session, "the launcher's doors", |session| {
+    crate::common::wait_for(&mut session, "the launcher's doors", |session| {
         (says(session, "Overview") && says(session, "Notifications")).then_some(())
     });
     keep(&mut session, "shell-launcher");
@@ -1194,7 +1192,7 @@ fn a_persons_presence_shows_their_face_and_opens_the_roster() {
     let mut session = session();
     until(&mut session, |session| says(session, &desk(session).clock));
     // Nobody here: the people door alone.
-    let door = common::wait_for(&mut session, "the people door", |session| {
+    let door = crate::common::wait_for(&mut session, "the people door", |session| {
         bar_control(session, "People")
     });
     assert!(
@@ -1227,7 +1225,9 @@ fn a_persons_presence_shows_their_face_and_opens_the_roster() {
         (5, "Mia Clayton and 4 others are here"),
     ] {
         set_here(&session, count);
-        widths.push(common::wait_for(&mut session, label, |session| bar_control(session, label)).2);
+        widths.push(
+            crate::common::wait_for(&mut session, label, |session| bar_control(session, label)).2,
+        );
     }
     assert!(
         widths[2] - widths[1] > 1.0 && widths[3] - widths[2] > 1.0,
@@ -1478,7 +1478,7 @@ fn session_where(
 /// Run frames, taking in what the services report, until `done` holds.
 #[track_caller]
 fn until_settled(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
-    common::wait_for(session, "the services' reading", |session| {
+    crate::common::wait_for(session, "the services' reading", |session| {
         session.settle_services();
         // What the services reported reaches the shell on the frame the loop runs.
         session.step(Duration::from_millis(1)).expect("step");
@@ -1722,7 +1722,7 @@ fn the_bars_status_opens_the_panel_as_its_own_app() {
         session.surfaces().names()
     );
     // The panel's ground goes with it: the desk shows where it stood.
-    let closed = common::wait_for(
+    let closed = crate::common::wait_for(
         &mut session,
         "the panel's ground to go with it",
         |session| {
@@ -1759,7 +1759,7 @@ fn escape_goes_back_a_page_in_the_panel_before_it_closes_it() {
     let controls = drawn(&mut session);
     // A page of the panel's own, over the controls: what plays on this machine, which is what the
     // person reads after picking Sound.
-    let page = common::wait_for(&mut session, "the panel's page", |session| {
+    let page = crate::common::wait_for(&mut session, "the panel's page", |session| {
         session
             .surfaces()
             .published(quick_settings::SURFACE)
@@ -1776,9 +1776,9 @@ fn escape_goes_back_a_page_in_the_panel_before_it_closes_it() {
             ui::tilo_actions::remote::InvokeArgument::Json(asked),
         )
         .expect("the panel's app answers the page it publishes");
-    let page = common::wait_for(&mut session, "the page drawn", |session| {
+    let page = crate::common::wait_for(&mut session, "the page drawn", |session| {
         let frame = drawn(session);
-        (common::changed(&controls, &frame) > 1000).then_some(frame)
+        (crate::common::changed(&controls, &frame) > 1000).then_some(frame)
     });
     save(&page, "quick-settings-page");
     // Escape goes back to the controls: the panel answers that it had a page behind it and stays up
@@ -2584,8 +2584,9 @@ fn the_charge_shows_the_charging_battery_while_the_pack_takes_charge() {
     // The reading is the minute's, and the pass that draws it comes after the minute the desk now
     // says: wait for the bar to show it rather than take the minute the last frame drew.
     let drawn_clock = |session: &mut Session| bar_control(session, &desk(session).clock);
-    let clock = common::wait_for(&mut taking, "the bar's clock", drawn_clock);
-    let plain_clock = common::wait_for(&mut draining, "the bar's clock, draining", drawn_clock);
+    let clock = crate::common::wait_for(&mut taking, "the bar's clock", drawn_clock);
+    let plain_clock =
+        crate::common::wait_for(&mut draining, "the bar's clock, draining", drawn_clock);
     let left = clock.0.min(plain_clock.0);
     let right = (clock.0 + clock.2).max(plain_clock.0 + plain_clock.2);
     let allowed = [
@@ -2622,20 +2623,20 @@ fn a_compact_bar_keeps_a_glance_and_nothing_overflows_it() {
             "Notifications",
             PERSON,
         ] {
-            common::wait_for(
+            crate::common::wait_for(
                 &mut session,
                 format!("a compact bar keeping {words:?}"),
                 |session| says(session, words).then_some(()),
             );
         }
         for words in ["Volume", "are here"] {
-            common::wait_for(
+            crate::common::wait_for(
                 &mut session,
                 format!("a compact bar giving way on {words:?}"),
                 |session| (!says(session, words)).then_some(()),
             );
         }
-        common::wait_for(
+        crate::common::wait_for(
             &mut session,
             format!("the bar to stand inside {width}'s edge"),
             |session| {
@@ -2703,7 +2704,7 @@ fn the_bar_draws_inside_every_width_style_and_appearance() {
                         ),
                         "the capture is of the whole screen"
                     );
-                    common::wait_for(
+                    crate::common::wait_for(
                         &mut session,
                         format!(
                             "{width} wide, {style} in {appearance}, {count} here: nothing overflows"
@@ -2809,7 +2810,7 @@ fn a_press_on_a_quick_settings_tile_works_at_every_scale() {
 fn the_shell_loads_from_the_package_store_and_not_the_builds_copy() {
     let _settled = ui::motion::testing::settled();
     // The store the session reads: the test's, where the shell is installed as an app is.
-    let store = common::app_store();
+    let store = crate::common::app_store();
     assert!(
         app_catalogue::apps::read_one_from_env("so.tilo.shell")
             .expect("the store reads")

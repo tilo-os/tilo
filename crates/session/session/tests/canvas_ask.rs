@@ -23,15 +23,15 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
-mod common;
-
 use std::time::Duration;
 
 use tilo_compositor::InputEvent;
 use tilo_service::Questions;
 use tilo_session::{ActionPlane, Options, Session};
 
-use common::{CANVAS_ENTRY, PERSON, arrangement, on_screen, private_home, show_preset, until};
+use crate::common::{
+    CANVAS_ENTRY, PERSON, arrangement, on_screen, private_home, show_preset, until,
+};
 
 /// Enter, the key that submits the canvas entry.
 const KEY_ENTER: u32 = 28;
@@ -43,7 +43,7 @@ fn session(root: &std::path::Path) -> Session {
         person: PERSON.to_owned(),
         shell: true,
         collab: false,
-        services: vec![Box::new(common::seeded_apps())],
+        services: vec![Box::new(crate::common::seeded_apps())],
         questions: Some(Questions::new()),
         action_plane: ActionPlane::At(root.join("plane.sock")),
         agent_door: Some(root.join("agent.sock")),
@@ -59,8 +59,8 @@ fn session(root: &std::path::Path) -> Session {
 /// Type `text` in the canvas entry and press Enter: the person asking, through the shell's own
 /// action.
 fn ask(session: &mut Session, text: &str) {
-    common::press(session, CANVAS_ENTRY);
-    common::type_text(session, text);
+    crate::common::press(session, CANVAS_ENTRY);
+    crate::common::type_text(session, text);
     // Pressed and let go within a frame, as `type_text` types: held across one, Enter would repeat.
     for pressed in [true, false] {
         session
@@ -76,7 +76,7 @@ fn ask(session: &mut Session, text: &str) {
 
 /// The `n`th send the session carried out, as `session:send-to` reads, once it is there.
 fn sent(session: &mut Session, n: usize) -> serde_json::Value {
-    common::wait_for(session, format!("send {n} to be carried out"), |session| {
+    crate::common::wait_for(session, format!("send {n} to be carried out"), |session| {
         session.settle_services();
         session
             .read("session:send-to")

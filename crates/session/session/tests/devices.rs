@@ -15,8 +15,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::rc::Rc;

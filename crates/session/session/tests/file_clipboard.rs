@@ -16,8 +16,6 @@
               lives until the app it serves is done"
 )]
 
-mod common;
-
 use std::os::fd::AsRawFd as _;
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::MetadataExt as _;
@@ -40,10 +38,6 @@ use tilo_service::LoopWake;
 use tilo_session::{ActionPlane, Launches, Lists, Options, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 use ui::dnd::COPIED_FILES_MIME;
-
-// A host admits its members' records through an Automerge worker: this binary is that worker, as it
-// is the session's own.
-tilo_automerge_isolate::test_worker!();
 
 /// The app whose clipboard this is.
 const FILES: &str = "so.tilo.file-explorer";
@@ -661,7 +655,7 @@ fn until_the_app_is_done(
 
 #[test]
 fn files_copies_and_cuts_through_the_session_and_pastes_into_another_folder() {
-    let home = common::private_home();
+    let home = crate::common::private_home();
     let socket = home.path().join("collab.sock");
     let fixture = fixture();
     let mut session = session(&socket, &fixture);

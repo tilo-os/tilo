@@ -18,12 +18,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
-// An engine admits a workspace's records through an Automerge worker: this binary is that worker,
-// as it is the session's own.
-tilo_automerge_isolate::test_worker!();
-
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
@@ -48,7 +42,7 @@ use tilo_user_identity::{
     persist, sign_device_cert, sign_revocation_entry,
 };
 
-use common::private_home;
+use crate::common::private_home;
 
 /// The run the agent names its calls with, as a client does: what `undo task` takes back.
 const RUN: &str = "visa-run-1";
@@ -240,14 +234,14 @@ impl ThisBox {
     /// The answer `agent` reads to what it asked, while the session runs.
     #[track_caller]
     fn answer(&mut self, agent: &Agent) -> Option<Value> {
-        common::wait_for(&mut self.session, "the agent's answer", |_| {
+        crate::common::wait_for(&mut self.session, "the agent's answer", |_| {
             agent.answers.try_recv().ok()
         })
     }
 
     /// Press `effect` on the sheet up, as the person would.
     fn press(&mut self, effect: &str, args: &Value) {
-        common::press_sheet(&mut self.session, effect, args);
+        crate::common::press_sheet(&mut self.session, effect, args);
     }
 
     /// The agents the desk seats now, by the key its presence names each.
@@ -712,7 +706,7 @@ fn dial_in(
 
 /// The agent's next answer, the session running while it waits.
 fn answer(session: &mut Session, agent: &Agent) -> Value {
-    common::wait_for(session, "the agent's answer", |_| {
+    crate::common::wait_for(session, "the agent's answer", |_| {
         agent.answers.try_recv().ok()
     })
     .expect("an answer")
@@ -754,15 +748,16 @@ fn retitle(
     ));
     let renamed = answer(session, agent);
     assert_eq!(renamed["result"]["isError"], false, "{renamed}");
-    common::until(session, "the note retitled", |session| {
+    crate::common::until(session, "the note retitled", |session| {
         listed(session, agent, note).starts_with(&format!("session/Notes/{title} "))
     });
 }
 
 /// The note `note` reads as it did before the agent came: its first title.
 fn back_to_its_title(session: &mut Session, agent: &Agent, note: &str) {
-    common::until(session, "the note's title back", |session| {
-        listed(session, agent, note).starts_with(&format!("session/Notes/{} ", common::NOTE_TITLE))
+    crate::common::until(session, "the note's title back", |session| {
+        listed(session, agent, note)
+            .starts_with(&format!("session/Notes/{} ", crate::common::NOTE_TITLE))
     });
 }
 
@@ -780,16 +775,16 @@ fn an_agents_step_from_elsewhere_is_undone_in_the_workspace_this_desktop_holds()
     let root = private_home();
     let questions = Questions::new();
     // The notes this person keeps here, one of them the test renames and reads back.
-    let (notebook, notes) = common::notebook_of(&seated, &[common::NOTE_TITLE]);
+    let (notebook, notes) = crate::common::notebook_of(&seated, &[crate::common::NOTE_TITLE]);
     let note = notes.into_iter().next().expect("a note");
     let book = tilo_service::Service::resources(&notebook)
         .into_iter()
-        .find(|resource| resource.kind == format!("tl.{}.Notebook", common::NOTES))
+        .find(|resource| resource.kind == format!("tl.{}.Notebook", crate::common::NOTES))
         .expect("the notebook")
         .id
         .as_str()
         .to_owned();
-    let mut session = common::headless(Options {
+    let mut session = crate::common::headless(Options {
         person: seated.clone(),
         collab: true,
         state: Some(computer.state.path().to_path_buf()),
@@ -803,7 +798,7 @@ fn an_agents_step_from_elsewhere_is_undone_in_the_workspace_this_desktop_holds()
     session
         .handle()
         .replace_tree(desk(&computer.workspace, &seated));
-    common::until(
+    crate::common::until(
         &mut session,
         "the workspace this computer holds",
         |session| {
@@ -828,11 +823,11 @@ fn an_agents_step_from_elsewhere_is_undone_in_the_workspace_this_desktop_holds()
 
     // The person lets it in for this session.
     agent.send(initialize());
-    common::until(&mut session, "the person asked", |_| {
+    crate::common::until(&mut session, "the person asked", |_| {
         questions.pending().len() == 1
     });
-    common::press_sheet(&mut session, PortalEffect::SELECT.id, &json!({"index": 1}));
-    common::press_sheet(&mut session, PortalEffect::CONFIRM.id, &json!({}));
+    crate::common::press_sheet(&mut session, PortalEffect::SELECT.id, &json!({"index": 1}));
+    crate::common::press_sheet(&mut session, PortalEffect::CONFIRM.id, &json!({}));
     let introduced = answer(&mut session, &agent);
     assert!(
         introduced.pointer("/result/serverInfo").is_some(),
@@ -919,7 +914,7 @@ fn listed_run(session: &mut Session, workspace: &str, person: &str, named: &str)
 /// The person presses Undo run on `range` in the Activity, and the model takes it.
 fn undo_from_activity(session: &mut Session, range: &wire::Range) {
     let mut asked = session.activity().act(wire::UNDO_RUN, query(range));
-    common::wait_for(session, "the Activity takes the undo", |_| {
+    crate::common::wait_for(session, "the Activity takes the undo", |_| {
         match asked.poll_ready() {
             PendingPoll::Ready(Ok(())) => Some(()),
             PendingPoll::Ready(Err(error)) => panic!("the Activity refuses the undo: {error}"),
@@ -936,7 +931,7 @@ fn activity_read<T: serde::de::DeserializeOwned>(
     following: &tilo_actions::InvocationId,
     what: &str,
 ) -> T {
-    common::wait_for(session, what, |_| {
+    crate::common::wait_for(session, what, |_| {
         let read = requests.served(following)?.ok()?;
         serde_json::from_value(read).ok()
     })

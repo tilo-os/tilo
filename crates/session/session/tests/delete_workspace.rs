@@ -10,8 +10,6 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-mod common;
-
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
@@ -28,11 +26,7 @@ use tilo_sheets::delete_workspace::DeleteWorkspaceEffect;
 use tilo_sheets::workspace_settings::WorkspaceSettingsApp;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
-use common::{HEIGHT, WIDTH};
-
-// An engine admits a workspace's records through an Automerge worker: this binary is that worker,
-// as it is the session's own.
-tilo_automerge_isolate::test_worker!();
+use crate::common::{HEIGHT, WIDTH};
 
 /// The workspace this computer holds, and the person deletes.
 const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
@@ -361,7 +355,7 @@ fn the_settings_of_a_sole_members_workspace_offer_deleting_it() {
 }
 
 /// Wait until `device` neither shows nor keeps `workspace`, which its owner deleted, and said so.
-fn forgotten(device: &common::people::Device, workspace: &str) {
+fn forgotten(device: &crate::common::people::Device, workspace: &str) {
     tilo_test_env::wait_until(format!("{} forgets {workspace}", device.label), || {
         let state = device.state();
         let shown = state["state"]["workspace_tree"]["workspaces"]
@@ -388,7 +382,8 @@ fn forgotten(device: &common::people::Device, workspace: &str) {
 /// same once it is back.
 #[test]
 fn a_workspace_its_owner_deletes_leaves_every_members_device() {
-    let (site, _ada, _bob, ada_laptop, mut bob_laptop) = common::people::two_people_at_a_site();
+    let (site, _ada, _bob, ada_laptop, mut bob_laptop) =
+        crate::common::people::two_people_at_a_site();
     ada_laptop.wait_holding(&site.workspace);
     bob_laptop.wait_holding(&site.workspace);
     bob_laptop.stop();

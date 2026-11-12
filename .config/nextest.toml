@@ -84,12 +84,12 @@ command = [
 
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session) and binary(lounge_e2e)"
+filter = "package(tilo-session) and binary(it) and test(lounge_e2e::)"
 setup = "lounge-siblings"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session) and binary(lounge_e2e)"
+filter = "package(tilo-session) and binary(it) and test(lounge_e2e::)"
 setup = "lounge-siblings"
 
 # The browser peer's Lounge test starts the same room service the deployment
@@ -97,12 +97,12 @@ setup = "lounge-siblings"
 # feature `agents` that gives it the `room` subcommand.
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session-client) and binary(lounge_fresh_page)"
+filter = "package(tilo-session-client) and binary(it) and test(lounge_fresh_page::)"
 setup = "lounge-siblings"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session-client) and binary(lounge_fresh_page)"
+filter = "package(tilo-session-client) and binary(it) and test(lounge_fresh_page::)"
 setup = "lounge-siblings"
 
 # The browser peer's page tests drive the page's own modules in headless
@@ -116,12 +116,12 @@ command = ["bash", "tools/build-page-bundle.sh"]
 
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session-client) and (binary(passkey_root) or binary(node_workspace))"
+filter = "package(tilo-session-client) and binary(it) and (test(passkey_root::) or test(node_workspace::))"
 setup = "page-bundle"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session-client) and (binary(passkey_root) or binary(node_workspace))"
+filter = "package(tilo-session-client) and binary(it) and (test(passkey_root::) or test(node_workspace::))"
 setup = "page-bundle"
 
 # Chat's acceptance, and a branched device running it with its host away, drive
@@ -136,7 +136,7 @@ command = [
 
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session) and (binary(chat_2x2) or binary(device_branch))"
+filter = "package(tilo-session) and binary(it) and (test(chat_2x2::) or test(device_branch::))"
 setup = "chat-siblings"
 
 [[profile.ci.scripts]]
@@ -146,7 +146,7 @@ setup = ["test-runtime", "headless-audio"]
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session) and (binary(chat_2x2) or binary(device_branch))"
+filter = "package(tilo-session) and binary(it) and (test(chat_2x2::) or test(device_branch::))"
 setup = "chat-siblings"
 
 # Tasks' own package, which the closed-app test starts without a window, and the launcher the
@@ -160,12 +160,12 @@ command = [
 
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session) and binary(closed_tasks)"
+filter = "package(tilo-session) and binary(it) and test(closed_tasks::)"
 setup = "tasks-siblings"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session) and binary(closed_tasks)"
+filter = "package(tilo-session) and binary(it) and test(closed_tasks::)"
 setup = "tasks-siblings"
 
 [[profile.ci.scripts]]
@@ -269,7 +269,7 @@ slow-timeout = { period = "30s", terminate-after = 40 }
 # Megabytes of fsynced commits: these take the runner's disk and CPUs, so
 # they run alone rather than slowing every test beside them.
 [[profile.default.overrides]]
-filter = 'package(tilo-session-client) and binary(compaction)'
+filter = 'package(tilo-session-client) and binary(it) and test(compaction::)'
 threads-required = "num-cpus"
 
 [[profile.default.overrides]]

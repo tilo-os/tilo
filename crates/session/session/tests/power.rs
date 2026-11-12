@@ -16,8 +16,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::io::Read as _;
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -372,7 +370,7 @@ fn press(session: &mut Session, keycode: u32) {
 #[track_caller]
 fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
     let at = std::panic::Location::caller();
-    common::wait_for(session, format!("the condition at {at}"), |session| {
+    crate::common::wait_for(session, format!("the condition at {at}"), |session| {
         done(session).then_some(())
     });
 }

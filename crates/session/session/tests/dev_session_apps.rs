@@ -19,8 +19,6 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-mod common;
-
 use tilo_app_launch::SessionEnvironment;
 use tilo_service::Service as _;
 use tilo_session::apps::Apps;
@@ -33,7 +31,7 @@ fn every_dev_session_app_is_an_installed_package() {
     let store = home.data().join("tilo-apps");
     let runtime = home.state().join("tilolang");
     std::fs::create_dir_all(&runtime).expect("a directory for the build");
-    let installed = common::dev_apps::install(&store, &runtime);
+    let installed = crate::common::dev_apps::install(&store, &runtime);
     home.env().set("TILO_APPS_DATA_DIR", &store);
     for app in installed {
         let found = app_catalogue::apps::read_one_from_env(&app)
@@ -67,7 +65,7 @@ fn a_dev_session_installs_the_apps_and_not_the_parts_they_are_made_with() {
     let store = home.data().join("tilo-apps");
     let runtime = home.state().join("tilolang");
     std::fs::create_dir_all(&runtime).expect("a directory for the build");
-    let installed = common::dev_apps::install(&store, &runtime);
+    let installed = crate::common::dev_apps::install(&store, &runtime);
     home.env().set("TILO_APPS_DATA_DIR", &store);
     let catalog = package_store::Catalog::at(&store, None);
     let apps: Vec<String> = app_catalogue::apps::read(&catalog)
@@ -110,7 +108,7 @@ fn the_installed_apps_connectors_are_planned_from_their_manifests() {
     let store = home.data().join("tilo-apps");
     let runtime = home.state().join("tilolang");
     std::fs::create_dir_all(&runtime).expect("a directory for the build");
-    common::dev_apps::install(&store, &runtime);
+    crate::common::dev_apps::install(&store, &runtime);
     home.env().set("TILO_APPS_DATA_DIR", &store);
 
     // The launcher a connector's launch is planned through: what it would start is read from the
@@ -188,10 +186,10 @@ fn the_installed_apps_scenarios_fill_the_sessions_records() {
     let store = home.data().join("tilo-apps");
     let scratch = home.state().join("tilolang");
     std::fs::create_dir_all(&scratch).expect("a directory for the build");
-    common::dev_apps::install(&store, &scratch);
+    crate::common::dev_apps::install(&store, &scratch);
     home.env().set("TILO_APPS_DATA_DIR", &store);
 
-    let apps = common::seeded_apps_in(&store);
+    let apps = crate::common::seeded_apps_in(&store);
     let mut kinds = std::collections::BTreeSet::new();
     kinds_of(&apps.resources(), &mut kinds);
     for kind in [

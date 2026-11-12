@@ -16,7 +16,7 @@ use test_http::{Reply, Responder};
 use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_session::{Options, Session};
 
-use crate::{COMMUNITY_WORKSPACE, a_device, community_site, held, this_computer, wait_until};
+use super::{COMMUNITY_WORKSPACE, a_device, community_site, held, this_computer, wait_until};
 
 /// A computer's session, keeping the desk it is left with beside `state` : the same session that
 /// starts where the last one ended, beside what the person decided there.

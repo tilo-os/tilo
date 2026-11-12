@@ -25,13 +25,7 @@
               until their sessions end"
 )]
 
-mod common;
-
-// A site admits its members' records through an Automerge worker: this binary is that worker, as
-// the session's own is.
-tilo_automerge_isolate::test_worker!();
-
-use common::people::{Person, Site};
+use crate::common::people::{Person, Site};
 use tilo_relay_protocol::workspaces::WorkspaceRole;
 
 #[test]
@@ -166,7 +160,7 @@ fn two_peoples_own_desktops_see_each_other_come_and_go_without_a_site() {
     let workspace = ada_desktop
         .showing()
         .expect("the workspace Ada's desk made");
-    let invitation = common::people::shared_invitation(&ada_desktop, "editor", bob.public);
+    let invitation = crate::common::people::shared_invitation(&ada_desktop, "editor", bob.public);
     bob_desktop.join(&invitation);
     bob_desktop.wait_holding(&workspace);
     bob_desktop.wait_showing(&workspace);

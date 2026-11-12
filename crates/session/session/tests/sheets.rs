@@ -15,8 +15,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::collections::BTreeSet;
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
@@ -98,7 +96,7 @@ fn chord(session: &mut Session, keys: &[u32]) {
 #[track_caller]
 fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
     let at = std::panic::Location::caller();
-    common::wait_for(session, format!("the condition at {at}"), |session| {
+    crate::common::wait_for(session, format!("the condition at {at}"), |session| {
         done(session).then_some(())
     });
 }

@@ -12,8 +12,6 @@
               lives until the app it serves is done"
 )]
 
-mod common;
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -101,7 +99,7 @@ fn app(socket: &std::path::Path, id: &str, workspace: &str, seen: &std::sync::mp
 
 /// The session's pass until the app is done, as the session runs its loop.
 fn until_the_app_is_done(session: &mut Session, seen: &std::sync::mpsc::Receiver<Seen>) -> Seen {
-    common::wait_for(session, "the app to finish its calls", |session| {
+    crate::common::wait_for(session, "the app to finish its calls", |session| {
         session.settle_services();
         session.step(std::time::Duration::from_millis(1)).unwrap();
         seen.try_recv().ok()
@@ -126,7 +124,7 @@ fn copy(session: &mut Session, text: &str) {
 /// nothing.
 #[test]
 fn the_panel_reads_what_the_person_copied_and_an_app_is_refused_it() {
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let panel_socket = root.path().join("panel.sock");
     let app_socket = root.path().join("app.sock");
     // Both apps speak from this process, and a session admits one app of it,

@@ -3,7 +3,7 @@
 
 use super::*;
 
-use crate::desk::held_clock;
+use super::desk::held_clock;
 use tilo_desktop::notifications::CORNER_INSET;
 
 /// The frame the desk shows now, as RGBA pixels.

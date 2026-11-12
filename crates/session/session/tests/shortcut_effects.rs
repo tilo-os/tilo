@@ -15,8 +15,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::path::PathBuf;
 use std::time::Duration;
 

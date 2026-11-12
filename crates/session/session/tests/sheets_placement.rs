@@ -13,11 +13,9 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::time::Duration;
 
-use common::window::{Client, KEY_A, KEY_ESCAPE, WINDOW, WINDOW_BYTES, window_of};
+use crate::common::window::{Client, KEY_A, KEY_ESCAPE, WINDOW, WINDOW_BYTES, window_of};
 use tilo_actions::ResourceSpec;
 use tilo_compositor::{Compositor, OutputConfig, Screenshot};
 use tilo_desktop::desk_verbs::DISPLAY_KIND;
@@ -136,7 +134,7 @@ fn pixel(frame: &Screenshot, x: i32, y: i32) -> [u8; 4] {
 /// The point at the middle of the menu's panel, in its own coordinates, once the menu has laid the
 /// panel out.
 fn panel_centre(session: &mut Session) -> (i32, i32) {
-    let panel = common::wait_for(session, "the menu's panel", |session| {
+    let panel = crate::common::wait_for(session, "the menu's panel", |session| {
         let panel = session.power_menu().expect("power sheet").panel();
         (panel.x1 > panel.x0 && panel.y1 > panel.y0).then_some(panel)
     });
@@ -188,7 +186,7 @@ fn a_sheet_opens_on_the_display_in_focus() {
     assert!(power.presentation().is_open(), "and is up for the person");
     let (cx, cy) = panel_centre(&mut session);
 
-    let _after_right = common::wait_for(
+    let _after_right = crate::common::wait_for(
         &mut session,
         format!("the sheet drawn on the display in focus, at ({cx}, {cy}) of it"),
         |session| {
@@ -264,7 +262,7 @@ fn a_window_filling_the_display_keeps_the_sheet_on_top_and_takes_no_keys() {
         WINDOW,
         "the window filled the display at ({cx}, {cy}) before the sheet"
     );
-    common::wait_for(
+    crate::common::wait_for(
         &mut session,
         "the sheet painting over the maximised window",
         |session| {

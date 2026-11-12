@@ -12,11 +12,9 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
-mod common;
-
 use std::time::Duration;
 
-use common::{private_home, seeded_session};
+use crate::common::{private_home, seeded_session};
 
 /// Step the loop once.
 fn step(session: &mut tilo_session::Session) {

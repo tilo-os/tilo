@@ -19,11 +19,9 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
-mod common;
-
 use std::time::{Duration, Instant};
 
-use common::{BTN_LEFT, HEIGHT, WIDTH, changed, shot, until};
+use crate::common::{BTN_LEFT, HEIGHT, WIDTH, changed, shot, until};
 use tilo_compositor::{InputEvent, KeyRepeat, OutputConfig};
 use tilo_desktop::window_switcher::SwitcherView;
 use tilo_desktop_model::{

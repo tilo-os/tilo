@@ -156,7 +156,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                      if rule["setup"] == "chat-siblings"]
             self.assertEqual(
                 [(rule["filter"], rule["platform"]) for rule in rules],
-                [("package(tilo-session) and (binary(chat_2x2) or binary(device_branch))",
+                [("package(tilo-session) and binary(it) and (test(chat_2x2::) or test(device_branch::))",
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds Chat and its launcher for the acceptance",
             )
@@ -170,7 +170,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                      if rule["setup"] == "tasks-siblings"]
             self.assertEqual(
                 [(rule["filter"], rule["platform"]) for rule in rules],
-                [("package(tilo-session) and binary(closed_tasks)",
+                [("package(tilo-session) and binary(it) and test(closed_tasks::)",
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds Tasks and its launcher for the closed app",
             )
@@ -185,9 +185,9 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                      if rule["setup"] == "lounge-siblings"]
             self.assertEqual(
                 [(rule["filter"], rule["platform"]) for rule in rules],
-                [("package(tilo-session) and binary(lounge_e2e)",
+                [("package(tilo-session) and binary(it) and test(lounge_e2e::)",
                   {"host": 'cfg(target_os = "linux")'}),
-                 ("package(tilo-session-client) and binary(lounge_fresh_page)",
+                 ("package(tilo-session-client) and binary(it) and test(lounge_fresh_page::)",
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds the relay for the lounge's tests",
             )
@@ -200,7 +200,8 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                      if rule["setup"] == "page-bundle"]
             self.assertEqual(
                 [(rule["filter"], rule["platform"]) for rule in rules],
-                [("package(tilo-session-client) and (binary(passkey_root) or binary(node_workspace))",
+                [("package(tilo-session-client) and binary(it) and (test(passkey_root::) or "
+                  "test(node_workspace::))",
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds the page bundle its page tests run against",
             )
@@ -212,14 +213,15 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         rules = {rule["filter"]: rule["setup"] for rule in config["profile"]["ci"]["scripts"]}
         # `ci` inherits `default`'s rules, so it names only what it adds.
         self.assertEqual(rules, {"all()": ["test-runtime", "headless-audio"],
-                                 "package(tilo-session) and (binary(chat_2x2) or "
-                                 "binary(device_branch))": "chat-siblings",
-                                 "package(tilo-session) and binary(closed_tasks)": "tasks-siblings",
-                                 "package(tilo-session) and binary(lounge_e2e)": "lounge-siblings",
-                                 "package(tilo-session-client) and binary(lounge_fresh_page)":
+                                 "package(tilo-session) and binary(it) and (test(chat_2x2::) or "
+                                 "test(device_branch::))": "chat-siblings",
+                                 "package(tilo-session) and binary(it) and test(closed_tasks::)": "tasks-siblings",
+                                 "package(tilo-session) and binary(it) and test(lounge_e2e::)": "lounge-siblings",
+                                 "package(tilo-session-client) and binary(it) and "
+                                 "test(lounge_fresh_page::)":
                                      "lounge-siblings",
-                                 "package(tilo-session-client) and (binary(passkey_root) or "
-                                 "binary(node_workspace))": "page-bundle",
+                                 "package(tilo-session-client) and binary(it) and "
+                                 "(test(passkey_root::) or test(node_workspace::))": "page-bundle",
                                  "package(tilo-ntfs-helper)": "ntfs-fixtures",
                                  # Only the sandbox's tests that map host ids or
                                  # make cgroups run as root.

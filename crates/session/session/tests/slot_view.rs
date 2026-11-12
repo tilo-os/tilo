@@ -21,8 +21,6 @@
               lives until the app it starts is done"
 )]
 
-mod common;
-
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -306,7 +304,7 @@ fn package(dir: &Path, slot: &str, source: &str) -> PathBuf {
 #[test]
 fn a_bound_view_draws_the_menu_and_binding_another_swaps_it_while_it_is_up() {
     let _home = TestHome::new().expect("a home of the test's own");
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let socket = root.path().join("collab.sock");
     let report = root.path().join("report");
     let mut environment = ScopedEnv::new();
@@ -373,7 +371,7 @@ fn a_bound_view_draws_the_menu_and_binding_another_swaps_it_while_it_is_up() {
 #[test]
 fn a_part_the_system_draws_refuses_a_binding() {
     let _home = TestHome::new().expect("a home of the test's own");
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let socket = root.path().join("collab.sock");
     let mut session = session_with(&socket, desk_tree());
     for slot in ["lock", "consent", "portal", "auth", "display-confirm"] {
@@ -400,7 +398,7 @@ fn a_part_the_system_draws_refuses_a_binding() {
 fn a_package_bound_to_the_slot_reads_the_menu_and_closes_it_through_its_own_verb() {
     let _settled = ui::motion::testing::settled();
     let _home = TestHome::new().expect("a home of the test's own");
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let socket = root.path().join("collab.sock");
     let report = root.path().join("report");
     let payload = package(&root.path().join("slot-probe"), "window-menu", MENU_VIEW);
@@ -500,7 +498,7 @@ fn a_package_bound_to_the_slot_reads_the_menu_and_closes_it_through_its_own_verb
 fn a_package_that_is_no_view_of_the_slot_leaves_it_to_the_one_the_session_ships_with() {
     let _settled = ui::motion::testing::settled();
     let _home = TestHome::new().expect("a home of the test's own");
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let socket = root.path().join("collab.sock");
     let report = root.path().join("report");
     let payload = package(&root.path().join("slot-probe"), "window-menu", MENU_VIEW);
@@ -550,7 +548,7 @@ fn a_package_that_is_no_view_of_the_slot_leaves_it_to_the_one_the_session_ships_
 fn a_package_bound_to_the_slot_shows_the_menu_rows_and_choosing_one_runs_it() {
     let _settled = ui::motion::testing::settled();
     let _home = TestHome::new().expect("a home of the test's own");
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let socket = root.path().join("collab.sock");
     let report = root.path().join("report");
     let payload = package(&root.path().join("slot-rows"), "window-menu", ROWS_VIEW);

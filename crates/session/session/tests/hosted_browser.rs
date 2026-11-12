@@ -18,10 +18,6 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
-mod common;
-
-tilo_automerge_isolate::test_worker!();
-
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -35,7 +31,7 @@ use tilo_session::hosted_browser::HostedBrowser;
 use tilo_session::{AppActions, Options, Session};
 use tilo_user_identity::IdentityPaths;
 
-use common::people::{Person, Site};
+use crate::common::people::{Person, Site};
 
 /// The app whose window a browser environment holds.
 const BROWSER: &str = "so.tilo.browser";
@@ -104,7 +100,7 @@ fn environment(
     let mut launch = tilo_app_launch::SessionEnvironment::from_process();
     launch.wayland_socket = Some(home.runtime().join("wayland-7"));
     let apps = Rc::new(Apps::with_launcher(launch, None, Some(launcher.to_owned())));
-    let session = common::headless(Options {
+    let session = crate::common::headless(Options {
         collab: true,
         state: Some(state.to_path_buf()),
         apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
@@ -159,7 +155,7 @@ fn a_session_in_a_browser_environment_joins_its_workspace_and_opens_browser() {
     let (handed, _root) = material(&site, &site.workspace, workspace_id, RECORD, &person);
 
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
-    common::probe_app(&mut home, BROWSER, "Browser");
+    crate::common::probe_app(&mut home, BROWSER, "Browser");
     let launcher = tilo_test_env::stand_in(home.home().join("tilo-launcher"), "hold\n")
         .expect("the environment's launcher");
     let identity_root = home.data().join("identity");
@@ -178,21 +174,21 @@ fn a_session_in_a_browser_environment_joins_its_workspace_and_opens_browser() {
 
     // It asks the relay to enter it, redeems the invitation, and holds the workspace as the desk
     // holds any device's.
-    common::until(&mut session, "the workspace is held", |session| {
+    crate::common::until(&mut session, "the workspace is held", |session| {
         holds(session, &site.workspace)
     });
 
     // Browser opens on the record, and its window publishes under the tab it takes.
-    let mut client = common::window::Client::connect(session.compositor());
-    common::window::pump(&mut session, &mut [&mut client], |_, clients| {
+    let mut client = crate::common::window::Client::connect(session.compositor());
+    crate::common::window::pump(&mut session, &mut [&mut client], |_, clients| {
         let seen = &clients[0].seen;
         seen.compositor.is_some() && seen.wm_base.is_some() && seen.shm.is_some()
     });
     client.map_plain(&mut session, BROWSER, (600, 400));
-    let provider = common::wait_for(&mut session, "the window publishes", |session| {
+    let provider = crate::common::wait_for(&mut session, "the window publishes", |session| {
         tab_of(session, &site.workspace, BROWSER)
     });
-    common::until(&mut session, "the provider is reported", |_| {
+    crate::common::until(&mut session, "the provider is reported", |_| {
         reports(&said)
             .iter()
             .any(|line| line == &format!("up {provider}"))
@@ -214,7 +210,7 @@ fn a_session_whose_workspace_the_relay_does_not_let_it_into_opens_nothing() {
     let (handed, _root) = material(&site, other, 77, RECORD, &person);
 
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
-    common::probe_app(&mut home, BROWSER, "Browser");
+    crate::common::probe_app(&mut home, BROWSER, "Browser");
     let launcher = tilo_test_env::stand_in(home.home().join("tilo-launcher"), "hold\n")
         .expect("the environment's launcher");
     let identity_root = home.data().join("identity");
@@ -224,7 +220,7 @@ fn a_session_whose_workspace_the_relay_does_not_let_it_into_opens_nothing() {
     let state = tempfile::tempdir().expect("a directory for the environment's desk");
 
     let (mut session, said) = environment(&home, state.path(), launcher.path(), &handed);
-    let joined = common::steps_within(&mut session, Duration::from_secs(15), |session| {
+    let joined = crate::common::steps_within(&mut session, Duration::from_secs(15), |session| {
         holds(session, other).then_some(())
     });
     assert!(
@@ -232,7 +228,7 @@ fn a_session_whose_workspace_the_relay_does_not_let_it_into_opens_nothing() {
         "the workspace it was handed is not one the relay lets it into"
     );
     assert!(
-        common::steps_within(&mut session, Duration::from_secs(15), |_| {
+        crate::common::steps_within(&mut session, Duration::from_secs(15), |_| {
             reports(&said)
                 .iter()
                 .any(|line| line.starts_with("up "))

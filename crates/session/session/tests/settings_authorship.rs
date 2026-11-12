@@ -15,8 +15,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use serde_json::{Map, Value, json};
 use tilo_session::{Options, Session};
 use tilo_settings_service::{SettingsService, setting_resource};

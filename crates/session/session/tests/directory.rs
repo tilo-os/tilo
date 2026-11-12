@@ -24,7 +24,6 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-mod common;
 #[path = "directory/community.rs"]
 mod community;
 #[path = "directory/sheet.rs"]
@@ -53,10 +52,6 @@ use tilo_session::{Options, Session};
 use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_sheets::Seat as _;
 use tilo_sheets::directory::{Listing, ListingAction, Status};
-
-// A host admits its members' records through an Automerge worker: this binary is that worker, as it
-// is the session's own.
-tilo_automerge_isolate::test_worker!();
 
 /// The app the lounge's workspace talks in, and the record its people wrote there before this
 /// computer joined: the chat's own workspace record.
@@ -414,7 +409,7 @@ fn ask_to_join(session: &mut Session, key: &str) {
 fn wait_until(session: &mut Session, what: &str, done: impl Fn(&Session) -> bool) {
     // What this waits for is other runtimes' work (the site's answer, the record arriving), so the
     // bound is the suite's, not a second count.
-    common::until(session, what, |session| done(session));
+    crate::common::until(session, what, |session| done(session));
 }
 
 /// Wait until the directory is done with the person: it closes once the join's enrollment settles,
@@ -1070,7 +1065,7 @@ impl Lounge {
     fn start_with(person: [u8; 32], written: &str, door: LoungeDoor) -> Self {
         // The lounge's host and page run in this test's process: what they did with a join is only
         // said in its log.
-        common::people::install_log();
+        crate::common::people::install_log();
         let state = tempfile::tempdir().expect("a directory for the lounge's host");
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -1782,7 +1777,7 @@ fn wait_until_desk(
     want: &[(String, Vec<String>)],
     what: &str,
 ) {
-    let shown = common::wait_maybe(session, |session| {
+    let shown = crate::common::wait_maybe(session, |session| {
         (desk_layout(session, workspace) == want).then_some(())
     });
     assert!(
@@ -1976,7 +1971,7 @@ fn wait_until_their_pointer(
         .expect("the wait's bound fits in an Instant");
     loop {
         other_member_points_at(lounge, tab, at.0, at.1);
-        let drawn = common::steps_within(session, POINT_AGAIN, |session| {
+        let drawn = crate::common::steps_within(session, POINT_AGAIN, |session| {
             pointer_here(session, tab, at).then_some(())
         });
         if drawn.is_some() {
@@ -2021,17 +2016,18 @@ fn wait_until_the_lounge_is_here(session: &mut Session, lounge: &Lounge) {
     // patience and the suite's hang bound after it, so a host answering slowly is waited for rather
     // than called hung, and the session's note on a join that did not happen is what the test
     // reports when the wait runs out.
-    let here = common::wait_maybe_past(session, tilo_session::sync::JOIN_PATIENCE, |session| {
-        let held = session.held_workspaces();
-        let people = session.people(&lounge.workspace);
-        (held.iter().any(|workspace| workspace == &lounge.workspace)
-            && people.as_ref().is_ok_and(|people| {
-                people
-                    .iter()
-                    .any(|member| member.person == hex::encode(lounge.person))
-            }))
-        .then_some(())
-    });
+    let here =
+        crate::common::wait_maybe_past(session, tilo_session::sync::JOIN_PATIENCE, |session| {
+            let held = session.held_workspaces();
+            let people = session.people(&lounge.workspace);
+            (held.iter().any(|workspace| workspace == &lounge.workspace)
+                && people.as_ref().is_ok_and(|people| {
+                    people
+                        .iter()
+                        .any(|member| member.person == hex::encode(lounge.person))
+                }))
+            .then_some(())
+        });
     assert!(
         here.is_some(),
         "the lounge's workspace is held here: held {:?}, people {:?}, directory {:?}",

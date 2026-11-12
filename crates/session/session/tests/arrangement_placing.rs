@@ -20,8 +20,6 @@
     reason = "test fixtures: a failed step is the assertion, and the session outlives every call"
 )]
 
-mod common;
-
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -125,7 +123,7 @@ fn step(session: &mut Session) {
 
 /// Run a frame until `done` , so what a change asked of the session lands.
 fn settle(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
-    common::wait_for(session, "the change to land", |session| {
+    crate::common::wait_for(session, "the change to land", |session| {
         done(session).then_some(())
     });
 }
@@ -449,7 +447,7 @@ fn text_that_finds_nothing_asks_the_kept_agent_instead_of_being_dropped() {
                 .expect("arguments"),
         )
         .expect("text that names nothing asks the agent");
-    let sent = common::wait_for(&mut session, "the ask to be sent", |session| {
+    let sent = crate::common::wait_for(&mut session, "the ask to be sent", |session| {
         session.settle_services();
         session
             .read("session:send-to")

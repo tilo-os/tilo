@@ -15,8 +15,6 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
-mod common;
-
 use serde_json::json;
 use tilo_session::Session;
 
@@ -49,8 +47,8 @@ fn act(session: &mut Session, resource: &str, action: &str, arguments: &serde_js
               two would start a session of its own for its second half"
 )]
 fn an_agent_takes_a_story_across_apps_and_the_shell_by_actions_alone() {
-    let root = common::private_home();
-    let mut session = common::seeded_session(root.path());
+    let root = crate::common::private_home();
+    let mut session = crate::common::seeded_session(root.path());
 
     // Open the notebook in a window, as the arrangement's published `open` does for a person.
     let notebook = found(&session, "tl.so.tilo.lang.notes.Notebook");
@@ -60,8 +58,8 @@ fn an_agent_takes_a_story_across_apps_and_the_shell_by_actions_alone() {
         "open",
         &json!({ "resource": notebook }),
     );
-    common::until(&mut session, "the notebook's window", |session| {
-        common::places(session)
+    crate::common::until(&mut session, "the notebook's window", |session| {
+        crate::common::places(session)
             .iter()
             .any(|place| place.record == notebook || place.shows == notebook)
     });
@@ -74,7 +72,7 @@ fn an_agent_takes_a_story_across_apps_and_the_shell_by_actions_alone() {
         "set-quiet",
         &json!({ "on": true }),
     );
-    let quiet = common::wait_for(&mut session, "the centre to say it is quiet", |session| {
+    let quiet = crate::common::wait_for(&mut session, "the centre to say it is quiet", |session| {
         session.settle_services();
         session
             .read("session:notifications")
@@ -105,7 +103,7 @@ fn an_agent_takes_a_story_across_apps_and_the_shell_by_actions_alone() {
             "text": "the plan for Friday",
         }),
     );
-    let sent = common::wait_for(&mut session, "the send to be carried out", |session| {
+    let sent = crate::common::wait_for(&mut session, "the send to be carried out", |session| {
         session.settle_services();
         session
             .read("session:send-to")
@@ -134,7 +132,7 @@ fn an_agent_takes_a_story_across_apps_and_the_shell_by_actions_alone() {
         "copy",
         &json!({ "text": "the autumn release" }),
     );
-    let history = common::wait_for(
+    let history = crate::common::wait_for(
         &mut session,
         "the line in the clipboard's history",
         |session| {
