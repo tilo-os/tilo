@@ -630,3 +630,17 @@ files-app-kind-flatpak = Flatpak
 files-app-kind-appimage = AppImage
 files-app-kind-program = Programm
 files-app-kind-system = System
+
+## What the window shows
+files-cannot-read = { $path } lässt sich nicht lesen: { $detail }
+files-is-a-folder = { $path } ist ein Ordner, keine Datei
+files-is-too-large = zu groß
+files-not-a-folder = { $path } ist kein Ordner, den Dateien öffnen kann
+files-terminal-failed = Hier ließ sich kein Terminal öffnen: { $detail }
+files-location-gone = Der Ort ist nicht mehr verfügbar
+files-template-gone = Die Vorlage ist nicht mehr verfügbar
+files-entry-gone = Der Eintrag ist nicht mehr sichtbar
+files-sharing-unavailable = Teilen ist für diese Datei nicht verfügbar
+files-folder-missing = { $path } ist kein vorhandener Ordner.
+files-copy-failed = Das Kopieren ist fehlgeschlagen: { $detail }
+files-resource-nearby = In der Nähe

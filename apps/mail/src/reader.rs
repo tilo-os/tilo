@@ -637,7 +637,7 @@ impl MessageReader {
         // What it is: the subject, then who it goes to and from which
         // account.
         let subject = if queued.subject.trim().is_empty() {
-            "No subject".to_owned()
+            CATALOG.t("mail-no-subject")
         } else {
             queued.subject.clone()
         };
@@ -650,7 +650,10 @@ impl MessageReader {
             Some(wide),
         );
         y += ctx.line_box(TextRole::Heading) + f64::from(spacing.rhythm.related);
-        let to = format!("To {}", queued.to);
+        let to = CATALOG.t_args(
+            "mail-to",
+            &[("recipient", ui::i18n::ArgValue::Text(queued.to.clone()))],
+        );
         ctx.text_role(
             &to,
             TextRole::Body,
@@ -1003,7 +1006,7 @@ impl MessageReader {
         let title = flow.style(TextRole::Title);
         let subject = head.thread_subject();
         let subject = if subject.trim().is_empty() {
-            "No subject".to_owned()
+            CATALOG.t("mail-no-subject")
         } else {
             subject
         };
@@ -1023,14 +1026,20 @@ impl MessageReader {
                 ),
                 theme.text_dim,
             );
-            let text = if head.read {
-                "Preview"
+            let preview = CATALOG.t(if head.read {
+                "mail-preview"
             } else {
-                "Preview, still unread"
-            };
+                "mail-preview-unread"
+            });
             let x = flow.x + icon + f64::from(theme.tokens.metrics.icon_label_gap);
             let width = flow.width - (x - flow.x);
-            flow.line_at(text, &caption, theme.text_dim, Point::new(x, top), width);
+            flow.line_at(
+                &preview,
+                &caption,
+                theme.text_dim,
+                Point::new(x, top),
+                width,
+            );
             flow.y += line;
         }
         flow.y += f64::from(spacing.s6);

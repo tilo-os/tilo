@@ -777,7 +777,10 @@ pub(crate) fn attachment_row(
         if attachment.downloadable {
             spec
         } else {
-            spec.unavailable("not_downloaded", "Attachment content is not downloaded yet")
+            spec.unavailable(
+                "not_downloaded",
+                &crate::i18n::CATALOG.t("mail-attachment-not-downloaded"),
+            )
         }
     };
     LiveRow::new(

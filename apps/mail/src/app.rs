@@ -3893,7 +3893,10 @@ impl MailApp {
             .filter_map(|(index, (id, thread_len))| {
                 let message = state.mailbox.get(*id)?;
                 let title = if message.folder == Folder::Drafts {
-                    format!("Draft: {}", message.subject)
+                    CATALOG.t_args(
+                        "mail-draft-subject",
+                        &[("subject", ui::i18n::ArgValue::Text(message.subject.clone()))],
+                    )
                 } else {
                     format!("{}: {}", message.from.display(), message.subject)
                 };
@@ -4028,7 +4031,7 @@ impl MailApp {
                             "mail-a11y-refused",
                             &[("reason", ArgValue::Text(reason.clone()))],
                         ),
-                        None => "This message has not been sent yet.".to_owned(),
+                        None => CATALOG.t("mail-not-sent-yet"),
                     })
                     .with_value(message.body.clone()),
             );

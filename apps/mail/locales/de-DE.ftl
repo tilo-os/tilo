@@ -194,3 +194,12 @@ mail-status-selection-cancelled = Auswahl des Anhangs abgebrochen
 mail-status-selection-composer-closed = Auswahl des Anhangs abgebrochen, weil das Verfassen-Fenster geschlossen wurde
 mail-status-picker-disconnected = Die Anhangsauswahl wurde getrennt, bevor eine Datei gewählt war
 mail-status-choose-file = Wähle eine Datei zum Anhängen
+
+## What the window shows
+mail-attachment-not-downloaded = Der Inhalt des Anhangs ist noch nicht heruntergeladen
+mail-draft-subject = Entwurf: { $subject }
+mail-not-sent-yet = Diese Nachricht wurde noch nicht gesendet.
+mail-no-subject = Ohne Betreff
+mail-to = An { $recipient }
+mail-preview = Vorschau
+mail-preview-unread = Vorschau, noch ungelesen

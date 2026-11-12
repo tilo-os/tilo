@@ -214,3 +214,23 @@ reason = "A measuring sample a list row lays out to find its height, never a wor
 file = "apps/feeds/src/list_pane.rs"
 text = "Ag"
 reason = "A measuring sample a list row lays out to find its height, never a word a person reads."
+
+[[allow]]
+file = "apps/mail/src/app.rs"
+text = "Ag"
+reason = "A measuring sample a list row lays out to find its height, never a word a person reads."
+
+[[allow]]
+file = "apps/mail/src/list.rs"
+text = "Ag"
+reason = "A measuring sample a list row lays out to find its height, never a word a person reads."
+
+[[allow]]
+file = "apps/file-explorer/src/files_app.rs"
+text = "conflict must be keep-both, skip, replace or ask, not {other:?}"
+reason = "What the copy tool refuses an agent: a wrong argument name, never shown in a window."
+
+[[allow]]
+file = "apps/file-explorer/src/files_app.rs"
+text = "Files opens no `{anchor}`"
+reason = "What the open tool answers an agent about an anchor, never shown in a window."
