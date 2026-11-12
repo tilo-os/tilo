@@ -10,6 +10,7 @@
 //!   tree shape reflects), the main panel (title update), and the
 //!   storage saver (debounced disk persistence).
 
+use crate::metadata::CATALOG;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -246,7 +247,7 @@ fn read_image_asset(source: &std::path::Path) -> Result<Vec<u8>, String> {
     const MAX_IMAGE_BYTES: u64 = crate::notebook::MAX_ASSET_BYTES as u64;
     let bytes = crate::files::read_bounded(source, MAX_IMAGE_BYTES)
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| ui::i18n!("notes-image-too-big"))?;
+        .ok_or_else(|| CATALOG.t("notes-image-too-big"))?;
     check_image(&bytes)?;
     Ok(bytes)
 }
@@ -272,7 +273,7 @@ fn line_after_new_picture(
 /// an asset. `Ok(false)` for one that must be made smaller first
 /// ([`shrink_image_asset`]).
 fn image_fits_asset(bytes: &[u8]) -> Result<bool, String> {
-    crate::notebook::image_mime(bytes).ok_or_else(|| ui::i18n!("notes-image-kind"))?;
+    crate::notebook::image_mime(bytes).ok_or_else(|| CATALOG.t("notes-image-kind"))?;
     Ok(bytes.len() <= crate::notebook::MAX_ASSET_BYTES)
 }
 
@@ -304,7 +305,7 @@ async fn shrink_image_asset(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
         }
         image = image.resized(width.saturating_mul(3) / 4, height.saturating_mul(3) / 4);
     }
-    Err(ui::i18n!("notes-image-unfit"))
+    Err(CATALOG.t("notes-image-unfit"))
 }
 
 /// An image a paste or a drop brought, made small enough for an asset off
@@ -321,10 +322,10 @@ enum ShrunkImage {
 /// most 1 MiB.
 pub(crate) fn check_image(bytes: &[u8]) -> Result<(), String> {
     if bytes.len() > crate::notebook::MAX_ASSET_BYTES {
-        return Err(ui::i18n!("notes-image-too-big"));
+        return Err(CATALOG.t("notes-image-too-big"));
     }
     if crate::notebook::image_mime(bytes).is_none() {
-        return Err(ui::i18n!("notes-image-kind"));
+        return Err(CATALOG.t("notes-image-kind"));
     }
     Ok(())
 }
@@ -700,7 +701,7 @@ impl NotesApp {
             Button::icon_only(
                 NOTE_MENU_BUTTON_ID,
                 ui::icons::Icon::MoreHorizontal,
-                &ui::i18n!("notes-affordance-note-actions"),
+                &CATALOG.t("notes-affordance-note-actions"),
             )
             .on_view(move || header.note_menu.set(true))
         };
@@ -720,7 +721,7 @@ impl NotesApp {
             Button::icon_only(
                 NEW_NOTE_BUTTON_ID,
                 ui::icons::Icon::Plus,
-                &ui::i18n!("notes-affordance-new-note"),
+                &CATALOG.t("notes-affordance-new-note"),
             )
             .on_view(move || header.new_note.set(true)),
         )]
@@ -736,7 +737,7 @@ impl NotesApp {
             .sidebar(Box::new(columns.sidebar.slot()))
             .content(Box::new(columns.content.slot()))
             .sidebar_header(
-                ui::i18n!("notes-title"),
+                CATALOG.t("notes-title"),
                 Self::page_tree_header_actions(header),
             )
             .content_header("", actions)
@@ -1122,7 +1123,7 @@ impl NotesApp {
                     .flat_map(|blocks| blocks.iter())
                     .map(|block| block.text.clone())
                     .find(|text| !text.trim().is_empty())
-                    .unwrap_or_else(|| ui::i18n!("notes-empty-excerpt"));
+                    .unwrap_or_else(|| CATALOG.t("notes-empty-excerpt"));
                 let mut excerpt = raw.chars().take(EXCERPT_LIMIT).collect::<String>();
                 if raw.chars().nth(EXCERPT_LIMIT).is_some() {
                     excerpt.push('…');
@@ -1406,13 +1407,13 @@ impl NotesApp {
         }
         let bytes = crate::files::read_bounded(path, ui::clipboard::MAX_PASTED_IMAGE_BYTES as u64)
             .map_err(|error| error.to_string())
-            .and_then(|bytes| bytes.ok_or_else(|| ui::i18n!("notes-image-too-big")));
+            .and_then(|bytes| bytes.ok_or_else(|| CATALOG.t("notes-image-too-big")));
         match bytes {
             Ok(bytes) => {
                 let alt = path
                     .file_stem()
                     .and_then(|stem| stem.to_str())
-                    .map_or_else(|| ui::i18n!("notes-image-default-alt"), str::to_owned)
+                    .map_or_else(|| CATALOG.t("notes-image-default-alt"), str::to_owned)
                     .replace([']', '[', '(', ')'], " ");
                 self.insert_image_bytes(&mut ctx.edits(), alt.trim(), bytes);
             }
@@ -2067,7 +2068,7 @@ impl NotesApp {
                     notice,
                     ui::widget::toast::ToastKind::Info,
                     "undo-2",
-                    ui::i18n!("notes-undo"),
+                    CATALOG.t("notes-undo"),
                 );
                 self.delete_undo = DeleteUndo::Offered;
             }
@@ -2839,7 +2840,7 @@ impl Widget for NotesApp {
         self.follow_notebook();
         if self.link_copy.failed() {
             self.notify(
-                ui::i18n!("notes-copy-link-failed"),
+                CATALOG.t("notes-copy-link-failed"),
                 ui::widget::toast::ToastKind::Error,
             );
         }
@@ -3287,7 +3288,7 @@ impl Widget for NotesApp {
         Some(
             AccessNode::new(Role::Group)
                 .with_name(crate::metadata::CATALOG.t("notes-window-name"))
-                .with_description(crate::metadata::CATALOG.t("notes-window-description"))
+                .with_description(CATALOG.t("notes-window-description"))
                 .with_children(children),
         )
     }
@@ -3729,7 +3730,7 @@ impl NotesApp {
         });
         if self.note_menu_editor {
             for key in EDIT_MENU_KEYS {
-                self.note_menu.push(MenuItem::selection(ui::i18n!(key)));
+                self.note_menu.push(MenuItem::selection(CATALOG.t(key)));
             }
             self.note_menu.push(MenuItem::separator());
             if self.note_menu_table.is_some() {

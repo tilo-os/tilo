@@ -11,6 +11,8 @@
 //! This type owns no CRDT state and does no rendering — it holds the
 //! snapshot and formats the labels, which keeps it trivially unit-testable.
 
+use crate::metadata::CATALOG;
+
 /// Whether the notebook's changes are on disk, as the accessibility status says it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub enum SaveStatus {
@@ -76,7 +78,7 @@ impl StatusModel {
     }
 
     pub fn save_text(&self) -> String {
-        ui::i18n!(match self.state.save_status {
+        CATALOG.t(match self.state.save_status {
             SaveStatus::Saved => "notes-status-saved",
             SaveStatus::Saving => "notes-status-saving",
             SaveStatus::Failed => "notes-status-failed",
@@ -100,8 +102,8 @@ impl StatusModel {
                 "notes-status-failed-because",
                 &[("reason", ui::i18n::ArgValue::from(reason.to_owned()))],
             ),
-            (SaveStatus::Failed, None) => ui::i18n!("notes-status-failed-detail"),
-            (SaveStatus::SessionOnly, _) => ui::i18n!("notes-status-no-storage"),
+            (SaveStatus::Failed, None) => CATALOG.t("notes-status-failed-detail"),
+            (SaveStatus::SessionOnly, _) => CATALOG.t("notes-status-no-storage"),
             _ => self.save_text(),
         }
     }

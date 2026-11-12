@@ -2,6 +2,7 @@
 //! shortcut, grouped by what they do. Ctrl+/ (or F1) opens it; Escape, the
 //! close control or a scrim click dismisses it.
 
+use crate::metadata::CATALOG;
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -100,7 +101,7 @@ fn group(group: &Group, keys: &PropertyColumn) -> Element {
         .collect();
     Box::new(
         Section::new(vec![Box::new(PropertyList::new(rows).shared_column(keys))])
-            .with_header(SectionHeader::group(ui::i18n!(group.label))),
+            .with_header(SectionHeader::group(CATALOG.t(group.label))),
     )
 }
 
@@ -135,7 +136,7 @@ impl ShortcutsOverlay {
     fn dialog(dismissed: &Rc<Cell<bool>>) -> ModalDialog<Column> {
         let dismissed = Rc::clone(dismissed);
         ModalDialog::new(
-            ui::i18n!("notes-help-title"),
+            CATALOG.t("notes-help-title"),
             Column::new()
                 .with_intrinsic_height()
                 .with_no_padding()

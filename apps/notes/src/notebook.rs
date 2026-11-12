@@ -12,6 +12,7 @@
 //! descendant), its title (renaming relabels the links to it), creating,
 //! deleting and copying notes with everything under them.
 
+use crate::metadata::CATALOG;
 use std::collections::{HashMap, HashSet};
 
 use tilo_document::action::{RegionKind, Span};
@@ -603,7 +604,7 @@ impl Notebook {
         for bytes in images {
             self.store_image(cx, &bytes)?;
         }
-        let fallback = ui::i18n!("notes-imported-untitled");
+        let fallback = CATALOG.t("notes-imported-untitled");
         let page = Page::titled(
             if title.trim().is_empty() {
                 &fallback
@@ -1179,10 +1180,10 @@ pub const MAX_MARKDOWN_IMPORT_BLOCKS: usize = 10_000;
 /// Whether `markdown` is small enough for one import.
 pub fn check_markdown_import(markdown: &str) -> Result<(), String> {
     if markdown.len() > MAX_MARKDOWN_IMPORT_BYTES {
-        return Err(ui::i18n!("notes-import-too-big"));
+        return Err(CATALOG.t("notes-import-too-big"));
     }
     if crate::markdown::parse(markdown).len() > MAX_MARKDOWN_IMPORT_BLOCKS {
-        return Err(ui::i18n!("notes-import-too-many-blocks"));
+        return Err(CATALOG.t("notes-import-too-many-blocks"));
     }
     Ok(())
 }

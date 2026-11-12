@@ -4,6 +4,7 @@
 //! semantics) can make the first one.
 
 use crate::component_support::{self, NotebookFixture};
+use notes::metadata::CATALOG;
 use std::cell::RefCell;
 use std::rc::Rc;
 use tilo_desktop_model::{IdMinter, Tab, TileContent, Workspace};
@@ -106,7 +107,7 @@ fn an_empty_notes_window_offers_new_note_and_it_makes_a_note() {
             "{width}px: the notebook is empty"
         );
 
-        let offered = nodes_named(&harness, &ui::i18n!("notes-affordance-new-note"));
+        let offered = nodes_named(&harness, &CATALOG.t("notes-affordance-new-note"));
         let Some((new_note, _)) = offered
             .into_iter()
             .find(|(_, node)| node.bounds().is_some())
