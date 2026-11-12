@@ -97,8 +97,8 @@ pub struct RosterRow {
     /// called here. Software has no screen to mirror, so its row shows this instead, and pressing it
     /// brings that window forward.
     pub working_in: Option<(u64, String)>,
-    /// The app that window runs, as its person reads it ("Notes"): the place software works in,
-    /// said beside its line without naming the app it already sits in.
+    /// The app that window runs, by its id (what names the place software works in beside its
+    /// line, without naming the app it already sits in).
     pub working_app: Option<String>,
     /// Short participant intention, marked by its [`LineSource`] so model-suggested words cannot be mistaken for a direct quote.
     pub status: Option<RosterStatus>,

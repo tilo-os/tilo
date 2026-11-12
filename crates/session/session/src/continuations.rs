@@ -59,17 +59,21 @@ pub(crate) struct HandoffNote {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Showing {
     pub(crate) workspace: WorkspaceId,
+    /// The app the window runs, when its app said so: a window drawn by the
+    /// app's own surface names no app in the desk's own tree.
+    pub(crate) app: Option<String>,
     pub(crate) record: String,
-}
-
-thread_local! {
-    static DIAGNOSTIC: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
 }
 
 /// What the windows this session runs show, by the tab each runs in.
 #[derive(Default)]
 pub(crate) struct Continuations {
     shown: Mutex<BTreeMap<u64, Showing>>,
+    /// What each window said it shows, by the tab it runs in: its app names
+    /// the record it holds once, where the broker's channels cannot (an app
+    /// that keeps one document for the whole workspace speaks on a channel
+    /// that names no record).
+    named: Mutex<BTreeMap<u64, Showing>>,
     /// What the windows' apps answered about a handoff step, oldest first.
     handoffs: Mutex<VecDeque<HandoffNote>>,
 }
@@ -87,32 +91,32 @@ impl Continuations {
     ///
     /// `app_of` names the app each window runs: the records of any other app it
     /// holds (the desk's, a service's) are not what its window shows.
-    pub(crate) fn read(&self, held: &[(u64, CrdtRoute)], app_of: &dyn Fn(u64) -> Option<String>) {
-        let described = crate::continuations::DIAGNOSTIC.with(|last| {
-            let asked = format!(
-                "{} {:?}",
-                held.len(),
-                held.iter()
-                    .map(|(instance, route)| format!("{instance}:{}", route.channel_key()))
-                    .collect::<Vec<_>>()
-            );
-            let mut last = last.borrow_mut();
-            if *last == asked {
-                return None;
-            }
-            *last = asked.clone();
-            Some(asked)
-        });
-        if let Some(described) = described {
-            tracing::error!("DIAGNOSTIC window records read {described}");
-        }
+    pub(crate) fn read(
+        &self,
+        held: &[(u64, CrdtRoute)],
+        app_of: &dyn Fn(u64) -> Option<String>,
+        live: &std::collections::BTreeSet<u64>,
+    ) {
         let mut windows: BTreeMap<u64, Vec<&CrdtRoute>> = BTreeMap::new();
         for (instance, route) in held {
             windows.entry(*instance).or_default().push(route);
         }
+        let mut named = self.named.lock_recover();
+        // A window the desk no longer shows says nothing any more. A desk drawn with no window at
+        // all — the pass that lays it out, a moment between workspaces — says nothing of the kind:
+        // only a desk showing other windows can say one is gone.
+        if !live.is_empty() {
+            named.retain(|tab, _| live.contains(tab));
+        }
         let mut shown = self.shown.lock_recover();
         shown.clear();
         for (instance, routes) in windows {
+            // What the window's app said it shows is what it shows, however its
+            // channels name it.
+            if let Some(said) = named.get(&instance) {
+                shown.insert(instance, said.clone());
+                continue;
+            }
             let app = app_of(instance);
             let mut records = routes.into_iter().filter(|route| {
                 // The route a window's app speaks to the session on names the window's instance,
@@ -131,33 +135,76 @@ impl Continuations {
             let Some(record) = records.next() else {
                 continue;
             };
-            if let Some(second) = records.next() {
-                tracing::error!(
-                    instance,
-                    first = %record.channel_key(),
-                    second = %second.channel_key(),
-                    held = held.len(),
-                    "DIAGNOSTIC a window holds several records"
-                );
+            if records.next().is_some() {
                 continue;
             }
             let Some(workspace) = WorkspaceId::parse(&record.cluster_id) else {
-                tracing::error!(
-                    instance,
-                    cluster = %record.cluster_id,
-                    record = %record.record_id,
-                    "DIAGNOSTIC a window's record names no workspace"
-                );
                 continue;
             };
             shown.insert(
                 instance,
                 Showing {
                     workspace,
+                    app: Some(record.app_id.clone()),
                     record: record.record_id.clone(),
                 },
             );
         }
+        // A window whose app named what it shows is known by that, even where the broker names no
+        // record for it.
+        for (tab, said) in named.iter() {
+            if !shown.contains_key(tab) {
+                shown.insert(*tab, said.clone());
+            }
+        }
+    }
+
+    /// Window `tab` is gone: what it said it shows goes with it.
+    pub(crate) fn forget(&self, tab: u64) {
+        self.named.lock_recover().remove(&tab);
+        self.shown.lock_recover().remove(&tab);
+    }
+
+    /// Window `tab` says it shows `record` of `workspace` (a record id as the wire spells it), as
+    /// its app holds it: the one source of what a window shows, for its place, the layout beside
+    /// it and where anyone here is. Whether that is news.
+    pub(crate) fn note(&self, tab: u64, app: &str, workspace: &str, record: &str) -> bool {
+        if record.trim().is_empty() {
+            return false;
+        }
+        let Some(workspace) = WorkspaceId::parse(workspace) else {
+            return false;
+        };
+        let showing = Showing {
+            workspace,
+            app: Some(app.to_owned()),
+            record: record.to_owned(),
+        };
+        {
+            let mut named = self.named.lock_recover();
+            if named.get(&tab) == Some(&showing) {
+                return false;
+            }
+            named.insert(tab, showing.clone());
+        }
+        self.shown.lock_recover().insert(tab, showing);
+        true
+    }
+
+    /// The app each window runs, when its app said which one: what tells a window drawn by its
+    /// app's own surface which app it is.
+    pub(crate) fn app_of(&self, tab: u64) -> Option<String> {
+        self.shown.lock_recover().get(&tab)?.app.clone()
+    }
+
+    /// What each window shows, by tab, as its app and its record: the desk's people and its
+    /// presence read where a window is from here.
+    pub(crate) fn windows(&self) -> Vec<(u64, Option<String>, String)> {
+        self.shown
+            .lock_recover()
+            .iter()
+            .map(|(tab, showing)| (*tab, showing.app.clone(), showing.record.clone()))
+            .collect()
     }
 
     /// The record each window shows, by tab: what the desk keeps beside its windows, so a place
@@ -269,12 +316,17 @@ impl ContinuationServices for Continuations {
 mod tests {
     use super::*;
 
-    /// A window's app holding `records` , in `workspace` .
-    /// The app every window in these tests runs.
-    fn notes_app(_: u64) -> Option<String> {
-        Some("so.tilo.notes".to_owned())
+    /// The tabs the desk shows in these tests: every one the broker names.
+    fn instances(held: &[(u64, CrdtRoute)]) -> std::collections::BTreeSet<u64> {
+        held.iter().map(|(tab, _)| *tab).collect()
     }
 
+    /// The app every window in these tests runs.
+    fn notes_app() -> impl Fn(u64) -> Option<String> {
+        |_| Some("so.tilo.notes".to_owned())
+    }
+
+    /// A window's app holding `records` , in `workspace` .
     fn held(workspace: WorkspaceId, instance: u64, records: &[&str]) -> Vec<(u64, CrdtRoute)> {
         records
             .iter()
@@ -294,7 +346,7 @@ mod tests {
         let other = WorkspaceId::new();
         let mut routes = held(room, 12, &["plan"]);
         routes.extend(held(other, 30, &["budget"]));
-        notes.read(&routes, &notes_app);
+        notes.read(&routes, &notes_app(), &instances(&routes));
 
         assert_eq!(
             notes.window_record(12),
@@ -317,14 +369,18 @@ mod tests {
             12,
             CrdtRoute::record("so.tilo.notes", room.to_string(), "continuation:12"),
         ));
-        notes.read(&routes, &notes_app);
+        notes.read(&routes, &notes_app(), &instances(&routes));
         assert_eq!(
             notes.of_workspace(room),
             [(12, "plan".to_owned())],
             "the route its app speaks the session on is no record"
         );
 
-        notes.read(&held(room, 12, &["continuation:12"]), &notes_app);
+        notes.read(
+            &held(room, 12, &["continuation:12"]),
+            &notes_app(),
+            &instances(&held(room, 12, &["continuation:12"])),
+        );
         assert!(
             notes.of_workspace(room).is_empty(),
             "a window holding only that route shows no record"
@@ -335,12 +391,20 @@ mod tests {
     fn a_window_holding_several_records_notes_none() {
         let notes = Continuations::default();
         let room = WorkspaceId::new();
-        notes.read(&held(room, 12, &["plan", "index"]), &notes_app);
+        notes.read(
+            &held(room, 12, &["plan", "index"]),
+            &notes_app(),
+            &instances(&held(room, 12, &["plan", "index"])),
+        );
         assert!(
             notes.of_workspace(room).is_empty(),
             "which of them it shows is not something the broker says"
         );
-        notes.read(&held(room, 12, &["index"]), &notes_app);
+        notes.read(
+            &held(room, 12, &["index"]),
+            &notes_app(),
+            &instances(&held(room, 12, &["index"])),
+        );
         assert_eq!(
             notes.window_record(12),
             Some(("index".to_owned(), String::new())),
@@ -359,7 +423,7 @@ mod tests {
             12,
             CrdtRoute::record("so.tilo.desktop", room.to_string(), "desk"),
         ));
-        notes.read(&routes, &notes_app);
+        notes.read(&routes, &notes_app(), &instances(&routes));
         assert_eq!(
             notes.window_record(12),
             Some(("plan".to_owned(), String::new())),
@@ -370,20 +434,63 @@ mod tests {
             12,
             CrdtRoute::record("so.tilo.notes", room.to_string(), "index"),
         ));
-        notes.read(&routes, &notes_app);
+        notes.read(&routes, &notes_app(), &instances(&routes));
         assert_eq!(notes.window_record(12), None);
+    }
+
+    /// A window whose app names the record it shows is what it shows, however its channels name
+    /// it: an app that keeps one document for the whole workspace speaks on a channel that names
+    /// no record. The window that closes is forgotten with it.
+    #[test]
+    fn a_window_that_names_its_record_is_known_by_it() {
+        let notes = Continuations::default();
+        let room = WorkspaceId::new();
+        assert!(
+            notes.note(12, "so.tilo.notes", &room.to_string(), "notes.notebook"),
+            "it is news"
+        );
+        assert!(
+            !notes.note(12, "so.tilo.notes", &room.to_string(), "notes.notebook"),
+            "the same window, once"
+        );
+        notes.read(
+            &[(12, CrdtRoute::app("so.tilo.notes", room.to_string()))],
+            &notes_app(),
+            &[12].into_iter().collect(),
+        );
+        assert_eq!(
+            notes.window_record(12),
+            Some(("notes.notebook".to_owned(), String::new())),
+            "the record it said it shows, not the app-scoped channel it speaks on"
+        );
+        assert_eq!(
+            notes.of_workspace(room),
+            [(12, "notes.notebook".to_owned())]
+        );
+        // A desk drawn with no window at all says nothing of the kind: only a desk showing other
+        // windows can say this one is gone.
+        notes.read(&[], &notes_app(), &std::collections::BTreeSet::new());
+        assert!(notes.window_record(12).is_some());
+        notes.read(&[], &notes_app(), &[13].into_iter().collect());
+        assert_eq!(notes.window_record(12), None, "gone with its window");
+        // Said again by a window the session has not heard of yet: it is news.
+        assert!(notes.note(12, "so.tilo.notes", &room.to_string(), "notes.notebook"));
     }
 
     #[test]
     fn a_window_that_closed_leaves_no_note() {
         let notes = Continuations::default();
         let room = WorkspaceId::new();
-        notes.read(&held(room, 12, &["plan"]), &notes_app);
+        notes.read(
+            &held(room, 12, &["plan"]),
+            &notes_app(),
+            &instances(&held(room, 12, &["plan"])),
+        );
         assert_eq!(
             notes.window_record(12),
             Some(("plan".to_owned(), String::new()))
         );
-        notes.read(&[], &notes_app);
+        notes.read(&[], &notes_app(), &std::collections::BTreeSet::new());
         assert_eq!(notes.window_record(12), None);
         assert!(notes.of_workspace(room).is_empty());
     }
@@ -394,7 +501,11 @@ mod tests {
         let room = WorkspaceId::new();
         let person = "abababababababababababababababababababababababababababababababab";
         let record = tilo_action_policy::member_record_id(person, "tilo.note");
-        notes.read(&held(room, 12, &[&record]), &notes_app);
+        notes.read(
+            &held(room, 12, &[&record]),
+            &notes_app(),
+            &instances(&held(room, 12, &[&record])),
+        );
         assert_eq!(
             notes.window_record(12),
             Some((record, "tilo.note".to_owned())),

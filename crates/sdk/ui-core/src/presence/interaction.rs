@@ -871,11 +871,7 @@ impl PresenceCtx {
         // What it is doing, in the words presence says beside its face: the
         // record is the window this card stands in, never named twice. The
         // phase is the mark's fade, not words.
-        let mut detail = tilo_actions::wording::step_line(&interaction.action.label, None);
-        if placement.additional > 0 {
-            use std::fmt::Write as _;
-            let _ = write!(detail, " · +{} more", placement.additional);
-        }
+        let detail = card_detail(&interaction.action.label, placement.additional);
         let detail = tr.elide_to_width_style(&detail, (rect.width() - 24.0) as f32, &style);
         tr.draw_style(
             scene,
@@ -1086,6 +1082,20 @@ fn phase_label(phase: &InteractionPhase) -> String {
             crate::i18n::widget_format("interaction-cancelled", &[])
         }
     }
+}
+
+/// What the card says under its actor's name: the action in
+/// [`tilo_actions::wording`]'s words, the same line presence says beside the
+/// actor's face, and how many other steps of it the one card stands for. The
+/// card already stands in the record's own window, so the record is never
+/// named twice.
+fn card_detail(label: &str, additional: usize) -> String {
+    let mut detail = tilo_actions::wording::step_line(label, None);
+    if additional > 0 {
+        use std::fmt::Write as _;
+        let _ = write!(detail, " · +{additional} more");
+    }
+    detail
 }
 
 fn phase_color(phase: &InteractionPhase, theme: &Theme, actor: Color) -> Color {
@@ -1769,6 +1779,34 @@ mod tests {
         assert_eq!(
             presence.interaction_next_wake_deadline(at),
             Some(at + ACTIVE_INTERACTION_EXPIRY + EXPIRY_EPSILON)
+        );
+    }
+
+    /// A card reads as its actor: one colour from its face through its border
+    /// and bar, and the words presence says beside that face.
+    #[test]
+    fn a_card_wears_its_actors_colour_and_words() {
+        let theme = Theme::light();
+        let actor = Color::from_rgb8(0x12, 0x9f, 0x8a);
+        for phase in [
+            InteractionPhase::Locating,
+            InteractionPhase::Applying,
+            InteractionPhase::Progress {
+                label: "halfway".into(),
+                completed: Some(1),
+                total: Some(2),
+            },
+            InteractionPhase::Committed,
+        ] {
+            assert_eq!(phase_color(&phase, &theme, actor), actor, "{phase:?}");
+        }
+        assert_eq!(
+            card_detail("Create note from Markdown", 0),
+            "Creating note from Markdown"
+        );
+        assert_eq!(
+            card_detail("Create note from Markdown", 2),
+            "Creating note from Markdown · +2 more"
         );
     }
 

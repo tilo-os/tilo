@@ -1719,16 +1719,24 @@ impl SeatAt {
 
     /// The agent was offered `rows`.
     fn offered(&self, rows: &[tilo_actions::remote::CatalogueRow]) {
-        let mut apps = self.apps.lock_recover();
-        if apps.len() > Self::APPS {
-            apps.clear();
-            self.named.lock_recover().clear();
-        }
-        let mut named = self.named.lock_recover();
-        for row in rows {
-            if !row.app_id.is_empty() {
-                apps.insert(row.provider.clone(), row.app_id.clone());
+        let overflow = {
+            let mut apps = self.apps.lock_recover();
+            let overflow = apps.len() > Self::APPS;
+            if overflow {
+                apps.clear();
             }
+            for row in rows {
+                if !row.app_id.is_empty() {
+                    apps.insert(row.provider.clone(), row.app_id.clone());
+                }
+            }
+            overflow
+        };
+        let mut named = self.named.lock_recover();
+        if overflow {
+            named.clear();
+        }
+        for row in rows {
             if let Some(action) = &row.action {
                 let words = [
                     action.action_label.trim(),

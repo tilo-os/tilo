@@ -159,9 +159,11 @@ fn rows_of(
                     .flatten(),
                 working_app: is_agent
                     .then(|| {
-                        participant
-                            .active_tab
-                            .and_then(|tab| app_label_in(workspace, tab))
+                        participant.in_app.clone().or_else(|| {
+                            participant
+                                .active_tab
+                                .and_then(|tab| app_id_in(workspace, tab))
+                        })
                     })
                     .flatten(),
                 // What it is doing, read off its own device's word: an agent's row is where its
@@ -302,14 +304,15 @@ pub fn in_app(app: &str) -> String {
     crate::i18n::t_args("people-panel-in-app", &[("app", app.to_owned().into())])
 }
 
-/// The app the window `tab_id` runs, as its person reads it: the label its tile carries.
-fn app_label_in(workspace: Option<&tilo_desktop_model::Workspace>, tab_id: u64) -> Option<String> {
+/// The app the window `tab_id` runs, by its id: what names it where its own presence kept no word
+/// of the app, and its tile does.
+fn app_id_in(workspace: Option<&tilo_desktop_model::Workspace>, tab_id: u64) -> Option<String> {
     let tile = &workspace?.tabs().find(|tab| tab.id == tab_id)?.tile;
-    let tilo_desktop_model::TileContent::LocalApp { label, .. } = tile else {
+    let tilo_desktop_model::TileContent::LocalApp { app_id, .. } = tile else {
         return None;
     };
-    let label = label.trim();
-    (!label.is_empty()).then(|| label.to_owned())
+    let app_id = app_id.trim();
+    (!app_id.is_empty()).then(|| app_id.to_owned())
 }
 
 fn tab_title_in(workspace: Option<&tilo_desktop_model::Workspace>, tab_id: u64) -> Option<String> {

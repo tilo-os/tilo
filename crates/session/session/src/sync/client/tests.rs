@@ -729,8 +729,8 @@ fn another_device_of_this_person_is_this_person() {
 }
 
 /// No window of the desk shows a record.
-fn no_records() -> std::collections::BTreeMap<u64, String> {
-    std::collections::BTreeMap::new()
+fn no_records() -> crate::continuations::Continuations {
+    crate::continuations::Continuations::default()
 }
 
 /// The tile `tab` stands at on the desk of these tests.

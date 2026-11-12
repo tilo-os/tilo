@@ -855,7 +855,7 @@ impl Session {
                 seated: options.person.clone(),
                 notes: {
                     let notes = std::sync::Arc::clone(&notes);
-                    Rc::new(move || notes.records())
+                    Rc::new(move || notes.windows())
                 },
                 apps: Some(std::sync::Arc::new(options.lists.clone())
                     as std::sync::Arc<dyn crate::platform::apps::Apps>),
@@ -867,7 +867,9 @@ impl Session {
                     let notes = std::sync::Arc::clone(&notes);
                     Rc::new(move |tree: &mut tilo_desktop_model::DesktopTree| {
                         if let Some(sync) = &sync {
-                            sync.show(tree, &notes.records(), &|_: &str| None);
+                            sync.show(tree, &notes, &|app: &str| {
+                                Some(crate::app_names::app_name(app))
+                            });
                         }
                     })
                 },
@@ -2458,23 +2460,36 @@ impl Session {
         let Some(broker) = plane.action_broker() else {
             return;
         };
-        // The app each window runs: a record of another app it holds is not what its window
-        // shows.
-        let apps: std::collections::BTreeMap<u64, String> = self.shared.handle.read(|tree| {
-            tree.workspaces
+        // The app each window runs, and the windows the desk shows: a record of another app is
+        // not what a window shows, and a window the desk no longer shows says nothing.
+        let (apps, live): (
+            std::collections::BTreeMap<u64, String>,
+            std::collections::BTreeSet<u64>,
+        ) = self.shared.handle.read(|tree| {
+            let tabs: Vec<(u64, Option<String>)> = tree
+                .workspaces
                 .iter()
-                .flat_map(|workspace| workspace.tabs())
-                .filter_map(|tab| {
-                    let app = tilo_desktop_surface::host::records::app_of(tree, tab.id)?;
-                    Some((tab.id, app.to_owned()))
+                .flat_map(tilo_desktop_model::Workspace::tabs)
+                .map(|tab| {
+                    (
+                        tab.id,
+                        tilo_desktop_surface::host::records::app_of(tree, tab.id)
+                            .map(str::to_owned),
+                    )
                 })
-                .collect()
+                .collect();
+            (
+                tabs.iter()
+                    .filter_map(|(tab, app)| Some((*tab, app.clone()?)))
+                    .collect(),
+                tabs.iter().map(|(tab, _)| *tab).collect(),
+            )
         });
-        self.shared
-            .notes
-            .read(&broker.state().window_records(), &|instance| {
-                apps.get(&instance).cloned()
-            });
+        self.shared.notes.read(
+            &broker.state().window_records(),
+            &|instance| apps.get(&instance).cloned(),
+            &live,
+        );
     }
 
     /// Hand every agent following the catalogue the session's own actions again when what it

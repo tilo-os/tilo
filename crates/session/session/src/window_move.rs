@@ -1315,6 +1315,7 @@ mod tests {
                     CrdtRoute::record(PROBE, self.from.clone(), checkout.id.as_str()),
                 )],
                 &|_| Some(PROBE.to_owned()),
+                &[self.tab].into_iter().collect(),
             );
             checkout
         }

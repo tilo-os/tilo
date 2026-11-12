@@ -514,6 +514,10 @@ impl Published for People {
     }
 }
 
+/// What each window of the desk shows, by its tab: the app it runs, and the
+/// record it holds (a window whose app keeps no single record names its kind).
+pub type WindowRecords = Rc<dyn Fn() -> Vec<(u64, Option<String>, String)>>;
+
 /// What the roster reads and asks of the session, beside the surfaces it is placed on.
 pub struct Given {
     /// Where the panel stands and how finely it draws.
@@ -522,7 +526,7 @@ pub struct Given {
     pub seated: String,
     /// What each window of the desk shows, by its tab: the record it holds, as
     /// the host that runs the windows reads them.
-    pub notes: Rc<dyn Fn() -> std::collections::BTreeMap<u64, String>>,
+    pub notes: WindowRecords,
     /// The apps this host has, as a card offers to write to the person.
     pub apps: Option<std::sync::Arc<dyn crate::platform::apps::Apps>>,
     /// The desk the roster is drawn over.
@@ -627,7 +631,7 @@ struct Panel {
     here: Rc<dyn Fn(&mut DesktopTree)>,
     /// What each window of the desk shows, by its tab: where a person's record stands, so the
     /// roster places them in the window they work in.
-    notes: Rc<dyn Fn() -> std::collections::BTreeMap<u64, String>>,
+    notes: WindowRecords,
     /// The apps this host has: whether Chat stands here decides whether a card offers to write to
     /// the person.
     apps: Option<std::sync::Arc<dyn crate::platform::apps::Apps>>,
@@ -814,7 +818,8 @@ impl Panel {
                 place: if row.is_agent {
                     row.working_app
                         .as_deref()
-                        .map(tilo_desktop::collaborators::in_app)
+                        .map(crate::app_names::app_name)
+                        .map(|app| tilo_desktop::collaborators::in_app(&app))
                 } else {
                     row.activity.clone()
                 },
@@ -1020,7 +1025,7 @@ impl Panel {
             .sync
             .as_ref()
             .map_or_else(String::new, |sync| sync.publisher().to_string());
-        let records = (self.notes)();
+        let windows = (self.notes)();
         let mut tree = self.handle.read(Clone::clone);
         (self.here)(&mut tree);
         let (rows, _) = collaborator_roster_rows_named(&tree, &own, None);
@@ -1033,9 +1038,9 @@ impl Panel {
             .map(|workspace| workspace.id().to_string());
         // What each window here shows, by the digest presence names it with: what a person's window
         // on the same record is called here.
-        let titled: BTreeMap<String, String> = crate::sync::layout::bindings(&tree, &records)
+        let titled: BTreeMap<String, String> = crate::sync::layout::bindings_of(&tree, &windows)
             .into_iter()
-            .filter_map(|(tab, digest)| {
+            .filter_map(|(tab, _app, digest)| {
                 let title = tree.tab(tab)?.title.trim().to_owned();
                 (!title.is_empty()).then_some((digest, title))
             })

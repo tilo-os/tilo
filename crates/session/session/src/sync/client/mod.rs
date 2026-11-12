@@ -874,14 +874,12 @@ impl Roster {
     pub(crate) fn people(
         &self,
         tree: &DesktopTree,
-        records: &std::collections::BTreeMap<tilo_desktop_model::TabId, String>,
+        notes: &crate::continuations::Continuations,
         app_name: &dyn Fn(&str) -> Option<String>,
     ) -> Vec<Person> {
-        self.here.borrow().people(
-            tree,
-            &crate::sync::layout::bindings(tree, records),
-            app_name,
-        )
+        self.here
+            .borrow()
+            .people(tree, &crate::sync::layout::bindings(tree, notes), app_name)
     }
 
     /// Who is here, written into `tree`'s active workspace as its collaborators: the roster every
@@ -889,10 +887,10 @@ impl Roster {
     pub(crate) fn show(
         &self,
         tree: &mut DesktopTree,
-        records: &std::collections::BTreeMap<tilo_desktop_model::TabId, String>,
+        notes: &crate::continuations::Continuations,
         app_name: &dyn Fn(&str) -> Option<String>,
     ) -> Vec<Person> {
-        let people = self.people(tree, records, app_name);
+        let people = self.people(tree, notes, app_name);
         // Whose view this person follows, so the bar keeps that face when it has room for only one.
         let following = self.here.borrow().following().map(str::to_owned);
         tilo_desktop::here::overlay_collaborators(tree, &people, following.as_deref());
@@ -1631,23 +1629,23 @@ impl Client {
 
     /// Who is here, as the desktop lists them.
     #[must_use]
-    pub fn people(
+    pub(crate) fn people(
         &self,
         tree: &DesktopTree,
-        records: &std::collections::BTreeMap<tilo_desktop_model::TabId, String>,
+        notes: &crate::continuations::Continuations,
         app_name: &dyn Fn(&str) -> Option<String>,
     ) -> Vec<Person> {
-        self.hosting.roster.people(tree, records, app_name)
+        self.hosting.roster.people(tree, notes, app_name)
     }
 
     /// Who is here, written into `tree`'s active workspace as its collaborators.
-    pub fn show(
+    pub(crate) fn show(
         &self,
         tree: &mut DesktopTree,
-        records: &std::collections::BTreeMap<tilo_desktop_model::TabId, String>,
+        notes: &crate::continuations::Continuations,
         app_name: &dyn Fn(&str) -> Option<String>,
     ) -> Vec<Person> {
-        self.hosting.roster.show(tree, records, app_name)
+        self.hosting.roster.show(tree, notes, app_name)
     }
 
     /// The waves at this person since the last call, as the bar says them.

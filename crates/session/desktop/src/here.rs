@@ -10,7 +10,7 @@
 //! A person may be here from several devices at once (each browser profile is a device of its own).
 //! They are one person here: each device's certificate names its person, devices of one person
 //! show once, and this page's person's other devices are this page's person, never someone else.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tilo_sort::CompactSort as _;
 
 use collab_types::presence::Shown;
@@ -957,7 +957,7 @@ impl HereState {
     pub fn people(
         &self,
         tree: &DesktopTree,
-        records: &[(TabId, String)],
+        records: &[(TabId, String, String)],
         app_name: &dyn Fn(&str) -> Option<String>,
     ) -> Vec<Person> {
         let colors = self.colors();
@@ -998,7 +998,13 @@ impl HereState {
                 .and_then(|focus| window_of(tree, records, focus));
             let status = said_line(member);
             let place = match tab {
-                Some(tab) => worded_place(tree, tab, app_name, status.as_ref()),
+                Some(tab) => worded_place(
+                    tree,
+                    tab,
+                    member.focus.as_ref().map(|focus| focus.app.as_str()),
+                    app_name,
+                    status.as_ref(),
+                ),
                 None => focused_app(member, app_name, status.as_ref()),
             };
             people.push(Person {
@@ -1152,22 +1158,23 @@ pub fn guest_label() -> String {
 }
 
 /// The window showing `focus` : the record's window, else the first window of its app.
-fn window_of(tree: &DesktopTree, records: &[(TabId, String)], focus: &Focus) -> Option<TabId> {
-    let tabs: HashMap<TabId, &str> = tree
+fn window_of(
+    tree: &DesktopTree,
+    records: &[(TabId, String, String)],
+    focus: &Focus,
+) -> Option<TabId> {
+    let shown: HashSet<TabId> = tree
         .active_workspace()
         .into_iter()
         .flat_map(Workspace::tabs)
-        .filter_map(|tab| match &tab.tile {
-            TileContent::LocalApp { app_id, .. } => Some((tab.id, app_id.as_str())),
-            _ => None,
-        })
+        .map(|tab| tab.id)
         .collect();
     records
         .iter()
-        .find(|(tab, record)| {
-            *record == focus.record && tabs.get(tab).is_some_and(|app| *app == focus.app)
+        .find(|(tab, app, record)| {
+            *record == focus.record && *app == focus.app && shown.contains(tab)
         })
-        .map(|(tab, _)| *tab)
+        .map(|(tab, _, _)| *tab)
 }
 
 /// Where the window `tab` is, in words beside `status` : "Strip · App". The strip is named only
@@ -1177,6 +1184,7 @@ fn window_of(tree: &DesktopTree, records: &[(TabId, String)], focus: &Focus) -> 
 fn worded_place(
     tree: &DesktopTree,
     tab: TabId,
+    focus_app: Option<&str>,
     app_name: &dyn Fn(&str) -> Option<String>,
     status: Option<&Line>,
 ) -> Option<String> {
@@ -1188,10 +1196,13 @@ fn worded_place(
             .iter()
             .flat_map(|group| &group.tabs)
             .find(|t| t.id == tab)?;
+        // The app the window runs: from its tile where the desk's own model names it, else from
+        // the app its presence focuses (a window drawn by its app's own surface names none here).
         let app = match &tab.tile {
             TileContent::LocalApp { app_id, .. } => app_name(app_id),
             _ => None,
         }
+        .or_else(|| focus_app.and_then(app_name))
         .unwrap_or_else(|| tab.title.clone());
         let app = Some(app.trim())
             .filter(|app| !app.is_empty())
@@ -1759,7 +1770,8 @@ mod tests {
             text: text.into(),
             source: crate::collaborators::LineSource::Observed,
         };
-        let place = |tree: &DesktopTree, line: Option<&Line>| worded_place(tree, 7, &app, line);
+        let place =
+            |tree: &DesktopTree, line: Option<&Line>| worded_place(tree, 7, None, &app, line);
         assert_eq!(
             place(&tree, None),
             Some("Chat".into()),
@@ -2297,7 +2309,7 @@ mod tests {
             }]),
         );
         let app = |id: &str| (id == "so.tilo.notes").then(|| "Notes".to_owned());
-        let held = [(7, digest.to_owned())];
+        let held = [(7, "so.tilo.notes".to_owned(), digest.to_owned())];
         let people = here.people(&tree, &held, &app);
         let ann = people
             .iter()

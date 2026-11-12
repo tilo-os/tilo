@@ -11,15 +11,24 @@ use ui::record::RecordId;
 #[must_use]
 pub(crate) fn bindings(
     tree: &tilo_desktop_model::DesktopTree,
-    records: &std::collections::BTreeMap<tilo_desktop_model::TabId, String>,
-) -> Vec<(tilo_desktop_model::TabId, String)> {
-    records
+    notes: &crate::continuations::Continuations,
+) -> Vec<(tilo_desktop_model::TabId, String, String)> {
+    bindings_of(tree, &notes.windows())
+}
+
+/// [`bindings`] for what windows show as their apps said it: the app and record each holds, and
+/// the digest presence names the record by. A window whose app named none is read from the desk's
+/// own tree.
+pub(crate) fn bindings_of(
+    tree: &tilo_desktop_model::DesktopTree,
+    windows: &[(tilo_desktop_model::TabId, Option<String>, String)],
+) -> Vec<(tilo_desktop_model::TabId, String, String)> {
+    windows
         .iter()
-        .filter_map(|(&tab, record)| {
-            Some((
-                tab,
-                hex::encode(live_record(tree, tab, record)?.short_digest()),
-            ))
+        .filter_map(|(tab, app, record)| {
+            let record = live_record_as(tree, *tab, record, app.as_deref())?;
+            let digest = hex::encode(record.short_digest());
+            Some((*tab, record.app, digest))
         })
         .collect()
 }
@@ -52,16 +61,18 @@ pub fn placed(
 /// What the window `tab` shows, as presence names it to the others: the app it runs and its
 /// record's wire spelling ([`wire_record`]), the spelling a receiver matches against its own
 /// records. `None` for a window that runs no app, or shows a record this session does not know yet.
-pub(crate) fn live_record(
+/// The app is said by whoever knows it: a window drawn by its app's own surface names no app in
+/// the desk's tree, and its app is what told the session what it shows.
+pub(crate) fn live_record_as(
     tree: &tilo_desktop_model::DesktopTree,
     tab: tilo_desktop_model::TabId,
     record: &str,
+    app: Option<&str>,
 ) -> Option<LiveRecord> {
-    let app = app_of(tree, tab)?;
+    let app = app
+        .map(str::to_owned)
+        .or_else(|| app_of(tree, tab).map(str::to_owned))?;
     let record =
         RecordId::parse(record).map_or_else(|| record.to_owned(), |id| wire_record(&id).to_owned());
-    Some(LiveRecord {
-        app: app.to_owned(),
-        record,
-    })
+    Some(LiveRecord { app, record })
 }

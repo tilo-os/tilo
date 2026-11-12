@@ -93,8 +93,8 @@ impl Shared {
         follow.follow(followed);
         let people = sync.people(
             &self.handle.read(Clone::clone),
-            &self.notes.records(),
-            &|_: &str| None,
+            &self.notes,
+            &|app: &str| Some(crate::app_names::app_name(app)),
         );
         let places: Vec<Place<'_>> = people
             .iter()

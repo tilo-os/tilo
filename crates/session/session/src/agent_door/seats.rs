@@ -196,7 +196,10 @@ impl Seats {
                     }
                 }
                 if held.app.is_none() {
-                    held.app = connection.doing.as_ref().and_then(|(_, app)| app.clone());
+                    held.app = connection
+                        .doing
+                        .as_ref()
+                        .and_then(|doing| doing.app.clone());
                 }
             }
         }

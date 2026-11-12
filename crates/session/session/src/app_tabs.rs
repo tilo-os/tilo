@@ -741,8 +741,10 @@ impl Answers<'_> {
                     .remove(&connection)
                     .and_then(|link| link.instance)
                 {
-                    // A page nothing runs any more is published nowhere.
+                    // A page nothing runs any more is published nowhere, and what its window said
+                    // it shows goes with it.
                     self.pages.borrow_mut().closed(tab);
+                    self.launches.notes().forget(tab);
                 }
                 // The cards it presented, and the windows the desk stood
                 // them in, go with it.
@@ -917,11 +919,28 @@ impl Answers<'_> {
             FloatingSurfaceClientMessage::UpdateRegion { .. } => {
                 refuse(&reply, &app, &name, NO_REGION);
             }
-            // What a window shares live, the embeds it draws of other apps' resources, and the
-            // selection an agent works from: the session serves none of them over this connection
-            // yet.
-            FloatingSurfaceClientMessage::WindowRecord { .. }
-            | FloatingSurfaceClientMessage::Embeds { .. }
+            // The record a window shows, as its app holds it: the one source of what a window
+            // shows, which its place, the layout kept beside it and where anyone here is read
+            // from. An app that keeps one document for the whole workspace speaks on a channel
+            // that names no record, so the window itself has to say it.
+            // The record a window shows, as its app holds it. An app that keeps one document for
+            // the whole workspace has no record id to name it by (its route is empty), so the
+            // document's kind names it: the same on every device, and the same for every window
+            // showing it.
+            FloatingSurfaceClientMessage::WindowRecord { record, kind, .. } => {
+                let record = if record.trim().is_empty() {
+                    &kind
+                } else {
+                    &record
+                };
+                if let Some(tab) = own {
+                    self.launches.notes().note(tab, &app, &workspace, record);
+                }
+            }
+            // What else a window shares live, the embeds it draws of other apps' resources, and
+            // the selection an agent works from: the session serves none of them over this
+            // connection yet.
+            FloatingSurfaceClientMessage::Embeds { .. }
             | FloatingSurfaceClientMessage::SharedWindows { .. } => {
                 refuse(&reply, &app, &name, NO_WINDOW_SHARE);
             }
@@ -1707,9 +1726,8 @@ mod tests {
         let (app, session) = UnixStream::pair().unwrap();
         app.set_read_timeout(Some(std::time::Duration::from_secs(10)))
             .unwrap();
-        let message = FloatingSurfaceClientMessage::WindowRecord {
-            record: "so.tilo.notes".to_owned(),
-            kind: "note".to_owned(),
+        let message = FloatingSurfaceClientMessage::Embeds {
+            embeds: Vec::new(),
             instance: Some(1),
         };
         refuse(
@@ -1723,7 +1741,7 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<FloatingSurfaceHostMessage>(line.trim()).unwrap(),
             FloatingSurfaceHostMessage::Unanswered {
-                message: "window_record".to_owned(),
+                message: "embeds".to_owned(),
                 reason: NO_WINDOW_SHARE.to_owned(),
             }
         );

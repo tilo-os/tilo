@@ -492,13 +492,15 @@ impl Desk {
         let instant = std::time::Instant::now();
         let people = self.handle.read(|tree| {
             self.sync.as_ref().map_or_else(Vec::new, |sync| {
-                sync.people(tree, &self.notes.records(), &|_: &str| None)
-                    .into_iter()
-                    .map(|person| shell::PersonReading {
-                        key: person.id,
-                        name: person.label,
-                    })
-                    .collect()
+                sync.people(tree, &self.notes, &|app: &str| {
+                    Some(crate::app_names::app_name(app))
+                })
+                .into_iter()
+                .map(|person| shell::PersonReading {
+                    key: person.id,
+                    name: person.label,
+                })
+                .collect()
             })
         });
         self.handle.read(|tree| DeskReading {

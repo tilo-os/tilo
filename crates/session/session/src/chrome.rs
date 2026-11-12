@@ -498,7 +498,9 @@ impl ChromeSource for SessionChrome {
 
     fn place_people(&self, tree: &mut DesktopTree) {
         if let Some(sync) = &self.sync {
-            sync.show(tree, &self.notes.records(), &|_: &str| None);
+            sync.show(tree, &self.notes, &|app: &str| {
+                Some(crate::app_names::app_name(app))
+            });
         }
     }
 

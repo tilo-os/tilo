@@ -121,7 +121,7 @@ fn keep_on_screen_and_put_back_take_the_pointer_at_twice_the_scale() {
         Given {
             scale: 2.0,
             seated: "Quinten".into(),
-            notes: Rc::new(BTreeMap::new),
+            notes: Rc::new(Vec::new),
             apps: None,
             handle,
             sync: None,
@@ -239,7 +239,7 @@ fn agent_here() -> Option<(Rc<RefCell<People>>, ui::headless::FrameHarness)> {
         Given {
             scale: 1.0,
             seated: "Quinten".into(),
-            notes: Rc::new(BTreeMap::new),
+            notes: Rc::new(Vec::new),
             apps: None,
             handle,
             // A card is read from the session's model of the person.
