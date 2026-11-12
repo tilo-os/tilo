@@ -31,12 +31,12 @@ from pathlib import Path
 from .. import core
 from ..action_jobs import PendingJob
 from ..core import CheckFailed, Unobservable, check, expect
+from ..sheets import ALLOW_ALWAYS, ALLOW_ONCE, SHEET_S, answer_sheet, no_sheet, portal_dialog
 from ..vm import VmError, wait_until
 
 AREA = "agents-e2e"
 TERMINAL = "so.tilo.terminal"
 NOTES = "so.tilo.notes"
-SHEET = "so.tilo.portal-sheet"
 DESK = "session:desk"
 AGENT = Path(__file__).resolve().parents[2] / "guest" / "mcp_agent.sh"
 # Where in each workspace's tree (the environments' `~`) the agents keep their transcripts.
@@ -46,12 +46,9 @@ CLIENT = "claude-code"
 PROTOCOL = "2025-06-18"
 # The two workspaces, and the environment made in each.
 WORKSPACES = (("Studio", "Studio dev"), ("Garden", "Garden site"))
-# The sheet's choices for an agent's admission (session questions.rs `admitted`).
-ALLOW_ONCE, ALLOW_SESSION, ALLOW_ALWAYS = 0, 1, 2
 # How long a step may take: an environment's first shell (the runtime's guest set up), the
-# sheet appearing after an initialize, a reply after a request.
+# sheet appearing after an initialize (`SHEET_S`, in `../sheets.py`), a reply after a request.
 SHELL_S = 120
-SHEET_S = 60
 REPLY_S = 45
 # The guest's files root and the trees in it (tilo_paths::workspace_tree).
 GUEST_TREES = "/var/workspace/.workspaces"
@@ -407,75 +404,6 @@ def tool_answering(ctx, agent: Agent, name: str, arguments: dict, what: str) -> 
 
 
 # -- the sheet -------------------------------------------------------------------------------
-
-
-# The sheet's choices for an admission, as the person reads them (sheets en-US.ftl).
-CHOICE_LABELS = {ALLOW_ONCE: "Allow once", ALLOW_SESSION: "Allow for this session", ALLOW_ALWAYS: "Always allow"}
-# What the sheet's controls are called, in any question it asks.
-SHEET_WORDS = ("Allow", "Deny", "Always allow")
-
-
-def sheet_targets(ctx) -> list[dict]:
-    """The controls the person can press on the sheet up now (`list-targets`, the desk's
-    named controls, as an assistive technology reads them), or [] when no sheet is up."""
-    try:
-        targets = ctx.vm.targets()
-    except VmError:
-        return []
-    names = [t for t in targets if any(w.lower() in str(t.get("name", "")).lower() for w in SHEET_WORDS)]
-    return targets if names else []
-
-
-def portal_dialog(ctx) -> dict | None:
-    """The question on the sheet, as far as the desk shows it: its controls."""
-    targets = sheet_targets(ctx)
-    return {"targets": [t.get("name") for t in targets]} if targets else None
-
-
-def sheet_rows(ctx) -> list[dict]:
-    try:
-        return [r for r in ctx.vm.actions(programmatic=True) if r.get("application") == SHEET]
-    except VmError:
-        return []
-
-
-def press(ctx, name: str) -> None:
-    reply = ctx.vm.raw({"op": "click_named", "name": name})
-    if isinstance(reply, dict) and reply.get("err"):
-        raise CheckFailed(f"pressing {name!r} on the sheet was refused: {reply}")
-
-
-def answer_sheet(ctx, choice: int, what: str) -> dict:
-    """Answer the question up on the sheet with `choice`, as the person does: press the
-    choice, then the sheet's Allow if it asks for one. What the sheet showed."""
-    dialog = wait_until(lambda: portal_dialog(ctx), SHEET_S, interval=0.5)
-    if dialog is None:
-        raise CheckFailed(f"{what}: the person was never asked (no question on the sheet within {SHEET_S} s)")
-    targets = sheet_targets(ctx)
-    ctx.write(f"sheet-{what}.json", json.dumps({"targets": targets, "rows": sheet_rows(ctx)}, indent=1))
-    ctx.shot(f"sheet-{what}")
-    label = CHOICE_LABELS[choice]
-    chosen = [t["name"] for t in targets if label.lower() in str(t.get("name", "")).lower()]
-    if not chosen:
-        raise Unobservable(f"{what}: the sheet shows no control {label!r}: {[t.get('name') for t in targets]}")
-    press(ctx, chosen[0])
-    # A sheet whose choices are highlighted first answers on its Allow.
-    gone = wait_until(lambda: portal_dialog(ctx) is None or None, 3, interval=0.3)
-    if gone is None:
-        confirm = [t["name"] for t in sheet_targets(ctx)
-                   if str(t.get("name", "")).strip().lower() in ("allow", "confirm", "continue")]
-        if confirm:
-            press(ctx, confirm[0])
-    if wait_until(lambda: portal_dialog(ctx) is None or None, 15, interval=0.5) is None:
-        raise CheckFailed(f"{what}: the question stayed up after the person answered it "
-                          f"({[t.get('name') for t in sheet_targets(ctx)]})")
-    dialog["chosen"] = chosen[0]
-    return dialog
-
-
-def no_sheet(ctx, seconds: float) -> dict | None:
-    """The question that came up within `seconds`, or None."""
-    return wait_until(lambda: portal_dialog(ctx), seconds, interval=0.5)
 
 
 def seated(ctx) -> list[dict]:

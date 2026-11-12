@@ -9,9 +9,9 @@ tools (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_status`), which ans
 against a compositor with no session around it; only a session has the door.
 
 The client is `guest/mcp_client.py`, run in the guest through `tilo-vm slot exec` (the
-session's view, as the account's own process). The person's answer goes through the same
-decision the owner has remotely: the `permission-prompts` provider's `allow-once@<prompt>` and
-`deny@<prompt>` actions on the control socket.
+session's view, as the account's own process). The door asks the person on its own sheet
+(`so.tilo.portal-sheet`, `session.agent-door`), and the harness answers as the person does:
+it presses the sheet's "Allow once" and then Allow, or its Deny (`acceptance/sheets.py`).
 
 Until the door is in the image (`$XDG_RUNTIME_DIR/tilo-session/agent.sock`), these are
 expected failures that say so (core.ExpectedFailure); once it is, they are ordinary checks.
@@ -27,27 +27,19 @@ from pathlib import Path
 
 from .. import core
 from ..core import CheckFailed, ExpectedFailure, Unobservable, check, expect
+from ..sheets import ALLOW_ONCE, answer_sheet, deny_sheet
 from ..vm import VmError, wait_until
 
 AREA = "agent"
 
 CLIENT = Path(__file__).resolve().parents[2] / "guest" / "mcp_client.py"
 GUEST_CLIENT = ".cache/acceptance/mcp_client.py"
-PROVIDER = "permission-prompts"
 DOOR = '"${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/tilo-session/agent.sock"'
 MARK = "ACC-MCP "
-# How long the person's prompt may take to appear after the client's initialize.
-PROMPT_S = 60
-# How often the harness looks for that prompt.
-PROMPT_POLL_S = 0.5
 # The tools the door serves.
 DOOR_TOOLS = ["tilo_do", "tilo_find", "tilo_ls", "tilo_read", "tilo_status"]
 # The client names itself so (clientInfo), and the door admits it as this agent.
 AGENT = "acceptance-agent"
-# Admission makes the agent an Observer of the workspace: it may read. Writing to Notes is
-# the person's grant, as the Agents tab gives it, taken back when the session is over.
-GRANT = {"op": "allow", "subject": f"agent:{AGENT}", "node": "app:so.tilo.notes",
-         "kinds": ["read", "undoable"], "answer": "allow", "id": "acceptance-agent-notes"}
 
 NO_DOOR = ("the session serves no agent door ($XDG_RUNTIME_DIR/tilo-session/agent.sock): this image "
            "predates the in-session agent door (fix/agent-door, 2d43ddb51e), so `tilo-runtime-mcp "
@@ -61,11 +53,6 @@ def parse_transcript(output: str) -> dict:
         if line.startswith(MARK):
             return json.loads(line[len(MARK):])
     raise CheckFailed(f"the guest client printed no transcript: {output[-400:]!r}")
-
-
-def decision_rows(actions: list[dict], decision: str) -> list[str]:
-    """Ids of the waiting prompt's `<decision>@...` rows in an actions listing."""
-    return [a["id"] for a in actions if a.get("provider") == PROVIDER and a["id"].startswith(decision + "@")]
 
 
 def tool_names(transcript: dict) -> list[str]:
@@ -118,21 +105,11 @@ def _door_or_xfail(ctx) -> None:
 
 
 def _answer_prompt(ctx, decision: str) -> str:
-    """Answer the waiting prompt as the person: `decision` is allow-once or deny."""
-    def waiting():
-        try:
-            rows = decision_rows(ctx.vm.actions(PROVIDER), decision)
-        except VmError:
-            return None
-        return rows[0] if rows else None
-
-    row = wait_until(waiting, PROMPT_S, interval=PROMPT_POLL_S)
-    if row is None:
-        raise Unobservable(f"no `{decision}@...` row of the {PROVIDER} provider within {PROMPT_S} s of the "
-                           "client's initialize: the person is never asked, or cannot be answered over "
-                           "the control socket")
-    ctx.vm.invoke(PROVIDER, row, {"confirm": True})
-    return row
+    """Answer the door's question as the person: admit the client once, or refuse it."""
+    what = f"agent-door-{decision}"
+    if decision == "deny":
+        return deny_sheet(ctx, what)["chosen"]
+    return answer_sheet(ctx, ALLOW_ONCE, what)["chosen"]
 
 
 def _run_client(ctx, scenario: str, decision: str, title: str = "") -> dict:
@@ -172,19 +149,9 @@ def _session(ctx) -> dict:
         if ctx.wait_presented("so.tilo.notes", 30) is None:
             raise CheckFailed("Notes showed no frame within 30 s")
         title = f"Acceptance agent note {int(time.time())}"
-        try:
-            granted = ctx.vm.raw(GRANT)
-        except VmError as exc:
-            granted = {"err": exc.reason()}
-        if isinstance(granted, dict) and granted.get("err"):
-            raise Unobservable(f"the person's grant of Notes to the agent was refused: {granted}")
-        try:
-            transcript = _run_client(ctx, "session", "allow-once", title)
-        finally:
-            try:
-                ctx.vm.raw({"op": "disallow", "id": GRANT["id"]})
-            except VmError:
-                pass  # a grant left behind names only this test's agent
+        # What they admit works as themselves once: the agent's changes are the person's own,
+        # in their history and undo, so Notes' new note needs no grant beside the admission.
+        transcript = _run_client(ctx, "session", "allow-once", title)
         transcript["title"] = title
         ctx.facts["agent_session"] = transcript
     return ctx.facts["agent_session"]
