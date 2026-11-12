@@ -4704,10 +4704,20 @@ on = ["dispatch"]
 # that the packaging script passes the commit to — a build arg is a fixed string in t.toml, while
 # a per-commit one would rerun the config steps of every commit.
 
+# The developer docs served at https://tilo.sh/docs/ (tools/docs/build-site.sh): the pages of
+# docs/tilo-sh/pages.toml with the reference pages docs-reference generated from the code, so the
+# web entry's image ships the docs of the commit it is built from.
+[[check]]
+name = "docs-site"
+run = "bash tools/docs/build-site.sh /target/docs/site /target/docs/generated"
+needs = ["docs-reference"]
+outputs = ["/target/docs/site/**"]
+git = true
+
 [[check]]
 name = "image-web-entry-context"
-run = "bash tools/ci/publish/web-entry-context.sh /target/publish/web-entry/context /target/publish/web-desktop/bundle"
-needs = ["web-desktop-bundle"]
+run = "bash tools/ci/publish/web-entry-context.sh /target/publish/web-entry/context /target/publish/web-desktop/bundle /target/docs/site"
+needs = ["web-desktop-bundle", "docs-site"]
 outputs = ["/target/publish/web-entry/context/**"]
 git = true
 requires = ["arch=x86_64"]
