@@ -115,7 +115,7 @@ impl Runs {
             voice.narrated = voice.narrated.wrapping_add(1).max(1);
             voice.narrated
         };
-        let Some(narrated) = self.at(cluster, caller, said) else {
+        let Some(narrated) = self.at((peer, cluster), caller, said) else {
             return;
         };
         let (Some(run), Some(record)) = (caller.agent_run(), record) else {
@@ -145,13 +145,13 @@ impl Runs {
     /// says beside its face.
     pub(super) fn saying(
         &mut self,
-        cluster: &str,
+        (peer, cluster): (&Link, &str),
         caller: &Caller,
         line: String,
         provider: Option<&str>,
     ) {
         let record = provider.and_then(|provider| live(provider, cluster));
-        let _ = self.at(cluster, caller, |voice| {
+        let _ = self.at((peer, cluster), caller, |voice| {
             voice.activity = Some(line);
             if record.is_some() {
                 voice.focus = record;
@@ -161,8 +161,8 @@ impl Runs {
 
     /// `caller`'s run connected to the workspace `cluster` and has asked
     /// nothing yet: it is present, waiting, unless it is present already.
-    pub(super) fn arrived(&mut self, cluster: &str, caller: &Caller) {
-        let _ = self.at(cluster, caller, |voice| {
+    pub(super) fn arrived(&mut self, (peer, cluster): (&Link, &str), caller: &Caller) {
+        let _ = self.at((peer, cluster), caller, |voice| {
             if voice.activity.is_none() {
                 voice.activity = Some(narration::lines::waiting());
             }
@@ -170,11 +170,12 @@ impl Runs {
     }
 
     /// `caller`'s run is present in `cluster` with what `update` makes of its
-    /// word: a member of its own on the board from this first call, said as the
-    /// board owes it ([`Self::tick`]). What `update` answered.
+    /// word: a member of its own on the board from this first call, and what
+    /// the board owes for it said at once, as the run acts rather than once
+    /// the action that says so is over. What `update` answered.
     fn at<R>(
         &mut self,
-        cluster: &str,
+        (peer, cluster): (&Link, &str),
         caller: &Caller,
         update: impl FnOnce(&mut Voice) -> R,
     ) -> Option<R> {
@@ -191,16 +192,17 @@ impl Runs {
             lease,
         });
         let said = update(voice);
-        let faces = self.faces();
         let publisher = self.publisher;
-        self.board
-            .get_or_insert_with(|| Board::new(cluster, publisher))
-            .speak_for(&faces);
+        let _ = self
+            .board
+            .get_or_insert_with(|| Board::new(cluster, publisher));
+        self.tick(peer, now_ms());
         Some(said)
     }
 
-    /// Say what the board owes by `now_ms`, on `peer`: a run's word, said again
-    /// at the keep-alive, and the leaving of a run whose session ended.
+    /// Say what the board owes by `now_ms`, on `peer`: a run's word as it acts,
+    /// said again at the keep-alive, and the leaving of a run whose session
+    /// ended.
     pub(super) fn tick(&mut self, peer: &Link, now_ms: f64) {
         // A run whose session ended leaves with it.
         self.by_run.retain(|_, voice| voice.lease.is_live());
@@ -315,7 +317,7 @@ impl super::Worker {
         let Some((workspace, cluster)) = self.said_in(workspace_id) else {
             return;
         };
-        workspace.runs.arrived(&cluster, caller);
+        workspace.runs.arrived((&workspace.peer, &cluster), caller);
     }
 
     /// Say `caller`'s run reading the catalogue `query` asks ([`run_voice`]).
@@ -341,9 +343,12 @@ impl super::Worker {
         } else {
             narration::lines::looking(app)
         };
-        workspace
-            .runs
-            .saying(&cluster, caller, line, query.provider.as_deref());
+        workspace.runs.saying(
+            (&workspace.peer, &cluster),
+            caller,
+            line,
+            query.provider.as_deref(),
+        );
     }
 
     /// The workspace `workspace_id` names, as its presence frames name it:
