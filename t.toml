@@ -4817,23 +4817,32 @@ requires = ["arch=x86_64"]
 outputs = ["/target/publish/lounge-gate/cli/**"]
 default = false
 
-# The web page end to end on every change that reaches it, in minutes: the Lounge's own programs
-# run directly with its image's entrypoint and environment, the web entry served beside them and
-# one headless Chromium, started once; then every flow at the same time against them, each as
-# people of its own (os/containers/tilo-lounge/test-e2e.sh says which flows there are). Every app
-# opening from the search on the next frame is the desktop surface's in-process test, not a
-# browser's walk. It builds nothing itself: a change to a page driver reruns only this, and the
-# relay, the command and the bundle are the cached outputs the other page checks share. One flow
-# alone: `bash os/containers/tilo-lounge/test-e2e.sh BUNDLE WORK people-call`.
+# The web page and the stack it runs on, end to end, on every change that reaches either, in
+# minutes: tilo.sh as production's manifests bring it up (stack.sh: the Lounge's relay, the front
+# door and the web entry, with their images' entrypoints and environment behind production's Caddy)
+# from what the checks beside it built, so it compiles nothing; one headless Chromium started per
+# flow; then every flow at the same time against that one stack, each as people of its own
+# (os/containers/tilo-lounge/test-e2e.sh says which flows there are). Every app opening from the
+# search on the next frame is the desktop surface's in-process test, not a browser's walk. A change
+# to a page driver reruns only this, and the relay, the door, the site and the command are the
+# cached outputs the other checks share. One flow alone: `bash os/containers/tilo-lounge/test-e2e.sh
+# BUNDLE WORK people-call`.
+#
+# Nested, because the stack's services are sandboxed with bwrap (stack.sh), which needs namespaces
+# of its own.
 [[check]]
 name = "e2e"
 run = "bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-desktop/bundle /target/e2e"
-needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-cli", "lounge-gate-tools", "web-desktop-bundle"]
-env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/publish/lounge-gate/cli/tilo" }
+needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-cli", "lounge-gate-tools", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
+setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx && dnf clean all" }
+env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/publish/lounge-gate/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/e2e/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0" }
 requires = ["arch=x86_64"]
-# What it found, not what it ran: each flow's pages, reports and consoles and each part's log; the
-# site it served is the bundle again.
-outputs = ["/target/e2e/*.log", "/target/e2e/lounge/*.log", "/target/e2e/boot/**", "/target/e2e/people-call/**", "/target/e2e/people-desk/**", "/target/e2e/people-menus/**", "/target/e2e/people-invite/**", "/target/e2e/share-link/**", "/target/e2e/agent-setup/**", "/target/e2e/setup-resume/**", "/target/e2e/wait-list/**", "/target/e2e/restart/**"]
+isolation = "nested"
+# What it found, not what it ran: each flow's pages, reports and consoles, and each of the stack's
+# own logs; the site it served is the web entry's laid-out context again.
+outputs = ["/target/e2e/*.log", "/target/e2e/state/logs/*.log", "/target/e2e/signin/**", "/target/e2e/boot/**", "/target/e2e/people-call/**", "/target/e2e/people-desk/**", "/target/e2e/people-menus/**", "/target/e2e/people-invite/**", "/target/e2e/share-link/**", "/target/e2e/agent-setup/**", "/target/e2e/setup-resume/**", "/target/e2e/visa/**", "/target/e2e/entry/**", "/target/e2e/passkey/**", "/target/e2e/wait-list/**", "/target/e2e/restart/**"]
+# What a failure keeps of why: every service's log, which says which of them did not answer.
+evidence = ["/target/e2e/state/logs/**"]
 timeout_secs = 1200
 
 # A newcomer's tour of the page for a person to review: every screen a first-time visitor meets,
@@ -4883,33 +4892,6 @@ name = "tilo-sh-caddy"
 run = "bash tools/ci/publish/tilo-sh-caddy.sh /target/publish/tilo-sh-caddy"
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/tilo-sh-caddy/**"]
-default = false
-
-# tilo.sh, whole, on one machine, and used end to end (os/containers/tilo-sh/check.sh): this
-# commit's programs and site, laid out as their images lay them out and served behind production's
-# Caddy with the environment production's manifests give them. A fresh startup identity approves
-# a server key on the local site in a headless Chromium, the visa run makes workspaces, mints a
-# one-workspace MCP, has the agent fill the form, a reviewer join by invitation and approve, and
-# revoked keys refused; then fresh visitors' entry into the Lounge is timed. What it found (pages,
-# logs, report.json with the bring-up and entry times) stays in /target/tilo-sh-local. The VM host
-# is not in it: it needs a privileged host with KVM (tilo-sh-local-vm has one).
-#
-# It builds nothing: everything it runs is a need's output, so a change to the check itself
-# reruns the check alone. Nested, because the stack's services are sandboxed with bwrap, which
-# needs namespaces of its own.
-[[check]]
-name = "tilo-sh-local"
-run = "bash os/containers/tilo-sh/check.sh /target/tilo-sh-local"
-needs = ["tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context", "cli-x86_64"]
-setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx && dnf clean all" }
-env = { TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64", TILO_SH_STATE = "/target/tilo-sh-local-state", TILO_SH_FRESH = "1" }
-requires = ["arch=x86_64"]
-isolation = "nested"
-# What a failure keeps of why: each service's log, and the pages and the
-# reports the steps made.
-evidence = ["/target/tilo-sh-local-state/logs/**", "/target/tilo-sh-local/**"]
-outputs = ["/target/tilo-sh-local/**"]
-timeout_secs = 3600
 default = false
 
 # The same stack with the VM hosts' own machines in it: tilo.sh's VM host (privileged, with its

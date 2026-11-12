@@ -283,6 +283,10 @@ relay_env() {
     "TILO_ROOMS_WEB_ENTRY=$site_origin/"
     "TILO_ROOMS_SITE_ORIGINS=$site_origin"
     "TILO_ROOMS_ROOT_FILE=$secrets_path/room-root-lounge"
+    # The roles the operator declares, which the workspace re-reads when the
+    # file changes: production mounts its own; here it is the operator's to
+    # write in the stack's secrets.
+    "TILO_ROOMS_ROLES_FILE=$secrets_path/roles.json"
     TILO_ROOMS_FEEDBACK_CHANNEL=feedback
     # Production's listeners, which its pod binds on all addresses, here on
     # loopback only.
@@ -335,14 +339,16 @@ door_env() {
 }
 
 # The web entry's environment: apps/tilo-web/deployment.yaml. INFO is what
-# page_host printed.
+# page_host printed. The app a person lands in is the deployment's: production
+# opens Chat, and a page whose checks arrive on the workspace's desk names
+# none (TILO_SH_HOME_APP=).
 web_env() {
   local room=$1 info=$2
   printf '%s\n' \
     "TILO_WEB_HOME_HOST=127.0.0.1:$relay_port" \
     "TILO_WEB_HOME_HOST_INFO=$info" \
     TILO_WEB_HOME_NAME=Lounge \
-    TILO_WEB_HOME_APP=so.tilo.chat \
+    "TILO_WEB_HOME_APP=${TILO_SH_HOME_APP-so.tilo.chat}" \
     "TILO_WEB_HOME_DOOR=$relay_origin/peer/v1/directory/$room/" \
     TILO_WEB_HOME_FEEDBACK=c_feedback \
     "TILO_WEB_DIRECTORY=$relay_origin/peer/v1/directory" \
@@ -1026,13 +1032,17 @@ restart() {
 }
 
 # The operator's secrets, as the relay's Secret holds them: a throwaway
-# workspace root, made once.
+# workspace root, made once, and the roles file the operator declares nobody
+# in (the workspace's own owner roots stand; a person added to it is one the
+# workspace lets invite, as production's operator does).
 make_secrets() {
   if [[ ! -s $state/secrets/room-root-lounge ]]; then
     od -An -tx1 -N32 /dev/urandom | tr -d ' \n' > "$state/secrets/room-root-lounge"
     printf 'local-fake-discord-secret' > "$state/secrets/discord-client-secret"
     chmod 0400 "$state/secrets"/*
   fi
+  [[ -s $state/secrets/roles.json ]] \
+    || printf '{"owners":[],"moderators":[]}\n' > "$state/secrets/roles.json"
 }
 
 discord_secrets() {

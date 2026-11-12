@@ -16,7 +16,8 @@
 #      keys refuses them afterwards;
 #   7. a fresh visitor's entry, timed (TILO_SH_ENTRY_VISITS of them, 3 by
 #      default), against the Lounge as it is — seeded with `stack.sh up
-#      --seed` when TILO_SH_SEED=1.
+#      --seed` when TILO_SH_SEED=1;
+#   7b. a visitor keeps themselves with a passkey and signs in with it again.
 #
 # With TILO_SH_VM_HOST=1 it is the same stack with its VM host in it, and the
 # end of the check is the Browser of a hosted workspace (docs/hosted-browser.md),
@@ -61,6 +62,14 @@
 # TILO_SH_ONLY names the steps to run (`1`, `2-6`, `7`, `10`, comma separated)
 # to chase one of them without the rest; the stack is brought up either way and
 # each step's own seconds are printed beside it.
+#
+#   check.sh --flow signin|visa|entry|passkey
+#
+# runs one of those steps against a stack that is already up and named by
+# E2E_SITE, E2E_RELAY, E2E_DOOR and E2E_WORK, which is how test-e2e.sh runs
+# them beside the page's own flows; `visa` reads the key `signin` approved,
+# from E2E_WORK/signin/startup.json.
+#
 # Needs what stack.sh needs, node, a headless Chromium (CHROME or
 # Playwright's), and uv (or python3 with httpx) for the Python SDK. With
 # TILO_SH_VM_HOST=1 the stack also runs its VM host, from the images
@@ -72,19 +81,133 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd -- "$here/../../.." && pwd)
 state=${TILO_SH_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/tilo-sh-local}
 base=${TILO_SH_PORT_BASE:-24100}
+fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+pids=()
+trap 'for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done' EXIT
+# The Python SDK as this checkout has it, from stack.sh (sourced below).
+key= plain_key= reviewer_port= entries=() visa_seconds=0 at=$SECONDS began=$SECONDS
+step() {
+  printf '\n== %s (%ss, %ss in)\n' "$*" $((SECONDS - at)) $((SECONDS - began))
+  at=$SECONDS
+}
+
+# -- the steps ---------------------------------------------------------------
+
+# 1: a person who has never been here, on the site, approves the server key
+# `tilo keys create` asks for, and one that may not operate web pages.
+startup_identity() {
+  step '1. a fresh startup identity approves a server key on the local site'
+  node "$here/integration/person.mjs" "$site" "$relay" "$work/startup" \
+    --key 'Visa backend' --tilo "$tilo" --door "$door" --no-pages \
+    --root "$work/startup/person.json" > "$work/startup.json" \
+    || fail "the startup's key was not approved (see $work/startup)"
+  key=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["key"])' "$work/startup.json")
+  # The key they did not let operate web pages, made on the door's grants page:
+  # what the last step holds to being asked about each page action.
+  plain_key=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["noPagesKey"])' "$work/startup.json")
+  [[ -n $plain_key ]] || fail 'the startup made no key without the Browser scope (see $work/startup)'
+  echo "ok: the startup holds its server key, and one that may not operate web pages"
+}
+
+# The reviewer's helper: each invitation posted to it is another person in
+# their own headless Chromium, up for every run that invites someone.
+reviewer_up() {
+  reviewer_port=$((base + 50))
+  sdk_python "$here/integration/reviewer.py" \
+    "$reviewer_port" "$site" "$relay" "$door" "$tilo" "$work" > "$work/reviewer.out" 2> "$work/reviewer.log" &
+  pids+=($!)
+  for _ in $(seq 100); do grep -q invitee "$work/reviewer.out" 2>/dev/null && break; sleep 0.2; done
+  grep -q invitee "$work/reviewer.out" || fail "the reviewer did not start: $(cat "$work/reviewer.log")"
+}
+
+# 2-6: the visa run against the front door, with the reviewer's helper up.
+visa_run() {
+  step '2-6. the visa run against the local door'
+  local visa_began=$SECONDS status
+  set +e
+  TILO_DOOR=$door TILO_API_KEY=$key TILO_INVITEE=http://127.0.0.1:$reviewer_port/accept \
+    VISA_APPLICANTS=${VISA_APPLICANTS:-25} VISA_REVOKE_SERVER_KEY=1 \
+    sdk_python "$repo/sdk/python/examples/visa_proof.py" \
+    2>&1 | tee "$work/visa.log"
+  status=${PIPESTATUS[0]}
+  set -e
+  visa_seconds=$((SECONDS - visa_began))
+  if [[ $status != 0 ]]; then
+    echo '--- the reviewer said:' >&2
+    tail -60 "$work/reviewer.log" >&2
+    # A failing check keeps no outputs: what the reviewer's page said goes
+    # into the log.
+    local said
+    for said in "$work"/reviewer-*/console.log; do
+      [[ -f $said ]] && { echo "--- $said:" >&2; tail -40 "$said" >&2; }
+    done
+    fail "the visa run failed (see $work/visa.log)"
+  fi
+}
+
+# 7: fresh visitors enter the Lounge, each timed.
+entry_visits() {
+  step '7. a fresh visitor enters the Lounge, timed'
+  local visits=${TILO_SH_ENTRY_VISITS:-3} visit median
+  entries=()
+  for visit in $(seq "$visits"); do
+    node "$here/integration/person.mjs" "$site" "$relay" "$work/visitor-$visit" > "$work/visitor-$visit.json" \
+      || fail "visitor $visit did not get in (see $work/visitor-$visit)"
+    entries+=("$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["joinedMs"])' "$work/visitor-$visit.json")")
+  done
+  median=$(python3 -c 'import statistics,sys; print(int(statistics.median(int(ms) for ms in sys.argv[1:])))' "${entries[@]}")
+  echo "ok: $visits fresh visitors were in after ${entries[*]} ms (median $median ms)"
+}
+
+# 7b: a visitor keeps themselves with a passkey and signs in with it again.
+# The site's name is the passkey's relying party, as tilo.coffee is on
+# tilo.coffee: a browser registers none for an address, which the local site
+# was once.
+passkey_round() {
+  step '7b. a visitor keeps themselves with a passkey and signs in with it again'
+  node "$here/integration/person.mjs" "$site" "$relay" "$work/passkey" --passkey > "$work/passkey.json" \
+    || fail "the passkey did not register or sign in (see $work/passkey)"
+  echo 'ok: a passkey registered, and signed the same visitor in again'
+}
+
+# -- one step, for a runner that keeps the stack up --------------------------
+
+if [[ ${1:-} == --flow ]]; then
+  flow=${2:?--flow names signin, visa, entry or passkey}
+  work=${E2E_WORK:?E2E_WORK names the work directory}"/$flow"
+  site=${E2E_SITE:?E2E_SITE names the site} relay=${E2E_RELAY:?E2E_RELAY names the relay}
+  door=${E2E_DOOR:?E2E_DOOR names the front door}
+  mkdir -p "$work"
+  # The stack's addresses and helpers, and the tilo command it serves.
+  # shellcheck source=stack.sh
+  . "$here/stack.sh"
+  tilo=$(find_tilo)
+  case $flow in
+    signin) startup_identity ;;
+    visa)
+      key=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["key"])' \
+        "${E2E_WORK:?}/signin/startup.json") \
+        || fail "the startup approved no key (see ${E2E_WORK:?}/signin)"
+      reviewer_up
+      visa_run ;;
+    entry) entry_visits ;;
+    passkey) passkey_round ;;
+    *) fail "no step $flow: signin, visa, entry or passkey" ;;
+  esac
+  step "done ($flow)"
+  exit 0
+fi
+
+# -- the whole check, on the stack it brings up ------------------------------
+
 work=${1:-$state/check}
 mkdir -p "$work"
 find "$work" -mindepth 1 -delete
 site=https://tilo.localhost:$((base + 20))
 relay=https://127.0.0.1:$base
 door=http://localhost:$((base + 10))
-began=$SECONDS
-at=$SECONDS
-step() {
-  printf '\n== %s (%ss, %ss in)\n' "$*" $((SECONDS - at)) $((SECONDS - began))
-  at=$SECONDS
-}
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+report=$work/report.json
+
 # TILO_SH_ONLY names the steps to run, comma separated (`1`, `2-6`, `7`): what
 # a step that failed is chased with, instead of the whole check around it.
 # Naming none runs them all. A step that reads what an earlier one made is run
@@ -105,9 +228,6 @@ runs_step() {
   return 1
 }
 runs_any() { local number; for number in "$@"; do runs_step "$number" && return 0; done; return 1; }
-report=$work/report.json
-pids=()
-trap 'for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done' EXIT
 
 step 'bring the stack up'
 up_args=()
@@ -122,30 +242,12 @@ bring_up=$(cat "$state/bring-up-seconds")
 tilo=$(find_tilo)
 echo "the tilo command: $tilo"
 
-key= plain_key= reviewer_port=
 if runs_any 1 2 3 4 5 6 8 9 10 11 12; then
-  step '1. a fresh startup identity approves a server key on the local site'
-  node "$here/integration/person.mjs" "$site" "$relay" "$work/startup" \
-    --key 'Visa backend' --tilo "$tilo" --door "$door" --no-pages \
-    --root "$work/startup/person.json" > "$work/startup.json" \
-    || fail "the startup's key was not approved (see $work/startup)"
-  key=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["key"])' "$work/startup.json")
-  # The key they did not let operate web pages, made on the door's grants page:
-  # what the last step holds to being asked about each page action.
-  plain_key=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["noPagesKey"])' "$work/startup.json")
-  [[ -n $plain_key ]] || fail 'the startup made no key without the Browser scope (see $work/startup)'
-  echo "ok: the startup holds its server key, and one that may not operate web pages"
+  startup_identity
 fi
 
-# The reviewer's helper, up for every run that invites someone: each
-# invitation posted to it is another person in their own headless Chromium.
 if runs_any 2 3 4 5 6 12; then
-  reviewer_port=$((base + 50))
-  sdk_python "$here/integration/reviewer.py" \
-    "$reviewer_port" "$site" "$relay" "$door" "$tilo" "$work" > "$work/reviewer.out" 2> "$work/reviewer.log" &
-  pids+=($!)
-  for _ in $(seq 100); do grep -q invitee "$work/reviewer.out" 2>/dev/null && break; sleep 0.2; done
-  grep -q invitee "$work/reviewer.out" || fail "the reviewer did not start: $(cat "$work/reviewer.log")"
+  reviewer_up
 fi
 
 # The hosted Browser's checks (8-11) run here, on that key: the visa run below
@@ -299,46 +401,15 @@ print(found.group(1) if found else "")' "$hosted_workspace" <<<"$(vm_host status
   fi
 fi
 
-visa_seconds=0
-entries=()
 if runs_any 2 3 4 5 6; then
-  step '2-6. the visa run against the local door'
-  visa_began=$SECONDS
-  set +e
-  TILO_DOOR=$door TILO_API_KEY=$key TILO_INVITEE=http://127.0.0.1:$reviewer_port/accept \
-    VISA_APPLICANTS=${VISA_APPLICANTS:-25} VISA_REVOKE_SERVER_KEY=1 \
-    sdk_python "$repo/sdk/python/examples/visa_proof.py" \
-    2>&1 | tee "$work/visa.log"
-  visa_status=${PIPESTATUS[0]}
-  set -e
-  visa_seconds=$((SECONDS - visa_began))
-  if [[ $visa_status != 0 ]]; then
-    echo '--- the reviewer said:' >&2
-    tail -60 "$work/reviewer.log" >&2
-    # A failing check keeps no outputs: what the reviewer's page said goes
-    # into the log.
-    for said in "$work"/reviewer-*/console.log; do
-      [[ -f $said ]] && { echo "--- $said:" >&2; tail -40 "$said" >&2; }
-    done
-    fail "the visa run failed (see $work/visa.log)"
-  fi
+  visa_run
 fi
 
 if runs_step 7; then
-  step '7. a fresh visitor enters the Lounge, timed'
-  visits=${TILO_SH_ENTRY_VISITS:-3}
-  for visit in $(seq "$visits"); do
-    node "$here/integration/person.mjs" "$site" "$relay" "$work/visitor-$visit" > "$work/visitor-$visit.json" \
-      || fail "visitor $visit did not get in (see $work/visitor-$visit)"
-    entries+=("$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["joinedMs"])' "$work/visitor-$visit.json")")
-  done
+  entry_visits
 fi
 
-step '7b. a visitor keeps themselves with a passkey and signs in with it again'
-# The site's name is the passkey's relying party, as tilo.sh is on tilo.sh: a
-# browser registers none for an address, which the local site was once.
-node "$here/integration/person.mjs" "$site" "$relay" "$work/passkey" --passkey > "$work/passkey.json" \
-  || fail "the passkey did not register or sign in (see $work/passkey)"
+passkey_round
 
 python3 - "$report" "$bring_up" "$visa_seconds" "${TILO_SH_SEED:-0}" "${entries[@]}" <<'EOF'
 import json, os, statistics, sys
