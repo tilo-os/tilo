@@ -14,21 +14,35 @@
 // works the app, not this build of it. Where a render put it is reported
 // beside the diff, which catches a layout that only one render produced.
 //
+// --browser firefox or --browser webkit (see engines.mjs) runs the same
+// scenarios in that browser's own build. Neither has WebGPU here, so the HTML
+// renderer is shown alone and compared with the shots of a Chromium run given
+// by --against: that is what says the page looks the same in every browser.
+//
 // usage: node tools/web/html-renderer/parity.mjs BUNDLE_DIR OUT_DIR [--apps id,id] [--scenarios] [--phone]
+//          [--browser chromium|firefox|webkit] [--against DIR]
 import {mkdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {join, resolve} from 'node:path';
-import {launch, serve, sleep} from '../chrome.mjs';
+import {serve} from '../chrome.mjs';
+import {open, sleep} from './engines.mjs';
 import {decode, diff} from './png.mjs';
 
 const bundle = resolve(process.argv[2]);
 const out = resolve(process.argv[3]);
 mkdirSync(out, {recursive: true});
+const option = name => { const at = process.argv.indexOf(name); return at < 0 ? null : process.argv[at + 1]; };
 const only = process.argv.includes('--apps') ? process.argv[process.argv.indexOf('--apps') + 1].split(',') : null;
 // --scenarios runs just the apps with a scenario, for the driver's own loop.
 const scenariosOnly = process.argv.includes('--scenarios');
 // --phone is the same apps at a phone's width and three device pixels per
 // point, where text is set finer and the layout is the app's own narrow one.
 const phone = process.argv.includes('--phone');
+// Which browser's build shows the page: Chromium draws the canvas too, so it
+// is the only one that measures the two renderers against each other.
+const engine = option('--browser') ?? 'chromium';
+// A Chromium run's screenshots, to compare this browser's HTML against.
+const against = option('--against') ? resolve(option('--against')) : null;
+if (engine !== 'chromium' && !against) throw new Error(`${engine} shows the HTML renderer only: name a Chromium run's shots with --against DIR to compare it with`);
 const apps = JSON.parse(readFileSync(join(bundle, 'apps.json'), 'utf8')).applications
   .map(app => app.id).filter(id => !only || only.includes(id));
 const gpuArgs = process.platform === 'linux' ? ['--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader'] : [];
@@ -36,6 +50,9 @@ const sandbox = process.getuid?.() === 0 ? ['--no-sandbox'] : [];
 const [width, height] = phone ? [390, 844] : [1280, 800];
 const scale = phone ? 3 : 1;
 const tag = phone ? `-${width}` : '';
+// The renders this browser can show: the canvas is Chromium's, so every other
+// browser's HTML stands alone and is compared with the Chromium run's.
+const RENDERS = engine === 'chromium' ? ['dom', 'gpu'] : ['dom'];
 
 const pct = (values, p) => {
   if (!values.length) return null;
@@ -75,42 +92,51 @@ const LATENCIES = `(() => {
   m.inputs = []; m.painted = [];
   return JSON.stringify(out);
 })()`;
-// The first text field on screen: its centre, its role, and whether the page
-// shows it as its own input.
+// The first text field on screen: the page's own input for a single-line
+// field, or the semantic element of a rich one, with its centre.
 const FIELD = `(() => {
-  const walk = n => { if (!n) return null;
-    const s = n.semantics;
-    if (s && ['TextInput', 'MultilineTextInput'].includes(s.role) && !s.state?.disabled && n.rect && n.rect[2] > 20 && n.rect[3] > 8
-      && n.rect[0] >= 0 && n.rect[1] >= 0 && n.rect[0] + n.rect[2] <= innerWidth && n.rect[1] + n.rect[3] <= innerHeight)
-      return {x: n.rect[0] + Math.min(n.rect[2] / 2, 60), y: n.rect[1] + n.rect[3] / 2, role: s.role, autofill: s.state?.autofill ?? null};
-    for (const c of n.children ?? []) { const r = walk(c); if (r) return r; } return null; };
-  return JSON.stringify(walk(window.mount.state()?.semantics?.root));
+  const centre = element => { const r = element.getBoundingClientRect();
+    return {x: r.left + Math.min(r.width / 2, 60), y: r.top + r.height / 2}; };
+  for (const input of document.querySelectorAll('input[data-tilo-field]')) {
+    const r = input.getBoundingClientRect();
+    if (r.width > 20 && r.height > 8 && r.top >= 0 && r.bottom <= innerHeight)
+      return JSON.stringify({...centre(input), role: 'textbox', autofill: input.getAttribute('autocomplete') || null});
+  }
+  for (const element of document.querySelectorAll('[data-tilo-semantic]')) {
+    if (!['textbox', 'searchbox'].includes(element.getAttribute('role'))) continue;
+    if (element.localName === 'textarea' && element.getAttribute('aria-multiline') !== 'true') continue;
+    const r = element.getBoundingClientRect();
+    if (r.width > 20 && r.height > 8 && r.top >= 0 && r.bottom <= innerHeight)
+      return JSON.stringify({...centre(element), role: element.getAttribute('role'), autofill: null});
+  }
+  return 'null';
 })()`;
-// What a step's target is, and where this render put it: the app is worked by
-// the name assistive technology reads, never by a coordinate.
+// What a step's target is, and where this render put it: the page is worked
+// by the name and role assistive technology reads, taken from the semantic
+// element itself, never by a coordinate.
 const FIND = (text, role) => `(() => {
-  const root = window.mount.state()?.semantics?.root;
   const needle = ${JSON.stringify(text)}.toLowerCase();
-  const wanted = ${JSON.stringify(role ?? null)};
+  const wanted = ${JSON.stringify((role ?? '').toLowerCase()) || null};
   const hits = [];
-  const walk = n => { if (!n) return;
-    const s = n.semantics ?? {};
-    const words = [s.label, s.value, s.name].filter(Boolean).join(' ').toLowerCase();
-    if (words.includes(needle) && (!wanted || s.role === wanted) && n.rect && n.rect[2] > 0 && n.rect[3] > 0)
-      hits.push({x: n.rect[0] + n.rect[2] / 2, y: n.rect[1] + n.rect[3] / 2, rect: [n.rect[0], n.rect[1], n.rect[2], n.rect[3]], role: s.role ?? null, name: words.slice(0, 80)});
-    for (const c of n.children ?? []) walk(c);
-  };
-  walk(root);
+  for (const element of document.querySelectorAll('[data-tilo-semantic]')) {
+    const words = [element.getAttribute('aria-label'), element.getAttribute('aria-description'), element.value, element.textContent]
+      .filter(Boolean).join(' ').replace(/\\s+/g, ' ').trim().toLowerCase();
+    if (!words.includes(needle)) continue;
+    const role = (element.getAttribute('role') ?? '').toLowerCase();
+    if (wanted && role !== wanted) continue;
+    const r = element.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) continue;
+    hits.push({x: r.left + r.width / 2, y: r.top + r.height / 2, rect: [r.left, r.top, r.width, r.height], role, name: words.slice(0, 80)});
+  }
   return JSON.stringify(hits.slice(0, 6));
 })()`;
 // Every name the tree holds: what a step that found nothing is told about.
 const NAMES = `(() => {
   const out = [];
-  const walk = n => { if (!n) return; const s = n.semantics ?? {};
-    const words = [s.label, s.value, s.name].filter(Boolean).join(' ').trim();
+  for (const element of document.querySelectorAll('[data-tilo-semantic]')) {
+    const words = [element.getAttribute('aria-label'), element.value].filter(Boolean).join(' ').replace(/\\s+/g, ' ').trim();
     if (words) out.push(words.slice(0, 40));
-    for (const c of n.children ?? []) walk(c); };
-  walk(window.mount.state()?.semantics?.root);
+  }
   return JSON.stringify(out.slice(0, 40));
 })()`;
 const PAGE = `JSON.stringify({
@@ -144,14 +170,11 @@ async function settle(tab) {
   }
 }
 
-async function open(server, page) {
-  const browser = await launch({args: [`--window-size=${width},${height}`, ...gpuArgs, ...sandbox]});
-  const tab = await browser.tab();
-  await tab.send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: scale, mobile: phone});
-  if (phone) await tab.send('Emulation.setTouchEmulationEnabled', {enabled: true, maxTouchPoints: 5});
-  await tab.send('Emulation.setEmulatedMedia', {features: [{name: 'prefers-color-scheme', value: 'light'}]});
-  await tab.navigate(`${server.url}/${page}`);
-  return {browser, tab};
+async function openPage(server, page) {
+  const opened = await open({engine, width, height, scale, mobile: phone, args: [...gpuArgs, ...sandbox]});
+  await opened.tab.colourScheme('light');
+  await opened.tab.navigate(`${server.url}/${page}`);
+  return {browser: {close: () => opened.close()}, tab: opened.tab};
 }
 
 // Typing into the first field and wheel steps over the middle: each input's
@@ -160,12 +183,13 @@ async function interact(tab, field) {
   await tab.evaluate(INSTRUMENT);
   const result = {};
   if (field) {
-    for (const type of ['mousePressed', 'mouseReleased']) await tab.send('Input.dispatchMouseEvent', {type, x: field.x, y: field.y, button: 'left', clickCount: 1});
+    await tab.mouse.down({x: field.x, y: field.y});
+    await tab.mouse.up({x: field.x, y: field.y});
     await sleep(400);
     await tab.evaluate(LATENCIES);
     for (const ch of 'Parity typing') {
-      await tab.send('Input.dispatchKeyEvent', {type: 'keyDown', key: ch, text: ch, unmodifiedText: ch});
-      await tab.send('Input.dispatchKeyEvent', {type: 'keyUp', key: ch});
+      await tab.key.down({key: ch, text: ch});
+      await tab.key.up({key: ch});
       await sleep(60);
     }
     await sleep(300);
@@ -175,7 +199,7 @@ async function interact(tab, field) {
   }
   await tab.evaluate(LATENCIES);
   for (let i = 0; i < 12; i++) {
-    await tab.send('Input.dispatchMouseEvent', {type: 'mouseWheel', x: width / 2, y: height / 2, deltaX: 0, deltaY: i < 6 ? 120 : -120});
+    await tab.mouse.wheel({x: width / 2, y: height / 2, dy: i < 6 ? 120 : -120});
     await sleep(60);
   }
   await sleep(300);
@@ -279,46 +303,41 @@ async function step(tab, name, index, shot) {
     const button = name.rightClick !== undefined ? 'right' : 'left';
     // Where the pointer is, before it presses: an app that opens a menu at
     // the pointer reads the last move it saw.
-    await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x: at.x, y: at.y, button: 'none'});
-    for (const type of ['mousePressed', 'mouseReleased']) {
-      await tab.send('Input.dispatchMouseEvent', {type, x: at.x, y: at.y, button, clickCount: 1});
-    }
+    await tab.mouse.move(at.x, at.y);
+    await tab.mouse.down({x: at.x, y: at.y, button});
+    await tab.mouse.up({x: at.x, y: at.y, button});
     await settleFrames(tab);
     return {at: [Math.round(at.x), Math.round(at.y)], rect: at.rect, matches: at.matches};
   }
   if (name.drag !== undefined) {
     const [from, to] = [await where(name.drag[0]), await where(name.drag[1])];
-    await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x: from.x, y: from.y, button: 'none'});
-    await tab.send('Input.dispatchMouseEvent', {type: 'mousePressed', x: from.x, y: from.y, button: 'left', clickCount: 1});
+    await tab.mouse.move(from.x, from.y);
+    await tab.mouse.down({x: from.x, y: from.y});
     for (let k = 1; k <= 10; k++) {
-      await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x: from.x + (to.x - from.x) * k / 10, y: from.y + (to.y - from.y) * k / 10, button: 'left', buttons: 1});
+      await tab.mouse.move(from.x + (to.x - from.x) * k / 10, from.y + (to.y - from.y) * k / 10);
       await sleep(16);
     }
-    await tab.send('Input.dispatchMouseEvent', {type: 'mouseReleased', x: to.x, y: to.y, button: 'left', clickCount: 1});
+    await tab.mouse.up({x: to.x, y: to.y});
     await settleFrames(tab);
     return {from: [Math.round(from.x), Math.round(from.y)], to: [Math.round(to.x), Math.round(to.y)]};
   }
   if (name.type !== undefined) {
     for (const ch of name.type) {
-      await tab.send('Input.dispatchKeyEvent', {type: 'keyDown', key: ch, text: ch, unmodifiedText: ch});
-      await tab.send('Input.dispatchKeyEvent', {type: 'keyUp', key: ch});
+      await tab.key.down({key: ch, text: ch});
+      await tab.key.up({key: ch});
       await sleep(40);
     }
     await settleFrames(tab);
     return {typed: name.type.length};
   }
   if (name.key !== undefined) {
-    const MODIFIERS = {Alt: 1, Control: 2, Meta: 4, Shift: 8};
-    const modifiers = (name.modifiers ?? []).reduce((bits, held) => bits | (MODIFIERS[held] ?? 0), 0);
-    for (const type of ['keyDown', 'keyUp']) {
-      await tab.send('Input.dispatchKeyEvent', {type, key: name.key, modifiers, windowsVirtualKeyCode: name.key === 'Escape' ? 27 : undefined});
-    }
+    await tab.key.press({key: name.key, modifiers: name.modifiers ?? []});
     await settleFrames(tab);
     return {key: name.key};
   }
   if (name.wheel !== undefined) {
     for (let i = 0; i < 6; i++) {
-      await tab.send('Input.dispatchMouseEvent', {type: 'mouseWheel', x: width / 2, y: height / 2, deltaX: 0, deltaY: name.wheel});
+      await tab.mouse.wheel({x: width / 2, y: height / 2, dy: name.wheel});
       await sleep(50);
     }
     await settleFrames(tab);
@@ -344,15 +363,21 @@ async function settleFrames(tab) {
   }
 }
 
+// The screenshot a render's step is compared with: the canvas's own, or, in a
+// browser that has no canvas here, the HTML of the Chromium run given.
+const reference = relative => engine === 'chromium'
+  ? join(out, relative.replace('-dom', '-gpu'))
+  : join(against, relative);
+
 const server = await serve(bundle);
 const results = [];
 try {
   // The plain-DOM page: what typing and scrolling should feel like.
   {
-    const {browser, tab} = await open(server, 'baseline.html');
+    const {browser, tab} = await openPage(server, 'baseline.html');
     try {
       await sleep(1000);
-      const baseline = {app: 'baseline'};
+      const baseline = {app: 'baseline', engine};
       baseline.interaction = await interact(tab, {x: 600, y: 120});
       console.log(JSON.stringify(baseline));
       results.push(baseline);
@@ -360,14 +385,14 @@ try {
   }
   const planned = scenariosOnly ? apps.filter(app => SCENARIOS[app]) : apps;
   for (const app of planned) {
-    const result = {app, width};
+    const result = {app, width, engine};
     // A scenario's drags are points of the desktop layout: at a phone's
     // width only the first screen is compared, which is what the phone
     // measurement is for.
     const scenario = phone ? null : SCENARIOS[app];
     if (scenario) result.scenario = [];
-    for (const render of ['dom', 'gpu']) {
-      const {browser, tab} = await open(server, `app.html?app=${app}&render=${render}&theme=light`);
+    for (const render of RENDERS) {
+      const {browser, tab} = await openPage(server, `app.html?app=${app}&render=${render}&theme=light`);
       try {
         await settle(tab);
         writeFileSync(join(out, `${app}${tag}-${render}.png`), await tab.screenshot());
@@ -381,12 +406,10 @@ try {
           const shot = name.shot !== undefined ? `${app}${tag}-${render}-${name.shot}.png` : null;
           try {
             const outcome = await step(tab, name, index, shot);
-            if (render === 'dom') (result.scenario[index] ??= {step: name}).dom = outcome;
-            else (result.scenario[index] ??= {step: name}).gpu = outcome;
+            (result.scenario[index] ??= {step: name})[render] = outcome;
           } catch (error) {
             const message = String(error?.message ?? error).slice(0, 1200);
-            if (render === 'dom') (result.scenario[index] ??= {step: name}).domError = message;
-            else (result.scenario[index] ??= {step: name}).gpuError = message;
+            (result.scenario[index] ??= {step: name})[`${render}Error`] = message;
             // A step that cannot be taken leaves the rest of the scenario
             // meaningless: stop this render's run, keeping what it did.
             break;
@@ -410,7 +433,7 @@ try {
       } finally { await browser.close().catch(() => {}); }
     }
     try {
-      const compared = diff(decode(readFileSync(join(out, `${app}${tag}-dom.png`))), decode(readFileSync(join(out, `${app}${tag}-gpu.png`))));
+      const compared = diff(decode(readFileSync(join(out, `${app}${tag}-dom.png`))), decode(readFileSync(reference(`${app}${tag}-dom.png`))));
       if (compared.image) writeFileSync(join(out, `${app}${tag}-diff.png`), compared.image);
       result.parity = {differingShare: compared.differingShare, meanDifference: compared.meanDifference, error: compared.error};
     } catch (error) { result.parity = {error: String(error)}; }
@@ -419,8 +442,8 @@ try {
     for (const entry of result.scenario ?? []) {
       if (entry.step.shot === undefined) continue;
       try {
-        const [dom, gpu] = ['dom', 'gpu'].map(render => join(out, `${app}${tag}-${render}-${entry.step.shot}.png`));
-        const compared = diff(decode(readFileSync(dom)), decode(readFileSync(gpu)));
+        const relative = `${app}${tag}-dom-${entry.step.shot}.png`;
+        const compared = diff(decode(readFileSync(join(out, relative))), decode(readFileSync(reference(relative))));
         if (compared.image) writeFileSync(join(out, `${app}${tag}-diff-${entry.step.shot}.png`), compared.image);
         entry.diff = {differingShare: compared.differingShare, meanDifference: compared.meanDifference, error: compared.error};
       } catch (error) { entry.diff = {error: String(error)}; }
