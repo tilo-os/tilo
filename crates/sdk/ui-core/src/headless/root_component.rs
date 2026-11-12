@@ -60,6 +60,7 @@ impl FrameHarness {
         component: crate::application::AppComponent,
         notify: std::sync::Arc<dyn Fn() + Send + Sync>,
     ) -> Result<(), crate::launch::LaunchError> {
+        self.invalidate_local();
         let mounted = self.mount_root_component(component, notify)?;
         self.take_component_root(mounted);
         Ok(())

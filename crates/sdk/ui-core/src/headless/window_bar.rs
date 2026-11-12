@@ -36,6 +36,7 @@ impl FrameHarness {
     /// A header row that cannot stand as slots (it holds a catch-up, a popover) is the window's
     /// bar instead, as a window's frame hosts it: the row fills the window and the window's
     /// controls stand at its trailing end ([`Self::row_holds_bar`]).
+    /// Quiet: presents through `present_window_bar`, which invalidates first.
     pub fn present_in_window_bar(&mut self) {
         self.present_window_bar(true);
     }
@@ -45,6 +46,7 @@ impl FrameHarness {
     /// window. The bar still hosts the app's slots — a capture of this window draws no bar above
     /// the frame — so what the app offers in it is what the person finds on reaching for the top
     /// edge.
+    /// Quiet: presents through `present_window_bar`, which invalidates first.
     pub fn present_window_bar_at_rest(&mut self) {
         self.present_window_bar(false);
     }
@@ -265,6 +267,7 @@ impl FrameHarness {
         viewport: (u32, u32),
         theme: crate::theme::Theme,
     ) -> Result<(), crate::widget::WidgetLayoutError> {
+        self.invalidate_local();
         self.present_in_window_bar();
         let frame = self.content_viewport(viewport);
         self.relayout_themed(frame, theme)?;
@@ -326,6 +329,7 @@ impl FrameHarness {
         opening: crate::window_toolbar::SearchOpening,
         query: &str,
     ) -> Option<(usize, usize)> {
+        self.invalidate_local();
         if !self.window_search.is_open() {
             let offer = crate::window_toolbar::SearchOffer::of(self.root.as_mut());
             self.window_search.open_as(
@@ -343,6 +347,7 @@ impl FrameHarness {
 
     /// Step the window bar's search to the next (or previous) match.
     pub fn step_window_search(&mut self, forward: bool) -> Option<(usize, usize)> {
+        self.invalidate_local();
         self.window_search.step(forward);
         self.drive_window_search()
     }
@@ -351,6 +356,7 @@ impl FrameHarness {
     /// (or Replace all); the frame after writes what the app made of it.
     /// Returns whether the search offered Replace on what the window shows.
     pub fn replace_in_window(&mut self, with: &str, all: bool) -> bool {
+        self.invalidate_local();
         self.drive_window_search();
         if !self.window_search.abilities().replace {
             return false;
@@ -493,8 +499,8 @@ impl FrameHarness {
     /// notice asks for an undo) is done and shown, as the live window's idle
     /// service does after that sync.
     pub fn press_window_slot(&mut self, event: crate::window_toolbar::ToolbarEvent) {
-        let _running = self.running();
         self.invalidate_local();
+        let _running = self.running();
         if crate::window_toolbar::deliver_to_app(event) {
             self.hand_keyboard_to_app();
         }
@@ -516,6 +522,7 @@ impl FrameHarness {
     /// # Errors
     /// Says what the bar offers when no action is named `name`.
     pub fn press_window_action(&mut self, name: &str) -> Result<(), String> {
+        self.invalidate_local();
         let _running = self.running();
         let Some(toolbar) = self.window_toolbar() else {
             let parts = self.header_row_parts();
@@ -682,6 +689,7 @@ impl FrameHarness {
     /// it: the app's slots, the bar's own overflow, the History control and the window's own
     /// controls, and the room it leaves empty. A capture, an inspector and a layout check read
     /// the bar through it.
+    /// Quiet: lays out a scratch bar and reads it; nothing a frame reads.
     pub fn window_bar_layout(&mut self, width: f64) -> crate::window_toolbar::BarLayout {
         if !self.window_bar || !self.bar_revealed {
             return crate::window_toolbar::BarLayout {
@@ -753,6 +761,7 @@ impl FrameHarness {
 
     /// How the window's bar, as the desktop draws it across a window
     /// `width` wide, shows the notice up (none: no notice is up).
+    /// Quiet: reads the notice off a scratch bar; nothing a frame reads.
     #[must_use]
     pub fn window_bar_notice(&mut self, width: f64) -> Option<WindowBarNotice> {
         Self::shown_notice(&self.painted_window_bar(width))
@@ -820,6 +829,7 @@ impl FrameHarness {
     /// # Errors
     /// When no notice with that button is up, or the press runs nothing.
     pub fn click_window_notice_action(&mut self, width: f64, index: usize) -> Result<(), String> {
+        self.invalidate_local();
         let mut bar = self.painted_window_bar(width);
         let at = Self::shown_notice(&bar)
             .and_then(|notice| {
@@ -844,6 +854,7 @@ impl FrameHarness {
     /// # Errors
     /// When the bar lists no such button, or its action runs nothing.
     pub fn invoke_window_notice_action(&mut self, width: f64, index: usize) -> Result<(), String> {
+        self.invalidate_local();
         fn targets(node: &crate::a11y::AccessNode, out: &mut Vec<String>) {
             if let Some(target) = node.action_target.as_deref()
                 && target.starts_with(crate::widget::window_toolbar_row::NOTICE_TARGET_PREFIX)

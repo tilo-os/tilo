@@ -178,6 +178,8 @@ impl FrameHarness {
     /// to once that view is laid out. Each action is gone to once, so the
     /// follower can look around until the next one. Answers whether the view
     /// went there.
+    /// Quiet: moves the view through `relayout`, and opens one through `invoke_action`, each of
+    /// which invalidates; a frame where it finds nothing new changes nothing.
     pub fn follow_view(&mut self, actor: &str, followed: &mut FollowedView) -> bool {
         let Some(interaction) = self
             .presence

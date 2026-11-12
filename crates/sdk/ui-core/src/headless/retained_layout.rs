@@ -107,6 +107,7 @@ impl FrameHarness {
     /// Drain this host renderer's actual shape-cache hits, misses and time
     /// spent shaping. Like `TextRenderer::take_shape_stats`, this isolates
     /// input work after a measured warmup without a wall-clock threshold.
+    /// Quiet: drains the text renderer's shaping counters; nothing a frame reads.
     pub fn take_text_shape_stats(&mut self) -> (u64, u64, u128) {
         self.text.take_shape_stats()
     }

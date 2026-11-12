@@ -984,6 +984,7 @@ impl FrameHarness {
     }
     /// Service one snapshot through the checked owner and canonical admission. # Errors A refusal
     /// keeps the current and unvisited requests for retry.
+    /// Quiet: the report it takes work through judges its own effect.
     pub fn service_pending_owner_models(
         &mut self,
     ) -> Result<usize, crate::bound_dispatch::BoundDispatchError> {
@@ -993,6 +994,7 @@ impl FrameHarness {
 
     /// Scheduling progress from the actual taken snapshot, including a
     /// returned partial failure. This receipt grants no owner/map authority.
+    /// Quiet: invalidates when it took work up.
     pub fn service_pending_owner_models_report(
         &mut self,
     ) -> crate::owner_wake::OwnerModelServiceReport {
@@ -1749,6 +1751,7 @@ impl FrameHarness {
 
     /// What the widget tree asked of the transport since the last call, as a live window's host
     /// takes it: the other half of [`Self::handle_collaboration_event`].
+    /// Quiet: drains what the widgets asked of the transport; nothing a frame reads.
     pub fn take_collaboration_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
         crate::widget::take_collab_requests(self.root.as_mut())
     }
@@ -1989,6 +1992,8 @@ impl FrameHarness {
 
     /// Draw the last frame again if it replayed windows at rest, so what their widgets note while
     /// drawing describes where they are now; input does this before reaching a widget.
+    /// Quiet: draws again a frame that only moved laid-out content, through `try_relayout`,
+    /// which invalidates when it lays one out.
     pub fn settle_replayed_draws(&mut self) {
         if !self.replayed_draws {
             return;
@@ -2013,6 +2018,7 @@ impl FrameHarness {
 
     /// The report of the last frame the harness skipped on its own, when one was due: a host whose
     /// log is not `tracing`'s prints it.
+    /// Quiet: hands over a log line; nothing a frame reads.
     pub fn take_skip_report(&mut self) -> Option<String> {
         self.skip_report.take()
     }
@@ -2028,6 +2034,7 @@ impl FrameHarness {
     /// Let following frames replay windows at rest when they only move laid-out content (the
     /// default), or draw every window; a host about to read a frame's semantics forbids it for that
     /// frame, which then needs no [`Self::settle_replayed_draws`].
+    /// Quiet: chooses how later frames draw; nothing a frame reads.
     pub fn set_pan_replay(&mut self, allowed: bool) {
         self.pan_replay_allowed = allowed;
     }
@@ -2771,6 +2778,7 @@ impl FrameHarness {
 
     /// Drain optional canonical font assets demanded by the most recent
     /// authoritative shaping pass.
+    /// Quiet: drains the text renderer's fetch list; nothing a frame reads.
     pub fn take_browser_font_demands(&mut self) -> Vec<String> {
         self.text.take_browser_font_demands()
     }
@@ -2828,6 +2836,8 @@ impl FrameHarness {
     /// Record the damage parts of every scene the draw pass produces from now on
     /// ([`crate::scene_parts`]), for a host that compares each frame with the one it presented
     /// before.
+    /// Quiet: chooses whether later draws record their damage parts; nothing a frame reads, and
+    /// a host with no parts repaints whole.
     pub fn track_scene_parts(&mut self, track: bool) {
         self.track_scene_parts = track;
     }
@@ -2902,6 +2912,7 @@ impl FrameHarness {
 
     /// Pump component wakes and animate using the production update/layout/draw passes.
     /// Returns whether a new scene was produced. The host schedules this on its frame clock.
+    /// Quiet: the frame itself.
     pub fn poll_frame(&mut self) -> Result<bool, crate::widget::WidgetLayoutError> {
         let frame = self.frame_schedule();
         if !frame.needs_redraw && !frame.needs_animation_frame {
@@ -3095,6 +3106,7 @@ impl FrameHarness {
     /// Unlike [`Self::wait_until`] it forces nothing: a frame runs only when
     /// something asks for one, and syncs and publishes only when something
     /// it reads moved, as in the live window.
+    /// Quiet: invalidates when its control tick or save offer moved the document.
     pub fn idle(&mut self) {
         // A host that idles polls its frames: what a frame read is kept
         // for the next to compare ([`FrameWitness`]).
@@ -5509,6 +5521,8 @@ impl FrameHarness {
     /// its widget tree to itself, so a caller that drives the app alone (a
     /// recording of it) reads them from here instead.
     ///
+    /// Quiet: reads the embedded app's widget rects; reaches it through `root_mut`, which
+    /// invalidates.
     /// # Panics
     /// When the root was not mounted as an [`EmbeddedApp`].
     #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
@@ -6272,6 +6286,7 @@ impl FrameHarness {
 
     /// Deliver platform input including host keyboard policy. Browser/native adapters
     /// forward real events here; synthetic helpers use the same path.
+    /// Quiet: a wheel coalesced into the next frame counts once dispatched.
     pub fn send_host_event(&mut self, event: &WindowEvent) {
         let _wake = self.enter_wake();
         crate::motion::note_input(event);
@@ -6397,6 +6412,8 @@ impl FrameHarness {
     }
 
     /// Deliver one event through the production dispatch path.
+    /// Quiet: judged once dispatched, as the live App judges input: all but a wheel that only
+    /// panned and inert input that moved nothing.
     pub fn send(&mut self, event: &WindowEvent) {
         let _motions = crate::motion::owning(self.motions.0);
         crate::motion::note_input(event);
@@ -7952,6 +7969,7 @@ impl FrameHarness {
     /// three events a click produces, in order. Each is judged once
     /// dispatched, as [`Self::send`] judges it: a move that changed nothing
     /// a frame reads leaves its frame quiet, as hover does in the live App.
+    /// Quiet: a move, a press and a release through `send`, which judges each.
     pub fn click_at(&mut self, x: f64, y: f64) {
         self.pump_component_wakes();
         self.send(&crate::synthetic_input::cursor_moved(
@@ -8242,6 +8260,8 @@ impl FrameHarness {
 
     /// The placed pointers as the last frame drew them: without the name of
     /// one whose tag would meet the caret tag of the same person.
+    /// Quiet: reads the last frame's pointers; measures name tags through the text renderer's
+    /// shaping cache.
     pub fn drawn_placed_pointers(&mut self) -> Vec<crate::presence::PeerCursor> {
         self.pointers_beside_caret_tags(self.capture_draw_transform())
     }
@@ -8312,6 +8332,7 @@ impl FrameHarness {
 
     /// Send wheel line-deltas at the last pointer position. Move the pointer
     /// inside the intended content viewport first, as a live user would.
+    /// Quiet: a wheel through `send`, which judges it.
     pub fn scroll(&mut self, dx: f64, dy: f64) {
         // `send` judges whether the wheel can have changed what a frame
         // reads: one that only panned a view did not.
