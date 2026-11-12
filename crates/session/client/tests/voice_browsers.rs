@@ -242,7 +242,7 @@ impl Native {
         .expect("a native grant");
         let carrier = tilo_live::native::Iroh::new(endpoint.clone(), governed.relay.node_addr());
         let plane = Plane::join(
-            &carrier,
+            std::sync::Arc::new(carrier),
             &grant.encode(),
             Join {
                 scope,

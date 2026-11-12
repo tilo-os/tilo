@@ -399,7 +399,7 @@ impl Shared {
                     .filter(|(pinned, _)| *pinned == chosen)
                     .map_or_else(|| EndpointAddr::new(relay_id), |(_, addr)| addr.clone());
                 let carrier = native::Iroh::new(endpoint, addr);
-                Plane::join_within(&carrier, &grant, join, ATTEMPT).await
+                Plane::join_within(Arc::new(carrier), &grant, join, ATTEMPT).await
             })
         })
         .await;
