@@ -39,6 +39,11 @@ text = "See the app's window as a picture: answers with the image and the revisi
 reason = "What the screenshot tool answers an agent."
 
 [[allow]]
+file = "crates/sdk/tilo-app/src/framework/chain.rs"
+text = "What this holds as typed data: the items of its parts, the newest part first, a page at \\\n         a time with `cursor` passing on where a page ended; an item's own content when the read \\\n         is of that item."
+reason = "What a chain's read answers an agent: what the item of a part holds, and how the parts page."
+
+[[allow]]
 file = "crates/session/desktop-surface/src/window.rs"
 text = "See a window this desktop does not run as it shows now: answers with the picture, \\\n         kept as content of the workspace the window stands in."
 reason = "What the window-picture tool answers an agent."
