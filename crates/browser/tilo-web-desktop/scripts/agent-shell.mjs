@@ -773,6 +773,21 @@ async function settled(agent, answer, followed = () => {}) {
     answer = await agent.call('tilo_status', {invocation_id: id});
     followed(answer);
   }
+  // A batch answers each call on a line of its own ("[1] path: ok", "[2] path: pending ID: …"):
+  // each call still pending is asked after until it is done, and the batch is answered as its
+  // calls came out.
+  if (/^\[\d+\] /m.test(answer.text) && /: pending \S+:/.test(answer.text)) {
+    const lines = await Promise.all(answer.text.split('\n').map(async line => {
+      const id = (line.match(/^\[\d+\] .*?: pending (\S+):/) ?? [])[1];
+      if (!id) return {line, failed: false};
+      const head = line.slice(0, line.indexOf(': pending '));
+      const done = await settled(agent, {failed: true, text: `pending ${id}: not finished yet`}, followed);
+      const ok = verdict(done) === 'ok';
+      return {line: `${head}: ${ok ? 'ok' : done.text.split('\n')[0]}`, failed: !ok};
+    }));
+    const failed = lines.some(entry => entry.failed) || /: (failed|refused)\b/i.test(answer.text);
+    answer = {...answer, failed, text: lines.map(entry => entry.line).join('\n')};
+  }
   return answer;
 }
 
