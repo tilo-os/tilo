@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Measure `tilo-app dev` edit-to-pixels for an in-place Rust hot reload.
 
-Starts a headless `tilo-session` compositor in a private runtime
-directory, runs `tilo-app dev --timings --json APP` against it, then edits
-one line of the app's `src/lib.rs` several times. Each save is timed from the
-moment the file is closed to the first frame the reloaded code presents, and
-split into the phases `tilo-app dev --timings` reports.
+Starts a headless `tilo-session` compositor in a private runtime directory
+under a home of its own, runs `tilo-app dev --timings --json APP` in that same
+home and against that session, then edits one line of the app's `src/lib.rs`
+several times. Each save is timed from the moment the file is closed to the
+first frame the reloaded code presents, and split into the phases `tilo-app
+dev --timings` reports.
 
 Nothing here touches the operator's desktop: the compositor is headless,
 `DISPLAY`/`WAYLAND_DISPLAY` are scrubbed, and every process this script starts
@@ -108,14 +109,15 @@ def kill_group(proc: subprocess.Popen, sig=signal.SIGTERM, grace=5.0):
         proc.wait()
 
 
-def start_compositor(session: Path, runtime: Path, log) -> tuple[subprocess.Popen, str]:
-    env = dict(os.environ)
-    for key in ("DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET"):
-        env.pop(key, None)
-    env["XDG_RUNTIME_DIR"] = str(runtime)
-    # A session of its own: the compositor provisions an identity and state
-    # under HOME, which must not be the operator's.
-    home = runtime / "compositor-home"
+def session_home(runtime: Path) -> dict[str, str]:
+    """The environment of a session of its own, which the app shares.
+
+    The compositor provisions an identity, a workspace and the runtime the app
+    attaches to under HOME, so `tilo-app dev` runs under the same one: two
+    HOMEs are two sessions, and the app's runtime host would find none.
+    """
+    home = runtime / "session-home"
+    environment = {}
     for key, sub in [
         ("HOME", ""),
         ("XDG_DATA_HOME", "data"),
@@ -124,8 +126,17 @@ def start_compositor(session: Path, runtime: Path, log) -> tuple[subprocess.Pope
         ("XDG_CONFIG_HOME", "config"),
     ]:
         (home / sub).mkdir(parents=True, exist_ok=True)
-        env[key] = str(home / sub)
-    env["TILO_STATE_PATH"] = str(home / "config" / "state.json")
+        environment[key] = str(home / sub)
+    environment["TILO_STATE_PATH"] = str(home / "config" / "state.json")
+    return environment
+
+
+def start_compositor(session: Path, runtime: Path, log) -> tuple[subprocess.Popen, str]:
+    env = dict(os.environ)
+    for key in ("DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET"):
+        env.pop(key, None)
+    env["XDG_RUNTIME_DIR"] = str(runtime)
+    env.update(session_home(runtime))
     env["TILO_TEST_CONTROL"] = str(runtime / "tilo-session" / "test-control.sock")
     proc = subprocess.Popen(
         # A headless output is the only backend a Wayland client can attach to
@@ -221,6 +232,18 @@ def main() -> int:
         # An absolute display names the compositor's socket without moving
         # the runtime directory cargo and the build tools share with the user.
         env["WAYLAND_DISPLAY"] = str(runtime / display)
+        # The app runs in the session's home, so its runtime host finds that
+        # session's workspace. The toolchain stays the operator's: cargo and
+        # rustup live under HOME, and their paths name the caches and the
+        # compiler, so they are carried over rather than looked for again.
+        operator_home = Path.home()
+        for key, name in [
+            ("CARGO_HOME", ".cargo"),
+            ("RUSTUP_HOME", ".rustup"),
+            ("CARGO_REAL", ".cargo/bin/cargo"),
+        ]:
+            env[key] = os.environ.get(key) or str(operator_home / name)
+        env.update(session_home(runtime))
         command = [str(args.tilo_app), "dev", str(app), "--app-only"]
         if not args.no_timings:
             command += ["--timings", "--json"]
