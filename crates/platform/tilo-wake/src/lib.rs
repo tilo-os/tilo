@@ -96,7 +96,6 @@ thread_local! {
 pub struct FeedsComponent(());
 
 impl FeedsComponent {
-    #[must_use]
     pub fn begin() -> Self {
         FEEDS_COMPONENT.with(|feeds| feeds.set(feeds.get().saturating_add(1)));
         Self(())
@@ -1078,11 +1077,11 @@ mod tests {
     #[test]
     fn a_wake_wired_inside_a_scope_reaches_its_component() {
         let (scope, rx) = bound_scope();
-        let _feeds = super::FeedsComponent::begin();
-        let _entry = scope.enter();
+        let feeds = super::FeedsComponent::begin();
+        let entry = scope.enter();
         let handle = WakeHandle::new();
-        drop(_entry);
-        drop(_feeds);
+        drop(entry);
+        drop(feeds);
         handle.wake();
         assert!(scope.accepts(&rx.try_recv().unwrap()));
     }
