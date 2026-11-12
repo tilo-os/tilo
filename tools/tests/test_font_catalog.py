@@ -449,8 +449,20 @@ class CatalogBuildTest(unittest.TestCase):
     def tearDownClass(cls):
         cls.directory.cleanup()
 
+    def profile(self) -> Path:
+        """Cargo's own layout: `OUT_DIR` is `<target>/<profile>/build/<unit>/out`.
+
+        The build script publishes the catalog from the profile directory up, so it needs
+        the shape cargo gives it before it reaches the step under test.
+        """
+        profile = Path(os.path.abspath(self.directory.name)) / "target/debug"
+        out = profile / "build/font-catalog-test/out"
+        out.mkdir(parents=True, exist_ok=True)
+        return profile
+
     def test_missing_python_identifies_the_interpreter_and_preparation_tool(self):
-        environment = dict(os.environ, PATH=self.directory.name, OUT_DIR=self.directory.name)
+        out = self.profile() / "build/font-catalog-test/out"
+        environment = dict(os.environ, PATH=self.directory.name, OUT_DIR=str(out))
         environment.pop("PYTHON", None)
         default_python = "python" if os.name == "nt" else "python3"
         for executable in [default_python, str(Path(self.directory.name) / "missing-python")]:
@@ -469,26 +481,34 @@ class CatalogBuildTest(unittest.TestCase):
     def test_installed_python_prepares_the_real_verified_catalog_offline(self):
         source = ROOT / "crates/sdk/ui-core/assets/fonts"
         fc.prepared_root(source, "fixtures")
-        # Cargo's own layout: the catalog is this build's OUT_DIR/fonts, and the
-        # crate names it from the profile directory up, so the build directory's
-        # path is not compiled into the crate. A shallow OUT_DIR names it from
-        # wherever it happens to sit, which is what the build directory must not
-        # depend on, so the fixture puts it where cargo does.
-        profile = Path(os.path.abspath(self.directory.name)) / "target/debug"
+        # Cargo's own layout, as above: the catalog is published beside the profile
+        # directory, in `font-catalogs/<manifest>-fixtures`, and the crate names it from
+        # the profile directory up, so the build directory's path is not compiled into
+        # the crate.
+        profile = self.profile()
         out = profile / "build/font-catalog-test/out"
-        out.mkdir(parents=True)
-        named = out.relative_to(profile) / "fonts"
         environment = dict(os.environ, PYTHON=sys.executable, TILO_FONT_ASSETS_OFFLINE="1",
                            OUT_DIR=str(out))
         prefix = "cargo::rustc-env=TILO_CHECKOUT_FONT_ROOT="
-        # A second run replaces the first run's catalog, as cargo's rerun of the script does.
+        # A second run names the catalog the first run published and leaves it where it
+        # is: the tree a program reads lives outside OUT_DIR, which cargo fills again
+        # whenever it runs the script under a build that lost it.
+        published = []
         for _ in range(2):
             result = subprocess.run([str(self.build)], env=environment,
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             roots = [line[len(prefix):] for line in result.stdout.splitlines() if line.startswith(prefix)]
-            self.assertEqual(roots, [named.as_posix()], result.stdout)
-            self.assertEqual(fc.verify(profile / named, "fixtures"), (37, 55771564))
+            self.assertEqual(len(roots), 1, result.stdout)
+            published.append(roots[0])
+            # Named after the manifest it was prepared from, so a changed pin publishes a
+            # new catalog rather than replacing one in place.
+            self.assertEqual(Path(roots[0]).parent.as_posix(), "font-catalogs")
+            self.assertRegex(Path(roots[0]).name, r"^[0-9a-f]{64}-fixtures$")
+            self.assertEqual(fc.verify(profile / roots[0], "fixtures"), (37, 55771564))
+        self.assertEqual(published[0], published[1], "a rerun publishes no second catalog")
+        # Nothing is written where cargo fills the build script's output directory.
+        self.assertEqual(sorted(entry.name for entry in out.iterdir()), ["manifest.rs"])
 
 
 if __name__ == "__main__":
