@@ -7,8 +7,6 @@
     reason = "test assertions over exact, hand-written fixtures"
 )]
 
-mod support;
-
 use canvas::model::{Mark, Shape};
 use canvas::{App, Artwork};
 use ui::prelude::TestApp;
@@ -1170,7 +1168,7 @@ fn object_tree_selects_an_occluded_object_for_an_exact_edit() {
         )
         .unwrap();
     let snapshot = desk.app.harness().inspection();
-    let target = support::named_bounds(&snapshot.root, "Hidden rectangle")
+    let target = crate::support::named_bounds(&snapshot.root, "Hidden rectangle")
         .expect("the covered object is listed");
     desk.app
         .harness()

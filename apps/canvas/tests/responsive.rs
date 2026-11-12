@@ -1,6 +1,5 @@
 //! Controls must fit the logical window, including a small display at 2× scale.
 #![allow(clippy::unwrap_used, reason = "assertions over real editor controls")]
-mod support;
 use canvas::App;
 use ui::prelude::TestApp;
 
@@ -29,7 +28,7 @@ fn short_scaled_windows_keep_project_choices_and_brush_controls_reachable() {
         ] {
             let snapshot = app.harness().inspection();
             let label = canvas::locales::CATALOG.t(key);
-            let bounds = support::named_bounds(&snapshot.root, &label)
+            let bounds = crate::support::named_bounds(&snapshot.root, &label)
                 .unwrap_or_else(|| panic!("{label} unavailable at {width}x{height}"));
             assert!(
                 bounds.x0 >= 0.0 && bounds.x1 <= f64::from(width) && bounds.y1 <= f64::from(height),
@@ -188,7 +187,7 @@ fn export_choices_stay_readable_in_a_narrow_window() {
     app.harness().relayout();
     let snapshot = app.harness().inspection();
     for name in ["PNG", "JPEG", "WebP", "SVG", "Whole artwork", "Selection"] {
-        let bounds = support::named_bounds(&snapshot.root, name)
+        let bounds = crate::support::named_bounds(&snapshot.root, name)
             .unwrap_or_else(|| panic!("{name} is offered"));
         assert!(
             bounds.width() >= 44.0 && bounds.x1 <= 482.0,

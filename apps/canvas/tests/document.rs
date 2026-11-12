@@ -3,8 +3,6 @@
     reason = "test assertions over exact, hand-written fixtures"
 )]
 
-mod support;
-
 use canvas::App;
 use ui::prelude::TestApp;
 
@@ -183,7 +181,8 @@ fn a_tools_key_works_after_a_click_in_the_rail_and_a_tool_click_after_a_drag_lan
         .drag_at((x - 100.0, y - 100.0), (x - 80.0, y - 80.0));
     let snapshot = app.harness().inspection();
     let label = canvas::locales::CATALOG.t("canvas-tool-ellipse");
-    let target = support::named_bounds(&snapshot.root, &label).expect("ellipse control is visible");
+    let target =
+        crate::support::named_bounds(&snapshot.root, &label).expect("ellipse control is visible");
     app.harness().click_at(target.center().x, target.center().y);
     app.harness()
         .drag_at((x + 80.0, y + 60.0), (x + 160.0, y + 120.0));
@@ -488,7 +487,7 @@ fn a_small_vector_icon_keeps_vector_tools_in_the_automatic_workspace() {
     let snapshot = app.harness().inspection();
     let name = canvas::locales::CATALOG.t(canvas::tools::Tool::Text.label());
     assert!(
-        support::named_bounds(&snapshot.root, &name).is_some(),
+        crate::support::named_bounds(&snapshot.root, &name).is_some(),
         "small vector icons still offer lettering"
     );
 }
@@ -505,7 +504,7 @@ fn all_project_choices_fit_and_accept_pointer_input_at_the_live_window_size() {
     ] {
         let snapshot = app.harness().inspection();
         let label = canvas::locales::CATALOG.t(key);
-        let bounds = support::named_bounds(&snapshot.root, &label).unwrap();
+        let bounds = crate::support::named_bounds(&snapshot.root, &label).unwrap();
         assert!(
             bounds.x0 >= 0.0 && bounds.x1 <= 868.0 && bounds.y1 <= 772.0,
             "{label} is fully visible: {bounds:?}"
@@ -519,7 +518,7 @@ fn all_project_choices_fit_and_accept_pointer_input_at_the_live_window_size() {
         } else {
             let snapshot = app.harness().inspection();
             let name = canvas::locales::CATALOG.t(canvas::tools::Tool::Select.label());
-            assert!(support::named_bounds(&snapshot.root, &name).is_some());
+            assert!(crate::support::named_bounds(&snapshot.root, &name).is_some());
         }
     }
 }
