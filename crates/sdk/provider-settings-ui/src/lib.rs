@@ -1102,7 +1102,7 @@ impl<H: PanelBindings> ProviderPanel<H> {
                 let (provider, id) = (profile.id.clone(), model.id.clone());
                 let toggle = Toggle::from_state(&ui::LocalState::new(on))
                     .with_id(&format!("agent-model-{name}-{widget_id}"))
-                    .with_accessible_name(&t(label))
+                    .with_resolved_accessible_name(t(label))
                     .with_enabled(can_admin);
                 body.push(widgets::setting_row(
                     &t(label),
@@ -1550,7 +1550,7 @@ impl<H: PanelBindings> ProviderPanel<H> {
             let label = t(&format!("agent-kind-{}", kind.id().replace('_', "-")));
             let mut chooser = Dropdown::from_state(Vec::new(), &ui::LocalState::new(selected))
                 .with_id(&format!("agent-kind-choose-{}", kind.id()))
-                .with_accessible_name(&label)
+                .with_resolved_accessible_name(&label)
                 .with_placeholder(&t("agent-kind-model-default"))
                 .with_enabled(can_admin);
             chooser.set_value_options(offered.clone());

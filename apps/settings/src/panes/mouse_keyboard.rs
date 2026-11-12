@@ -1715,7 +1715,6 @@ impl PageOf<'_> {
                 self.cx
                     .setting(t("input-touchpad-speed"))
                     .id("input.touchpad_pointer_speed")
-                    .named("input-touchpad-speed")
                     .slider_with(
                         |input: &InputPrefs| {
                             input.touchpad_pointer_speed.unwrap_or(input.pointer_speed)
@@ -1785,7 +1784,6 @@ impl PageOf<'_> {
                 self.cx
                     .setting(t("input-mouse-speed"))
                     .id("input.mouse_pointer_speed")
-                    .named("input-mouse-speed")
                     .slider_with(
                         |input: &InputPrefs| {
                             input.mouse_pointer_speed.unwrap_or(input.pointer_speed)
@@ -1826,7 +1824,6 @@ impl PageOf<'_> {
                     .setting(t("input-scroll-speed"))
                     .described(t("input-scroll-speed-description"))
                     .id("input.scroll_speed")
-                    .named("input-scroll-speed")
                     .slider_with(
                         |input: &InputPrefs| {
                             settings_store::hardware::scroll_speed_to_slider(input.scroll_speed)
@@ -1847,7 +1844,6 @@ impl PageOf<'_> {
             .setting(t("input-key-repeat"))
             .described(key_repeat_description(&self.last.person))
             .id("input.key_repeat")
-            .named(t("input-key-repeat"))
             .slider_verb(key_repeat_slider_value, InputPrefs::SET_KEY_REPEAT)
     }
 }

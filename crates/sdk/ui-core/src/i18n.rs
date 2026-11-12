@@ -659,6 +659,20 @@ pub fn widget_text(key: &str) -> String {
     I18nManager::lookup(key, None)
 }
 
+/// The name a control is announced by: `name` taken as text when the caller
+/// resolved it (`resolved`, the row's caption an app localized itself), else
+/// as the message id [`widget_text`] resolves. `None` where there is no name
+/// to say, so the node falls back to what surrounds it.
+#[must_use]
+pub fn spoken_name(name: &str, resolved: bool) -> Option<String> {
+    let said = if resolved {
+        name.to_owned()
+    } else {
+        widget_text(name)
+    };
+    (!said.is_empty()).then_some(said)
+}
+
 /// A resource's name in the language this thread reads: the catalogue entry
 /// for its kind ([`tilo_resource::label::message_key`]) when one is loaded,
 /// and nothing when none is, so the resource keeps the name it declares.

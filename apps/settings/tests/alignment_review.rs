@@ -180,8 +180,8 @@ fn row_captions_and_hero_follow_the_spacing_steps() {
     {
         let mut app = crate::support::window_on(Category::Accessibility, WIDE);
         let root = app.harness().root_widget();
-        // The row speaks its label and the line explaining it together, so
-        // the explanation belongs to its row, not to the next one.
+        // The row explains itself after its label, so the explanation belongs
+        // to its row, not to the next one, and never reads as its value.
         let mut described = None;
         let mut next = None;
         walk(root, &mut |w| {
@@ -189,21 +189,24 @@ fn row_captions_and_hero_follow_the_spacing_steps() {
                 return;
             }
             let node = w.accessibility();
-            let name = node
-                .as_ref()
-                .and_then(|n| n.name.clone())
-                .unwrap_or_default();
-            let said = format!("{name} {}", node.and_then(|n| n.value).unwrap_or_default());
+            let said = |text: Option<&String>| text.cloned().unwrap_or_default();
+            let name = said(node.as_ref().and_then(|n| n.name.as_ref()));
+            let explained = said(node.as_ref().and_then(|n| n.description.as_ref()));
+            let value = said(node.as_ref().and_then(|n| n.value.as_ref()));
             if name.starts_with("High contrast") {
-                described = Some((w.get_rect(), said));
+                described = Some((w.get_rect(), explained, value));
             } else if name.starts_with("Reduce motion") && next.is_none() {
                 next = Some(w.get_rect());
             }
         });
-        let (row, name) = described.expect("the High contrast row");
+        let (row, explained, value) = described.expect("the High contrast row");
         assert!(
-            name.contains("Maximise contrast for low-vision comfort"),
-            "the explanation is part of its row: {name}"
+            explained.contains("Maximise contrast for low-vision comfort"),
+            "the explanation is part of its row: {explained}"
+        );
+        assert!(
+            !value.contains("contrast for low-vision"),
+            "the explanation is the row's description, never its value: {value}"
         );
         let next = next.expect("the Reduce motion row");
         assert!(
