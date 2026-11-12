@@ -53,6 +53,12 @@ pub fn author_line(author: &HistoryAuthor) -> String {
     )
 }
 
+/// [`author_line`] for software named `name` acting for `person`: "Helper for Ada", or "Helper
+/// for you" to that person. Where a surface knows no person, the name alone.
+pub fn acting_line(name: &str, person: Option<&str>, for_reader: bool) -> String {
+    actor_line(name, person, for_reader, false, None)
+}
+
 /// [`author_line`] for an author as an app reads it over the wire.
 pub fn wire_author_line(author: &wire::Author) -> String {
     actor_line(

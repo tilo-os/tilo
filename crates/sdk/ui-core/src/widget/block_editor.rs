@@ -10076,8 +10076,8 @@ impl Widget for BlockEditor {
             }
         }
 
-        // Runs AFTER the block loop: pixel_x_for_byte needs this frame's
-        // fresh `char_x_positions`. Cross-block selections are resolved from
+        // Runs AFTER the block loop: a run's bands need this frame's
+        // fresh layout. Cross-block selections are resolved from
         // their start block id once per frame.
         let document_selections = self.resolve_document_selections(presence);
         for (i, b) in self.blocks.iter().enumerate() {

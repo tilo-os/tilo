@@ -521,7 +521,7 @@ fn an_agents_send_is_the_agents_on_every_member() {
         Chat::direct_id([Participant::person(ada.clone()), Participant::person(bob)]);
     let helper = tilo_actions::ActionInvoker::actor("agent:helper")
         .with_kind(tilo_actions::ActorKind::Agent)
-        .acting_for(ada)
+        .acting_for(ada.clone())
         .named(Some("Helper".into()));
 
     ada_window
@@ -564,5 +564,18 @@ fn an_agents_send_is_the_agents_on_every_member() {
         bob_window.with_chat(|chat| chat.agent_authors.get("agent:helper").cloned()),
         Some(Some("Helper".to_owned())),
         "Bob reads it by the name Ada's device gave the agent"
+    );
+    let ada_name = bob_window
+        .with_chat(|chat| chat.user_name(&ada))
+        .expect("Bob's window");
+    assert_eq!(
+        bob_window.with_chat(|chat| chat.user_name("agent:helper")),
+        Some(format!("Helper for {ada_name}")),
+        "and as acting for Ada"
+    );
+    assert_eq!(
+        ada_window.with_chat(|chat| chat.user_name("agent:helper")),
+        Some("Helper for you".to_owned()),
+        "Ada reads it as hers"
     );
 }

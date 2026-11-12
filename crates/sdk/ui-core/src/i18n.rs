@@ -2580,7 +2580,6 @@ mod tests {
             "participant-unknown-agent",
             "participant-shortcut",
             "participant-app",
-            "participant-acting-for",
         ] {
             let mut args = FluentArgs::new();
             args.set("count", FluentValue::from(2));

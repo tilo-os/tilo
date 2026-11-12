@@ -1224,7 +1224,7 @@ mod tests {
         agent.actor.for_person = Some("ada".into());
         assert!(presence.apply_interaction_at(agent.clone(), at).unwrap());
         let claude = UserId("quill".into());
-        assert_eq!(presence.display_name(&claude), "Claude, for Ada");
+        assert_eq!(presence.display_name(&claude), "Claude for Ada");
         assert_eq!(presence.acting_for(&claude), Some(&UserId("ada".into())));
         assert!(presence.is_agent(&claude));
         assert_eq!(presence.agent_marker_interactions(at), vec![agent]);

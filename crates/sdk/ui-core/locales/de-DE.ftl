@@ -583,8 +583,6 @@ participant-bot = { $name } · Bot
 # Zwei oder mehr Personen in einem Arbeitsbereich tragen denselben Namen: jede
 # wird nummeriert, für alle im Arbeitsbereich gleich.
 participant-numbered = { $name } ({ $number })
-# Ein Agent, ein Kurzbefehl oder eine App, die für eine Person handelt.
-participant-acting-for = { $name }, für { $person }
 interaction-agent = Agent
 interaction-collaborator = Mitwirkende Person
 # Was jemand gerade tut: der Name, dann die Handlung im Präsens.

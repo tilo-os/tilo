@@ -103,7 +103,13 @@ impl ChatApp {
             .and_then(|agent| self.known_agent_name(agent))
             .or_else(|| self.agent_authors.get(id).cloned());
         if let Some(name) = agent {
-            return crate::i18n::t_args("chat-agent-author", &[("name", name.into())]);
+            // An agent a person admitted is named with them: "Helper for Ada".
+            return match self.agent_people.get(id) {
+                Some(person) => {
+                    ui::acting_line(&name, Some(&self.user_name(person)), self.is_me(person))
+                }
+                None => crate::i18n::t_args("chat-agent-author", &[("name", name.into())]),
+            };
         }
         let named = self.display_name(id);
         // A name that happens to equal the id is still a name when the

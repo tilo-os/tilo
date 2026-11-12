@@ -584,8 +584,6 @@ participant-bot = { $name } · Bot
 # Two or more people in a workspace go by the same name: each is numbered, the
 # same numbers for everyone in it.
 participant-numbered = { $name } ({ $number })
-# An agent, a Shortcut or an app acting for a person.
-participant-acting-for = { $name }, for { $person }
 interaction-agent = Agent
 interaction-collaborator = Collaborator
 # What an actor is doing: its name, then the action in the present tense.

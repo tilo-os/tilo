@@ -242,6 +242,12 @@ impl Chat {
             .collect()
     }
 
+    /// The person each agent acts for, by the agent's participant id.
+    #[must_use]
+    pub fn agent_people(&self) -> HashMap<String, String> {
+        self.agent_people.clone().into_iter().collect()
+    }
+
     /// The rows of `channel`, read from the parts' rows already read (`parts`,
     /// oldest first) instead of from the chain: the open channel's messages,
     /// with the feedback filed in it where it was filed and what is being sent

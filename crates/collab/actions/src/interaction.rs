@@ -53,7 +53,7 @@ pub struct InteractionActor {
     pub id: String,
     pub kind: ActorKind,
     /// The person an agent, a Shortcut or an app acts for, as the host
-    /// admitted the delegation: what presence names as "Claude, for Ada".
+    /// admitted the delegation: what presence names as "Claude for Ada".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub for_person: Option<String>,
 }

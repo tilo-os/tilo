@@ -662,7 +662,7 @@ pub struct PresenceCtx {
     /// person when names are hidden, elided, or inaccessible.
     participant_kinds: HashMap<UserId, ParticipantKind>,
     /// The person each agent, Shortcut or app acts for, as the broker
-    /// admitted it: "Claude, for Ada".
+    /// admitted it: "Claude for Ada".
     acting_for: HashMap<UserId, UserId>,
     /// The person (their user root) each participant here is a device of,
     /// where presence names devices rather than people (a browser page's
@@ -1670,7 +1670,7 @@ impl PresenceCtx {
     /// The friendly name to show for `user`, this session's own participant included, falling back
     /// to the raw id when the roster has not announced one. Never blank. People sharing a name
     /// carry their number ("Ada (2)", [`ParticipantLabels`]); software acting for a person is named
-    /// with that person ("Claude, for Ada"), else with its kind.
+    /// with that person ("Claude for Ada"), else with its kind.
     pub fn display_name(&self, user: &UserId) -> String {
         let name = self.names.get(user).cloned().or_else(|| {
             self.self_participant
@@ -1694,7 +1694,7 @@ impl PresenceCtx {
             return self.labels.label(&user.0, name);
         }
         // A person the roster has not named yet is left out rather than
-        // shown as their raw key: "Claude" reads better than "Claude, for
+        // shown as their raw key: "Claude" reads better than "Claude for
         // 3f9a…".
         if let Some(person) = self
             .acting_for
@@ -1705,10 +1705,7 @@ impl PresenceCtx {
                     .map(|name| self.labels.label(&person.0, name))
             })
         {
-            return crate::i18n::widget_format(
-                "participant-acting-for",
-                &[("name", name.into()), ("person", person.as_str().into())],
-            );
+            return crate::history_source::sentence::acting_line(name, Some(&person), false);
         }
         match kind {
             ParticipantKind::Shortcut => {
