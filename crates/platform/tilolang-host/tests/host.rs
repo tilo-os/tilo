@@ -134,6 +134,20 @@ struct Window {
 }
 
 impl Window {
+    /// A window at the other end of `transport`, shown nothing yet.
+    fn over(transport: ChannelTransport) -> Self {
+        Self {
+            transport,
+            root: None,
+            detail: None,
+            detail_target: None,
+            in_place: None,
+            activated: false,
+            bound: BTreeMap::new(),
+            form: None,
+        }
+    }
+
     /// Take in what the instance sent: the root's tree, kept up to date with its patches.
     fn take(&mut self) {
         while let Some(batch) = self.transport.recv().unwrap() {
@@ -327,16 +341,7 @@ fn instance_on(
         wake(),
     );
     host.add(hosted, Some(watched));
-    let window = Window {
-        transport: ChannelTransport::new(theirs).unwrap(),
-        root: None,
-        detail: None,
-        detail_target: None,
-        in_place: None,
-        activated: false,
-        bound: BTreeMap::new(),
-        form: None,
-    };
+    let window = Window::over(ChannelTransport::new(theirs).unwrap());
     (window, sent, inbox)
 }
 
@@ -420,16 +425,7 @@ fn opened_from_own_copy_in(
         wake(),
     );
     host.add(hosted, Some(watched));
-    let window = Window {
-        transport: ChannelTransport::new(theirs).unwrap(),
-        root: None,
-        detail: None,
-        detail_target: None,
-        in_place: None,
-        activated: false,
-        bound: BTreeMap::new(),
-        form: None,
-    };
+    let window = Window::over(ChannelTransport::new(theirs).unwrap());
     (host, window, sent, route)
 }
 
@@ -1113,16 +1109,7 @@ fn a_slow_open_does_not_hold_up_another_instances_frame() {
         manager,
         ours,
     );
-    let mut second = Window {
-        transport: ChannelTransport::new(theirs).unwrap(),
-        root: None,
-        detail: None,
-        detail_target: None,
-        in_place: None,
-        activated: false,
-        bound: BTreeMap::new(),
-        form: None,
-    };
+    let mut second = Window::over(ChannelTransport::new(theirs).unwrap());
 
     // The first instance's window presses +: its next frame comes at once, while the second
     // instance still waits for its workspace.
@@ -1238,16 +1225,7 @@ fn an_idle_hosts_loop_does_not_wake_until_a_window_has_something() {
         manager,
         ours,
     );
-    let mut second = Window {
-        transport: ChannelTransport::new(theirs).unwrap(),
-        root: None,
-        detail: None,
-        detail_target: None,
-        in_place: None,
-        activated: false,
-        bound: BTreeMap::new(),
-        form: None,
-    };
+    let mut second = Window::over(ChannelTransport::new(theirs).unwrap());
     second.send(&[ToApp::Fire {
         lane: Lane::Root,
         key: "early".to_owned(),

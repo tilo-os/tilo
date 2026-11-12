@@ -11,6 +11,8 @@
 //! - one directory of its own, read-write: the storage of its workspace and author, which the session
 //!   names, keyed by package inside. Landlock can only narrow, so it holds that directory from
 //!   its start;
+//! - the person's zone, read-only, as an app reads it ([`ZONE_PATHS`] and `TZ`): the day an
+//!   instance writes, filters and heads by is the person's, the one their window shows;
 //! - its door, the one descriptor it inherits (at [`DOOR_CHILD_FD`]);
 //! - nothing else: no display, no session bus, no service socket, no network (every namespace is
 //!   its own, and Landlock refuses TCP), no home, no device but the minimal `/dev`; the baseline
@@ -33,6 +35,9 @@ pub const BIN: &str = "bin/tilolang-host";
 
 /// Where the host sees its storage.
 pub const STORAGE_MOUNT: &str = "/run/tilolang-host/storage";
+
+/// The zone database and the device's zone, which the host's clock reads the person's day by.
+pub const ZONE_PATHS: [&str; 2] = ["/usr/share/zoneinfo", "/etc/localtime"];
 
 /// The descriptor the host finds its door at.
 pub const DOOR_CHILD_FD: RawFd = 3;
@@ -91,7 +96,9 @@ pub fn bwrap_argv(
     ] {
         argv.extend(["--setenv".to_owned(), name.to_owned(), value]);
     }
-    for name in ["LANG", "LC_ALL", "LC_MESSAGES", "RUST_LOG"] {
+    // The person's language and zone, as an app inherits them: `today` an instance writes and
+    // filters by is the day their window heads its rows by.
+    for &name in crate::sandbox::INHERITED_ENV {
         if let Some(value) = std::env::var_os(name).filter(|value| !value.is_empty()) {
             argv.extend([
                 "--setenv".to_owned(),
@@ -104,6 +111,9 @@ pub fn bwrap_argv(
     // tilolang bundle beside it, as an app's entrypoint runtime is.
     crate::sandbox::push_runtime_bundle(&mut argv, Some(app_runtime));
     let _ = crate::sandbox::push_required_runtime(&mut argv, runtime_root, version);
+    for zone in ZONE_PATHS {
+        argv.extend(["--ro-bind-try", zone, zone].map(str::to_owned));
+    }
     argv.extend([
         "--bind".to_owned(),
         storage.display().to_string(),
@@ -121,6 +131,9 @@ pub fn bwrap_argv(
         runtime_mount.display().to_string(),
     ]);
     super::push_runtime_landlock_rules(&mut argv, Some(app_runtime));
+    for zone in ZONE_PATHS {
+        argv.extend(["--ro-noexec", zone].map(str::to_owned));
+    }
     argv.extend([
         "--rw-noexec".to_owned(),
         STORAGE_MOUNT.to_owned(),
@@ -333,6 +346,8 @@ mod tests {
     /// no display, no bus, no service, no network, no home, no app storage.
     #[test]
     fn a_tilolang_host_holds_its_runtime_its_storage_and_its_door_only() {
+        let mut zone = tilo_test_env::ScopedEnv::new();
+        zone.set("TZ", "America/Los_Angeles");
         let argv = bwrap_argv(
             (
                 Path::new("/usr/lib/tilo/runtimes/tilolang/0.1.0"),
@@ -374,7 +389,18 @@ mod tests {
                 "{forbidden} is not in a host's sandbox: {mounted:?}"
             );
         }
+        let read_only = pair(&argv, "--ro-bind-try");
+        for zone in ZONE_PATHS {
+            assert!(
+                read_only.contains(&(zone.to_owned(), zone.to_owned())),
+                "the person's zone is read where an app reads it: {read_only:?}"
+            );
+        }
         let env = pair(&argv, "--setenv");
+        assert!(
+            env.contains(&("TZ".to_owned(), "America/Los_Angeles".to_owned())),
+            "the zone the person chose for the session: {env:?}"
+        );
         assert!(env.contains(&(
             runtime_portal::tilolang_host::DOOR_FD_ENV.to_owned(),
             "3".to_owned()
