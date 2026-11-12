@@ -347,34 +347,6 @@ impl Page {
         self.receipt(invocation).await
     }
 
-    /// Follow `invocation`, answered pending, until it settles, as an agent
-    /// follows it with `tilo_status`: its last update.
-    pub async fn settled(&mut self, invocation: InvocationId) -> tilo_actions::InvocationUpdate {
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            self.send(RemoteActionMessage::Observe {
-                invocation,
-                wait_ms: None,
-                seen: None,
-            });
-            let state = self
-                .answer("update", |answer| match answer {
-                    RemoteActionMessage::Update {
-                        invocation: got,
-                        state,
-                    } if *got == invocation => Some(state.clone()),
-                    _ => None,
-                })
-                .await
-                .expect("the host remembers the invocation it answered pending");
-            if state.update.is_terminal() {
-                return state.update;
-            }
-            assert!(Instant::now() < deadline, "the invocation never settled");
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    }
-
     /// Run one action on the host's agent supervisor.
     pub async fn call(
         &mut self,
