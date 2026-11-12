@@ -388,14 +388,21 @@ async fn a_write_costs_what_it_changed_however_long_the_record_history() {
             "writes past 1,000 changes {what} {after} bytes each on average, before {before}"
         );
     }
+    reopens_as_it_was_stored(fixture.owner, &path, WRITES);
+}
+
+/// The record reopens from `path` as the state it was stored as, with the
+/// same digest, and every one of the `writes` changes reads back.
+fn reopens_as_it_was_stored(owner: NativeWorkspaceOwner, path: &std::path::Path, writes: usize) {
+    let workspace = crate::owner::WorkspaceId::parse(testing::WORKSPACE).unwrap();
     let digest = |owner: &NativeWorkspaceOwner| {
         owner
             .with_current(workspace, |view| view.peer().durable_hash())
             .unwrap()
     };
-    let before = digest(&fixture.owner);
-    drop(fixture.owner);
-    let reopened = open_file(&path).unwrap();
+    let before = digest(&owner);
+    drop(owner);
+    let reopened = open_file(path).unwrap();
     assert_eq!(
         digest(&reopened),
         before,
@@ -409,7 +416,7 @@ async fn a_write_costs_what_it_changed_however_long_the_record_history() {
         })
         .unwrap();
     let document = automerge::AutoCommit::load(&document).unwrap();
-    for n in 0..WRITES {
+    for n in 0..writes {
         let key = format!("k{n}");
         assert!(
             automerge::ReadDoc::get(&document, automerge::ROOT, &key)
