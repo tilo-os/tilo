@@ -98,6 +98,10 @@ assets=$(pinned_assets virtio-win-0.1.302-1.noarch.rpm)
 # after that clock, as every update signed since the base was mirrored is. A build from this
 # unpublished one takes OUT/epoch instead. Given as SOURCE_DATE_EPOCH, so nothing reads Git and the
 # check's key is not its commit's (t.toml, image-rpms-ARCH).
+# The image's last instruction copies only the repository metadata, so a layer per instruction
+# gives consumers of the snapshot that small layer to read (verify-rpm-snapshot-buildkit.py)
+# instead of streaming the multi-GB package layer.
+export TILO_OCI_LAYERS=1
 SOURCE_DATE_EPOCH=$(date -u +%s) bash tools/ci/publish/oci-build.sh . os/Containerfile.rpms "$out" \
   --platform "$platform" --build-context "github-assets=$assets" \
   --build-arg "BASE_REF=$BASE_REF" --build-arg "PACKAGES=$packages"
