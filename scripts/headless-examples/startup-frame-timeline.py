@@ -49,6 +49,15 @@ def opens_probe(row: dict) -> bool:
     return desktop_id.removeprefix("host:") in (APP, APP + ".desktop")
 
 
+def is_probe_window(row: dict) -> bool:
+    """Whether `row` is a mapped window of the probe that its client has drawn in: the desk names
+    a program of this machine `host:<desktop id>`."""
+    if row.get("frames", 0) <= 0 or row.get("rect") is None:
+        return False
+    app_id = str(row.get("app_id", ""))
+    return app_id.removeprefix("host:") in (APP, APP + ".desktop")
+
+
 def runtime_directory(state: pathlib.Path) -> pathlib.Path:
     """The private runtime directory a session on `state` uses.
 
@@ -407,8 +416,7 @@ def main() -> None:
                     observed = windows(sock)
                     query_after = time.monotonic_ns()
                     positive = [row for row in observed if row["window"] not in ignore
-                                and row.get("app_id") == APP and row.get("frames", 0) > 0
-                                and row.get("rect") is not None]
+                                and is_probe_window(row)]
                     if positive:
                         frame = positive[0]
                         break
