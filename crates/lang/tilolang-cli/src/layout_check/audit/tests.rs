@@ -2421,14 +2421,14 @@ fn a_group_heading_takes_one_band_and_stands_on_the_row_it_heads() {
     );
 }
 
-/// A list that heads its rows keeps a heading's room over the first of them, under a heading or
-/// under the room a heading the list leaves out would take: a lead thinner than that leaves the
-/// first row hugging the box over it. A list whose rows name no group is one block and leads
-/// with its rows.
+/// The first band a list that heads its rows draws — the heading over its first run, or the first
+/// row where the list leaves that heading out — stands on the column's content gutter, where a
+/// page's first block stands: one closer to the box over the list hugs it. A list whose rows name
+/// no group is one block and leads with its rows.
 #[test]
-fn a_list_that_heads_its_rows_keeps_a_heading_s_room_over_them() {
+fn a_list_that_heads_its_rows_starts_its_first_band_on_the_content_gutter() {
     let theme = ui::Theme::dark();
-    let band = band_height(&theme);
+    let inset = ui::chrome::column_gutter(&theme);
     let list = |heads_rows: bool, lead: f64| {
         let mut list = node_of("VirtualList", "list", [100.0, 40.0, 400.0, 600.0]);
         list.layout = Some(ui::widget::LayoutInfo::List(ui::widget::ListLayout {
@@ -2448,21 +2448,51 @@ fn a_list_that_heads_its_rows_keeps_a_heading_s_room_over_them() {
         list
     };
     assert!(
-        heading_rooms(&list(true, band), &theme, None).is_empty(),
-        "a band of room over the first row"
+        heading_rooms(&list(true, inset), &theme, None).is_empty(),
+        "a content gutter of room over the first row"
     );
     let hugging = heading_rooms(&list(true, 0.0), &theme, None);
     assert!(
         hugging.iter().any(|p| p.kind == Kind::HuggingRow),
-        "a list that heads its rows with none of a heading's room over them: {hugging:?}"
+        "a list that heads its rows with none of the content gutter over them: {hugging:?}"
+    );
+    assert!(
+        heading_rooms(&list(true, band_height(&theme)), &theme, None).is_empty(),
+        "a heading's own band is room enough over the row it heads"
     );
     assert!(
         heading_rooms(&list(false, 0.0), &theme, None).is_empty(),
         "a list whose rows name no group leads with them"
     );
+    // The heading the list draws is held to the same inset, whatever room the list states.
+    let heading_over = |top: f64| {
+        let mut list = list(true, inset);
+        let mut access = AccessNode::new(Role::List);
+        access.children = vec![
+            AccessNode::new(Role::Heading { level: 3 })
+                .with_name("Overdue")
+                .with_bounds(Rect::new(100.0, top, 400.0, top + band_height(&theme)))
+                .with_action_target("group:Overdue"),
+            AccessNode::new(Role::ListItem)
+                .with_name("Water the plants")
+                .with_bounds(Rect::new(
+                    100.0,
+                    top + band_height(&theme),
+                    500.0,
+                    top + band_height(&theme) + 48.0,
+                )),
+        ];
+        list.semantics = Some(access);
+        list
+    };
     assert!(
-        heading_rooms(&list(true, 48.0), &theme, Some(48.0)).is_empty(),
-        "a finger's target is the room the band grows by"
+        heading_rooms(&heading_over(40.0 + inset), &theme, None).is_empty(),
+        "a heading standing on the content gutter"
+    );
+    let hugging_heading = heading_rooms(&heading_over(40.0), &theme, None);
+    assert!(
+        hugging_heading.iter().any(|p| p.kind == Kind::HuggingRow),
+        "a heading hugging the box over the list: {hugging_heading:?}"
     );
 }
 

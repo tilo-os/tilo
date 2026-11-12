@@ -637,17 +637,19 @@ pub fn inspect(
 /// finger's target where the window is held in the hand, and nothing else. A heading names the
 /// rows under it, so no empty slot, padding or hidden row may stand between its band and the
 /// first of them, and a finger's taller band keeps the heading's line where the width does.
-/// A list that heads its rows keeps that band's room over the first of them all the same, under
-/// a heading or under the room a heading the list leaves out would take: a first row standing on
-/// the list's own edge hugs the box over it.
+/// The first band a list that heads its rows draws — the heading over its first run, or the first
+/// row where the list leaves that heading out — stands on the column's content gutter, where a
+/// page's first block stands: one closer to the box over the list hugs it, reading as that box's
+/// last line rather than as a band of the list's own.
 pub fn heading_rooms(
     root: &InspectionNode,
     theme: &ui::Theme,
     min_target: Option<f64>,
 ) -> Vec<Problem> {
     let band = band_height(theme).max(min_target.unwrap_or(0.0));
+    let inset = ui::chrome::column_gutter(theme);
     let mut out = Vec::new();
-    heading_rooms_in(root, &mut Vec::new(), band, &mut out);
+    heading_rooms_in(root, &mut Vec::new(), band, inset, &mut out);
     out
 }
 
@@ -655,6 +657,7 @@ fn heading_rooms_in(
     node: &InspectionNode,
     keys: &mut Vec<String>,
     band: f64,
+    inset: f64,
     out: &mut Vec<Problem>,
 ) {
     let pushed = node.test_id.clone().map(|id| keys.push(id)).is_some();
@@ -709,26 +712,42 @@ fn heading_rooms_in(
             });
         }
     }
-    // A list whose rows name groups starts them one band in from its edge, and a heading it
-    // leaves out keeps that room: a lead thinner than a band leaves the first row hugging the
-    // box over it, reading as that block's last line rather than as a row of the list's own.
+    // A list that heads its rows starts its first band on the column's content gutter, where a
+    // page's first block stands: a heading drawn there, or the first row where the list leaves
+    // that heading out. One standing closer hugs the box over the list, reading as that block's
+    // last line rather than as a band of the list's own.
     if let Some(ui::widget::LayoutInfo::List(list)) = node.layout
         && list.heads_rows
-        && f64::from(list.lead) < band - 0.5
     {
-        out.push(Problem {
-            kind: Kind::HuggingRow,
-            keys: keys.iter().rev().cloned().collect(),
-            widget: node.widget.clone(),
-            id: node.test_id.clone(),
-            detail: format!(
-                "the list keeps {:.0} px over its first row, where a heading takes {band:.0}",
-                list.lead
-            ),
-        });
+        // The band the person sees: the heading the list draws over its first run says where it
+        // stands; a list that draws none says the room it keeps over its first row.
+        let drawn = headings
+            .iter()
+            .find(|child| child.bounds.is_some())
+            .filter(|heading| {
+                heading
+                    .action_target
+                    .as_deref()
+                    .is_some_and(|target| target.starts_with(GROUP))
+            })
+            .and_then(|heading| heading.bounds)
+            .map(|bounds| bounds.y0 - rect(node.rect).y0);
+        let room = drawn.unwrap_or_else(|| f64::from(list.lead));
+        if room + 0.5 < inset {
+            out.push(Problem {
+                kind: Kind::HuggingRow,
+                keys: keys.iter().rev().cloned().collect(),
+                widget: node.widget.clone(),
+                id: node.test_id.clone(),
+                detail: format!(
+                    "the list keeps {room:.0} px over the first band it draws, where a page's \
+                     content gutter is {inset:.0}"
+                ),
+            });
+        }
     }
     for child in &node.children {
-        heading_rooms_in(child, keys, band, out);
+        heading_rooms_in(child, keys, band, inset, out);
     }
     if pushed {
         keys.pop();

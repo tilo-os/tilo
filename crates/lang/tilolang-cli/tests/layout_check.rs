@@ -155,9 +155,8 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             // Its trees fold rows on the line those rows' words stand on.
             | Kind::ChevronOffLine
             | Kind::IndentedBody
-            // Its lists group no rows under headings of their own.
+            // Its lists group no rows under headings of their own, so none heads its rows.
             | Kind::RepeatedGroupTitle
-            // No list of this fixture stands a row as its first thing.
             | Kind::HuggingRow
             // The fixture's rows state no day of their own.
             | Kind::RepeatedDayFact => "(no view)",

@@ -383,42 +383,18 @@ impl<M: ListModel> VirtualList<M> {
     /// The height the row `index` takes in the layout: its own, with the band of the heading
     /// over it when it starts a group; only that band while its group is closed.
     pub(super) fn grouped_height(&self, index: usize, height: f64) -> f64 {
-        let room = self.room_over(index);
+        let band = self.band_room(index);
         if !self.row_open(index) {
-            return room;
+            return band;
         }
-        height + room
+        height + band
     }
 
-    /// The room the list takes over the row `index` before the row itself: the band of the
-    /// heading it starts a group with, or the room the list keeps above its first row when the
-    /// first band is a row ([`Self::lead_room`]).
+    /// The room the band of the heading the row `index` starts takes over it, and nothing over a
+    /// row that starts no group: the list's own content gutter, over the first band it draws, is
+    /// the viewport's lead ([`super::VirtualList::content_gutter`]), not a row's.
     pub(super) fn band_room(&self, index: usize) -> f64 {
-        self.room_over(index)
-    }
-
-    /// The room the row `index` takes before itself: a heading's band where it starts a group,
-    /// and the list's lead over its first row where no heading leads the list.
-    fn room_over(&self, index: usize) -> f64 {
         if self.row_starts(index) {
-            self.groups.height
-        } else {
-            self.lead_room(index)
-        }
-    }
-
-    /// The room the list keeps above its first row when that row starts no group, though its
-    /// group stands in the list: the band a heading would have taken. A list that heads its
-    /// rows starts them one band in from its edge, so the rows stand where they would under a
-    /// heading, and a heading the list leaves out — a lone group naming the title over it
-    /// ([`Self::heads_nothing`]) — moves nothing. A list whose rows name no groups at all
-    /// leads with them as its own block.
-    fn lead_room(&self, index: usize) -> f64 {
-        if index != 0 {
-            return 0.0;
-        }
-        let heads_a_group = group_of(&self.model, 0, self.tail_title.as_deref()).is_some();
-        if heads_a_group {
             self.groups.height
         } else {
             0.0

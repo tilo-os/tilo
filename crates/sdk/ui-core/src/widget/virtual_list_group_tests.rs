@@ -650,7 +650,9 @@ fn a_list_with_nothing_to_disclose_keeps_no_chevron_room() {
 fn a_view_titled_like_its_one_group_heads_nothing_over_the_rows() {
     // Two tasks due today, in a window whose title already says "Today 2": the heading over
     // them would say it again.
-    let mut list = grouped(vec![heading("Today"), heading("Today")]).in_view("Today", Some(2));
+    let mut list = grouped(vec![heading("Today"), heading("Today")])
+        .in_view("Today", Some(2))
+        .in_column();
     let _ = settle(&mut list);
     assert!(
         bands(&list).is_empty(),
@@ -659,12 +661,12 @@ fn a_view_titled_like_its_one_group_heads_nothing_over_the_rows() {
     );
     let row = f64::from(ROW);
     assert_eq!(mounted_indexes(&list), vec![0, 1], "both rows are built");
-    // The band the heading took stays empty over the rows: the first row stands where a
-    // heading would have left it, so nothing moves as the heading goes.
-    let band = band_height(&Theme::dark());
+    // A heading the list leaves out takes no room: the rows stand where a page's first block
+    // does, one content gutter below the list's top, and no ghost band stands empty over them.
+    let inset = crate::chrome::column_gutter(&Theme::dark());
     assert!(
-        (list.band_room(0) - band).abs() < 0.5,
-        "the list keeps a heading's room over its first row: {}",
+        (list.band_room(0) - 0.0).abs() < 0.5,
+        "the list keeps no heading's room over its first row: {}",
         list.band_room(0)
     );
     assert!(
@@ -679,8 +681,8 @@ fn a_view_titled_like_its_one_group_heads_nothing_over_the_rows() {
         first.height()
     );
     assert!(
-        (first.y0 - band).abs() < 0.5,
-        "the row's box stands under the room the heading took: {} of {band}",
+        (first.y0 - inset).abs() < 0.5,
+        "the row's box stands on the column's content gutter: {} of {inset}",
         first.y0
     );
 }
@@ -718,25 +720,37 @@ fn a_heading_counts_only_where_the_number_says_something() {
 }
 
 #[test]
-fn a_lone_group_heading_leaves_the_rows_where_a_heading_would() {
+fn a_lone_group_heading_starts_the_rows_on_the_content_gutter() {
     // Three tasks under two headings, and the same first two under a title that names their
-    // one group: the row stands in the same place either way, so nothing moves under the hand
-    // as a heading the title says goes.
+    // one group: either way the first band starts on the column's content gutter, which is the
+    // heading's own place where the list draws it and its first row's where it leaves it out.
     let mut headed = grouped(vec![
         heading("Today"),
         heading("Today"),
         heading("Tomorrow"),
-    ]);
+    ])
+    .in_column();
     let _ = settle(&mut headed);
+    let inset = crate::chrome::column_gutter(&Theme::dark());
+    let band = band_height(&Theme::dark());
+    let headed_band = bands(&headed).first().expect("a heading leads the rows").1;
+    assert!(
+        (headed_band - inset).abs() < 0.5,
+        "the heading stands on the content gutter: {headed_band} of {inset}"
+    );
     let headed_top = headed.row_box(0).expect("a mounted first row").y0;
-    assert!(!bands(&headed).is_empty(), "a heading leads the rows");
-    let mut lone = grouped(vec![heading("Today"), heading("Today")]).in_view("Today", Some(2));
+    assert!(
+        (headed_top - inset - band).abs() < 0.5,
+        "the row stands under the heading's band: {headed_top}"
+    );
+    let mut lone = grouped(vec![heading("Today"), heading("Today")])
+        .in_view("Today", Some(2))
+        .in_column();
     let _ = settle(&mut lone);
     let lone_top = lone.row_box(0).expect("a mounted first row").y0;
     assert!(
-        (headed_top - lone_top).abs() < 0.5,
-        "the first row stands where the heading left it: {lone_top} under no heading, \
-         {headed_top} under one"
+        (lone_top - inset).abs() < 0.5,
+        "with the heading left out the row stands on the content gutter: {lone_top} of {inset}"
     );
 }
 
@@ -753,52 +767,68 @@ fn a_list_of_rows_that_name_no_group_leads_with_them() {
     );
 }
 
-/// The room a list keeps over its first row, as it states it to a layout audit: a heading's
-/// band where its rows name a group, whether or not the list draws that heading, and nothing
-/// where they are one block.
+/// The room a list keeps over the first band it draws, as it states it to a layout audit: the
+/// column's content gutter where its rows name a group, whether or not the list draws the heading
+/// over them, and nothing where they are one block or the list stands outside a column.
 #[test]
-fn a_list_states_the_room_it_keeps_over_its_first_row() {
-    let band = band_height(&Theme::dark());
+fn a_list_states_the_room_it_keeps_over_its_first_band() {
+    let inset = crate::chrome::column_gutter(&Theme::dark());
     let stated = |list: &VirtualList<Grouped>| {
         let Some(crate::widget::LayoutInfo::List(stated)) = Widget::layout_info(list) else {
             panic!("a list states how it stands its rows");
         };
         stated
     };
-    let mut headed = grouped(vec![heading("Today"), heading("Today")]);
+    let mut headed = grouped(vec![heading("Today"), heading("Today")]).in_column();
     let _ = settle(&mut headed);
     let under_a_heading = stated(&headed);
     assert!(under_a_heading.heads_rows);
-    assert!((f64::from(under_a_heading.lead) - band).abs() < 0.5);
-    // A title that names the rows' one group leaves the heading out, and the room its band took
-    // stays: the audit reads the same room over a row no heading stands on.
-    let mut lone = grouped(vec![heading("Today"), heading("Today")]).in_view("Today", Some(2));
+    assert!(
+        (f64::from(under_a_heading.lead) - inset).abs() < 0.5,
+        "the heading starts on the content gutter: {}",
+        under_a_heading.lead
+    );
+    // A title that names the rows' one group leaves the heading out: the audit reads the same
+    // room over the row no heading stands on.
+    let mut lone = grouped(vec![heading("Today"), heading("Today")])
+        .in_view("Today", Some(2))
+        .in_column();
     let _ = settle(&mut lone);
     let under_the_title = stated(&lone);
     assert!(under_the_title.heads_rows);
-    assert!((f64::from(under_the_title.lead) - band).abs() < 0.5);
+    assert!(
+        (f64::from(under_the_title.lead) - inset).abs() < 0.5,
+        "the row starts on the content gutter: {}",
+        under_the_title.lead
+    );
     // Rows that name no group are one block: the list leads with them.
     let mut plain = grouped(vec![None, None]);
     let _ = settle(&mut plain);
     let plain = stated(&plain);
     assert!(!plain.heads_rows);
     assert!(plain.lead.abs() < 0.5);
+    // A list that is no column's body brings its own spacing: it keeps nothing of the column's.
+    let mut alone = grouped(vec![heading("Today"), heading("Today")]);
+    let _ = settle(&mut alone);
+    assert!(stated(&alone).lead.abs() < 0.5);
 }
 
 #[test]
-fn the_room_over_a_lists_first_row_is_no_part_of_it() {
-    let mut list = grouped(vec![heading("Today"), heading("Today")]).in_view("Today", Some(2));
+fn the_room_over_a_lists_first_band_is_no_part_of_it() {
+    let mut list = grouped(vec![heading("Today"), heading("Today")])
+        .in_view("Today", Some(2))
+        .in_column();
     let (taffy, node) = settle(&mut list);
-    let band = band_height(&Theme::dark());
-    let at = crate::synthetic_input::cursor_moved(20.0, band / 2.0);
+    let inset = crate::chrome::column_gutter(&Theme::dark());
+    let at = crate::synthetic_input::cursor_moved(20.0, inset / 2.0);
     let _ = Dispatch::new().layout(&taffy, node).send(&mut list, &at);
     assert_eq!(
-        list.key_at_point(vello::kurbo::Point::new(20.0, band / 2.0)),
+        list.key_at_point(vello::kurbo::Point::new(20.0, inset / 2.0)),
         None,
         "the room over the first row is the list's, not the row's"
     );
     assert_eq!(
-        list.key_at_point(vello::kurbo::Point::new(20.0, band + 5.0)),
+        list.key_at_point(vello::kurbo::Point::new(20.0, inset + 5.0)),
         Some(0),
         "the row itself takes the press below it"
     );

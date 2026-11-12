@@ -194,11 +194,11 @@ pub enum Kind {
     /// the person did not know nor one they can act on. A row keeps the time of day it is due,
     /// and says nothing where it names no time.
     RepeatedDayFact,
-    /// A list's first row standing on the list's own edge, with none of the room a heading takes
-    /// over the rows it heads: a list that heads its rows starts them one band in from its edge,
-    /// and a heading the list leaves out — a lone group naming the title above it — keeps that
-    /// room, so the rows stand where they would under it. A row that hugs the edge reads as part
-    /// of the block over it.
+    /// The first band a list that heads its rows draws — the heading over its first run, or the
+    /// first row where the list leaves that heading out — standing against the box over the list,
+    /// with less than a column's content gutter above it: where a page's first block stands. A
+    /// band that hugs the edge reads as part of the block over it rather than as one of the
+    /// list's own.
     HuggingRow,
 }
 
