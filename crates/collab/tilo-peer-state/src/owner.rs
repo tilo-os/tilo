@@ -194,6 +194,9 @@ struct SharedOwner {
     /// How many more passes each workspace takes before a compaction that
     /// drafted nothing is tried again.
     compaction_wait: Mutex<BTreeMap<WorkspaceId, usize>>,
+    /// The sealed records whose compaction the host refused: each compacts again at once, so
+    /// the host's history meets its next compaction before its bound.
+    refused_compactions: Mutex<BTreeSet<(WorkspaceId, String, String)>>,
 }
 #[derive(Default)]
 struct Current {
@@ -555,6 +558,7 @@ impl NativeWorkspaceOwner {
             kept_here: Mutex::new(Vec::new()),
             history_keys: Mutex::new(None),
             compaction_wait: Mutex::new(BTreeMap::new()),
+            refused_compactions: Mutex::new(BTreeSet::new()),
         }))
     }
     /// Restore every enrolled workspace of `authority`, the record `store` last
@@ -597,6 +601,7 @@ impl NativeWorkspaceOwner {
             kept_here: Mutex::new(Vec::new()),
             history_keys: Mutex::new(None),
             compaction_wait: Mutex::new(BTreeMap::new()),
+            refused_compactions: Mutex::new(BTreeSet::new()),
         })))
     }
     #[must_use]
@@ -844,20 +849,18 @@ impl NativeWorkspaceOwner {
         // ([`publication::retire_member_changes`]), which a device that
         // published none (a page entering a workspace) never has.
         let mut governed: Vec<Vec<Vec<u8>>> = Vec::new();
-        // The sealed records that took a compaction in place of this device's own.
-        let mut rebased: Vec<(String, String)> = Vec::new();
+        // Custody, as the host's compactions of records this device compacted ahead of it
+        // leave it.
+        let mut publication = candidate.record.publication.clone();
         for (origin, message) in inputs {
             let received = Self::received_changes(origin, &message).cloned();
-            let compaction = matches!(&message,
-                NeighbourMsg::AppDocument { envelope, .. } if envelope.kind == collab_types::OpKind::Compaction)
-            .then(|| message.clone());
-            let mut report = Self::admit_input(&candidate, origin, message, now);
-            if report.is_err()
-                && let Some(message) = compaction
-                && let Some(route) = self.rebase(&candidate, origin, message, now, &mut report)
+            let report = match publication
+                .as_mut()
+                .and_then(|publication| self.receive_hosted(&candidate, publication, &message, now))
             {
-                rebased.push(route);
-            }
+                Some(report) => report,
+                None => Self::admit_input(&candidate, origin, message, now),
+            };
             if report.is_ok()
                 && let Some(changes) = received
             {
@@ -870,14 +873,12 @@ impl NativeWorkspaceOwner {
             return Ok(reports);
         }
         let mut record = candidate.record.clone();
+        record.publication = publication;
         // One snapshot under the replica's lock, as [`Self::publish`] takes
         // it: the durable bytes that show whether anything changed are the
         // ones published, encoded once.
         let snapshot = {
             let live = replica.lock();
-            for (app, rebased) in &rebased {
-                publication::rebased(&mut record, app, rebased);
-            }
             publication::retire(&live, &mut record)?;
             publication::settle(&mut record, self.0.store.as_ref())?;
             publication::retire_member_changes(&live, &mut record, &governed)?;
@@ -900,44 +901,6 @@ impl NativeWorkspaceOwner {
         };
         self.install_snapshot(workspace, &replica, record, snapshot, None)?;
         Ok(reports)
-    }
-    /// Take `message`, a sealed compaction the record's history here refused, as the record's
-    /// key holder ([`crate::PeerPublicationMut::rebase_sealed`]): with the writes this device's
-    /// own compactions fold here, the history it leaves is the one the host holds. Answers
-    /// the record rebased, with `report` its admission; a rebase that cannot be made leaves
-    /// `report` the refusal it was.
-    fn rebase(
-        &self,
-        candidate: &NativeCommittedView,
-        origin: TransportOrigin,
-        message: NeighbourMsg,
-        now: SystemTime,
-        report: &mut Result<AdmissionReport, String>,
-    ) -> Option<(String, String)> {
-        let keys = self.0.history_keys.lock().clone()?;
-        let NeighbourMsg::AppDocument {
-            app_id, record_id, ..
-        } = &message
-        else {
-            return None;
-        };
-        let route = (app_id.clone(), record_id.clone());
-        let workspace = candidate.record.workspace;
-        let rebased = publication::state(candidate)
-            .and_then(|publication| publication.folded(&route.0, &route.1))
-            .and_then(|held| {
-                candidate.live().publication_mut().rebase_sealed(
-                    origin,
-                    message,
-                    &held,
-                    &mut |write| keys.open(workspace, write),
-                    now,
-                )
-            });
-        // ignored-failure: the compaction's own refusal stands in `report` and is answered.
-        let rebased = rebased.ok()?;
-        *report = Ok(rebased);
-        Some(route)
     }
     /// The workspace changes `message` carries, from any device of the workspace: each
     /// participant admits every other's, and the workspace's governance that now
