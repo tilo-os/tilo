@@ -544,6 +544,14 @@ pub enum ToolEffect {
 }
 
 impl Tools {
+    /// Whether the canvas's next frame has work it took from elsewhere: keys
+    /// a menu or a panel pressed for the person, or objects the tree picked.
+    /// The frame that sees one syncs and carries it out, so a command chosen
+    /// away from the canvas reaches the artwork in the frame it arrived in.
+    pub fn waiting(&self) -> bool {
+        !self.keys.with(Vec::is_empty) || self.pick_objects.with(Option::is_some)
+    }
+
     /// Take up what `effect` chooses.
     pub fn answer(&self, effect: ToolEffect) -> ui::framework::EffectAnswer {
         match effect {

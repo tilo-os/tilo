@@ -68,15 +68,22 @@ impl CanvasSurface {
         Ok(ui::framework::Effected::Pending)
     }
 
-    /// Answer the views whose pictures came.
-    pub(super) fn take_due(&mut self) {
+    /// Answer the views whose pictures came. Taken up between frames, so the
+    /// frame that answers them syncs and shows what the answer wrote.
+    /// Answers whether it answered any.
+    pub(super) fn take_due(&mut self) -> bool {
         let due = std::mem::take(&mut self.due);
+        let mut answered = false;
         for mut due in due {
             match self.came(&mut due.waiting) {
-                Some(done) => due.reply.finish(done),
+                Some(done) => {
+                    due.reply.finish(done);
+                    answered = true;
+                }
                 None => self.due.push(due),
             }
         }
+        answered
     }
 
     /// What `waiting` came to, once its pictures came.
