@@ -743,7 +743,9 @@ try {
     writeFileSync(`${out}/report.json`, JSON.stringify(report, null, 2));
     console.log(JSON.stringify(report, null, 2));
     for (const launched of browsers) await launched.close().catch(error => console.error('close:', error.message));
-    process.exit(0);
+    // A check that failed without waiting for the exit it asked for still
+    // fails the run: every page's run is read by its status.
+    process.exit(report.error ? 1 : 0);
   }
   const a = await open('A');
   const b = await open('B');
@@ -1683,4 +1685,6 @@ try {
 } finally {
   for (const browser of browsers) await browser.close().catch(error => console.error('close:', error.message));
 }
-process.exit(0);
+// A check that failed without waiting for the exit it asked for still fails
+// the run: every page's run is read by its status.
+process.exit(report.error ? 1 : 0);
