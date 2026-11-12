@@ -57,11 +57,13 @@ pub fn list(
         .bind_filter(filter)
 }
 
-/// The sections of the list, in render order.
+/// The sections of the list, in render order: only those this build has a
+/// page in, so the web's Settings shows no heading over nothing.
 pub fn sections() -> Vec<NavSection> {
     Section::ALL
         .iter()
         .copied()
+        .filter(|section| Category::in_section(*section).next().is_some())
         .map(|section| {
             let items = Category::in_section(section)
                 .map(|category| {
@@ -82,9 +84,18 @@ mod tests {
     #[test]
     fn list_holds_every_category_once_under_its_section() {
         let sections = sections();
-        assert_eq!(sections.len(), Section::ALL.len());
+        let shown: Vec<Section> = Section::ALL
+            .iter()
+            .copied()
+            .filter(|section| Category::in_section(*section).next().is_some())
+            .collect();
+        assert_eq!(sections.len(), shown.len());
+        assert!(
+            sections.iter().all(|section| !section.items.is_empty()),
+            "no heading stands over nothing"
+        );
         let mut seen = std::collections::HashSet::new();
-        for (section, rendered) in Section::ALL.iter().zip(&sections) {
+        for (section, rendered) in shown.iter().zip(&sections) {
             for category in Category::in_section(*section) {
                 assert!(seen.insert(category.slug()), "{category:?} listed twice");
                 assert_eq!(category.section(), *section);

@@ -10,7 +10,11 @@ use ui::tilo_actions::remote::identity_admin::{self, FleetDevice, KeyKind};
 use ui::tilo_actions::remote::{Confirmation, InvokeArgument};
 
 /// One of the person's devices, as the host listed it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is a separate fact the list shows about one key"
+)]
 pub struct DeviceView {
     pub label: String,
     pub key: [u8; 32],
@@ -24,6 +28,19 @@ pub struct DeviceView {
     /// The browser profile it is a tab of, by the profile's id: a browser
     /// keeps a key per open tab, and the pane shows them as one entry.
     pub browser: Option<String>,
+    /// The agent it runs ("Claude Code"), as its sessions named it.
+    pub agent: Option<String>,
+    /// When the person's root certified it, ms since the epoch.
+    pub issued_ms: Option<i64>,
+    /// When its access ends by itself, ms since the epoch.
+    pub expires_ms: Option<i64>,
+    /// When it was last connected to the person's host, ms since the epoch.
+    pub last_active_ms: Option<i64>,
+    /// Connected to the person's host now.
+    pub online: bool,
+    /// The one workspace an agent's key reaches; every one of theirs when
+    /// `None`.
+    pub workspace: Option<String>,
 }
 
 /// Ask the host for the devices trusted under the workspace's identity.
@@ -79,6 +96,12 @@ pub(crate) fn views(listed: Vec<FleetDevice>) -> Result<Vec<DeviceView>, String>
                 can_host: device.can_host,
                 kind: device.kind,
                 browser: device.browser,
+                agent: device.agent,
+                issued_ms: device.issued_ms,
+                expires_ms: device.expires_ms,
+                last_active_ms: device.last_active_ms,
+                online: device.online,
+                workspace: device.workspace,
             })
         })
         .collect()

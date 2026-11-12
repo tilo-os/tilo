@@ -545,55 +545,65 @@ fn home_relay_fixture() -> ui::tilo_actions::remote::home_relay_hosting::HomeRel
     }
 }
 
-/// A person's laptop, phone and browser, a phone they lost, two agents
-/// and a script's key, and a new tablet asking to be them: what the
-/// Devices and access capture shows.
+/// A person's laptop (this computer), a phone, a browser with two tabs, a
+/// phone they removed, Claude Code signed in on another laptop, an agent
+/// the door let into one workspace and a script's key, and a new tablet
+/// asking to be them: what the Devices and access capture shows.
 pub(crate) fn access_fixture(
     scenario: Option<&str>,
 ) -> Option<crate::panes::devices_access::AccessSample> {
     use crate::device_fleet::DeviceView;
     use crate::panes::devices_access::{AccessSample, Asking};
     use ui::tilo_actions::remote::agent_door::{Door, Grant, Reach, Run};
+    use ui::tilo_actions::remote::identity_admin::KeyKind;
+    const MINUTE: i64 = 60_000;
     const DAY: i64 = 86_400_000;
     const NOW: i64 = 1_794_400_000_000;
     if scenario != Some(Category::DevicesAccess.slug()) {
         return None;
     }
-    let device = |n: u8, label: &str, current, revoked| DeviceView {
+    let device = |n: u8, label: &str| DeviceView {
         label: label.into(),
         key: [n; 32],
         fingerprint: format!("{n:02X} {n:02X} {n:02X} {n:02X} {n:02X} {n:02X}"),
-        current,
-        revoked,
-        can_host: false,
-        kind: ui::tilo_actions::remote::identity_admin::KeyKind::Device,
-        browser: None,
+        issued_ms: Some(NOW - 40 * DAY),
+        ..DeviceView::default()
+    };
+    let tab = |n: u8| DeviceView {
+        browser: Some("0123456789abcdef0123456789abcdef".into()),
+        last_active_ms: Some(NOW - DAY - 3 * 60 * MINUTE),
+        issued_ms: Some(NOW - 12 * DAY),
+        ..device(n, "Chrome on Linux")
     };
     Some(AccessSample {
         devices: vec![
-            device(1, "Framework 16", true, false),
-            device(2, "Pixel 9 phone", false, false),
-            device(3, "Tilo on the web", false, false),
-            device(4, "Old phone", false, true),
+            DeviceView {
+                current: true,
+                can_host: true,
+                ..device(1, "Framework 16")
+            },
+            DeviceView {
+                last_active_ms: Some(NOW - 3 * 60 * MINUTE),
+                ..device(2, "Pixel 9")
+            },
+            tab(3),
+            tab(6),
+            DeviceView {
+                revoked: true,
+                ..device(4, "Old phone")
+            },
+            DeviceView {
+                kind: KeyKind::Agent,
+                agent: Some("Claude Code".into()),
+                online: true,
+                issued_ms: Some(NOW - 9 * DAY),
+                expires_ms: Some(NOW + 21 * DAY),
+                ..device(5, "Claude Code on laptop")
+            },
         ],
         door: Door {
             endpoint: "https://mcp.tilo.sh".into(),
             grants: vec![
-                Grant {
-                    id: "aa".repeat(32),
-                    agent: "Claude Code".into(),
-                    reach: Reach::Account,
-                    granted_ms: NOW - 9 * DAY,
-                    last_ms: Some(NOW - 3_600_000),
-                    runs: vec![Run {
-                        name: "Claude Code #2".into(),
-                        started_ms: NOW - 3_600_000,
-                    }],
-                    runs_on: "Framework 16".into(),
-                    expires_ms: Some(NOW + 81 * DAY),
-                    browser_pages: true,
-                    script_key: false,
-                },
                 Grant {
                     id: "bb".repeat(32),
                     agent: "ChatGPT".into(),
@@ -604,7 +614,7 @@ pub(crate) fn access_fixture(
                     granted_ms: NOW - 2 * DAY,
                     last_ms: Some(NOW - DAY),
                     runs: Vec::new(),
-                    runs_on: "mcp.tilo.sh".into(),
+                    runs_on: String::new(),
                     expires_ms: Some(NOW + 28 * DAY),
                     browser_pages: false,
                     script_key: false,
@@ -614,8 +624,11 @@ pub(crate) fn access_fixture(
                     agent: "Nightly export".into(),
                     reach: Reach::Account,
                     granted_ms: NOW - 30 * DAY,
-                    last_ms: None,
-                    runs: Vec::new(),
+                    last_ms: Some(NOW - 7 * 60 * MINUTE),
+                    runs: vec![Run {
+                        name: "Nightly export #12".into(),
+                        started_ms: NOW - 2 * MINUTE,
+                    }],
                     runs_on: "build-server".into(),
                     expires_ms: None,
                     browser_pages: false,
@@ -628,8 +641,9 @@ pub(crate) fn access_fixture(
             ask: "dd".repeat(32),
             label: "Safari on iPad".into(),
             code: "482 913".into(),
-            via: "Pixel 9 phone".into(),
+            via: "Pixel 9".into(),
         }],
+        now_ms: NOW,
     })
 }
 

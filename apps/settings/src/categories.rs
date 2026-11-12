@@ -17,8 +17,8 @@ pub enum Section {
     /// Displays, sound, the input devices, printers and power: the hardware
     /// in front of you.
     Devices,
-    /// Appearance, accessibility, notifications, apps, language and time:
-    /// how the desktop behaves for you.
+    /// Appearance, accessibility, notifications, apps, language, time and
+    /// shortcuts: how the desktop behaves for you.
     Personal,
     /// The people, accounts and models other apps rely on, and the device's
     /// privacy. Workspace roles live with the workspace that owns them.
@@ -111,13 +111,13 @@ impl Category {
         Category::Spelling,
         Category::RegionFormats,
         Category::TimeDate,
+        Category::KeyboardShortcuts,
         // Devices
         Category::Displays,
         Category::Sound,
         Category::Speakers,
         Category::Keyboard,
         Category::Pointing,
-        Category::KeyboardShortcuts,
         Category::Printers,
         Category::Power,
         // Hubs
@@ -141,7 +141,6 @@ impl Category {
         Category::Appearance,
         Category::Accessibility,
         Category::RegionFormats,
-        // Devices
         Category::KeyboardShortcuts,
         // Hubs
         Category::DevicesAccess,
@@ -174,7 +173,6 @@ impl Category {
             | Category::Speakers
             | Category::Keyboard
             | Category::Pointing
-            | Category::KeyboardShortcuts
             | Category::Printers
             | Category::Power => Section::Devices,
             Category::Appearance
@@ -183,7 +181,8 @@ impl Category {
             | Category::DefaultApps
             | Category::Spelling
             | Category::RegionFormats
-            | Category::TimeDate => Section::Personal,
+            | Category::TimeDate
+            | Category::KeyboardShortcuts => Section::Personal,
             Category::DevicesAccess
             | Category::Users
             | Category::Billing

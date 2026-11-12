@@ -609,9 +609,13 @@ fn content(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>, key: &PaneKey) -> Eleme
     // revision without any change of language.
     app.content_language()
         .set_if_changed(ui::i18n::I18nManager::revision());
+    // The page reads as one column in the middle of the room it has: a wide
+    // window leaves its extra room on both sides, so a row's actions on its
+    // trailing edge stay beside what they act on.
     let content: Element = Box::new(
         Container::new()
             .readable()
+            .centered()
             .with_inset(ui::tokens::Rhythm::Group)
             .with_child(body),
     );

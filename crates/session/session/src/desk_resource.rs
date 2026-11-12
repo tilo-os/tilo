@@ -124,6 +124,10 @@ pub(crate) enum DeskEffect {
         #[param("The workspace, by its key; the one in front when absent")]
         workspace: Option<String>,
     },
+    /// Show how an agent or another computer connects as the person: the setup their own card's
+    /// "Connect an agent or computer" opens. An app that lists what acts as them offers adding to
+    /// it this way.
+    ShowConnect,
     /// Cancel the invitation `invite` of a workspace: its link admits nobody from now on
     CancelInvitation {
         /// The invitation's id, 64 hex characters, as listing invitations reports it
@@ -999,6 +1003,11 @@ impl Service for Desk {
         }
         if let DeskEffect::ShowInvite { workspace } = &effect {
             return self.show_invite(workspace.as_deref());
+        }
+        if matches!(effect, DeskEffect::ShowConnect) {
+            self.handle
+                .choose_host_action(tilo_actions::remote::session_actions::CONNECT_AGENT);
+            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if let DeskEffect::ShowSurface { surface } = &effect {
             self.surfaces.toggle(surface);

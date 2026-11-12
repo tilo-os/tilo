@@ -49,7 +49,7 @@ mod readiness;
 mod readmit;
 mod shortcut_run;
 mod workspace_nodes;
-use app_admission::{invitation_request, own_view_lookup, reference_request};
+use app_admission::{connect_request, invitation_request, own_view_lookup, reference_request};
 use directory::bridge_error;
 
 /// The longest a waiter on a running invocation sleeps without a signalled
@@ -645,7 +645,8 @@ impl AppBrokerState {
     /// role and has only what the workspace grants it. Sharing what an app
     /// shows is the workspace's invitation, which only its person makes: the
     /// app asks the desk for it as that person
-    /// ([`app_admission::invitation_request`]), under their part in the workspace.
+    /// ([`app_admission::invitation_request`]), under their part in the workspace; so is showing
+    /// them how an agent or a computer connects as them ([`app_admission::connect_request`]).
     pub(crate) fn app_door(
         &self,
         person: &Caller,
@@ -686,6 +687,7 @@ impl AppBrokerState {
                 if self.app_owns(person, app_id, request)
                     || reference_request(request)
                     || invitation_request(request)
+                    || connect_request(request)
                 {
                     Some(person.clone())
                 } else {
