@@ -46,6 +46,7 @@ on:
       - "crates/collab/workspace-join/**"
       - "crates/dev/headless-schema/**"
       - "crates/dev/test-env/**"
+      - "crates/dev/test-relay/**"
       - "crates/dev/ui-graph/**"
       - "crates/doc/bounded-zip/**"
       - "crates/doc/tilo-automerge/**"
