@@ -99,9 +99,28 @@ impl PeerDocumentCapture {
     fn from_document(document: &Automerge, maximum: usize) -> Result<Self, PeerDocumentReadError> {
         Ok(Self {
             heads: document.get_heads(),
-            bytes: changes_since(document, &[], maximum)?,
+            bytes: saved_whole(document, maximum)?,
         })
     }
+}
+
+/// `document` whole, as a reader loads it: saved compressed, at most `maximum` bytes. A record's
+/// history handed out change by change loads by applying each change in turn, several times
+/// slower than a saved document (whose columns load at once) and many times its size, and
+/// every reader of a whole record (an app opening it, the person's mentions, the page keeping it
+/// for whoever opens it) loads it. The save keeps every change and who made it.
+///
+/// # Errors
+/// The document misses a change one it holds depends on, or its save exceeds `maximum`.
+pub fn saved_whole(document: &Automerge, maximum: usize) -> Result<Vec<u8>, PeerDocumentReadError> {
+    if !automerge::ReadDoc::get_missing_deps(document, &[]).is_empty() {
+        return Err(PeerDocumentReadError::Incomplete);
+    }
+    let bytes = document.save();
+    if bytes.len() > maximum {
+        return Err(PeerDocumentReadError::Capacity);
+    }
+    Ok(bytes)
 }
 
 /// The changes of `document` a holder of `since` lacks, as raw change chunks: every change for an
@@ -168,8 +187,8 @@ impl KeptRecord {
     }
 
     /// The kept record captured whole, at most `maximum` bytes: the bytes the last capture made
-    /// with the changes since appended, rather than every change encoded again. `None` when
-    /// nothing is kept.
+    /// (the document saved whole) with the changes since appended, rather than the document
+    /// saved again. `None` when nothing is kept.
     pub(crate) fn capture(
         &mut self,
         maximum: usize,
@@ -186,7 +205,7 @@ impl KeptRecord {
                 }
                 bytes
             }
-            _ => match changes_since(document, &[], usize::MAX) {
+            _ => match saved_whole(document, usize::MAX) {
                 Ok(bytes) => bytes,
                 Err(error) => return Some(Err(error)),
             },

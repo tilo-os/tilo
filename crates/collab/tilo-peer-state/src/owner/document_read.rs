@@ -258,7 +258,7 @@ impl NativeCommittedView {
         // A record kept opened extends what its last capture made; any other is captured whole.
         let bytes = match kept.capture(maximum) {
             Some(bytes) => bytes,
-            None => crate::state::changes_since(
+            None => crate::state::saved_whole(
                 self.peer
                     .open_document(
                         reader,
@@ -269,7 +269,6 @@ impl NativeCommittedView {
                         &mut KeptRecord::default(),
                     )
                     .map_err(|error| refusal(app, record, error))?,
-                &[],
                 maximum,
             ),
         }

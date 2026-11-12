@@ -229,10 +229,10 @@ const LARGE_CHARACTERS: usize = 50_000;
 const LARGE_EDITS: usize = 100;
 /// One-edit change bytes a reader may be handed for a large document.
 const CHANGES_BYTES_BUDGET: usize = 1024;
-/// How many times cheaper the owner's changes read must be than the whole
-/// read it replaces (a capture of the whole document), on the large
-/// document.
-const OWNER_SPEEDUP_BUDGET: u32 = 10;
+/// How many times the owner's changes read may cost the whole read it replaces, on the large
+/// document. A whole read is the document saved, which costs the owner about as little as
+/// finding the changes: what a changes read saves is the reader's loading the document whole.
+const OWNER_CHANGES_OVER_WHOLE: u32 = 10;
 /// How many times cheaper taking in the changes must be for the reader
 /// than loading and merging the whole document.
 const READER_SPEEDUP_BUDGET: u32 = 3;
@@ -338,7 +338,7 @@ fn a_remote_edit_of_a_large_document_costs_its_reader_the_edit() {
         whole.bytes.len()
     );
     assert!(
-        changes_owner * OWNER_SPEEDUP_BUDGET <= whole_owner,
+        changes_owner <= whole_owner * OWNER_CHANGES_OVER_WHOLE,
         "the owner read the changes in {changes_owner:?}, the whole document in {whole_owner:?}"
     );
     assert!(

@@ -25,7 +25,7 @@ mod backend;
 mod document_capture;
 pub use document_capture::{
     KeptRecord, PeerDocumentCapture, PeerDocumentReadError, changes_since,
-    committed_document_revision,
+    committed_document_revision, saved_whole,
 };
 #[cfg(test)]
 pub(crate) mod json_resource_tests;
