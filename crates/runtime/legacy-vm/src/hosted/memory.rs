@@ -117,6 +117,35 @@ pub fn resident_mib(pid: u32) -> Option<u64> {
     pss_mib(&rollup)
 }
 
+/// What `pid` and every process below it hold of this host's memory, MiB.
+///
+/// A VM is more than one process: a jailed host runs the jailer, which forks
+/// Firecracker, and the VM's network (and anything the VM's agent starts that
+/// outlives a command). Closing the VM frees all of it, so that is what the
+/// host counts. `None` when nothing of it is left.
+#[must_use]
+pub fn tree_mib(pid: u32) -> Option<u64> {
+    let mut total = 0_u64;
+    let mut found = false;
+    let mut next = vec![pid];
+    while let Some(pid) = next.pop() {
+        if let Some(mib) = resident_mib(pid) {
+            total = total.saturating_add(mib);
+            found = true;
+            // Everything this process started: the VM's own processes are
+            // below the one the service holds.
+            let children = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+                .unwrap_or_default();
+            next.extend(
+                children
+                    .split_whitespace()
+                    .filter_map(|child| child.parse::<u32>().ok()),
+            );
+        }
+    }
+    found.then_some(total)
+}
+
 /// The `Pss:` of a `smaps_rollup`, in MiB, rounded up so a VM that holds any
 /// of a mebibyte is counted for it.
 #[must_use]
@@ -218,6 +247,19 @@ mod tests {
             eight_nodes > 1_500,
             "{eight_nodes} workspaces over eight nodes"
         );
+    }
+
+    #[test]
+    fn a_vms_memory_is_read_from_the_kernels_own_accounting() {
+        // The process this test runs in is a real one: the same files the
+        // host reads of a VM's are read of it.
+        let me = std::process::id();
+        let mine = resident_mib(me).expect("a running process has a smaps_rollup");
+        assert!(mine > 0, "{mine} MiB");
+        let tree = tree_mib(me).expect("its own tree holds memory");
+        assert!(tree >= mine, "{tree} MiB with its children, {mine} alone");
+        assert_eq!(resident_mib(u32::MAX), None, "no such process");
+        assert_eq!(tree_mib(u32::MAX), None);
     }
 
     #[test]

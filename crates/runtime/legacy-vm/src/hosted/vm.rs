@@ -266,12 +266,13 @@ impl HostedVm {
     }
 
     /// What the running VM takes of this host's memory, MiB, as its kernel
-    /// accounts it ([`memory::resident_mib`]): what the host counts the VM at
-    /// and what it stops admitting new ones over. `None` when it is not
-    /// running, or between its start and the kernel's first word.
+    /// accounts it ([`memory::tree_mib`]): its Firecracker process and
+    /// everything below it, which is what closing the VM would free. This is
+    /// what the host counts the VM at, and what it stops admitting new ones
+    /// over. `None` when it is not running.
     #[must_use]
     pub fn resident_mib(&self) -> Option<u64> {
-        memory::resident_mib(self.process.as_ref()?.id())
+        memory::tree_mib(self.process.as_ref()?.id())
     }
 
     /// Ask the running VM's guest to give `target_mib` of its memory back,
