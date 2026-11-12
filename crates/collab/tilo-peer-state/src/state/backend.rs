@@ -51,7 +51,7 @@ pub(crate) struct SealedLog {
 struct SealedChunk {
     ops: Vec<collab_types::SignedOp>,
     /// The concatenated postcard encoding of `ops`, once asked for.
-    encoded: OnceLock<Vec<u8>>,
+    encoded: OnceLock<Arc<[u8]>>,
 }
 impl Clone for SealedChunk {
     /// A copy is only ever made to be changed: it starts unencoded.
@@ -105,23 +105,29 @@ impl SealedLog {
             })),
         }
     }
-    /// Append the postcard encoding of `(route, every write held)` to
-    /// `out`: what `postcard` makes of `(Route, Vec<SignedOp>)`, with each
-    /// chunk encoded once per state of it.
-    pub(super) fn encode_into(&self, route: &Route, out: Vec<u8>) -> Result<Vec<u8>, String> {
-        let mut out = postcard::to_extend(&(route, self.len), out).map_err(err)?;
+    /// What `postcard` makes of `(route, every write held)`, in parts: the
+    /// route and count, then each chunk, encoded once per state of it and
+    /// the same allocation while it lasts. A write changes the last chunk
+    /// alone.
+    pub(super) fn encode_parts(&self, route: &Route) -> Result<Vec<Arc<[u8]>>, String> {
+        let mut parts = Vec::with_capacity(self.chunks.len().saturating_add(1));
+        parts.push(
+            postcard::to_allocvec(&(route, self.len))
+                .map_err(err)?
+                .into(),
+        );
         for chunk in &self.chunks {
             if let Some(encoded) = chunk.encoded.get() {
-                out.extend_from_slice(encoded);
+                parts.push(Arc::clone(encoded));
                 continue;
             }
             let mut encoded = Vec::new();
             for op in &chunk.ops {
                 encoded = postcard::to_extend(op, encoded).map_err(err)?;
             }
-            out.extend_from_slice(chunk.encoded.get_or_init(|| encoded));
+            parts.push(Arc::clone(chunk.encoded.get_or_init(|| encoded.into())));
         }
-        Ok(out)
+        Ok(parts)
     }
 }
 
@@ -153,11 +159,11 @@ pub(super) struct StoredDocument {
 /// A record's part of a durable peer encoding.
 pub(super) struct EncodedDocument {
     pub(super) route: Route,
-    /// Its `DurableDocument`.
-    pub(super) document: Arc<[u8]>,
+    /// Its `DurableDocument`, in parts.
+    pub(super) document: Vec<Arc<[u8]>>,
     /// Its `(Route, Vec<SignedOp>)` sealed history entry, when it holds
-    /// sealed writes.
-    pub(super) sealed: Option<Arc<[u8]>>,
+    /// sealed writes, in parts ([`SealedLog::encode_parts`]).
+    pub(super) sealed: Option<Vec<Arc<[u8]>>>,
 }
 impl Clone for StoredDocument {
     fn clone(&self) -> Self {

@@ -27,6 +27,8 @@ pub(crate) mod fixture;
 mod history_content;
 #[cfg(not(target_arch = "wasm32"))]
 mod join_service;
+#[cfg(not(target_arch = "wasm32"))]
+mod journal;
 mod limits;
 mod publication;
 mod record;
@@ -725,7 +727,7 @@ impl NativeWorkspaceOwner {
         let durable = {
             let live = view.live();
             publication::refresh_governance_checkpoint(&live, &mut record)?;
-            live.durable()?
+            record::DurablePeer::from(live.durable_parts()?)
         };
         if durable == record.peer && record.publication == previous {
             return Ok(());
@@ -855,7 +857,7 @@ impl NativeWorkspaceOwner {
             publication::retire(&live, &mut record)?;
             publication::retire_member_changes(&live, &mut record, &governed)?;
             publication::refresh_governance_checkpoint(&live, &mut record)?;
-            let durable = live.durable()?;
+            let durable = record::DurablePeer::from(live.durable_parts()?);
             // Authentication and causal admission still run for every replay.
             // Reuse the actual committed barrier only when both durable peer
             // state and outgoing custody are byte-for-byte unchanged. In
@@ -994,7 +996,7 @@ impl NativeWorkspaceOwner {
         let snapshot = {
             let live = replica.lock();
             publication::refresh_governance_checkpoint(&live, &mut record)?;
-            record.peer = live.durable()?;
+            record.peer = live.durable_parts()?.into();
             Self::snapshot(&live, &mut record)?
         };
         self.install_snapshot(workspace, replica, record, snapshot, enrollment)

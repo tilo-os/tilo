@@ -107,7 +107,7 @@ impl NativeWorkspaceOwner {
                     enrollment: None,
                     vouched: None,
                     host_hint: host_hint.cloned(),
-                    peer: peer.durable()?,
+                    peer: peer.durable_parts()?.into(),
                     generation: 1,
                     continuity: 0,
                     publication: Some(publication::StoredPublication::default()),

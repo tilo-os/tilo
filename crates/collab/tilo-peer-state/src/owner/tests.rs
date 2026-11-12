@@ -1294,7 +1294,14 @@ fn an_owner_file_from_before_the_join_version_bump_restores() {
 #[test]
 fn owner_files_hold_byte_fields_as_compact_base64() {
     let joined = enrolled();
-    for (file, bytes) in record_on_disk(&joined.path) {
+    // The journals beside the files are binary.
+    for (file, bytes) in record_on_disk(&joined.path)
+        .into_iter()
+        .filter(|(file, _)| {
+            file.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+    {
         assert!(!bytes.contains(&b'\n'), "{} is compact", file.display());
     }
     let file = workspace_file(&joined.path, joined.workspace);

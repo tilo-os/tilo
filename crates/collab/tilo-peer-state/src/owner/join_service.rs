@@ -172,10 +172,7 @@ impl WorkspaceTxn for OwnerWorkspace<'_> {
                     receipt: OwnerCommitReceipt {
                         binding: binding.clone(),
                         generation,
-                        aggregate_hash: *blake3::hash(
-                            &self.peer.durable().map_err(JoinError::new)?,
-                        )
-                        .as_bytes(),
+                        aggregate_hash: self.peer.durable_hash().map_err(JoinError::new)?,
                     },
                 },
             );

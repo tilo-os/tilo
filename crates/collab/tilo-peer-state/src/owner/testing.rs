@@ -603,7 +603,7 @@ pub struct Stored {
 pub fn stored(storage: &NativeAuthorityStorage, workspace: WorkspaceId) -> Option<Stored> {
     let record = storage.workspaces.get(&workspace)?;
     Some(Stored {
-        peer: record.peer.clone(),
+        peer: record.peer.to_vec(),
         governor: record.workspace_host.clone(),
         device: record.device.clone(),
         projection: record

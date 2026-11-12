@@ -328,7 +328,7 @@ impl NativeWorkspaceOwner {
                     .ok_or("native owner generation exhausted")?;
             }
             let generation = stored.generation;
-            let aggregate_hash = *blake3::hash(&live.durable()?).as_bytes();
+            let aggregate_hash = live.durable_hash()?;
             let committed = taken
                 .into_iter()
                 .map(|request| {

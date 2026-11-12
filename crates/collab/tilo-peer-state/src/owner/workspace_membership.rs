@@ -94,7 +94,7 @@ impl NativeWorkspaceOwner {
                 let receipt = OwnerCommitReceipt {
                     binding: binding.clone(),
                     generation: next_generation,
-                    aggregate_hash: *blake3::hash(&live.durable()?).as_bytes(),
+                    aggregate_hash: live.durable_hash()?,
                 };
                 record.workspace_memberships.insert(
                     id.clone(),

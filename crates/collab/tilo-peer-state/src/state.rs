@@ -268,16 +268,6 @@ struct DurableDocument {
     covered: BTreeMap<String, u64>,
     covered_snapshot: Option<Vec<u8>>,
 }
-/// [`DurableDocument`] as it encodes, borrowed from the peer.
-#[derive(Serialize)]
-struct DurableDocumentRef<'a> {
-    route: &'a Route,
-    bytes: &'a [u8],
-    watermarks: Vec<([u8; 32], u64)>,
-    encryption_required: bool,
-    covered: &'a BTreeMap<String, u64>,
-    covered_snapshot: Option<&'a [u8]>,
-}
 /// Each encrypted record's sealed writes, in admission order.
 type SealedHistory = Vec<(Route, Vec<SignedOp>)>;
 
@@ -285,7 +275,7 @@ type SealedHistory = Vec<(Route, Vec<SignedOp>)>;
 /// Past them a key holder compacts the history
 /// ([`PeerPublication::draft_sealed_compaction`]). This crate's tests keep
 /// fewer, so a test crosses the bound many times over in the writes it can
-/// afford: each of an owner's commits writes its whole replica.
+/// afford.
 #[cfg(not(test))]
 const MAX_SEALED_OPS: usize = 4096;
 #[cfg(test)]
