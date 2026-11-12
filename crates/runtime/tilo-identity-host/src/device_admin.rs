@@ -341,6 +341,10 @@ pub fn trusted_devices(
             current: current == Some(cert.device_public_key),
             revoked: fleet.refuses(cert),
             can_host: cert.capabilities.can_act_as_host,
+            kind: tilo_actions::remote::identity_admin::KeyKind::of(
+                cert.capabilities.agent.is_some(),
+                cert.capabilities.server_key,
+            ),
         })
         .collect())
 }

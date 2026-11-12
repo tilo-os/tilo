@@ -243,3 +243,33 @@ fn a_device_is_revoked_on_the_host_and_the_list_read_again() {
         "the list is read again after the revocation"
     );
 }
+
+/// A key acting for the person (an agent's grant, a script's key) is no
+/// device: Devices leaves it out, and where no door answers for the agents,
+/// Agents lists it from the person's record, unless its access ended.
+#[test]
+fn an_agents_key_is_listed_with_the_agents_not_the_devices() {
+    en();
+    let mut sample = sample();
+    let key = |n: u8, label: &str, revoked| DeviceView {
+        label: label.into(),
+        key: [n; 32],
+        fingerprint: String::new(),
+        current: false,
+        revoked,
+        can_host: false,
+        kind: KeyKind::Agent,
+    };
+    sample.devices.push(key(7, "Claude Code on job", false));
+    sample.devices.push(key(8, "Old export", true));
+    let model = AccessModel::shown(sample);
+    assert!(
+        model
+            .listed_devices()
+            .iter()
+            .all(|device| device.kind == KeyKind::Device),
+        "Devices lists no agent's key"
+    );
+    let keys: Vec<&str> = model.agent_keys().map(|key| key.label.as_str()).collect();
+    assert_eq!(keys, ["Claude Code on job"]);
+}

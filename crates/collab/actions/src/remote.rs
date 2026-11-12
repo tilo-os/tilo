@@ -322,6 +322,33 @@ pub mod identity_admin {
         pub revoked: bool,
         /// Whether it may host workspaces for the person.
         pub can_host: bool,
+        /// What the key is: a device of the person's, or a key acting for
+        /// them.
+        #[serde(default)]
+        pub kind: KeyKind,
+    }
+
+    /// What a key the person's root certified is.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub enum KeyKind {
+        /// One of their devices.
+        #[default]
+        Device,
+        /// A key acting for them: an agent's grant, a script's key.
+        Agent,
+    }
+
+    impl KeyKind {
+        /// What the key `capabilities` certify is.
+        #[must_use]
+        pub fn of(agent: bool, server_key: bool) -> Self {
+            if agent || server_key {
+                Self::Agent
+            } else {
+                Self::Device
+            }
+        }
     }
 }
 

@@ -42,6 +42,7 @@ use crate::settings_app::SettingsApp;
 use provider_settings_ui::widgets::{
     Item, SettingsSection, note, page, row, rows, section, thing_row, value_row,
 };
+use ui::tilo_actions::remote::identity_admin::KeyKind;
 
 crate::effects::effect_family!(DevicesAccessEffect => answer);
 
@@ -462,6 +463,25 @@ impl AccessModel {
         true
     }
 
+    /// The person's devices as the Devices section lists them: this one
+    /// first, then the others, then the ones whose access ended. A key
+    /// acting for the person is listed with the agents.
+    fn listed_devices(&self) -> Vec<&DeviceView> {
+        let devices = || self.devices.iter().filter(|d| d.kind == KeyKind::Device);
+        let mut ordered: Vec<&DeviceView> = devices().filter(|d| d.current).collect();
+        ordered.extend(devices().filter(|d| !d.current && !d.revoked));
+        ordered.extend(devices().filter(|d| !d.current && d.revoked));
+        ordered
+    }
+
+    /// The keys acting for the person that the record holds and no
+    /// revocation ended: what Agents lists where no door answers.
+    fn agent_keys(&self) -> impl Iterator<Item = &DeviceView> {
+        self.devices
+            .iter()
+            .filter(|d| d.kind == KeyKind::Agent && !d.revoked)
+    }
+
     fn page(&self, cx: &ViewCx<Settings>) -> Element {
         // What waits for the person comes first while anything does.
         let mut sections = Vec::new();
@@ -492,9 +512,7 @@ impl AccessModel {
         if !self.devices_asked.answered {
             return section(&title, rows(vec![note(&t("settings-access-reading"))]));
         }
-        let mut ordered: Vec<&DeviceView> = self.devices.iter().filter(|d| d.current).collect();
-        ordered.extend(self.devices.iter().filter(|d| !d.current && !d.revoked));
-        ordered.extend(self.devices.iter().filter(|d| !d.current && d.revoked));
+        let ordered = self.listed_devices();
         if ordered.is_empty() {
             return section(&title, rows(vec![note(&t("settings-access-no-devices"))]));
         }
@@ -513,6 +531,15 @@ impl AccessModel {
         }
         if let Some(error) = &self.door_error {
             tracing::warn!(target: "tilo::settings", %error, "the host did not answer the agent door");
+            // No door here to say what they reach or run: the keys the
+            // person's record holds for agents, each to take back.
+            let keys: Vec<Item> = self
+                .agent_keys()
+                .map(|device| device_item(cx, device))
+                .collect();
+            if !keys.is_empty() {
+                return section(&title, rows(keys));
+            }
             return section(
                 &title,
                 rows(vec![note(&t("settings-access-agents-unlisted"))]),
@@ -648,9 +675,13 @@ fn device_item(cx: &ViewCx<Settings>, device: &DeviceView) -> Item {
                 &[("name", device.label.clone().into())],
             ),
         );
-        for reason in REVOKE_REASONS {
+        // An agent's key is taken back, not lost or stolen: one Revoke.
+        let agent = device.kind == KeyKind::Agent;
+        let reasons: &[&str] = if agent { &["retired"] } else { &REVOKE_REASONS };
+        for reason in reasons.iter().copied() {
             menu = menu.destructive(
                 t(match reason {
+                    _ if agent => "settings-access-revoke-agent",
                     "lost" => "settings-access-revoke-lost",
                     "stolen" => "settings-access-revoke-stolen",
                     "compromised" => "settings-access-revoke-compromised",

@@ -133,6 +133,10 @@ fn fleet(value: Option<Value>, own: &[u8; 32]) -> Value {
                     current: device.cert.device_public_key == *own,
                     revoked: device.revoked,
                     can_host: device.cert.capabilities.can_act_as_host,
+                    kind: identity_admin::KeyKind::of(
+                        device.cert.capabilities.agent.is_some(),
+                        device.cert.capabilities.server_key,
+                    ),
                 })
                 .collect::<Vec<_>>()
         })
