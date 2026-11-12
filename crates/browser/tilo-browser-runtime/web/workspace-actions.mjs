@@ -139,10 +139,16 @@ export function createWorkspaceActions({
    * is not the person's to read yet: pressing the action says it. */
   const armInviteLink = async () => {
     if (ready) return ready;
+    // The page says what its link is doing (`data-invite-link`), so a person
+    // who opens the search sees a link that is there, and a tool driving the
+    // page knows when a press will hand one over.
+    ui.said?.('invite-link', 'making');
     try {
       const text = await peer.createInvitation({role: 'editor'});
       ready = {link: await inviteLink(text), madeAt: Date.now()};
+      ui.said?.('invite-link', 'ready');
     } catch (refusal) {
+      ui.said?.('invite-link', 'failed');
       onError(refusal);
       return null;
     }

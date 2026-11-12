@@ -1352,6 +1352,11 @@ export async function startEntryPage({mode}) {
         chooseMachine: origins => card('Create the workspace on', [...origins.map(origin => [new URL(origin).host, origin]), ['Cancel', null]]),
         share: shareCard,
         copy: text => navigator.clipboard.writeText(text).then(() => true, () => false),
+        // What the page says of the invitation it keeps ready for one press
+        // (`data-invite-link`): making it, ready to hand over, or failed.
+        said: (what, state) => {
+          if (what === 'invite-link') document.documentElement.dataset.inviteLink = state;
+        },
         waitingList: waitingCard,
         fail: text => card(text, [['Close', null]]),
       },
