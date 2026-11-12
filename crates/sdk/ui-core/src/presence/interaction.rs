@@ -519,12 +519,11 @@ impl PresenceCtx {
         // colour, saying what it is doing here: one tag for the agent and its
         // action, clear of the text around it.
         let words = self.interaction_status_label(interaction);
-        // A caret it writes with may wear that tag already (an agent writing in a document): the
-        // pointer then goes without, one tag for one agent.
-        let worn = self
-            .caret_tags()
-            .iter()
-            .any(|tag| tag.user == user && tag.label == words);
+        // A caret it writes with may wear its tag already (an agent writing in a document): the
+        // pointer then goes without, one tag for one agent, at its caret. The caret's tag names
+        // the agent ("Claude Code · Agent") where this one would say what it does; a second tag
+        // beside it, or floating where the pointer is, says the same agent twice.
+        let worn = self.caret_tags().iter().any(|tag| tag.user == user);
         let bounds = if worn {
             super::render::draw_agent_pointer_alone(
                 paint.scene,
@@ -1194,6 +1193,45 @@ mod tests {
             surface,
             now,
         )
+    }
+
+    /// An agent writing in a document wears one tag, at its caret: the caret's tag names it, and
+    /// the marker of the action it is taking there adds no second tag, whatever words that tag
+    /// would have said.
+    #[test]
+    fn an_agent_writing_at_its_caret_wears_one_tag() {
+        let at = crate::time::now();
+        let theme = Theme::default();
+        let mut presence = PresenceCtx::empty();
+        presence.set_display_name(UserId("quill".into()), "Claude Code");
+        let agent = interaction(40, 1, InteractionPhase::Applying);
+        presence.apply_interaction_at(agent.clone(), at).unwrap();
+        let claude = UserId("quill".into());
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        presence.draw_peer_caret_labeled_in(
+            &mut scene,
+            &theme,
+            &mut text,
+            Affine::IDENTITY,
+            &claude,
+            "Claude Code · Agent",
+            super::super::LabeledCaret::new(Rect::new(200.0, 300.0, 202.0, 318.0)),
+        );
+        let locus = Rect::new(100.0, 296.0, 400.0, 322.0);
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        assert!(paint_marker(&mut presence, &agent, locus, viewport, "note", at, &theme).is_some());
+        let tags: Vec<String> = presence
+            .caret_tags()
+            .into_iter()
+            .filter(|tag| tag.user == claude)
+            .map(|tag| tag.label)
+            .collect();
+        assert_eq!(
+            tags,
+            vec!["Claude Code · Agent".to_owned()],
+            "one tag, at its caret"
+        );
     }
 
     #[test]
