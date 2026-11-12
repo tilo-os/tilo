@@ -35,6 +35,9 @@ app gets on a real system:
              from its row's menu, pressed by name as a tool presses it, and Today's "Morning
              cleanup", pressed by name, runs on them and asks the person before changing Tasks
              and Notes
+  reopened   a task Tasks holds before the session stops shows in Today's card after it starts
+             again and Today opens: Today reads what Tasks' record already held, not only what
+             arrives while it is open (today-reopened.png)
   native     native Notes (so.tilo.notes), installed beside them, launches and
              presents a frame (native-notes.png)
   activation "Show this window" answers for tilolang Notes as for native Notes
@@ -492,8 +495,8 @@ def check_today(session: Session, out: Path, before: bytes) -> dict:
     row's menu, opened where the row stands and run by the command a tool presses by name, both
     standing in Tasks' history. Its "Morning cleanup" is a control of that window too, pressed here
     as a tool or an assistive technology presses it: with tasks done in Tasks it clears them and
-    files "Morning: 2 done" in Notes, or asks the person's leave to change those two apps — a
-    headless session has nobody to answer, and an app's change of another app is refused unasked
+    files "Morning: 2 done" in Notes, or asks the person's leave to change those two apps, which
+    this check denies: an app's change of another app is made only with the person's leave
     (`docs/architecture/apps.md`)."""
     today = app_id("today")
     held = ["Water the plants", "Call the plumber"]
@@ -514,15 +517,21 @@ def check_today(session: Session, out: Path, before: bytes) -> dict:
     session.click_named("Morning cleanup")
 
     def ran():
-        if note in named(session):
+        shown = named(session)
+        if note in shown:
             return "answered"
-        # The app's own log reaches the session's with escape sequences in it, so the line is
-        # matched for its words and the app it names, not by its fields.
-        asked = [line for line in session.log().splitlines()
-                 if "another app's door refused a change asked of it" in line and today in line]
-        return "consent" if asked else None
+        return "consent" if "Allow once" in shown else None
     how = until("Today's cleanup to run", ran, 30)
+    denied = 0
     if how == "consent":
+        # Each question the cleanup asks is denied, as a person who gives no leave answers it.
+        quiet = time.monotonic() + 3
+        while time.monotonic() < quiet:
+            if "Allow once" in named(session):
+                session.click_named("Deny")
+                denied += 1
+                quiet = time.monotonic() + 3
+            time.sleep(0.3)
         for title in (title for title in held if title in named_before):
             if title not in named(session):
                 raise Failed(f"{title!r} left Tasks without the note Morning cleanup files")
@@ -535,8 +544,37 @@ def check_today(session: Session, out: Path, before: bytes) -> dict:
                 if after[i:i + width] != before[i:i + width]) / max(1, len(before) // width)
     return {"before": str(out / "today-before.png"), "after": str(out / "today-after.png"),
             "note": note if how == "answered" else None,
-            "asked_consent": how == "consent", "controls": len(named_before),
+            "asked_consent": how == "consent", "denied": denied, "controls": len(named_before),
             "moved": round(moved, 3), "done": done, "menu": menu}
+
+
+# The task Tasks holds when the session stops, which Today's card lists after it starts again.
+KEPT_TASK = "Book the dentist"
+
+
+def keep_task(session: Session) -> dict:
+    """Type a task into Tasks' Today, due there and not done, and see Tasks' window list it: what
+    Tasks' record holds when the session stops."""
+    tasks = app_id("tasks")
+    window = next(w for w in session.windows() if w.get("app_id") == tasks)
+    focus(session, window)
+    time.sleep(0.5)
+    session.control({"op": "type", "text": KEPT_TASK})
+    session.control({"op": "key", "key": "Enter"})
+    until(f"{KEPT_TASK!r} in Tasks' window", lambda: KEPT_TASK in window_controls(session, window), 30)
+    return {"task": KEPT_TASK}
+
+
+def check_reopened(session: Session, out: Path) -> dict:
+    """The session started again on the state the first start left, and Today opened in it:
+    Today's Tasks card lists the task Tasks' record held before the stop. Today reads what that
+    record already holds when it opens, not only what arrives while it is open."""
+    today = app_id("today")
+    window = session.launch(today)
+    until(f"{KEPT_TASK!r} in Today's card", lambda: KEPT_TASK in window_controls(session, window), 60)
+    today_shown(session, out, "reopened")
+    return {"task": KEPT_TASK, "window": {"group": window["group"], "tab": window["tab"]},
+            "shot": str(out / "today-reopened.png")}
 
 
 def mark_done(session: Session, title: str) -> dict:
@@ -881,13 +919,23 @@ def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
         ("windows", lambda: check_windows(session, summary["checks"]["processes"], pid, out)),
         ("titles", lambda: check_titles(session, out)),
         ("today", lambda: check_today(session, out, today_before[0])),
+        ("kept", lambda: keep_task(session)),
     ])
     stop_session(proc)
     running["proc"] = None
-    # The second start writes its own session log over this one.
+    # The next start writes its own session log over this one.
     shutil.copy(state / "logs/session.log", out / "shell-apps.log")
     if not ok:
         return False
+    if "kept" not in summary["failed"]:
+        # The same session started again, with what Tasks held when it stopped, and Today opened.
+        proc, session = start_session(state, out, [out / "build" / f"{n}.tapp" for n in APPS],
+                                      "reopened", apps="notes")
+        running["proc"] = proc
+        run_checks(summary, [("reopened", lambda: check_reopened(session, out))])
+        stop_session(proc)
+        running["proc"] = None
+        shutil.copy(state / "logs/session.log", out / "shell-reopened.log")
     # Route access, with the probe installed as Today and as Tasks. The probes first: until
     # a package names the probe's runtime, the collection after each install reclaims it.
     tapps = [*probe_packages(state, out), out / "build/notes.tapp"]
