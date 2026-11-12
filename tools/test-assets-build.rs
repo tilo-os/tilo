@@ -26,7 +26,11 @@ fn prepare_fixture_assets(
         .unwrap_or_else(|| if cfg!(windows) { "python" } else { "python3" }.into());
     let directory = PathBuf::from(std::env::var_os("OUT_DIR").ok_or("missing build output")?);
     let mut command = Command::new(python);
-    command.arg(tool).arg(manifest);
+    // Isolated, as the CI helpers in `tools/ci` are run: without it Python puts the script's
+    // directory on `sys.path` and lists it looking its imports up, so every package including
+    // this script would read the whole `tools/` tree and rerun when any file in it changes. The
+    // tool imports nothing of its own.
+    command.arg("-I").arg(tool).arg(manifest);
     // TILO_TEST_ASSET_SEED, inherited from the environment, names read-only caches the
     // tool takes verified assets from before it fetches (tools/test-assets.py).
     // A build script writes only under OUT_DIR: the source tree may be read-only, as it
