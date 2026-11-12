@@ -441,6 +441,71 @@ impl tilo_desktop_search::Source for Plan {
     }
 }
 
+/// An app that answers a bare letter as a shortcut, as a calendar's week view does: "n" opens its
+/// new-event dialog, and the letters after it land in the dialog's title. A window with no field of
+/// its own focused is where such a shortcut is pressed, so this one keeps no field at all.
+struct CalendarLike {
+    tab: u64,
+    typed: Typed,
+    /// The title the dialog opened over this window holds, while it is open: what the letters after
+    /// the shortcut went into, and `None` while no dialog was opened.
+    dialog: Option<String>,
+    rect: Rect,
+}
+
+impl Widget for CalendarLike {
+    fn name(&self) -> &'static str {
+        "KeyboardCalendar"
+    }
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _: &ui::Theme,
+        nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        taffy.widget_leaf(Style::default(), nodes, self)
+    }
+    ui::rect_geometry!();
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        let WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return;
+        };
+        if key.state != ElementState::Pressed {
+            return;
+        }
+        let Some(text) = key.text.as_deref() else {
+            return;
+        };
+        match &mut self.dialog {
+            // The dialog's title field has the keyboard: the rest of the word lands in it.
+            Some(title) => title.push_str(text),
+            None if text.eq_ignore_ascii_case("n") => {
+                NEW_EVENT.with(|opened| opened.set(opened.get().saturating_add(1)));
+                self.dialog = Some(String::new());
+            }
+            // Every other letter is nothing this app does.
+            None => return,
+        }
+        let title = self.dialog.clone().unwrap_or_default();
+        self.typed
+            .borrow_mut()
+            .insert(format!("event-title-{}", self.tab), title);
+        *ctx.handled = true;
+    }
+}
+
+impl AppWidget for CalendarLike {
+    fn app_kind(&self) -> AppKind {
+        AppKind::Editor
+    }
+    fn app_title(&self) -> &'static str {
+        "Calendar"
+    }
+    fn app_icon(&self) -> IconDescriptor {
+        IconDescriptor::Glyph("C")
+    }
+}
+
 impl AppWidget for Root {
     fn app_kind(&self) -> AppKind {
         AppKind::Editor
@@ -460,6 +525,10 @@ thread_local! {
     static PRESSED: RefCell<HashMap<u64, Rc<std::cell::Cell<usize>>>> = RefCell::new(HashMap::new());
     /// Whether the next built app takes typing that is not its own.
     static GREEDY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Whether the next window's app is the one that answers a bare letter as a shortcut
+    /// ([`CalendarLike`]), and how often that shortcut opened its dialog.
+    static AS_CALENDAR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static NEW_EVENT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// What the apps' search was asked, and whether it has answered.
     static SEARCH: RefCell<SearchLog> = RefCell::default();
 }
@@ -489,6 +558,20 @@ fn factory(
     let search = ui::search::search_button(ui::search::SearchRequest::this_app());
     let pressed = Rc::new(std::cell::Cell::new(0));
     PRESSED.with_borrow_mut(|all| all.insert(tab, Rc::clone(&pressed)));
+    if AS_CALENDAR.with(|calendar| calendar.replace(false)) {
+        let mut registry = tilo_actions::ActionRegistry::new();
+        registry.register::<Open>(OPEN_TYPE);
+        return Ok(AppComponent::new(
+            context,
+            Box::new(CalendarLike {
+                tab,
+                typed,
+                dialog: None,
+                rect: Rect::ZERO,
+            }),
+            registry,
+        ));
+    }
     let greedy = GREEDY
         .with(|greedy| greedy.replace(false))
         .then(|| Rc::clone(&typed));
@@ -1030,6 +1113,69 @@ fn the_desk_says_who_holds_the_keyboard() {
     assert!(
         !desk.handle.search_open(),
         "dismissing twice never opens a search"
+    );
+}
+
+/// Search owns the keyboard while it is up, as the desk says who holds it: a window's app is
+/// offered no key. A bare letter is a shortcut in the app behind the card — a calendar's week view
+/// opens its new-event dialog on "n" — so one that reached it opened a dialog over the search and
+/// took the rest of the word into the dialog's title instead of the query.
+#[test]
+fn the_open_search_takes_every_key_from_the_window_under_it() {
+    AS_CALENDAR.with(|calendar| calendar.set(true));
+    let mut desk = Desk::new(1, 450);
+    let tab = desk.tabs[0];
+    assert_eq!(
+        desk.handle.input_owner().as_deref(),
+        Some(APP),
+        "the window's calendar has the keyboard before search opens"
+    );
+    desk.handle.open_search(Scope::Workspace, None);
+    desk.settle();
+    assert!(desk.handle.search_open());
+    // What the person types is the search's.
+    desk.type_search("Notes");
+    assert_eq!(
+        desk.handle.search_rows().0,
+        "Notes",
+        "the query holds what was typed"
+    );
+    // The same keys handed to the desk itself — the frame the palette opened in, or a host that
+    // routes the press — are the search's too: no shortcut fires and no dialog takes the rest.
+    desk.driver.type_text("Notes");
+    assert_eq!(
+        NEW_EVENT.with(std::cell::Cell::get),
+        0,
+        "no app shortcut fires while search is open"
+    );
+    assert_eq!(
+        desk.typed(&format!("event-title-{tab}")),
+        "",
+        "and no dialog opened over the search to take the letters after it"
+    );
+    assert_eq!(
+        desk.handle.search_rows().0,
+        "Notes",
+        "the search still holds the query it was given"
+    );
+}
+
+/// The chord that opens search is the desk's, never the window's under it: an app that takes every
+/// key it is handed is not handed the chord, so no app's own Control+K runs on the press that opened
+/// the search.
+#[test]
+fn the_search_chord_is_never_the_windows() {
+    GREEDY.with(|greedy| greedy.set(true));
+    let mut desk = Desk::new(1, 450);
+    let tab = desk.tabs[0];
+    desk.driver.set_modifiers(&["ctrl".into()]);
+    desk.driver.key("k");
+    desk.driver.set_modifiers(&[]);
+    desk.settle();
+    assert_eq!(
+        desk.typed(&format!("greedy-{tab}")),
+        "",
+        "the window's app is offered nothing of the chord"
     );
 }
 

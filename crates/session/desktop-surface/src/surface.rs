@@ -2193,6 +2193,16 @@ impl Widget for DesktopSurface {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.pointer = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
+        // The desk's own search owns the keyboard while it is up, as
+        // [`DesktopHandle::input_owner`] says: no window's app is offered a key then, or a bare
+        // letter reaches it as its own shortcut and a field of its dialog takes the rest of the
+        // word. The chrome above the windows hands the palette what the person types; a key that
+        // arrives here while the palette stands is search's, and the chord that opens search is
+        // the desk's wherever it is pressed.
+        if self.search_holds_the_key(event, *ctx.modifiers) {
+            *ctx.handled = true;
+            return;
+        }
         if let WindowEvent::MouseWheel { delta, .. } = event {
             let now = ui::time::now();
             self.end_idle_swipe(now);

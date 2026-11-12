@@ -800,6 +800,32 @@ fn commands(
 }
 
 impl DesktopSurface {
+    /// Whether `event` is search's while the desk stands under it: a key or composed text, which no
+    /// window's app may see while the palette holds the keyboard ([`DesktopHandle::input_owner`]),
+    /// and the chord that opens search, which is the desk's wherever it is pressed and never the
+    /// window's under it.
+    ///
+    /// The chrome above the windows hands the palette what the person types there. A key that
+    /// reaches the desk instead is one the card's own hit test does not cover — the frame the
+    /// palette opened in, a host routing the press itself, a chord the page's own listener let
+    /// through — and letting it fall to the window fires that app's shortcut: a bare letter opens a
+    /// dialog over the search the person was typing into, and the letters after it land in the
+    /// dialog's field. So the desk takes it here, where it decides which window a key belongs to.
+    pub(super) fn search_holds_the_key(
+        &self,
+        event: &ui::winit::event::WindowEvent,
+        modifiers: ui::winit::event::Modifiers,
+    ) -> bool {
+        let key = matches!(
+            event,
+            ui::winit::event::WindowEvent::KeyboardInput { .. }
+                | ui::winit::event::WindowEvent::Ime(_)
+        );
+        key && (self.search.borrow().is_open()
+            || self.shared.borrow().search_open
+            || is_search_chord(event, modifiers, self.platform))
+    }
+
     /// Open search at `scope` , with `query` typed: over what the desktop has open in the workspace
     /// in front ([`Scope::Workspace`]), over every workspace ([`Scope::Everywhere`]), over what an
     /// app's window holds ([`Scope::InApp`]), or over the applications a window group's new tab may
