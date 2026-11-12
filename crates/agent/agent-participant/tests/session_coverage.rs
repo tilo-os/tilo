@@ -22,22 +22,11 @@
               driven on the test's own thread (the agent's apps are not Send)"
 )]
 
-mod common;
-
-// Agents hold each record in a confined app worker (this binary, started
-// again), whose changes are admitted through the Automerge isolate.
-tilo_agent_participant::app_worker!();
-tilo_automerge_isolate::test_worker!();
-#[path = "../../../session/client/tests/support/participant.rs"]
-mod participant;
-#[path = "../../../session/client/tests/support/mod.rs"]
-mod support;
-
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 use tilo_session_client::{Cmd, Event, Outbox};
 
-use common::{Driveable, KeywordModel, catalogue, find_edit};
+use crate::common::{Driveable, KeywordModel, catalogue, find_edit};
 use tilo_actions::InvocationId;
 use tilo_actions::door::ActionDescriptor;
 use tilo_actions::remote::{
@@ -54,7 +43,7 @@ use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_session_core::remote::Heard;
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
-use support::{WORKSPACE, enrol, ready, start_host, start_peer, wait_for, workspace};
+use crate::support::{WORKSPACE, enrol, ready, start_host, start_peer, wait_for, workspace};
 
 const ATTEMPTS: usize = 40;
 
@@ -123,7 +112,7 @@ async fn ask(
     }
 }
 
-fn body(app: &impl common::Body) -> String {
+fn body(app: &impl crate::common::Body) -> String {
     app.body()
 }
 
@@ -196,10 +185,10 @@ fn only_written_by(events: &tilo_session_client::Events, writers: &[[u8; 32]]) {
 /// relay it serves, and the browser participant holding that root.
 async fn session() -> (
     ed25519_dalek::SigningKey,
-    support::Device,
+    crate::support::Device,
     tempfile::TempDir,
-    support::TestHost,
-    participant::Participant,
+    crate::support::TestHost,
+    crate::participant::Participant,
 ) {
     let (root, _) = UserIdentity::generate("Ada", 1);
     let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
@@ -211,7 +200,7 @@ async fn session() -> (
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let laptop = participant::Participant::start(&host.relay, &root).await;
+    let laptop = crate::participant::Participant::start(&host.relay, &root).await;
     (root, host_device, state, host, laptop)
 }
 
@@ -307,7 +296,9 @@ async fn every_web_app_over_the_session() {
             },
             ATTEMPTS,
         );
-        let local = common::LOCAL_STATE.iter().any(|(id, _)| *id == app_id);
+        let local = crate::common::LOCAL_STATE
+            .iter()
+            .any(|(id, _)| *id == app_id);
         if edit.is_none() && !local {
             note(&mut failures, format!("{app_id}: no edit: {refused:#?}"));
         }
@@ -429,14 +420,14 @@ async fn every_web_app_over_the_session() {
         .rows
         .iter()
         .filter_map(tilo_actions::remote::CatalogueRow::target)
-        .find(|target| target.address == common::scratchpad_body("").0)
+        .find(|target| target.address == crate::common::scratchpad_body("").0)
         .expect("the record's declared action is offered");
     assert_eq!(
         offered.rows.len(),
         agent.survey(&scratchpad).len(),
         "the catalogue is the record's whole door, declared and projected"
     );
-    let text = common::scratchpad_body("Invoked over actionsV1").1;
+    let text = crate::common::scratchpad_body("Invoked over actionsV1").1;
     let request = InvokeRequest {
         on_behalf_of: None,
         invocation: InvocationId::new(),
@@ -589,7 +580,7 @@ async fn every_web_app_over_the_session() {
         .retained(workspace())
         .await
         .unwrap();
-    let (readable, _) = common::member_documents(
+    let (readable, _) = crate::common::member_documents(
         retained
             .into_iter()
             .map(|retained| (retained.author, retained.body)),
@@ -607,7 +598,7 @@ const VIDEO: &str = "so.tilo.video-editor";
 /// on `host`, its records lent `store`.
 async fn planning_agent(
     root: &ed25519_dalek::SigningKey,
-    host: (&support::TestHost, &support::Device),
+    host: (&crate::support::TestHost, &crate::support::Device),
     apps: &[&str],
     planner: Box<dyn tilo_agent_participant::Planner>,
     store: tilo_content::ContentStore,
@@ -619,7 +610,7 @@ async fn planning_agent(
 async fn planning_agent_as(
     id: &str,
     root: &ed25519_dalek::SigningKey,
-    host: (&support::TestHost, &support::Device),
+    host: (&crate::support::TestHost, &crate::support::Device),
     apps: &[&str],
     planning: (
         Box<dyn tilo_agent_participant::Planner>,
@@ -634,7 +625,7 @@ async fn planning_agent_as(
 async fn planning_agent_labelled(
     (id, label): (&str, &str),
     root: &ed25519_dalek::SigningKey,
-    (host, host_device): (&support::TestHost, &support::Device),
+    (host, host_device): (&crate::support::TestHost, &crate::support::Device),
     apps: &[&str],
     (planner, store): (
         Box<dyn tilo_agent_participant::Planner>,
@@ -2051,8 +2042,8 @@ async fn pump_for(agents: &mut [&mut AgentParticipant], long: Duration) {
 /// model at `url`) waits for Rae's post; Rae made the chat; Ben is a third
 /// agent who has not opened it yet.
 struct RelayWorkspace {
-    host: support::TestHost,
-    _laptop: participant::Participant,
+    host: crate::support::TestHost,
+    _laptop: crate::participant::Participant,
     ana: (AgentParticipant, std::sync::Arc<AgentControl>),
     rae: (AgentParticipant, std::sync::Arc<AgentControl>),
     ben: (AgentParticipant, std::sync::Arc<AgentControl>),
@@ -2095,7 +2086,7 @@ impl RelayWorkspace {
             "127.0.0.1:0".parse().unwrap(),
         )
         .await;
-        let laptop = participant::Participant::start(&host.relay, &ada).await;
+        let laptop = crate::participant::Participant::start(&host.relay, &ada).await;
         let direct = || {
             (
                 Box::new(tilo_agent_participant::DirectPlanner)

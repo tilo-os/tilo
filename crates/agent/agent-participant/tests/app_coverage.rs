@@ -12,17 +12,9 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-mod common;
-
-// A record read here is held the way a host holds it for the door: in a
-// confined app worker (this binary, started again), its changes admitted
-// through the Automerge isolate.
-tilo_agent_participant::app_worker!();
-tilo_automerge_isolate::test_worker!();
-
 use std::fmt::Write as _;
 
-use common::{Driveable, LOCAL_STATE, catalogue, find_edit};
+use crate::common::{Driveable, LOCAL_STATE, catalogue, find_edit};
 use tilo_actions::door::ActionDescriptor;
 use tilo_agent_participant::{Replica, ReplicaActor, Seed, StepAction};
 
@@ -58,7 +50,7 @@ fn every_web_app_takes_an_edit_through_its_published_operations() {
     let mut table = String::from("| App | Operations | Edit |\n|---|---|---|\n");
     let mut gaps = Vec::new();
     for definition in catalogue.iter() {
-        let app = common::open(
+        let app = crate::common::open(
             definition.app_id(),
             "coverage-agent",
             ReplicaActor::Agent,
@@ -110,8 +102,9 @@ fn every_web_apps_record_reads_with_no_window_open() {
         let app = definition.app_id();
         // Opened the way a host holds a record for the door: no window, so
         // nothing but the record's own declaration can answer.
-        let replica = common::confined(app, "reading-agent", &ReplicaActor::Agent, Seed::New)
-            .unwrap_or_else(|error| panic!("{app} did not open: {error}"));
+        let replica =
+            crate::common::confined(app, "reading-agent", &ReplicaActor::Agent, Seed::New)
+                .unwrap_or_else(|error| panic!("{app} did not open: {error}"));
         let root = definition.record_kind.clone();
         let Some(descriptor) = replica.survey().into_iter().find(|descriptor| {
             descriptor.address.action == "read" && descriptor.address.resource == root.as_str()

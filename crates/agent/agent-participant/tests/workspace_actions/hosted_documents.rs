@@ -347,22 +347,22 @@ async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no
     let host = enrol(&root, "tilo.sh", DeviceCapabilities::host());
     let reviewer = enrol(&root, "reviewer's phone", DeviceCapabilities::member());
     let computer = enrol(&root, "visa agent", DeviceCapabilities::member());
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     // The workspace's shell: where its commands run, here or on the VM host
     // a placer names. Document work never asks it.
     let shell_state = tempfile::tempdir().unwrap();
     let shells = shell_state.path().join("shells");
-    let hosted = harness::hosted::start(
+    let hosted = crate::harness::hosted::start(
         &root,
         &host,
         state.path(),
         Options {
             shell: Some(tilo_relay::agents::host_shells(shells.clone()).unwrap()),
-            ..Options::offering(common::catalogue, ModelChoice::Scripted)
+            ..Options::offering(crate::common::catalogue, ModelChoice::Scripted)
         },
     )
     .await;
-    let _laptop = participant::Participant::start(&hosted.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
 
     // The agent's session: one of the person's devices, as `tilo login`
     // makes one, serving the MCP projection of the workspace's host. No

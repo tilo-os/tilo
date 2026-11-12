@@ -14,9 +14,9 @@ async fn a_request_sent_as_the_page_joins_is_answered_once_it_is_admitted() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _participant = participant::Participant::start(&hosted.relay, &root).await;
+    let _participant = crate::participant::Participant::start(&hosted.relay, &root).await;
 
     let peer = start_peer(
         Host::at(hosted.relay.node_addr()),

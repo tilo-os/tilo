@@ -13,18 +13,9 @@
               driven on the test's own thread (the agent's apps are not Send)"
 )]
 
-mod common;
-
-tilo_agent_participant::app_worker!();
-tilo_automerge_isolate::test_worker!();
-#[path = "../../../session/client/tests/support/participant.rs"]
-mod participant;
-#[path = "../../../session/client/tests/support/mod.rs"]
-mod support;
-
 use std::sync::{Arc, Mutex};
 
-use common::catalogue;
+use crate::common::catalogue;
 use tilo_actions::door::ActionAddress;
 use tilo_agent_participant::{
     AgentControl, AgentIdentity, AgentParticipant, ParticipantConfig, PlanContext, Planner, Step,
@@ -34,7 +25,7 @@ use tilo_relay_protocol::agents::{AgentStatus, TaskState};
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_user_identity::{CertificationPolicy, UserIdentity};
 
-use support::{WORKSPACE, enrol, start_host, wait_for};
+use crate::support::{WORKSPACE, enrol, start_host, wait_for};
 
 const VIDEO: &str = "so.tilo.video-editor";
 
@@ -80,7 +71,10 @@ impl Planner for Recording {
 }
 
 /// Ed's delegation: the workspace and the video editor, for an hour.
-fn delegate_to_ed(root: &ed25519_dalek::SigningKey, agent_device: &support::Device) -> Delegation {
+fn delegate_to_ed(
+    root: &ed25519_dalek::SigningKey,
+    agent_device: &crate::support::Device,
+) -> Delegation {
     let now = tilo_clock::unix_now_ns();
     Delegation::sign(
         root,
@@ -108,7 +102,7 @@ async fn a_check_is_shown_the_facts_of_the_record_its_task_changed() {
         "home-server",
         tilo_user_identity::DeviceCapabilities::host(),
     );
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let host = start_host(
         &root,
         &host_device,
@@ -116,7 +110,7 @@ async fn a_check_is_shown_the_facts_of_the_record_its_task_changed() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&host.relay, &root).await;
     let agent_device = enrol(&root, "Agent: Ed", CertificationPolicy::agent().ceiling);
     let delegation = delegate_to_ed(&root, &agent_device);
     host.relay
@@ -285,8 +279,8 @@ impl Planner for Coordinated {
 async fn ed_planning_with(
     planner: Box<dyn Planner>,
 ) -> (
-    support::TestHost,
-    participant::Participant,
+    crate::support::TestHost,
+    crate::participant::Participant,
     tempfile::TempDir,
     AgentParticipant,
     Arc<AgentControl>,
@@ -297,7 +291,7 @@ async fn ed_planning_with(
         "home-server",
         tilo_user_identity::DeviceCapabilities::host(),
     );
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let host = start_host(
         &root,
         &host_device,
@@ -305,7 +299,7 @@ async fn ed_planning_with(
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let laptop = participant::Participant::start(&host.relay, &root).await;
+    let laptop = crate::participant::Participant::start(&host.relay, &root).await;
     let agent_device = enrol(&root, "Agent: Ed", CertificationPolicy::agent().ceiling);
     let now = tilo_clock::unix_now_ns();
     let delegation = Delegation::sign(

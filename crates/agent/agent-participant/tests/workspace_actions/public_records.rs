@@ -98,7 +98,7 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
         "lounge-host",
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
     let workspaces = hosted.relay.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
@@ -128,7 +128,8 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
     .await;
     let mut member = open_admitted_peer(&hosted, &member_device, &host, &workspace).await;
     let mut note =
-        common::open_in(&workspace, NOTES, "member", ReplicaActor::Owner, Seed::New).unwrap();
+        crate::common::open_in(&workspace, NOTES, "member", ReplicaActor::Owner, Seed::New)
+            .unwrap();
     let new_note = address_of(&note, "new-note");
     note.invoke(
         &new_note,
@@ -141,7 +142,7 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
         cluster_id: workspace.clone(),
         record: note.wire_record().to_owned(),
     };
-    support::written(
+    crate::support::written(
         &member.peer,
         &route,
         &note.take_mutation().unwrap().unwrap(),
@@ -264,7 +265,7 @@ async fn lounge_with_chat() -> (Hosted, Device, String, tempfile::TempDir) {
         "lounge-host",
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
     let workspaces = hosted.relay.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
@@ -285,14 +286,20 @@ async fn lounge_with_chat() -> (Hosted, Device, String, tempfile::TempDir) {
     // holding the channel it opens with. Nobody's device has it open, and the
     // workspace sends it to no one who does not.
     workspaces
-        .prepare_application(&workspace, &host.cert, &common::catalogue(), CHAT, "")
+        .prepare_application(
+            &workspace,
+            &host.cert,
+            &crate::common::catalogue(),
+            CHAT,
+            "",
+        )
         .await
         .unwrap();
     workspaces
         .author_application(
             &workspace,
             &host.cert,
-            &common::catalogue(),
+            &crate::common::catalogue(),
             CHAT,
             "",
             |doc| {
@@ -517,7 +524,7 @@ async fn every_paragraph_a_visitors_agent_was_told_it_wrote_reaches_their_open_n
         "lounge-host",
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
     let workspaces = hosted.relay.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
@@ -552,13 +559,14 @@ async fn every_paragraph_a_visitors_agent_was_told_it_wrote_reaches_their_open_n
     let mut browser = open_admitted_peer(&hosted, &browser_device, &host, &workspace).await;
     // They opened Notes before their agent came: their page founded it.
     let mut founded =
-        common::open_in(&workspace, NOTES, "visitor", ReplicaActor::Owner, Seed::New).unwrap();
+        crate::common::open_in(&workspace, NOTES, "visitor", ReplicaActor::Owner, Seed::New)
+            .unwrap();
     let notes_route = DocumentRoute {
         app_id: NOTES.into(),
         cluster_id: workspace.clone(),
         record: founded.wire_record().to_owned(),
     };
-    support::written(
+    crate::support::written(
         &browser.peer,
         &notes_route,
         &founded.take_mutation().unwrap().unwrap(),

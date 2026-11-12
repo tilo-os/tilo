@@ -30,19 +30,6 @@
     reason = "in a test these are the assertion, not a hazard; one scenario in order"
 )]
 
-#[path = "../../../session/client/tests/support/participant.rs"]
-mod participant;
-#[path = "../../../session/client/tests/support/mod.rs"]
-mod support;
-
-mod common;
-mod harness;
-
-// Agents hold each record in a confined app worker (this binary, started
-// again), whose changes are admitted through the Automerge isolate.
-tilo_agent_participant::app_worker!();
-tilo_automerge_isolate::test_worker!();
-
 use std::path::Path;
 use std::time::{Duration, Instant};
 use tilo_session_client::Outbox;
@@ -61,9 +48,9 @@ use tilo_relay_protocol::agents::{
 
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use harness::hosted::{Hosted, Laptop, Options, Unlisted};
-use harness::page::Page as Browser;
-use support::{Device, WORKSPACE, enrol, workspace};
+use crate::harness::hosted::{Hosted, Laptop, Options, Unlisted};
+use crate::harness::page::Page as Browser;
+use crate::support::{Device, WORKSPACE, enrol, workspace};
 
 const NOTES: &str = "so.tilo.notes";
 const SHEETS: &str = "so.tilo.sheets";
@@ -75,11 +62,11 @@ async fn start(root: &SigningKey, host: &Device, state: &Path) -> Hosted {
 }
 
 async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: ModelChoice) -> Hosted {
-    harness::hosted::start(
+    crate::harness::hosted::start(
         root,
         host,
         state,
-        Options::offering(common::catalogue, model),
+        Options::offering(crate::common::catalogue, model),
     )
     .await
 }
@@ -92,7 +79,7 @@ async fn stop(hosted: Hosted) {
         .retained(workspace())
         .await
         .unwrap();
-    let (readable, _) = common::member_documents(
+    let (readable, _) = crate::common::member_documents(
         retained
             .into_iter()
             .map(|retained| (retained.author, retained.body)),
@@ -126,7 +113,7 @@ impl Browser {
                 );
                 // Until the change that sets the record up arrives, the app
                 // refuses to open what came before it.
-                let page = match common::open(
+                let page = match crate::common::open(
                     app,
                     "ada",
                     ReplicaActor::Owner,
@@ -178,11 +165,11 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
 
     let hosted = start(&root, &host, state.path()).await;
 
-    let mut channels = participant::Participant::start(&hosted.relay, &root).await;
+    let mut channels = crate::participant::Participant::start(&hosted.relay, &root).await;
     let approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
 
@@ -452,7 +439,7 @@ struct Page {
 
 impl Page {
     fn create(browser: &Browser, app: &str) -> Self {
-        let mut page = common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
+        let mut page = crate::common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
         let route = DocumentRoute {
             app_id: app.into(),
             cluster_id: WORKSPACE.into(),
@@ -481,7 +468,7 @@ impl Page {
                 .get(&creator.route)
                 .filter(|c| !c.is_empty())
             {
-                let mut app = common::open(
+                let mut app = crate::common::open(
                     SHEETS,
                     "bea",
                     ReplicaActor::Owner,
@@ -555,9 +542,9 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _laptop = participant::Participant::start(&hosted.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
 
@@ -649,7 +636,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
             .get(&page.route)
             .filter(|c| !c.is_empty())
         {
-            let replayed = common::open(
+            let replayed = crate::common::open(
                 SHEETS,
                 "ada",
                 ReplicaActor::Owner,
@@ -713,9 +700,9 @@ async fn the_creator_and_a_joined_page_both_see_every_task_live() {
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let first_device = enrol(&root, "browser", DeviceCapabilities::member());
     let second_device = enrol(&root, "second browser", DeviceCapabilities::member());
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _laptop = participant::Participant::start(&hosted.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut first = Browser::open(&hosted, &first_device, &host).await;
     let mut second = Browser::open(&hosted, &second_device, &host).await;
@@ -815,9 +802,9 @@ async fn an_agent_plans_on_metered_cloud_credits_until_they_run_out() {
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let hosted = start_with(&root, &host, state.path(), model).await;
-    let _laptop = participant::Participant::start(&hosted.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let mut page = Page::create(&browser, SHEETS);
@@ -979,9 +966,9 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _laptop = participant::Participant::start(&hosted.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let (_endpoint, mut device) = person_device(&hosted.relay, &laptop).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
@@ -1160,7 +1147,7 @@ async fn agents_post_in_the_workspaces_chat_and_read_each_other_by_name() {
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let hosted = start(&root, &host, state.path()).await;
-    let _laptop = participant::Participant::start(&hosted.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let reader = approved_grant(&mut browser, "Reader", &[CHAT]).await;

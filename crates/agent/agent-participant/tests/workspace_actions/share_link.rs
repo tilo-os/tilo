@@ -5,8 +5,8 @@ use super::resource_support::{
     admit_person, on_messages, open_admitted_peer, part_route, published_message,
 };
 use super::{
-    ActionAddress, DeviceCapabilities, DocumentRoute, InvokeArgument, Seed, common, enrol,
-    record_provider, request, start_browser,
+    ActionAddress, DeviceCapabilities, DocumentRoute, InvokeArgument, Seed, enrol, record_provider,
+    request, start_browser,
 };
 use tilo_actions::remote::ReceiptStatus;
 use tilo_agent_participant::ReplicaActor;
@@ -43,7 +43,7 @@ async fn the_host_mints_a_message_link_with_its_range() {
     let mut publisher =
         open_admitted_peer(&hosted, &writer_device, &host, &workspace.workspace).await;
     let writer = hex::encode(writer_device.cert.user_public_key);
-    let mut source = common::open_in(
+    let mut source = crate::common::open_in(
         &workspace.workspace,
         "so.tilo.chat",
         &writer,
@@ -52,8 +52,8 @@ async fn the_host_mints_a_message_link_with_its_range() {
     )
     .unwrap();
     let mut doc = source.read(Clone::clone).unwrap();
-    common::add_channel(&mut doc, &writer, "general", None);
-    let channel = common::channel(&doc, chat::model::ChannelKind::Text);
+    crate::common::add_channel(&mut doc, &writer, "general", None);
+    let channel = crate::common::channel(&doc, chat::model::ChannelKind::Text);
     source
         .apply(&collab_types::DocumentMutation::Snapshot(doc.save()))
         .unwrap();

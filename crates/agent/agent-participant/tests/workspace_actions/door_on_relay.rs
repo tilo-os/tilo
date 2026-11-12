@@ -8,10 +8,7 @@
 //! key a person approved there, and plays another person who follows the
 //! invitation links the run hands them ([`accept_invitation`]).
 
-use super::{
-    Arc, Device, DeviceCapabilities, Hosted, ModelChoice, Options, SigningKey, common, enrol,
-    harness, support,
-};
+use super::{Arc, Device, DeviceCapabilities, Hosted, ModelChoice, Options, SigningKey, enrol};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use tilo_front_door::{Config, Door, store::Store};
@@ -129,8 +126,8 @@ pub async fn door_on_relay_limiting(
         "relay",
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
-    let state = support::scratch_dir();
-    let hosted = harness::hosted::start(
+    let state = crate::support::scratch_dir();
+    let hosted = crate::harness::hosted::start(
         &operator,
         &host,
         state.path(),
@@ -138,7 +135,7 @@ pub async fn door_on_relay_limiting(
             plain: true,
             member_limits,
             web_entry: Some(format!("http://127.0.0.1:{}/", site.port())),
-            ..Options::offering(common::catalogue, ModelChoice::Scripted)
+            ..Options::offering(crate::common::catalogue, ModelChoice::Scripted)
         },
     )
     .await;
@@ -222,14 +219,14 @@ impl OnRelay {
         } else {
             relay.shutdown().await;
         }
-        let hosted = harness::hosted::start(
+        let hosted = crate::harness::hosted::start(
             &operator,
             &host,
             state.path(),
             Options {
                 plain: true,
                 web_entry: Some(web_entry.clone()),
-                ..Options::offering(common::catalogue, ModelChoice::Scripted)
+                ..Options::offering(crate::common::catalogue, ModelChoice::Scripted)
             },
         )
         .await;

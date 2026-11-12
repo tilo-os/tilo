@@ -1436,15 +1436,13 @@ inputs = [
   "crates/session/client/tests/support/",
   "tools/with-test-environment.sh",
 ]
+# One test binary includes the fixtures every file shares, and the two
+# examples reuse the workspace-actions one.
 readers = [
-  "crates/agent/agent-participant/tests/asking_first.rs",
+  "crates/agent/agent-participant/tests/it.rs",
   "crates/agent/agent-participant/tests/campaign_bench.rs",
-  "crates/agent/agent-participant/tests/check_facts.rs",
-  "crates/agent/agent-participant/tests/workspace_actions.rs",
-  "crates/agent/agent-participant/tests/host_agents.rs",
-  "crates/agent/agent-participant/tests/session_coverage.rs",
-  "crates/agent/agent-participant/tests/shared_session.rs",
-  "crates/agent/agent-participant/tests/public_workspace_records.rs",
+  "crates/agent/agent-participant/examples/door-on-relay.rs",
+  "crates/agent/agent-participant/examples/mounted-resource.rs",
 ]
 
 [[cargo]]

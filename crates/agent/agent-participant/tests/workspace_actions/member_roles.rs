@@ -329,9 +329,9 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let guest_device = enrol(&guest, "guest-browser", DeviceCapabilities::member());
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _participant = participant::Participant::start(&hosted.relay, &root).await;
+    let _participant = crate::participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let notes = browser.create(NOTES);
     let tasks = browser.create(TASKS);
@@ -372,7 +372,7 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
         asked: AtomicUsize::new(0),
         content: tilo_content::ContentStore::in_dir(state.path().join("member-content")),
     });
-    let actions = tilo_agent_participant::WorkspaceActions::new(Arc::new(common::catalogue));
+    let actions = tilo_agent_participant::WorkspaceActions::new(Arc::new(crate::common::catalogue));
     actions.attach(membership.clone()).unwrap();
     let workspace = browser.workspace;
     let member = Caller::authenticated(

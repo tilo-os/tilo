@@ -943,14 +943,20 @@ async fn a_members_key_posts_a_long_history_into_the_lounges_chat() {
     let workspaces = on_relay.hosted.relay.workspaces().unwrap();
     let serving = workspaces.serving_certificate().clone();
     workspaces
-        .prepare_application(&lobby, &serving, &common::catalogue(), "so.tilo.chat", "")
+        .prepare_application(
+            &lobby,
+            &serving,
+            &crate::common::catalogue(),
+            "so.tilo.chat",
+            "",
+        )
         .await
         .unwrap();
     workspaces
         .author_application(
             &lobby,
             &serving,
-            &common::catalogue(),
+            &crate::common::catalogue(),
             "so.tilo.chat",
             "",
             |doc| {

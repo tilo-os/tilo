@@ -15,11 +15,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-mod common;
-
-tilo_agent_participant::app_worker!();
-tilo_automerge_isolate::test_worker!();
-
 use tilo_actions::door::{ActionDescriptor, DoorError};
 use tilo_agent_participant::{ConfinedReplica, ReplicaActor, Seed, render};
 use tilo_content::ContentStore;
@@ -81,7 +76,7 @@ fn timeline(source: Option<&str>) -> Project {
 /// `project` held for an agent, lent `workspace`: a new record the agent loads
 /// the project into through the door, as opening a project file does.
 fn agents_record(project: &Project, workspace: &ContentStore) -> ConfinedReplica {
-    let agent = common::confined(VIDEO, "editor", &ReplicaActor::Agent, Seed::New)
+    let agent = crate::common::confined(VIDEO, "editor", &ReplicaActor::Agent, Seed::New)
         .unwrap()
         .lending(workspace.clone());
     let load = offered(&agent, "field-edit").expect("field edits are offered");
@@ -288,7 +283,7 @@ fn a_second_participant_views_a_frame_of_footage_the_first_imported() {
         .unwrap_or_else(|error| panic!("the host renders: {error}"));
     let footage = made.value.unwrap()["content"].as_str().unwrap().to_owned();
 
-    let editor = common::confined(VIDEO, "editor", &ReplicaActor::Agent, Seed::New)
+    let editor = crate::common::confined(VIDEO, "editor", &ReplicaActor::Agent, Seed::New)
         .unwrap()
         .lending(workspace.clone());
     let import = offered(&editor, "import-content").unwrap().address;
@@ -313,7 +308,7 @@ fn a_second_participant_views_a_frame_of_footage_the_first_imported() {
         panic!("a new record is published whole");
     };
 
-    let reviewer = common::confined(
+    let reviewer = crate::common::confined(
         VIDEO,
         "reviewer",
         &ReplicaActor::Agent,

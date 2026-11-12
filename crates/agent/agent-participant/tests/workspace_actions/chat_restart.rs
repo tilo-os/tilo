@@ -57,14 +57,20 @@ async fn round(seed: u64) {
     let workspaces = on_relay.hosted.relay.workspaces().unwrap();
     let serving = workspaces.serving_certificate().clone();
     workspaces
-        .prepare_application(&lobby, &serving, &common::catalogue(), "so.tilo.chat", "")
+        .prepare_application(
+            &lobby,
+            &serving,
+            &crate::common::catalogue(),
+            "so.tilo.chat",
+            "",
+        )
         .await
         .unwrap();
     workspaces
         .author_application(
             &lobby,
             &serving,
-            &common::catalogue(),
+            &crate::common::catalogue(),
             "so.tilo.chat",
             "",
             |doc| {

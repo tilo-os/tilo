@@ -12,15 +12,8 @@
               helpers write fixed-layout bytes"
 )]
 
-mod common;
-
-// Records are held in confined app workers (this binary, started again);
-// their changes are admitted through the Automerge isolate.
-tilo_agent_participant::app_worker!();
-tilo_automerge_isolate::test_worker!();
-
+use crate::common::{Body as _, catalogue, pdf};
 use collab_types::DocumentMutation;
-use common::{Body as _, catalogue, pdf};
 use tilo_actions::OperationKind;
 use tilo_actions::door::{ActionAddress, ActionDescriptor, DoorError};
 use tilo_agent_participant::worker::{ProbeReport, probe_confinement};
@@ -34,7 +27,7 @@ const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 fn a_confined_record_kept_at_an_older_storage_version_sends_its_migration() {
     use ui::tilo_resource::evolution::{VERSION_KEY, stored_version};
     let app = "so.tilo.chat";
-    let mut page = common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
+    let mut page = crate::common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
     let Some(DocumentMutation::Snapshot(snapshot)) = page.take_mutation().unwrap() else {
         panic!("a new record is published whole");
     };
@@ -50,7 +43,7 @@ fn a_confined_record_kept_at_an_older_storage_version_sends_its_migration() {
 
     // As a host holds a bot's record: in a worker, its changes admitted to
     // the host's mirror of the workspace's document.
-    let held = common::confined(
+    let held = crate::common::confined(
         app,
         "host",
         &ReplicaActor::Owner,
@@ -108,7 +101,7 @@ fn a_confined_workspace_record_is_created_under_the_package_primary_route() {
 
 fn assert_seed_route(app: &str, default: ui::record::RecordId) {
     let catalogue = catalogue();
-    let source = common::confined(
+    let source = crate::common::confined(
         app,
         "host",
         &ReplicaActor::Owner,
@@ -135,7 +128,7 @@ fn assert_seed_route(app: &str, default: ui::record::RecordId) {
         );
     }
     // Both route shapes must reopen through the actual confined factory.
-    common::confined(
+    crate::common::confined(
         app,
         "member",
         &ReplicaActor::Owner,
@@ -148,18 +141,18 @@ fn assert_seed_route(app: &str, default: ui::record::RecordId) {
 }
 
 fn edit(text: &str) -> serde_json::Map<String, serde_json::Value> {
-    common::scratchpad_body(text).1
+    crate::common::scratchpad_body(text).1
 }
 
 #[test]
 fn a_confined_record_is_edited_in_its_worker_and_converges_with_a_page() {
     let app = "so.tilo.scratchpad";
-    let note = common::scratchpad_body("").0;
-    let mut page = common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
+    let note = crate::common::scratchpad_body("").0;
+    let mut page = crate::common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
     let Some(DocumentMutation::Snapshot(snapshot)) = page.take_mutation().unwrap() else {
         panic!("a new record is published whole");
     };
-    let agent = common::confined(
+    let agent = crate::common::confined(
         app,
         "writer",
         &ReplicaActor::Agent,
@@ -215,7 +208,7 @@ fn a_confined_record_is_edited_in_its_worker_and_converges_with_a_page() {
 
 #[test]
 fn bytes_that_are_not_automerge_never_reach_the_worker() {
-    let agent = common::confined(
+    let agent = crate::common::confined(
         "so.tilo.scratchpad",
         "writer",
         &ReplicaActor::Agent,
@@ -238,8 +231,8 @@ fn bytes_that_are_not_automerge_never_reach_the_worker() {
 
 #[test]
 fn a_dead_worker_is_replaced_from_what_the_host_holds() {
-    let note = common::scratchpad_body("").0;
-    let agent = common::confined(
+    let note = crate::common::scratchpad_body("").0;
+    let agent = crate::common::confined(
         "so.tilo.scratchpad",
         "writer",
         &ReplicaActor::Agent,
@@ -303,12 +296,12 @@ fn appearances(change: &DocumentMutation) -> Vec<Option<tilo_actions::Appearance
 #[test]
 fn an_appearance_given_to_the_worker_is_recorded_on_the_change() {
     let app = "so.tilo.scratchpad";
-    let note = common::scratchpad_body("").0;
-    let mut page = common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
+    let note = crate::common::scratchpad_body("").0;
+    let mut page = crate::common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
     let Some(DocumentMutation::Snapshot(snapshot)) = page.take_mutation().unwrap() else {
         panic!("a new record is published whole");
     };
-    let agent = common::confined(
+    let agent = crate::common::confined(
         app,
         "writer",
         &ReplicaActor::Agent,
@@ -344,7 +337,7 @@ const SHEETS: &str = "so.tilo.sheets";
 /// A new record of `app` held for an agent, lent `workspace`'s content when
 /// there is a workspace.
 fn agents_record(app: &str, workspace: Option<&ContentStore>) -> ConfinedReplica {
-    let agent = common::confined(app, "painter", &ReplicaActor::Agent, Seed::New).unwrap();
+    let agent = crate::common::confined(app, "painter", &ReplicaActor::Agent, Seed::New).unwrap();
     let agent = match workspace {
         Some(workspace) => agent.lending(workspace.clone()),
         None => agent,
@@ -507,7 +500,8 @@ fn an_agent_is_offered_the_effects_and_views_that_answer() {
     }));
 
     // A record held for the workspace's owner lists no views.
-    let owners = common::confined(CANVAS, "workspace", &ReplicaActor::Owner, Seed::New).unwrap();
+    let owners =
+        crate::common::confined(CANVAS, "workspace", &ReplicaActor::Owner, Seed::New).unwrap();
     assert!(
         owners
             .survey()
@@ -573,7 +567,7 @@ fn an_agent_exports_its_artwork_as_content_the_workspace_keeps() {
     // Another worker holding the same record, given no content but the
     // workspace's, exports the same picture: what the record refers to is put
     // into its worker before the export runs.
-    let exporting = common::confined(
+    let exporting = crate::common::confined(
         CANVAS,
         "exporter",
         &ReplicaActor::Agent,
@@ -854,7 +848,7 @@ fn an_agent_reads_a_pdf_the_workspace_holds_in_its_worker() {
     // Another worker on the same record, lent the workspace, asks for the PDF
     // it lacks and reads it; one lent nothing says it cannot.
     let open = |lent: Option<&ContentStore>| {
-        let replica = common::confined(
+        let replica = crate::common::confined(
             PDF,
             "reader",
             &ReplicaActor::Agent,

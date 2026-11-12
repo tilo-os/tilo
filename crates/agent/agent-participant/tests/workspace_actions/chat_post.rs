@@ -16,7 +16,7 @@
 use super::resource_support::{admit_person, open_admitted_peer};
 use super::{
     ActionAddress, ActionHostError, Browser, DeviceCapabilities, DocumentRoute, InvokeArgument,
-    ReceiptStatus, common, enrol, record_provider, start,
+    ReceiptStatus, enrol, record_provider, start,
 };
 use std::time::{Duration, Instant};
 use tilo_agent_participant::{ReplicaActor, Seed};
@@ -160,7 +160,7 @@ async fn a_post_costs_the_same_however_long_the_chat_has_run() {
         .prepare_application(
             &workspace.workspace,
             &host.cert,
-            &common::catalogue(),
+            &crate::common::catalogue(),
             "so.tilo.chat",
             "",
         )
@@ -193,7 +193,7 @@ async fn a_post_costs_the_same_however_long_the_chat_has_run() {
     // The chat grown to the Lounge's size: one part, written as a page of the
     // workspace starts it, holding the messages the deployed Lounge holds.
     let page = Browser::open_workspace(&hosted, &owner_device, &host, &workspace.workspace).await;
-    let mut source = common::open_in(
+    let mut source = crate::common::open_in(
         &workspace.workspace,
         "so.tilo.chat",
         "ada",
@@ -202,8 +202,8 @@ async fn a_post_costs_the_same_however_long_the_chat_has_run() {
     )
     .unwrap();
     let mut chat_doc = source.read(Clone::clone).unwrap();
-    common::add_channel(&mut chat_doc, "ada", "general", None);
-    let channel = common::channel(&chat_doc, chat::model::ChannelKind::Text);
+    crate::common::add_channel(&mut chat_doc, "ada", "general", None);
+    let channel = crate::common::channel(&chat_doc, chat::model::ChannelKind::Text);
     source
         .apply(&collab_types::DocumentMutation::Snapshot(chat_doc.save()))
         .unwrap();

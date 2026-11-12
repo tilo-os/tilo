@@ -78,9 +78,9 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
         "Claude Code on build-box",
         DeviceCapabilities::member(),
     );
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let shell_state = tempfile::tempdir().unwrap();
-    let hosted = harness::hosted::start(
+    let hosted = crate::harness::hosted::start(
         &root,
         &host,
         state.path(),
@@ -88,15 +88,17 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
             shell: Some(
                 tilo_relay::agents::host_shells(shell_state.path().join("shells")).unwrap(),
             ),
-            ..Options::offering(common::catalogue, ModelChoice::Scripted)
+            ..Options::offering(crate::common::catalogue, ModelChoice::Scripted)
         },
     )
     .await;
-    let _participant = participant::Participant::start(&hosted.relay, &root).await;
+    let _participant = crate::participant::Participant::start(&hosted.relay, &root).await;
     // The person's laptop answers what the host asks them about the agent.
-    let _asked =
-        harness::hosted::Laptop::new(["Claude Code".to_owned()], harness::hosted::Unlisted::Deny)
-            .spawn(&hosted.relay, root.clone(), &laptop_device);
+    let _asked = crate::harness::hosted::Laptop::new(
+        ["Claude Code".to_owned()],
+        crate::harness::hosted::Unlisted::Deny,
+    )
+    .spawn(&hosted.relay, root.clone(), &laptop_device);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let notes = browser.create(NOTES);
     let tasks = browser.create(TASKS);
@@ -392,15 +394,15 @@ async fn a_persons_own_agent_starts_a_stopped_app_writes_and_reads_as_one_run() 
         "Claude Code on build-box",
         DeviceCapabilities::member(),
     );
-    let state = support::scratch_dir();
-    let hosted = harness::hosted::start(
+    let state = crate::support::scratch_dir();
+    let hosted = crate::harness::hosted::start(
         &root,
         &host,
         state.path(),
-        Options::offering(common::catalogue, ModelChoice::Scripted),
+        Options::offering(crate::common::catalogue, ModelChoice::Scripted),
     )
     .await;
-    let _participant = participant::Participant::start(&hosted.relay, &root).await;
+    let _participant = crate::participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let agent = Browser::open(&hosted, &computer, &host).await;
     let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;

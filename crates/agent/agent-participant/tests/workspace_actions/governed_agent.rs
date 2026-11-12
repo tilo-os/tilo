@@ -129,7 +129,7 @@ fn opened_sheets(member: &Browser, route: &DocumentRoute) -> Option<Vec<String>>
     let changes = member.documents.get(route)?;
     let record = ui::record::RecordId::parse(&route.record)?;
     let replica = tilo_agent_participant::Replica::open(
-        &super::common::catalogue(),
+        &crate::common::catalogue(),
         &route.app_id,
         &route.cluster_id,
         "bob",

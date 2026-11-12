@@ -65,11 +65,6 @@
               boundaries; the zip and deflate readers index fixed-layout bytes"
 )]
 
-// Records are held in confined app workers (this binary, started again);
-// their changes are admitted through the Automerge isolate.
-tilo_agent_participant::app_worker!();
-tilo_automerge_isolate::test_worker!();
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::io::Write as _;

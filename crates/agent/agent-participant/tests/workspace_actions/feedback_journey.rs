@@ -109,7 +109,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
         .prepare_application(
             &workspace.workspace,
             &host.cert,
-            &common::catalogue(),
+            &crate::common::catalogue(),
             "so.tilo.chat",
             "",
         )
@@ -293,7 +293,7 @@ async fn the_owner_reviews_a_report_with_its_model_and_asks_nothing_else() {
         .prepare_application(
             &workspace.workspace,
             &host.cert,
-            &common::catalogue(),
+            &crate::common::catalogue(),
             "so.tilo.chat",
             "",
         )
@@ -370,7 +370,7 @@ async fn a_commenter_files_through_the_owner_and_cannot_triage() {
         .prepare_application(
             &workspace.workspace,
             &host.cert,
-            &common::catalogue(),
+            &crate::common::catalogue(),
             "so.tilo.chat",
             "",
         )
@@ -600,7 +600,7 @@ fn participant(browser: &mut Browser, route: &DocumentRoute, person: &str) -> Re
         .iter()
         .map(|(_, bytes)| bytes.clone())
         .collect();
-    common::open_in(
+    crate::common::open_in(
         &route.cluster_id,
         &route.app_id,
         person,
