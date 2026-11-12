@@ -513,33 +513,46 @@ impl Shell {
             styles.revision = styles.revision.saturating_add(1);
             return;
         };
-        let moved = crate::desk_styles::fingerprint(&catalog);
-        let moved = {
+        let now = crate::desk_styles::registry(&catalog);
+        {
             let mut styles = self.desk.styles.borrow_mut();
-            if styles.fingerprint == Some(moved.clone()) {
+            let former = styles.registry.as_ref();
+            if former == Some(&now) {
                 return;
             }
-            styles.fingerprint = Some(moved);
-            true
-        };
+            // The store is read on every frame, so what the log says of it is said to the frame
+            // that found it changed: the warning when it starts, and the line that it reads again
+            // when it recovers, rather than the same line thousands of times a second.
+            match crate::desk_styles::news(former, &now) {
+                Some(crate::desk_styles::News::Unreadable(why)) => {
+                    tracing::warn!(
+                        error = %why,
+                        "the app store's registry does not read; its styles wait"
+                    );
+                }
+                Some(crate::desk_styles::News::ReadsAgain) => {
+                    tracing::info!("the app store's registry reads again; its styles are read");
+                }
+                None => {}
+            }
+            styles.registry = Some(now);
+        }
         // A package installed or taken away is published again, so a style that failed and was
         // reinstalled fixed draws again with no restart (`shell.md` §6). The failure it had is
         // cleared too: the desk must draw it again for its view to run and tell whether it is
         // fixed, and a store that moved is the only news the session gets of a reinstall.
-        if moved {
-            self.republish = true;
-            for style in crate::desk_styles::installed(&catalog) {
-                // The shell's own package is the one the part already runs, never one loaded
-                // beside itself.
-                if style.package != tilo_session_core::shell::SHELL_APP {
-                    self.needed.insert(style.package.clone());
-                }
+        self.republish = true;
+        for style in crate::desk_styles::installed(&catalog) {
+            // The shell's own package is the one the part already runs, never one loaded
+            // beside itself.
+            if style.package != tilo_session_core::shell::SHELL_APP {
+                self.needed.insert(style.package.clone());
             }
-            for entry in &mut self.desk.styles.borrow_mut().list {
-                if !entry.loads {
-                    entry.loads = true;
-                    entry.reason.clear();
-                }
+        }
+        for entry in &mut self.desk.styles.borrow_mut().list {
+            if !entry.loads {
+                entry.loads = true;
+                entry.reason.clear();
             }
         }
         // The store's styles, the shell's own among them when the store holds the shell: each

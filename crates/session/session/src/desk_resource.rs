@@ -337,9 +337,9 @@ impl Surfaces {
 pub(crate) struct Styles {
     pub(crate) revision: u64,
     pub(crate) list: Vec<shell::DeskStyleReading>,
-    /// The store's fingerprint the list was read at: a store that reads the same is not read
-    /// again.
-    pub(crate) fingerprint: Option<String>,
+    /// The store's registry the list was read at: a store that reads the same is not read again,
+    /// and what the log says of it is said only when it changes.
+    pub(crate) registry: Option<crate::desk_styles::Registry>,
 }
 
 /// The desk as the session reads it. See the module docs.

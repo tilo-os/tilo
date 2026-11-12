@@ -131,6 +131,8 @@ mod launch;
 mod live_revocation;
 #[path = "lockdown_live.rs"]
 mod lockdown_live;
+#[path = "log_says_once.rs"]
+mod log_says_once;
 #[path = "logging.rs"]
 mod logging;
 #[path = "lounge_e2e.rs"]
