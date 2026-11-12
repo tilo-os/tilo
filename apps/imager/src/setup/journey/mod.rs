@@ -99,9 +99,9 @@ use ui::tilo_resource::{self, AbsolutePath, ActionRef, Binds, Effect};
 
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::{
-    AppModel, Avatar, AvatarSize, Button, ButtonRole, Card, Checkbox, Container, Field, IconWidget,
-    LabelPlacement, ListRow, ModelPath, NumberInput, Row, Scrollable, Spacer, Text, TextInput,
-    TextInputKind, Widget,
+    AppModel, Avatar, AvatarSize, Button, ButtonRole, Card, Checkbox, Container, DrawChild as _,
+    Field, IconWidget, LabelPlacement, ListRow, ModelPath, NumberInput, Row, Scrollable, Spacer,
+    Text, TextInput, TextInputKind, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -5714,7 +5714,7 @@ impl Widget for InstallerPreview {
         }
         let mut current = Scene::new();
         if let Some(child) = &mut self.composed {
-            child.draw(&mut current, Affine::IDENTITY, text, theme, presence);
+            child.draw_child(&mut current, Affine::IDENTITY, text, theme, presence);
         }
         scene.push_layer(
             vello::peniko::Fill::NonZero,
@@ -11029,7 +11029,7 @@ mod tests {
     fn page_motion_tracks_navigation_and_respects_reduced_motion() {
         let mut app = fixture();
         let paint = |preview: &mut InstallerPreview, theme: &Theme| {
-            preview.draw(
+            preview.draw_child(
                 &mut Scene::new(),
                 Affine::IDENTITY,
                 &mut TextRenderer::new(),

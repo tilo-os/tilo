@@ -62,8 +62,8 @@ use ui::theme::Theme;
 use ui::tokens::Rhythm;
 use ui::tokens::typography::TextRole;
 use ui::widget::{
-    Dropdown, ListRow, Property, PropertyList, Row, Spacer, Spinner, Stepper, Text, TextInput,
-    Widget,
+    DrawChild as _, Dropdown, ListRow, Property, PropertyList, Row, Spacer, Spinner, Stepper, Text,
+    TextInput, Widget,
 };
 
 use install_profile_model::{
@@ -1040,13 +1040,17 @@ impl InstallerApp {
                 self.supported_filesystems = supported;
                 self.filesystem_policy_error = None;
                 if !supported.get(self.selected_fs).copied().unwrap_or(false) {
+                    let rejected = self.filesystem().to_string();
                     if let Some(completion) = self.profile_completion.as_mut() {
                         completion.filesystem = FieldCompletion::NeedsRepair;
                     }
                     if let Some(index) = supported.iter().position(|available| *available) {
                         self.selected_fs = index;
                     }
-                    self.status = "The preselected filesystem cannot boot from this image; choose a supported filesystem.".into();
+                    self.status = CATALOG.t_args(
+                        "installer-filesystem-cannot-boot",
+                        &[("filesystem", ArgValue::Text(rejected))],
+                    );
                 }
             }
             Err(message) => {
@@ -1057,7 +1061,7 @@ impl InstallerApp {
                 }
                 self.status = CATALOG.t_args(
                     "installer-install-unavailable",
-                    &[("message", ArgValue::Text(message.clone()))],
+                    &[("message", ArgValue::Text(message))],
                 );
             }
         }
@@ -3371,7 +3375,7 @@ impl InstallerApp {
         } else {
             CATALOG.t_args(
                 "imager-installer-erase",
-                &[("device", ui::i18n::ArgValue::Text(dev.to_string()))],
+                &[("device", ui::i18n::ArgValue::Text(dev.clone()))],
             )
         };
         children.push(Box::new(
@@ -3479,7 +3483,6 @@ impl InstallerApp {
                     Text::new(&crate::setup::strings::t("installer-failed"))
                         .with_role(TextRole::Title)
                         .with_color(danger)
-                        .with_role(TextRole::Title)
                         .with_live(Politeness::Assertive),
                 ));
                 children.push(Box::new(
@@ -3972,7 +3975,7 @@ impl Widget for InstallerApp {
     ) {
         // The framework paints the window ground; the page draws on it.
         if let Some(c) = self.composed.element_mut() {
-            c.draw(scene, transform, text_renderer, theme, presence);
+            c.draw_child(scene, transform, text_renderer, theme, presence);
         }
     }
 
@@ -4718,7 +4721,7 @@ mod tests {
             app.sync(&doc, &root);
 
             // Empty username → blocked.
-            activate(&mut app, &mut doc, "Next");
+            activate(&mut app, &mut doc, "installer.next");
             assert_eq!(app.step, Step::Account);
             assert_eq!(app.status, "Enter a username");
 
@@ -4726,7 +4729,7 @@ mod tests {
             app.username.set("ada".to_string());
             *app.password.lock().unwrap() = "correct horse battery staple".to_string();
             *app.password_confirmation.lock().unwrap() = "correct horse battery staple".to_string();
-            activate(&mut app, &mut doc, "Next");
+            activate(&mut app, &mut doc, "installer.next");
             assert_eq!(app.step, Step::Options);
             assert_eq!(local_text(&app.username), "ada");
         }
@@ -4769,7 +4772,7 @@ mod tests {
             activate(&mut app, &mut doc, "/dev/nvme0n1");
             assert_eq!(app.selected_disk, Some(1));
 
-            activate(&mut app, &mut doc, "Next");
+            activate(&mut app, &mut doc, "installer.next");
             assert_eq!(app.step, Step::Account);
             assert!(app.take_focus_reset(), "step change requests focus reset");
         }
@@ -6008,25 +6011,25 @@ mod tests {
             let root = automerge::ROOT;
             app.sync(&doc, &root);
 
-            activate(&mut app, &mut doc, "Back");
+            activate(&mut app, &mut doc, "installer.back");
             assert_eq!(app.step, Step::Media);
 
-            activate(&mut app, &mut doc, "Back");
+            activate(&mut app, &mut doc, "installer.back");
             assert_eq!(app.step, Step::Options);
 
-            activate(&mut app, &mut doc, "Back");
+            activate(&mut app, &mut doc, "installer.back");
             assert_eq!(app.step, Step::Account);
 
-            activate(&mut app, &mut doc, "Back");
+            activate(&mut app, &mut doc, "installer.back");
             assert_eq!(app.step, Step::Disk);
 
-            activate(&mut app, &mut doc, "Back");
+            activate(&mut app, &mut doc, "installer.back");
             assert_eq!(app.step, Step::Accounts);
 
-            activate(&mut app, &mut doc, "Back");
+            activate(&mut app, &mut doc, "installer.back");
             assert_eq!(app.step, Step::Network);
 
-            activate(&mut app, &mut doc, "Back");
+            activate(&mut app, &mut doc, "installer.back");
             assert_eq!(app.step, Step::Keyboard);
 
             // The first step (Keyboard) offers no Back; the action is a no-op.
@@ -6049,7 +6052,7 @@ mod tests {
             let root = automerge::ROOT;
             app.sync(&doc, &root);
 
-            activate(&mut app, &mut doc, "Review storage");
+            activate(&mut app, &mut doc, "installer.review_storage");
             assert_eq!(app.step, Step::Disk);
             assert_eq!(app.selected_disk, None);
             assert_ne!(app.guided_efi_partuuid, old_efi_partuuid);

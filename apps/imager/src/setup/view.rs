@@ -953,7 +953,7 @@ impl SetupApp {
             let summary = if presentation.phase.is_none()
                 && let Some(error) = flow.catalog_error()
             {
-                error.to_string()
+                super::strings::t(error)
             } else {
                 super::strings::t(presentation.sentence_key)
             };
@@ -1095,7 +1095,7 @@ impl SetupApp {
                     Text::new(&self.internal_readiness_text()).with_live(Politeness::Polite),
                 )])
                 .with_header(SectionHeader::heading(
-                    &CATALOG.t("imager-section-before-installing"),
+                    CATALOG.t("imager-section-before-installing"),
                 )),
             ));
         }
