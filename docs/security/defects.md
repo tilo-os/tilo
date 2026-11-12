@@ -570,10 +570,11 @@ answers it with a mandatory lock before sleep (`IdleState::prepare_for_sleep` in
 defaults both blanking and locking to five minutes; an explicit `TILO_IDLE_LOCK_SECS=0` remains the
 documented opt-out for idle locking only. Unit coverage pins the sleep-edge mapping and secure
 default. `locking_requires_authentication_to_clear` in `crates/session/compositor/src/idle.rs`
-holds the lock and unlock transitions and the policy the live session runs on is held by
-`the_policy_is_the_idle_timer_the_session_runs_on` in `crates/session/session/tests/power.rs`;
-the lock screen's own keyboard, a refused control-socket snapshot and a touch unlock need a
-display, so that journey runs in the VM acceptance suite (W21) and not in default CI.
+covers the idle, requested and resumed lock transitions, and
+`the_policy_is_the_idle_timer_the_session_runs_on` in `crates/session/session/tests/power.rs`
+covers the policy the live session runs on; the lock screen's own keyboard, a refused
+control-socket snapshot and a touch unlock need a display, so that journey runs in the VM
+acceptance suite (W21) and not in default CI.
 
 ---
 
