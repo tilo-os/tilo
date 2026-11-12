@@ -93,6 +93,50 @@ fn the_controls_that_press_the_notebooks_actions_declare_them() {
         control.contains(plus.center()) && plus.contains(control.center()),
         "the agent's marker lands on the page tree's +: {control:?} vs {plus:?}"
     );
+    // What the session publishes when it keeps the record names the notebook by
+    // the toolkit's transport alias; the marker still finds the app's own
+    // control, which names the notebook by its own id.
+    let alias = format!(
+        "tilo-ui-bound:v1:0f7c:9a12:{}",
+        "notes.notebook"
+            .bytes()
+            .fold(String::new(), |mut hex, byte| {
+                use std::fmt::Write as _;
+                write!(hex, "{byte:02x}").expect("a byte is two hex digits");
+                hex
+            })
+    );
+    let event = tilo_actions::SemanticInteraction {
+        version: tilo_actions::INTERACTION_VERSION,
+        invocation: tilo_actions::InvocationId::new(),
+        sequence: 1,
+        actor: tilo_actions::InteractionActor {
+            id: "scribe".into(),
+            kind: tilo_actions::ActorKind::Agent,
+            for_person: None,
+        },
+        phase: tilo_actions::InteractionPhase::Applying,
+        action: tilo_actions::InteractionAction {
+            id: "new-note".into(),
+            label: "New note".into(),
+            app: None,
+        },
+        resource: tilo_actions::ActionResource {
+            id: alias,
+            kind: "notes.notebook".into(),
+            label: "Notebook".into(),
+        },
+        anchor: tilo_actions::InteractionAnchor::Resource,
+        group: None,
+    };
+    let locus = app
+        .harness()
+        .semantic_locus(&event)
+        .expect("the agent's invocation finds the control it presses");
+    assert!(
+        plus.contains(locus.center()),
+        "the agent acts at the +: {locus:?} in {plus:?}"
+    );
 
     crate::framework_support::add_note(&mut app, "Inbox", "");
     app.settle();

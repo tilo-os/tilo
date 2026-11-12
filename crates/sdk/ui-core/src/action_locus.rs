@@ -225,10 +225,17 @@ fn visit_action_ui_routes<'tree>(
             );
             let semantic_address = address.resource == format!("ui:{encoded_node_id}")
                 && tree.action(semantic_id, &address.action).is_some();
+            // A window the session keeps publishes its record under the
+            // toolkit's transport alias, while the same record's controls may
+            // be bound under another alias or the record's own id: the action
+            // one record exports is one action, whatever published it.
             let matches_address = semantic_address
                 || matches!(
                     &binding.kind,
-                    crate::widget::ControlBindingKind::Action(candidate) if candidate == address
+                    crate::widget::ControlBindingKind::Action(candidate)
+                        if candidate.action == address.action
+                            && tilo_actions::logical_resource_id(&candidate.resource)
+                                == address.resource
                 );
             if !matches_address {
                 continue;
@@ -239,6 +246,27 @@ fn visit_action_ui_routes<'tree>(
             visit(binding, path, node);
         }
     }
+}
+
+/// The action an interaction names, by the record's own id: a window the
+/// session keeps publishes its record under the toolkit's transport alias
+/// (`tilo-ui-bound:v1:…`), and the controls it binds may be published under the
+/// same alias, another window's, or the record's own id. All of them are the one
+/// record's one action, so the alias is decoded before either side is matched.
+fn interaction_address(
+    interaction: &tilo_actions::SemanticInteraction,
+) -> tilo_actions::ActionAddress {
+    tilo_actions::ActionAddress::new(
+        tilo_actions::logical_resource_id(&interaction.resource.id).into_owned(),
+        interaction.action.id.clone(),
+    )
+}
+
+/// The record a semantic node names: its id without the `r:` of a published
+/// resource, and without the transport alias a window published it under.
+fn record_of(id: &crate::a11y_tree::SemanticId) -> std::borrow::Cow<'_, str> {
+    let id = id.as_str().strip_prefix("r:").unwrap_or(id.as_str());
+    tilo_actions::logical_resource_id(id)
 }
 
 /// Resolve only an unambiguous, currently bound control. Labels and positional
@@ -254,10 +282,13 @@ pub(crate) fn interaction_bounds(
     if let tilo_actions::InteractionAnchor::ListItems { ids } = &interaction.anchor {
         return item_bounds(tree, ids);
     }
-    let address = tilo_actions::ActionAddress::new(
-        interaction.resource.id.clone(),
-        interaction.action.id.clone(),
-    );
+    let address = interaction_address(interaction);
+    // The resource node is what makes this an action on a record rather than a
+    // guessed widget: it must export the very action the invocation names.
+    // It stands under the id its own window published it as — the record's own
+    // id, or that window's transport alias — which for an action the session
+    // keeps is not the alias the invocation carries, so the record is what the
+    // node is found by.
     let canonical_id = if let Some(encoded) = address.resource.strip_prefix("ui:") {
         crate::a11y_tree::SemanticId(
             percent_encoding::percent_decode_str(encoded)
@@ -268,11 +299,28 @@ pub(crate) fn interaction_bounds(
     } else {
         crate::a11y_tree::SemanticId(format!("r:{}", address.resource))
     };
-    // Resource publication and durable identity are separate from a control's
-    // retained binding. Component aliases require explicit owner translation;
-    // they cannot be inferred from a matching leaf address.
-    let resource = tree.node(&canonical_id)?;
-    if !resource.durable_identity || resource.action(&address.action).is_none() {
+    // A widget the projection names by its own laid-out id stands for a record
+    // only while that id is durable: a key under a layout id moves when the UI
+    // rebuilds. A record the invocation names by its published id is that
+    // record, whatever window published it.
+    let stands_for_record = |node: &crate::a11y_tree::SemanticNode| {
+        node.action(&address.action).is_some()
+            && (node.durable_identity || !address.resource.starts_with("ui:"))
+    };
+    // A record the session keeps is published by each window under its own
+    // alias, and the invocation names one window's while the frame in hand
+    // carries another: that record is what its node is found by.
+    let published_here = tree
+        .node(&canonical_id)
+        .is_some_and(|node| stands_for_record(node));
+    let same_record = interaction
+        .resource
+        .id
+        .starts_with(tilo_actions::BOUND_RESOURCE_PREFIX)
+        && tree
+            .iter()
+            .any(|node| stands_for_record(node) && record_of(&node.id) == address.resource);
+    if !published_here && !same_record {
         return None;
     }
     let mut candidates = action_ui_routes(tree, bindings, &address)
@@ -352,10 +400,7 @@ fn control_bounds(
     interaction: &tilo_actions::SemanticInteraction,
     locus: vello::kurbo::Rect,
 ) -> Option<vello::kurbo::Rect> {
-    let address = tilo_actions::ActionAddress::new(
-        interaction.resource.id.clone(),
-        interaction.action.id.clone(),
-    );
+    let address = interaction_address(interaction);
     let mut inside = action_ui_routes(tree, bindings, &address)
         .into_iter()
         .filter_map(|route| route.bounds)
