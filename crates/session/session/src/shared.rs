@@ -50,9 +50,6 @@ impl Shared {
             self.handle.replace_tree(tree.clone());
             self.handle.set_opened_by(self.desktops.opened_by());
         }
-        // A window the person opens here is this device's to place: the record lacks it until the
-        // next write, and folding keeps it.
-        self.desktops.note_unrecorded(engine, &tree);
     }
 
     /// Run what waited for the person to finish their gesture or their typing: an arranging action
