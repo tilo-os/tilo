@@ -1615,16 +1615,16 @@ impl Widget for FindScope {
         let content = self.content.build_layout(taffy, theme, node_map);
         children.push(content);
         self.content_node = Some(content);
-        let node = taffy.parent_node(
+        let style = crate::widget::layout::filling(
             Style {
                 display: taffy::Display::Flex,
                 flex_direction: taffy::FlexDirection::Column,
                 size: taffy::Size::from_percent(1.0_f32, 1.0_f32),
-                flex_grow: 1.0,
                 ..Default::default()
             },
-            &children,
+            1.0,
         );
+        let node = taffy.parent_node(style, &children);
         if let Ok(mut style) = taffy.style(content).cloned() {
             style.flex_grow = 1.0;
             style.flex_shrink = 1.0;

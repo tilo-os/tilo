@@ -2303,6 +2303,111 @@ mod tests {
             .get_rect()
     }
 
+    /// Every keyed node of `view`, by key, in a window of `size`.
+    fn laid_out_all(
+        view: &UiNode,
+        size: (u32, u32),
+    ) -> std::collections::BTreeMap<String, ui::vello::kurbo::Rect> {
+        let built = reconciler().build(view);
+        let mut harness = ui::headless::FrameHarness::new(ui::State::new(), built, size);
+        harness.targets().into_iter().collect()
+    }
+
+    /// `fill` in the language lowers to a slot's `Fit::fill`, and a scroll view to a
+    /// `Scrollable` that fills its parent. A page of many lines stands in a scroll view that
+    /// fills the room it is given.
+    fn filling_scroll(key: &str) -> UiNode {
+        let mut content = node("stack", &format!("{key}~content"));
+        content.children = (0..80)
+            .map(|index| text(&format!("{key}-line-{index}"), "A line of the page"))
+            .collect();
+        let mut scroll = node("scroll", key);
+        scroll.props.insert("fill".to_owned(), Value::Int(1));
+        scroll.children = vec![content];
+        scroll
+    }
+
+    /// A stack written `fill`, the language's `gap: .none`, with `strip` above `content`: the
+    /// shape a place's handle stood in over the place's body (`stack(gap: .none, fill) {
+    /// handle; content }`). The window it is shown in is the place.
+    fn stack_over(strip: UiNode, content: UiNode) -> UiNode {
+        let mut root = node("stack", "root");
+        root.props.insert("fill".to_owned(), Value::Int(1));
+        root.props.insert("gap".to_owned(), Value::text("none"));
+        root.children = vec![strip, content];
+        root
+    }
+
+    /// One line of text in a plain stack: a strip that hugs what it holds.
+    fn strip(key: &str) -> UiNode {
+        let mut strip = node("stack", key);
+        strip.children = vec![text(&format!("{key}-text"), "Move place")];
+        strip
+    }
+
+    /// A filled call of a view (`show(r, fill)`): the call is a fragment, the view's body one
+    /// more, and the view's root inside them.
+    fn filled_call_of_stack(key: &str, content: UiNode) -> UiNode {
+        let mut body = node("fragment", &format!("{key}~body"));
+        body.children = vec![content];
+        let mut call = node("fragment", key);
+        call.props.insert("fill".to_owned(), Value::Int(1));
+        call.children = vec![body];
+        call
+    }
+
+    /// The scroll view in a view built of stacks: the only `Scrollable` in the tree.
+    fn the_scrollable(view: &UiNode, size: (u32, u32)) -> ui::vello::kurbo::Rect {
+        fn walk(w: &dyn ui::widget::Widget, out: &mut Option<ui::vello::kurbo::Rect>) {
+            if w.name() == "Scrollable" {
+                *out = Some(w.get_rect());
+            }
+            for child in w.children() {
+                walk(child, out);
+            }
+        }
+        let built = reconciler().build(view);
+        let harness = ui::headless::FrameHarness::new(ui::State::new(), built, size);
+        let mut found = None;
+        walk(harness.root_widget(), &mut found);
+        found.expect("the view holds a scroll view")
+    }
+
+    /// A stack written `fill` with something above filling content: the filled content takes
+    /// the room under what is above it, and never pushes the stack past the place's height.
+    ///
+    /// The language lowers `stack(gap: .none, fill) { handle; content }` to `Fit::fill` on the
+    /// filled slot and a hug on the plain one, and the stack itself to an `Arranged` filling the
+    /// place: this holds that lowering to the rule — the filled slot takes its share, and its
+    /// content scrolls or clips inside it.
+    #[test]
+    fn a_stack_of_a_strip_above_filling_content_keeps_the_content_in_the_place() {
+        let place = stack_over(
+            strip("strip"),
+            filled_call_of_stack("call", filling_scroll("scroll")),
+        );
+        let rects = laid_out_all(&place, (400, 520));
+        let root = *rects.get("root").expect("the stack");
+        let strip = *rects.get("strip").expect("the strip");
+        let scroll = the_scrollable(&place, (400, 520));
+        assert!(
+            (root.height() - 520.0).abs() <= 1.0,
+            "the stack is the place's height: {root:?}"
+        );
+        assert!(
+            strip.height() > 0.0 && strip.height() < 100.0,
+            "the strip hugs its one line: {strip:?}"
+        );
+        assert!(
+            (scroll.y0 - strip.y1).abs() <= 1.0,
+            "the content starts under the strip: {scroll:?} under {strip:?}"
+        );
+        assert!(
+            scroll.y1 <= 521.0,
+            "the content's room ends in the place: {scroll:?}"
+        );
+    }
+
     /// A `spacer` in a row takes the room its neighbours leave, so what follows it stands at
     /// the row's trailing edge (a bar's status), and a group beside it holds what it holds
     /// rather than taking that room itself.

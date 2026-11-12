@@ -2547,10 +2547,10 @@ impl Widget for VideoPlayer {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
             },
-            flex_grow: 1.0,
             flex_shrink: 1.0,
             ..Default::default()
         };
+        let style = crate::widget::layout::filling(style, 1.0);
         taffy.widget_leaf(style, node_map, self)
     }
 

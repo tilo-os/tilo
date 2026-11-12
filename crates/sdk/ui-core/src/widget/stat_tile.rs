@@ -635,11 +635,10 @@ impl Widget for StatTile {
                 width: length(0.0_f32),
                 height: auto(),
             },
-            flex_grow: 1.0,
-            flex_basis: length(0.0_f32),
             flex_shrink: 0.0,
             ..Default::default()
         };
+        let style = crate::widget::layout::filling(style, 1.0);
         taffy.widget_leaf(style, node_map, self)
     }
 

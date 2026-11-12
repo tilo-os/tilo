@@ -413,10 +413,10 @@ impl Widget for Reserve {
                 width: length(0.0_f32),
                 height: auto(),
             },
-            flex_grow: if fills { 1.0 } else { 0.0 },
             flex_shrink: 0.0,
             ..Default::default()
         };
+        let style = crate::widget::layout::filling(style, if fills { 1.0 } else { 0.0 });
         taffy.widget_leaf(style, node_map, self)
     }
 
@@ -994,10 +994,10 @@ impl Widget for ArrivingView {
                 width: length(0.0_f32),
                 height: auto(),
             },
-            flex_grow: if shape.fills() { 1.0 } else { 0.0 },
             flex_shrink: 0.0,
             ..Default::default()
         };
+        let style = crate::widget::layout::filling(style, if shape.fills() { 1.0 } else { 0.0 });
         taffy.widget_node(style, &[reserve, content], node_map, self)
     }
 
