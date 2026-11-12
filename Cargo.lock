@@ -14225,7 +14225,6 @@ dependencies = [
  "rustix 1.1.6",
  "serde",
  "serde_json",
- "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.21",
  "tilo-files",
