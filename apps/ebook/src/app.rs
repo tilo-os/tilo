@@ -8577,16 +8577,12 @@ impl BooksApp {
         let has_sel = self.sel.is_some_and(|s| !s.is_empty());
         if has_sel {
             let height = ControlSize::Small.height(theme);
-            let width = button_width(
-                ctx,
-                &CATALOG.t("ebook-add-note-button"),
-                Some(Icon::Plus),
-                ControlSize::Small,
-            );
+            let add_note = CATALOG.t("ebook-add-note-button");
+            let width = button_width(ctx, &add_note, Some(Icon::Plus), ControlSize::Small);
             let rect = Rect::new(x0, y, x0 + width, y + height);
             self.button(
                 ctx,
-                ButtonFace::new(rect, &CATALOG.t("ebook-add-note-button"))
+                ButtonFace::new(rect, &add_note)
                     .icon(Icon::Plus)
                     .control_size(ControlSize::Small),
                 Action::AddNote,

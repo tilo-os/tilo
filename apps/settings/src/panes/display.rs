@@ -2284,7 +2284,7 @@ impl DisplayModel {
                     warn!(target: "tilo::settings", op = "set_brightness", %error, requested, "display worker dispatch failed");
                     self.notice = Some(crate::i18n::t_args(
                         "display-brightness-failed",
-                        &[("detail", ui::i18n::ArgValue::Text(error.to_string()))],
+                        &[("detail", ui::i18n::ArgValue::Text(error))],
                     ));
                 }
             }

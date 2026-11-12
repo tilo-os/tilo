@@ -2380,7 +2380,7 @@ impl FilesState {
                 self.open_terminal().map_err(|e| {
                     crate::i18n::CATALOG.t_args(
                         "files-terminal-failed",
-                        &[("detail", ui::i18n::ArgValue::Text(e.to_string()))],
+                        &[("detail", ui::i18n::ArgValue::Text(e))],
                     )
                 })?;
                 None

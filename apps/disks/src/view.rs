@@ -561,12 +561,12 @@ fn filesystem(index: usize, part: &Partition, selected: bool, intents: &Intents)
             "disks-filesystem-at",
             &[
                 ("filesystem", ui::i18n::ArgValue::Text(fstype.clone())),
-                ("path", ui::i18n::ArgValue::Text(mount.to_owned())),
+                ("path", ui::i18n::ArgValue::Text(mount)),
             ],
         ),
         (Some(mount), _) => CATALOG.t_args(
             "disks-mounted-at",
-            &[("path", ui::i18n::ArgValue::Text(mount.to_owned()))],
+            &[("path", ui::i18n::ArgValue::Text(mount))],
         ),
         (None, _) => String::new(),
     };

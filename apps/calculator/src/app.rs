@@ -1657,7 +1657,7 @@ impl Widget for CalculatorApp {
                         ),
                         Err(error) => CATALOG.t_args(
                             "calculator-invalid-expression",
-                            &[("detail", ui::i18n::ArgValue::Text(error.to_string()))],
+                            &[("detail", ui::i18n::ArgValue::Text(error))],
                         ),
                     };
                     display = display.with_children(vec![

@@ -3895,7 +3895,7 @@ impl MailApp {
                 let title = if message.folder == Folder::Drafts {
                     CATALOG.t_args(
                         "mail-draft-subject",
-                        &[("subject", ui::i18n::ArgValue::Text(message.subject.clone()))],
+                        &[("subject", ArgValue::Text(message.subject.clone()))],
                     )
                 } else {
                     format!("{}: {}", message.from.display(), message.subject)

@@ -5414,24 +5414,21 @@ impl BrowserWidget {
         } else {
             back.unavailable(
                 "history_boundary",
-                &CATALOG.t("browser-action-no-previous-page"),
+                CATALOG.t("browser-action-no-previous-page"),
             )
         });
         let forward = E::Forward.bound();
         page.actions.push(if self.can_go_forward {
             forward
         } else {
-            forward.unavailable(
-                "history_boundary",
-                &CATALOG.t("browser-action-no-next-page"),
-            )
+            forward.unavailable("history_boundary", CATALOG.t("browser-action-no-next-page"))
         });
         page.actions.push(E::Reload.bound());
         let stop = E::Stop.bound();
         page.actions.push(if self.progress < 1.0 {
             stop
         } else {
-            stop.unavailable("history_boundary", &CATALOG.t("browser-action-page-idle"))
+            stop.unavailable("history_boundary", CATALOG.t("browser-action-page-idle"))
         });
         page.actions
             .push(E::Navigate { url: String::new() }.bound_asking(&["url"]));
@@ -5455,7 +5452,7 @@ impl BrowserWidget {
         page.actions.push(if web_page {
             reader
         } else {
-            reader.unavailable("no_web_page", &CATALOG.t("browser-action-needs-page"))
+            reader.unavailable("no_web_page", CATALOG.t("browser-action-needs-page"))
         });
         page.actions.extend(self.daily.zoom_actions());
         // A page waiting on a permission asks in the page's own actions too:
@@ -5653,7 +5650,7 @@ impl BrowserWidget {
             page.actions.push(if web_page {
                 spec
             } else {
-                spec.unavailable("no_web_page", &CATALOG.t("browser-action-needs-page"))
+                spec.unavailable("no_web_page", CATALOG.t("browser-action-needs-page"))
             });
         }
 
@@ -5683,7 +5680,7 @@ impl BrowserWidget {
         );
         let clear = E::ClearHistory.bound();
         history.actions.push(if self.history.is_empty() {
-            clear.unavailable("already_empty", &CATALOG.t("browser-history-already-empty"))
+            clear.unavailable("already_empty", CATALOG.t("browser-history-already-empty"))
         } else {
             clear
         });
@@ -5840,7 +5837,7 @@ impl BrowserWidget {
             .actions
             .push(if self.library_filter.get().trim().is_empty() {
                 clear_filter
-                    .unavailable("already_clear", &CATALOG.t("browser-library-already-clear"))
+                    .unavailable("already_clear", CATALOG.t("browser-library-already-clear"))
             } else {
                 clear_filter
             });

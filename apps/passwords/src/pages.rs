@@ -416,7 +416,7 @@ fn editor(core: &Core, shared: &Shared, requests: &Requests) -> Element {
             )));
         }
     }
-    let mut more = FormSection::new(&CATALOG.t(if kind == SecretItemKind::SecureNote {
+    let mut more = FormSection::new(CATALOG.t(if kind == SecretItemKind::SecureNote {
         "passwords-note"
     } else {
         "passwords-notes-and-tags"
@@ -883,7 +883,7 @@ fn import_dialog(
         1 => CATALOG.t("passwords-import-one"),
         n => CATALOG.t_args(
             "passwords-import-count",
-            &[("count", ui::i18n::ArgValue::Number(n as f64))],
+            &[("count", ui::i18n::ArgValue::Text(n.to_string()))],
         ),
     };
     ModalDialog::new(title, body(children))

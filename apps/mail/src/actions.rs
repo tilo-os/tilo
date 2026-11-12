@@ -779,7 +779,7 @@ pub(crate) fn attachment_row(
         } else {
             spec.unavailable(
                 "not_downloaded",
-                &crate::i18n::CATALOG.t("mail-attachment-not-downloaded"),
+                crate::i18n::CATALOG.t("mail-attachment-not-downloaded"),
             )
         }
     };

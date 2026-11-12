@@ -23,6 +23,7 @@ use ui::framework::views::{
     Chip, FacetMenu, FacetOffer, FieldDecl, FieldRole, FilterKind, Form, Item, KindDecl, OpenFacet,
     QueryEngine, QuerySpec, RemoteError, RemoteSection, RemoteSource, ResultGroup, facet_bar,
 };
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::widget::{
@@ -1001,6 +1002,20 @@ impl BooksApp {
     /// One result as a row: a passage by its words, a chapter or a note by
     /// its name, each with where it is; a store book with its author and
     /// the button that gets it.
+    /// What the button that gets `book` from the store says.
+    fn get_label(book: &crate::store::StoreBook) -> String {
+        CATALOG.t_args(
+            "ebook-query-get",
+            &[
+                ("book", ui::i18n::ArgValue::Text(book.title.clone())),
+                (
+                    "store",
+                    ui::i18n::ArgValue::Text(crate::store::STORE_LABEL.to_owned()),
+                ),
+            ],
+        )
+    }
+
     fn query_row(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -1027,24 +1042,12 @@ impl BooksApp {
             .and_then(Icon::from_name)
             .unwrap_or(Icon::FileText);
         let (action, label) = match &store {
-            Some(book) => (
-                Action::GetBook(book.id),
-                CATALOG.t_args(
-                    "ebook-query-get",
-                    &[
-                        ("book", ui::i18n::ArgValue::Text(book.title.clone())),
-                        (
-                            "store",
-                            ui::i18n::ArgValue::Text(crate::store::STORE_LABEL.to_owned()),
-                        ),
-                    ],
-                ),
-            ),
+            Some(book) => (Action::GetBook(book.id), Self::get_label(book)),
             None => (
                 Action::OpenHit(item.id.clone()),
                 CATALOG.t_args(
                     "ebook-query-open",
-                    &[("title", ui::i18n::ArgValue::Text(title.to_owned()))],
+                    &[("title", ArgValue::Text(title.clone()))],
                 ),
             ),
         };

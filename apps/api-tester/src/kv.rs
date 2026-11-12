@@ -257,7 +257,7 @@ pub(crate) fn build(
         // takes the rest of the panel.
         ColumnDef::new(
             "key",
-            &crate::locales::CATALOG.t("api-tester-key"),
+            crate::locales::CATALOG.t("api-tester-key"),
             ColumnWidth::Flex(1.0),
         )
         .max_width(Metrics::BASE.readable_width / 3.0)
@@ -274,7 +274,7 @@ pub(crate) fn build(
         }),
         ColumnDef::new(
             "value",
-            &crate::locales::CATALOG.t("api-tester-value"),
+            crate::locales::CATALOG.t("api-tester-value"),
             ColumnWidth::Flex(2.0),
         )
         .with_widget(move |row: &KvRow, _| -> Element {

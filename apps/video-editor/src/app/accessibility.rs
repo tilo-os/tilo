@@ -767,7 +767,7 @@ impl VideoEditorApp {
             PickField::Label(slot) => (
                 crate::resource::CATALOG.t_args(
                     "video-editor-label-colour",
-                    &[("slot", ui::i18n::ArgValue::Number((slot + 1) as f64))],
+                    &[("slot", ui::i18n::ArgValue::Text((slot + 1).to_string()))],
                 ),
                 Role::RadioButton,
                 self.selected_clip().is_some_and(|c| c.palette == slot),

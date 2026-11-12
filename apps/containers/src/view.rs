@@ -622,7 +622,7 @@ fn logs(c: &Container) -> Element {
     if let Some(error) = &c.logs_error {
         return note(&crate::resource::CATALOG.t_args(
             "containers-logs-unavailable",
-            &[("detail", ui::i18n::ArgValue::Text(error.to_string()))],
+            &[("detail", ui::i18n::ArgValue::Text(error.clone()))],
         ));
     }
     if c.logs.is_empty() {

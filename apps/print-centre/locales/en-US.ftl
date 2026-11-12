@@ -156,3 +156,5 @@ print-centre-pages-captured = { $count ->
 }
 print-centre-scanning-page = Scanning page…
 print-centre-scan-page = Scan page
+
+print-centre-job-on = { $status } on { $printer }

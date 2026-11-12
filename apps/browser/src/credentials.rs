@@ -518,7 +518,7 @@ impl Credentials {
                 .map(|(index, form)| {
                     Box::new(self.choice(
                         format!("browser.address.form.{index}"),
-                        &form_title(&bases, index),
+                        form_title(&bases, index),
                         None,
                         self.form.as_ref() == Some(&form.id),
                         Action::Form(form.id.clone()),
@@ -527,7 +527,7 @@ impl Credentials {
                 .collect();
             if forms.is_empty() {
                 column = column.push(line(
-                    &crate::CATALOG.t("browser-credentials-no-address-form"),
+                    crate::CATALOG.t("browser-credentials-no-address-form"),
                 ));
             } else {
                 column = column.push(Box::new(Section::new(forms).with_header(
@@ -552,7 +552,7 @@ impl Credentials {
             return column;
         }
         if self.forms.is_empty() {
-            column = column.push(line(&crate::CATALOG.t("browser-credentials-no-login-form")));
+            column = column.push(line(crate::CATALOG.t("browser-credentials-no-login-form")));
         } else {
             let bases: Vec<String> = self
                 .forms
@@ -572,7 +572,7 @@ impl Credentials {
                 .map(|(index, form)| {
                     Box::new(self.choice(
                         format!("browser.credentials.form.{index}"),
-                        &form_title(&bases, index),
+                        form_title(&bases, index),
                         None,
                         self.form.as_ref() == Some(&form.id),
                         Action::Form(form.id.clone()),
@@ -584,7 +584,7 @@ impl Credentials {
             )));
         }
         if self.accounts.is_empty() {
-            column = column.push(line(&crate::CATALOG.t("browser-credentials-no-accounts")));
+            column = column.push(line(crate::CATALOG.t("browser-credentials-no-accounts")));
         } else {
             let accounts: Vec<Box<dyn Widget>> = self
                 .accounts
@@ -652,7 +652,7 @@ impl Credentials {
                     ))
                     .with_role(TextRole::Subheading),
                 ))
-                .push(line(&crate::CATALOG.t("browser-credentials-kept-here")))
+                .push(line(crate::CATALOG.t("browser-credentials-kept-here")))
                 .push(Box::new(
                     Actions::new(
                         self.button(
@@ -674,9 +674,7 @@ impl Credentials {
         }
         if self.delete.is_some() {
             column = column
-                .push(line(
-                    &crate::CATALOG.t("browser-credentials-confirm-delete"),
-                ))
+                .push(line(crate::CATALOG.t("browser-credentials-confirm-delete")))
                 .push(Box::new(
                     Actions::new(
                         self.button(

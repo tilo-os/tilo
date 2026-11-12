@@ -1153,7 +1153,7 @@ fn memory_section(metrics: &Metrics, theme: &Theme) -> Section {
                 theme,
             ),
             level_gauge(
-                &CATALOG.t("monitor-memory-swap"),
+                CATALOG.t("monitor-memory-swap"),
                 of(metrics.swap_used, metrics.swap_total),
                 metrics.swap_frac(),
                 theme,

@@ -543,7 +543,7 @@ fn proof_places_section() -> ModelView<Vec<String>> {
                 column = column.push(value_group(
                     &crate::locales::CATALOG.t_args(
                         "publisher-publish-at",
-                        &[("place", ui::i18n::ArgValue::Number(number as f64))],
+                        &[("place", ui::i18n::ArgValue::Text(number.to_string()))],
                     ),
                     place,
                     &format!("proof-place-{index}"),

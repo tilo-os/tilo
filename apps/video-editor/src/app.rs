@@ -8418,7 +8418,7 @@ impl VideoEditorApp {
                 } else {
                     crate::resource::CATALOG.t_args(
                         "video-editor-rendering",
-                        &[("percent", ui::i18n::ArgValue::Number(percent as f64))],
+                        &[("percent", ui::i18n::ArgValue::Text(percent.to_string()))],
                     )
                 };
                 text(scene, tr, tf, &words, &ty.xs, dim, x0, bar.y1 + s1);
@@ -8427,7 +8427,7 @@ impl VideoEditorApp {
                 let done = elide_at(
                     &crate::resource::CATALOG.t_args(
                         "video-editor-export-done",
-                        &[("path", ui::i18n::ArgValue::Text(path.to_string()))],
+                        &[("path", ui::i18n::ArgValue::Text(path.clone()))],
                     ),
                     width,
                     &ty.xs,

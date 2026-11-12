@@ -522,12 +522,18 @@ impl CameraApp {
         Self::with(Storage::Sample, Screen::Camera)
     }
 
+    /// The scanner the sample document content offers, so the scan screen has
+    /// a device to show without touching the machine's own.
+    fn scanner_fixture() -> tilo_capture::scanner::Scanner {
+        tilo_capture::scanner::Scanner {
+            device: "sample:document-scanner".into(),
+            description: "Document scanner".into(),
+        }
+    }
+
     fn with(storage: Storage, initial_screen: Screen) -> Self {
         let scanner_devices = match &storage {
-            Storage::Sample => vec![tilo_capture::scanner::Scanner {
-                device: "sample:document-scanner".into(),
-                description: "Document scanner".into(),
-            }],
+            Storage::Sample => vec![Self::scanner_fixture()],
             Storage::Disk(_) => tilo_capture::scanner::scanners().unwrap_or_default(),
         };
         let selected_scanner = scanner_devices
@@ -623,14 +629,11 @@ impl CameraApp {
             dispatcher: Self::unattached_dispatcher(),
             bar: window_bar::Bar::new(Self::unattached_dispatcher().as_ref()),
             clock: None,
-            photos_handoff: Self::media_handoff_emitter(
-                "so.tilo.photos",
-                &crate::CATALOG.t("camera-app-photos"),
-            ),
+            photos_handoff: Self::media_handoff_emitter("so.tilo.photos", "camera-app-photos"),
             photos_browse: Self::photos_browse_emitter(),
             video_handoff: Self::media_handoff_emitter(
                 "so.tilo.video-player",
-                &crate::CATALOG.t("camera-app-video-player"),
+                "camera-app-video-player",
             ),
         }
     }
@@ -653,10 +656,12 @@ impl CameraApp {
         ResourceSpec::new(format!("{app_id}.app"), "applications.app", label).with_action(spec)
     }
 
-    fn media_handoff_emitter(app_id: &str, label: &str) -> Option<ActionEmitter<String>> {
+    /// An emitter handing a capture to `app_id`, whose name `name` is a
+    /// catalogue key.
+    fn media_handoff_emitter(app_id: &str, name: &str) -> Option<ActionEmitter<String>> {
         use ui::tilo_actions::ActionBinding;
 
-        let resource = Self::media_handoff_resource(app_id, label);
+        let resource = Self::media_handoff_resource(app_id, &crate::CATALOG.t(name));
         let spec = resource.actions.first()?;
         ActionBinding::new(&resource, spec, |content_hash| {
             let mut arguments = serde_json::Map::new();

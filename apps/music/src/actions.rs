@@ -659,7 +659,7 @@ impl<D: DeviceFacts + ?Sized> MusicRows<'_, D> {
             .operation(if id.starts_with("spotify:") {
                 MusicEffect::KeepOffline { tracks }.bound().unavailable(
                     "spotify_offline_unsupported",
-                    &crate::i18n::CATALOG.t("music-spotify-protected"),
+                    crate::i18n::CATALOG.t("music-spotify-protected"),
                 )
             } else if self.device.offline(id) {
                 MusicEffect::RemoveOffline { tracks }.bound()
@@ -840,7 +840,7 @@ impl<D: DeviceFacts + ?Sized> MusicRows<'_, D> {
         } else {
             move_up.unavailable(
                 "first_queue_item",
-                &crate::i18n::CATALOG.t("music-already-first"),
+                crate::i18n::CATALOG.t("music-already-first"),
             )
         })
         .operation(if index + 1 < total {
@@ -848,7 +848,7 @@ impl<D: DeviceFacts + ?Sized> MusicRows<'_, D> {
         } else {
             move_down.unavailable(
                 "last_queue_item",
-                &crate::i18n::CATALOG.t("music-already-last"),
+                crate::i18n::CATALOG.t("music-already-last"),
             )
         });
         if !artist.is_empty() {
@@ -923,7 +923,7 @@ fn transport(
     } else {
         play.unavailable(
             "nothing_playing",
-            &crate::i18n::CATALOG.t("music-choose-track-playback"),
+            crate::i18n::CATALOG.t("music-choose-track-playback"),
         )
     });
     row = row
@@ -943,7 +943,7 @@ fn transport(
     } else {
         like.unavailable(
             "nothing_playing",
-            &crate::i18n::CATALOG.t("music-choose-track-like"),
+            crate::i18n::CATALOG.t("music-choose-track-like"),
         )
     });
     let unavailable: Option<(&str, String)> = if playback.current.is_none() {

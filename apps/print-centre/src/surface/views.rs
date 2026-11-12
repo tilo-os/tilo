@@ -260,17 +260,17 @@ fn job_progress(job: &os_actions::printing::PrintJob) -> El {
             &[
                 (
                     "page",
-                    ArgValue::Number(done.saturating_add(1).min(total) as f64),
+                    ArgValue::Text(done.saturating_add(1).min(total).to_string()),
                 ),
-                ("total", ArgValue::Number(total as f64)),
+                ("total", ArgValue::Text(total.to_string())),
             ],
         )
     } else {
         CATALOG.t_args(
             "print-centre-pages-progress",
             &[
-                ("done", ArgValue::Number(done as f64)),
-                ("total", ArgValue::Number(total as f64)),
+                ("done", ArgValue::Text(done.to_string())),
+                ("total", ArgValue::Text(total.to_string())),
             ],
         )
     };
@@ -524,10 +524,12 @@ fn history_card(job: &os_actions::printing::PrintJob, tx: &Door) -> El {
     )
     .with_icon(Icon::Refresh);
     let body = bare_column()
-        .push(copy(&format!(
-            "{} on {}",
-            history_status(job),
-            display_name(&job.destination)
+        .push(copy(CATALOG.t_args(
+            "print-centre-job-on",
+            &[
+                ("status", ArgValue::Text(history_status(job))),
+                ("printer", ArgValue::Text(display_name(&job.destination))),
+            ],
         )))
         .push(muted(&job.submitted));
     let card = Card::new(Box::new(body)).with_title(job_title(job));
@@ -614,8 +616,8 @@ pub(super) fn diagnostics_view(snapshot: &Snapshot, tx: &Door) -> El {
             CATALOG.t_args(
                 "print-centre-printers-responding-count",
                 &[
-                    ("responding", ArgValue::Number(responding as f64)),
-                    ("total", ArgValue::Number(queues.len() as f64)),
+                    ("responding", ArgValue::Text(responding.to_string())),
+                    ("total", ArgValue::Text(queues.len().to_string())),
                 ],
             ),
         ),
@@ -623,7 +625,7 @@ pub(super) fn diagnostics_view(snapshot: &Snapshot, tx: &Door) -> El {
             CATALOG.t("print-centre-reporting-levels"),
             CATALOG.t_args(
                 "print-centre-reporting-levels-count",
-                &[("count", ArgValue::Number(supply_reports as f64))],
+                &[("count", ArgValue::Text(supply_reports.to_string()))],
             ),
         ),
         Property::new(
@@ -674,7 +676,7 @@ fn printer_check(queue: &os_actions::printing::PrinterQueue, tx: &Door) -> El {
         tx,
         UiCommand::Device(queue.name.clone()),
     )));
-    titled_section(&display_name(&queue.name), items)
+    titled_section(display_name(&queue.name), items)
 }
 
 fn scanner_check(none_found: bool, tx: &Door) -> El {
@@ -1268,9 +1270,9 @@ fn page_details(
                 &[
                     (
                         "page",
-                        ArgValue::Number(selected_page.saturating_add(1) as f64),
+                        ArgValue::Text(selected_page.saturating_add(1).to_string()),
                     ),
-                    ("pages", ArgValue::Number(page_count as f64)),
+                    ("pages", ArgValue::Text(page_count.to_string())),
                 ],
             ),
             TextRole::Heading,
@@ -1424,14 +1426,13 @@ fn scan_review_view(page_data: &super::ScannedPage, scan: &ScanState, tx: &Door)
                 .with_child(Box::new(details)),
         ));
 
-    let mut items: Vec<El> = Vec::new();
-    items.push(Box::new(review));
+    let mut items: Vec<El> = vec![Box::new(review)];
     items.push(titled_section(
         CATALOG.t("print-centre-pages-in-document"),
         vec![
             muted(CATALOG.t_args(
                 "print-centre-pages-in-document-count",
-                &[("count", ArgValue::Number(page_count as f64))],
+                &[("count", ArgValue::Text(page_count.to_string()))],
             )),
             button_row(page_navigation(selected_page, page_count, tx)),
         ],
@@ -1600,7 +1601,7 @@ pub(super) fn scan_setup_view(
     if page_count > 0 {
         items.push(muted(CATALOG.t_args(
             "print-centre-pages-captured",
-            &[("count", ArgValue::Number(page_count as f64))],
+            &[("count", ArgValue::Text(page_count.to_string()))],
         )));
     }
     items.push(titled_section(

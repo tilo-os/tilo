@@ -1330,7 +1330,7 @@ fn build_editor(ui: &Ui, input: &EditorInput) -> Element {
                 (None, 1) => String::from("1 step needs attention"),
                 (None, count) => CATALOG.t_args(
                     "shortcuts-problems",
-                    &[("count", ui::i18n::ArgValue::Number(count as f64))],
+                    &[("count", ui::i18n::ArgValue::Text(count.to_string()))],
                 ),
             }
         })

@@ -386,7 +386,7 @@ fn sample_directory() -> Directory {
         tag: None,
         activity: crate::t_args(
             "sheets-room-activity",
-            &[("people", ui::i18n::ArgValue::Number(here as f64))],
+            &[("people", ui::i18n::ArgValue::Text(here.to_string()))],
         ),
         members: (here > 0).then(|| format!("{} members", here.saturating_mul(4))),
         joins_as: "You join as an editor".to_owned(),
@@ -395,7 +395,7 @@ fn sample_directory() -> Directory {
                 (
                     crate::t_args(
                         "sheets-room-person",
-                        &[("number", ui::i18n::ArgValue::Number(n as f64))],
+                        &[("number", ui::i18n::ArgValue::Text(n.to_string()))],
                     ),
                     format!("person-{n}"),
                 )
