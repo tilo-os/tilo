@@ -2078,3 +2078,6 @@ fn a_seal_waits_behind_the_cleartext_writes_held_before_it() {
         );
     }
 }
+
+#[path = "kept_open_tests.rs"]
+mod kept_open;

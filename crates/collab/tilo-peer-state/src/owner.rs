@@ -48,7 +48,9 @@ pub use checkpoint::{
     CheckpointAcknowledgement, CheckpointCapture, CheckpointCompleteness, CheckpointEntry,
     CheckpointRoute, CheckpointSchema, MaterializedCheckpoint, NameBinding, NativeCheckpoint,
 };
-pub use document_read::{CommittedDocument, DocumentChanges, DocumentRead, History, Holding};
+pub use document_read::{
+    CommittedDocument, DocumentChanges, DocumentRead, History, Holding, revision_of_heads,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub use file_store::{FileHost, open_file, open_file_with, owner_file_of, read_file};
 #[cfg(not(target_arch = "wasm32"))]

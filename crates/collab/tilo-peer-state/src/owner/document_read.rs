@@ -107,6 +107,12 @@ fn revision_of(heads: &[automerge::ChangeHash]) -> [u8; 32] {
     crate::committed_document_revision(heads)
 }
 
+/// The revision a record standing at the sorted `heads` reads at, as a read names it.
+#[must_use]
+pub fn revision_of_heads(heads: &[[u8; 32]]) -> [u8; 32] {
+    revision_of_sorted(heads)
+}
+
 fn revision_of_sorted(heads: &[[u8; 32]]) -> [u8; 32] {
     revision_of(
         &heads
@@ -249,8 +255,25 @@ impl NativeCommittedView {
         }
         #[cfg(test)]
         CAPTURES.with(|count| count.set(count.get().saturating_add(1)));
-        let bytes = crate::state::changes_since(document, &[], maximum)
-            .map_err(|error| refusal(app, record, error))?;
+        // A record kept opened extends what its last capture made; any other is captured whole.
+        let bytes = match kept.capture(maximum) {
+            Some(bytes) => bytes,
+            None => crate::state::changes_since(
+                self.peer
+                    .open_document(
+                        reader,
+                        route,
+                        now,
+                        maximum,
+                        None,
+                        &mut KeptRecord::default(),
+                    )
+                    .map_err(|error| refusal(app, record, error))?,
+                &[],
+                maximum,
+            ),
+        }
+        .map_err(|error| refusal(app, record, error))?;
         Ok(DocumentRead::Captured(CommittedDocument {
             revision,
             heads,
