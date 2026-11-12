@@ -2075,9 +2075,9 @@ fn only_a_share_of_an_unheard_device_asks_who_the_workspace_admits() {
 #[test]
 fn a_window_the_desk_already_lists_is_pictured_in_its_tab_and_keeps_it_when_the_share_ends() {
     tilo_window_share::flatpak_share::read_encoders();
-    let salt = tilo_desktop_model::ids::device_salt_of_key(device(0x61).as_bytes());
+    let salt = tilo_desktop_model::ids::device_salt_of_key(device(0x67).as_bytes());
     let mut host = member_minting_under(
-        0x61,
+        0x67,
         desk(
             TileContent::LocalApp {
                 app_id: APP.to_owned(),
@@ -2091,7 +2091,7 @@ fn a_window_the_desk_already_lists_is_pictured_in_its_tab_and_keeps_it_when_the_
     let mut window = Some(mapped(&mut host.session, APP));
     let tab = tab_of(&host.session, APP);
     let mut viewer = member_minting_under(
-        0x62,
+        0x68,
         desk(
             TileContent::PeerWindow {
                 app_id: APP.to_owned(),
@@ -2116,7 +2116,7 @@ fn a_window_the_desk_already_lists_is_pictured_in_its_tab_and_keeps_it_when_the_
         !rows(&shares(&host.session), "sharing").is_empty()
     });
     carry_governance(&host.session, &viewer.session);
-    heard(&viewer, 0x61, "Framework");
+    heard(&viewer, 0x67, "Framework");
 
     // The picture comes into the tab that stood for the window, with nobody asking for it by hand.
     let wanted = tab.to_string();

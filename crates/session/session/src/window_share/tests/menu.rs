@@ -64,9 +64,9 @@ fn shared_count(member: &Member) -> usize {
 #[test]
 fn a_window_is_shared_with_its_workspace_from_its_menu_and_stopped_there() {
     tilo_window_share::flatpak_share::read_encoders();
-    let salt = tilo_desktop_model::ids::device_salt_of_key(device(0x61).as_bytes());
+    let salt = tilo_desktop_model::ids::device_salt_of_key(device(0x65).as_bytes());
     let mut host = member_minting_under(
-        0x61,
+        0x65,
         desk(
             TileContent::LocalApp {
                 app_id: APP.to_owned(),
@@ -79,7 +79,7 @@ fn a_window_is_shared_with_its_workspace_from_its_menu_and_stopped_there() {
     );
     let mut window = Some(mapped(&mut host.session, APP));
     let tab = foreign_tab(&host.session);
-    let mut viewer = member(0x62, showing(host.sync.publisher(), APP, tab));
+    let mut viewer = member(0x66, showing(host.sync.publisher(), APP, tab));
     let shared_in_governance = |host: &Member| {
         host.session.handle().read(|tree| {
             tree.workspaces[0]
