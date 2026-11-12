@@ -62,9 +62,10 @@ class Install(unittest.TestCase):
         (self.release / "SHA256SUMS").write_text(sums or f"{digest}  {self.archive.name}\n")
         run("openssl", "dgst", "-sha256", "-sign", self.key, "-out", self.release / "SHA256SUMS.sig", self.release / "SHA256SUMS")
 
-    def install(self, **env):
+    def install(self, *args, **env):
         return subprocess.run(
-            ["sh", SCRIPT],
+            ["sh", "-s", *args],
+            input=SCRIPT.read_text(),
             capture_output=True,
             text=True,
             env={
@@ -109,6 +110,17 @@ class Install(unittest.TestCase):
         done = self.install(TILO_RELEASES=f"http://127.0.0.1.example:{port}")
         self.assertNotEqual(done.returncode, 0)
         self.assertFalse(self.installed.exists())
+
+    def test_arguments_run_the_installed_command_by_its_path_where_path_does_not_name_it(self):
+        # `curl … | sh -s login CODE` on a fresh machine: ~/.local/bin is not on PATH, and the
+        # agent's shell never rereads the profile that would add it.
+        self.publish(b'#!/bin/sh\necho "ran tilo $*"; read -r line && echo "read $line"\nexit 3\n')
+        done = self.install("login", "K7Q-MX2P", "--site", "https://tilo.example")
+        self.assertEqual(done.returncode, 3, "the command's own status is the install's")
+        self.assertEqual(done.stdout, "ran tilo login K7Q-MX2P --site https://tilo.example\n",
+                         "its input is not the rest of the script")
+        self.assertNotIn(str(self.installed.parent), os.environ["PATH"].split(":"))
+        self.assertNotIn("Next:", done.stderr, "what comes next is the command it ran")
 
     def test_another_directory_and_an_update_in_place(self):
         target = self.home / "bin"

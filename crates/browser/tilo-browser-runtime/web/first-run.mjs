@@ -78,15 +78,20 @@ export const MCP_URL = 'https://mcp.tilo.sh';
 
 /** `site` as the curl command and `tilo login` read it: tilo.sh is the default. */
 const siteOf = site => (!site || site === HOME_SITE ? null : site);
-/** The command that installs `tilo` from `site`. */
-export const installCommand = site => `curl -fsSL ${siteOf(site) ?? 'tilo.sh'} | sh`;
+/** The command that installs `tilo` from `site`; with `args`, the installer
+ * then runs the installed `tilo` with them by its full path, so the line works
+ * on a machine whose PATH does not name where it went (a fresh one, or an
+ * agent's shell, which never rereads the profile that would add it). */
+export const installCommand = (site, args = '') => `curl -fsSL ${siteOf(site) ?? 'tilo.sh'} | sh${args ? ` -s ${args}` : ''}`;
+/** `login <code>`, naming `site` unless it is tilo.sh. */
+const loginArgs = (code, site) => `login ${code}${siteOf(site) ? ` --site ${site}` : ''}`;
 /** `tilo login <code>`, naming `site` unless it is tilo.sh. */
-export const loginCommand = (code, site) => `tilo login ${code}${siteOf(site) ? ` --site ${site}` : ''}`;
+export const loginCommand = (code, site) => `tilo ${loginArgs(code, site)}`;
 
 /** The prompt that has an agent set Tilo up: one line, complete on its own,
  * since `tilo login` tells the agent the rest. */
 export function setupPrompt(code, {site} = {}) {
-  return `Set up Tilo for me: run ${installCommand(site)} && ${loginCommand(code, site)}, then do what it tells you.`;
+  return `Set up Tilo for me: run ${installCommand(site, loginArgs(code, site))}, then do what it tells you.`;
 }
 
 /** The prompt that has an agent sign this tab in as the person. */
@@ -96,7 +101,7 @@ export function signInPrompt(code, {site} = {}) {
 
 /** The commands for someone who sets up by hand, one per line. */
 export function manualCommands(code, {site} = {}) {
-  return [installCommand(site), loginCommand(code, site), `claude mcp add --transport http tilo ${MCP_URL}`].join('\n');
+  return [installCommand(site, loginArgs(code, site)), `claude mcp add --transport http tilo ${MCP_URL}`].join('\n');
 }
 
 /** "10 more minutes", the time left until `expiresAt` (ms) at `now` in whole

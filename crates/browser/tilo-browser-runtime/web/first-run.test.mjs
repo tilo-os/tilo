@@ -62,14 +62,16 @@ function fixture({copy, site, stored = new Map(), online = () => true, clock = 0
 }
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 
-test('the setup prompt is one line: install, log in with the code, follow what tilo says', () => {
+test('the setup prompt is one line: install, log in with the code by the installed path, follow what tilo says', () => {
+  // The installer runs `login` with the `tilo` it just put in place, by its full path: an agent's
+  // shell on a fresh machine has no ~/.local/bin on its PATH (dist/install/tilo.sh).
   assert.equal(setupPrompt(CODE),
-    'Set up Tilo for me: run curl -fsSL tilo.sh | sh && tilo login K7Q-MX2P, then do what it tells you.');
+    'Set up Tilo for me: run curl -fsSL tilo.sh | sh -s login K7Q-MX2P, then do what it tells you.');
   assert.equal(setupPrompt(CODE, {site: 'https://tilo.sh'}), setupPrompt(CODE), 'tilo.sh is the default site');
   assert.equal(setupPrompt(CODE, {site: 'https://dev.tilo.example'}),
-    'Set up Tilo for me: run curl -fsSL https://dev.tilo.example | sh && tilo login K7Q-MX2P --site https://dev.tilo.example, then do what it tells you.');
+    'Set up Tilo for me: run curl -fsSL https://dev.tilo.example | sh -s login K7Q-MX2P --site https://dev.tilo.example, then do what it tells you.');
   assert.equal(signInPrompt(CODE), 'Sign me in to Tilo: run tilo login K7Q-MX2P, then do what it tells you.');
-  assert.equal(manualCommands(CODE), ['curl -fsSL tilo.sh | sh', 'tilo login K7Q-MX2P',
+  assert.equal(manualCommands(CODE), ['curl -fsSL tilo.sh | sh -s login K7Q-MX2P',
     'claude mcp add --transport http tilo https://mcp.tilo.sh'].join('\n'));
   assert.equal(MCP_URL, 'https://mcp.tilo.sh');
 });
@@ -756,7 +758,7 @@ test('the prompt breaks only between its words: a flag and a URL each stay whole
   const document = {createTextNode: text => node('text', text), createElement: () => node('span')};
   const element = {ownerDocument: document, children: [], replaceChildren(...children) { this.children = children; },
     get textContent() { return this.children.map(child => child.textContent).join(''); }};
-  const prompt = 'Set up Tilo for me: run curl -fsSL https://tilo.example | sh && tilo login D9B-X4GK --site https://tilo.example, then do what it tells you.';
+  const prompt = 'Set up Tilo for me: run curl -fsSL https://tilo.example | sh -s login D9B-X4GK --site https://tilo.example, then do what it tells you.';
   showPrompt(element, prompt);
   assert.equal(element.textContent, prompt, 'what is copied from the box is the prompt itself');
   const words = element.children.filter(child => child.className === 'fr-word').map(child => child.textContent);

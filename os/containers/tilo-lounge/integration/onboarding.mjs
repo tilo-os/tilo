@@ -400,10 +400,10 @@ const tilo = async (env, args) => new Promise(resolve => {
  * writes it inside the gesture, and the browser lands the write a moment
  * later, so a prompt an earlier copy left there is not this one. */
 const copied = async (tab, before) => until(tab,
-  `navigator.clipboard.readText().then(text => text.includes('tilo login') && text !== ${JSON.stringify(before)} ? text : '', () => '')`,
+  `navigator.clipboard.readText().then(text => text.match(/(?:tilo|sh -s) login /) && text !== ${JSON.stringify(before)} ? text : '', () => '')`,
   'the prompt on the clipboard', stepLimit(4));
 const commandOf = prompt => {
-  const match = prompt.match(/tilo login ([2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4})(?: --site (\S+?))?(?:,|\s|$)/);
+  const match = prompt.match(/(?:tilo|sh -s) login ([2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4})(?: --site (\S+?))?(?:,|\s|$)/);
   return match ? {code: match[1], site: match[2] ?? null} : null;
 };
 

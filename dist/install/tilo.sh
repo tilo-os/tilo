@@ -18,6 +18,11 @@
 #   $TILO_RELEASES/latest/tilo-<os>-<arch>.tar.gz   holding `tilo`
 # $TILO_VERSION picks a release other than latest (`v0.4.0`).
 #
+# Arguments are a command for the installed `tilo`, run by its full path once
+# it is in place: `curl -fsSL https://tilo.sh | sh -s login K7Q-MX2P` installs
+# and logs in on a machine whose PATH does not name ~/.local/bin (a fresh one,
+# or an agent's shell, which never rereads the profile that adds it).
+#
 # The whole script is one function called on its last line, so a download
 # cut short runs nothing.
 set -eu
@@ -110,10 +115,17 @@ KEY
 
   say "Installed tilo to $dir/tilo."
   case ":${PATH:-}:" in
-    *":$dir:"*) ;;
-    *) say "Add $dir to your PATH to run it as tilo, or run $dir/tilo." ;;
+    *":$dir:"*) tilo=tilo ;;
+    *) tilo=$dir/tilo; say "Add $dir to your PATH to run it as tilo; until then, run $tilo." ;;
   esac
-  say "Next: tilo login <code from your Tilo tab>, then tilo agent connect claude (or codex)."
+  if [ "$#" -eq 0 ]; then
+    say "Next: $tilo login <code from your Tilo tab>, then $tilo agent connect claude (or codex)."
+    return
+  fi
+  rm -rf "$work"
+  trap - EXIT INT TERM
+  # Its input is the rest of this script's pipe, not the person's.
+  "$dir/tilo" "$@" </dev/null
 }
 
 main "$@"
