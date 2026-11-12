@@ -24,6 +24,7 @@ case $arch in
 esac
 [[ $(uname -m) == "$arch" ]] || die "the $arch snapshot is built natively, not on $(uname -m)"
 cd "$repo_root"
+mkdir -p "$out"
 . os/base-snapshot.env
 # The newest signature among the packages of the snapshot archive $1, as seconds: the clock an OS
 # build from the unpublished snapshot takes (with its base's date), which rpm refuses a package
