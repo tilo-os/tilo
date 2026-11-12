@@ -77,7 +77,9 @@ const SENDER_STOPPED: &str = "the sender stopped sharing it";
 enum ShareCommand {
     /// Share the window `window` (a compositor identifier,
     /// [`Compositor::shareable_windows`]) with `workspace` as the window of `tab`
-    /// belonging to `app_id`.
+    /// belonging to `app_id`. An ask that leaves `window`, `app_id` or `workspace` empty means
+    /// the window this desk shows in `tab`, its app and the workspace the tab stands in
+    /// ([`share_of`]): the tab is all that whoever asks at the desk's actions can name.
     Share {
         window: String,
         tab: TabId,
@@ -646,6 +648,11 @@ impl WindowShares {
                     if self.hosted.contains_key(&tab) {
                         continue;
                     }
+                    let Some((window, app_id, workspace)) =
+                        share_of(compositor, tree, tab, window, app_id, workspace)
+                    else {
+                        continue;
+                    };
                     // The workspace's governance names the window and the device it runs on, which
                     // is how the other members learn of the share. Only this device's own window is
                     // hosted here.
@@ -2065,6 +2072,68 @@ fn hosted_window(tree: &DesktopTree, tab: TabId) -> Option<(String, String)> {
     })
 }
 
+/// What a share of `tab` is of, once the desk said what the ask left out. Whoever asks at the
+/// desk's actions names the tab and nothing else: the identifier a window is captured under is the
+/// compositor's own, told only to the clients it trusts, so the session finds it from the window
+/// the tab shows ([`window_shown`]). The app is that window's, and the workspace the one the tab
+/// stands in. `None` , and said in the log, for an ask that leaves something out of a tab that
+/// shows no window of this device.
+fn share_of(
+    compositor: &Compositor,
+    tree: &DesktopTree,
+    tab: TabId,
+    window: String,
+    app_id: String,
+    workspace: String,
+) -> Option<(String, String, String)> {
+    if !(window.is_empty() || app_id.is_empty() || workspace.is_empty()) {
+        return Some((window, app_id, workspace));
+    }
+    let Some((shown, shown_app, stands_in)) = window_shown(compositor, tree, tab) else {
+        tracing::warn!(
+            tab,
+            "a tab that shows no window of this device shares nothing"
+        );
+        return None;
+    };
+    let named = |asked: String, found: String| if asked.is_empty() { found } else { asked };
+    Some((
+        named(window, shown),
+        named(app_id, shown_app),
+        named(workspace, stands_in),
+    ))
+}
+
+/// The window this device maps in `tab` : the identifier the compositor captures it under, the app
+/// it belongs to and the workspace the tab stands in. `None` for a tab the desk does not hold, one
+/// that shows no window this compositor maps, or one in no workspace.
+fn window_shown(
+    compositor: &Compositor,
+    tree: &DesktopTree,
+    tab: TabId,
+) -> Option<(String, String, String)> {
+    let (held, shown) = tree.workspaces.iter().find_map(|held| {
+        held.strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find(|shown| shown.id == tab)
+            .map(|shown| (held, shown))
+    })?;
+    let TileContent::Foreign { app_id, surface_id } = &shown.tile else {
+        return None;
+    };
+    let workspace = held.policy.workspace.clone();
+    if workspace.is_empty() {
+        return None;
+    }
+    Some((
+        compositor.shareable_window_of(*surface_id)?,
+        app_id.clone(),
+        workspace,
+    ))
+}
+
 /// The device a window is hosted by, as the key that hosts it: what the desktop model names a
 /// hosted window's device by.
 fn device_key(host: &str) -> Option<EndpointId> {
@@ -2260,24 +2329,30 @@ fn text_of(args: &tilo_actions::ActionArgs, name: &str) -> String {
     args.text(name).unwrap_or_default().to_owned()
 }
 
-/// Share the window `window` of `app_id` as `tab` of `workspace` .
+/// Share the window `tab` shows with the workspace the tab stands in. `window` , `app_id` and
+/// `room` say which window, whose and with which workspace for a caller that knows them; left out,
+/// they are what the desk says of the tab ([`share_of`]).
 fn share_action() -> ActionSpec {
     action(
         "share",
         t("session-window-share-share"),
         vec![
-            ActionParam::required_owned(
+            ActionParam::optional_owned(
                 "window",
                 ParamType::Text,
                 t("session-window-share-param-window"),
             ),
             tab_argument(),
-            ActionParam::required_owned(
+            ActionParam::optional_owned(
                 "app_id",
                 ParamType::Text,
                 t("session-window-share-param-app"),
             ),
-            workspace_argument(),
+            ActionParam::optional_owned(
+                "room",
+                ParamType::Text,
+                t("session-window-share-param-share-workspace"),
+            ),
         ],
         |args| ShareCommand::Share {
             window: text_of(args, "window"),

@@ -1858,6 +1858,95 @@ fn a_share_shows_on_another_device_from_the_workspace_governance() {
     });
 }
 
+/// The tile `session` 's desk shows in `tab` .
+fn tile_of(session: &Session, tab: u64) -> Option<TileContent> {
+    session.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find(|shown| shown.id == tab)
+            .map(|shown| shown.tile.clone())
+    })
+}
+
+/// A person shares a window by the tab their desk shows it in, and names nothing else. The
+/// identifier a window is captured under is the compositor's own, which it tells only the clients
+/// it trusts: no person, script or agent at the desk's actions can name it. The workspace is the
+/// one the tab stands in.
+#[test]
+fn a_window_is_shared_by_naming_the_tab_it_is_shown_in() {
+    tilo_window_share::flatpak_share::read_encoders();
+    let salt = tilo_desktop_model::ids::device_salt_of_key(device(0x51).as_bytes());
+    let mut host = member_minting_under(
+        0x51,
+        desk(
+            TileContent::LocalApp {
+                app_id: APP.to_owned(),
+                label: "Notes".to_owned(),
+                note: String::new(),
+            },
+            tilo_desktop_model::ids::compose_id(salt, 1),
+        ),
+        salt,
+    );
+    let mut window = Some(mapped(&mut host.session, APP));
+    // The tab the desk shows the window in, which is all the person names.
+    let tab = foreign_tab(&host.session);
+    assert_eq!(
+        tilo_desktop_model::peer_salt_of(tab),
+        salt,
+        "the window's tab is this device's own: {:?}",
+        tile_of(&host.session, tab)
+    );
+    let mut viewer = member_minting_under(0x52, own_desk(), 1);
+
+    host.session
+        .invoke(
+            SHARES_RESOURCE,
+            "share",
+            &arguments(serde_json::json!({ "tab": tab.to_string() })),
+        )
+        .expect("the window the tab shows is shared with the workspace the tab stands in");
+    let wanted = tab.to_string();
+    until(&mut host, &mut window, &mut viewer, |host, _, _| {
+        rows(&shares(&host.session), "sharing")
+            .iter()
+            .any(|shared| {
+                shared["tab"].as_str() == Some(wanted.as_str())
+                    && shared["app_id"].as_str() == Some(APP)
+                    && shared["room"].as_str() == Some(WORKSPACE)
+            })
+    });
+    let grants = host
+        .session
+        .handle()
+        .read(|tree| tree.workspaces[0].policy.grants.clone());
+    assert!(
+        grants
+            .iter()
+            .any(|grant| is_of_share(grant, &window_share_id(tab))),
+        "the share is in the workspace's governance, where its other devices read it: {grants:?}"
+    );
+
+    // A tab that shows no window of this device shares nothing.
+    host.session
+        .invoke(
+            SHARES_RESOURCE,
+            "share",
+            &arguments(serde_json::json!({ "tab": "7" })),
+        )
+        .expect("the ask is taken");
+    settle(&mut host, &mut window, &mut viewer);
+    let reading = shares(&host.session);
+    assert_eq!(
+        rows(&reading, "sharing").len() + rows(&reading, "starting").len(),
+        1,
+        "only the window the desk shows is shared: {reading}"
+    );
+}
+
 /// The window of another device shown on `session` 's desk as `tab` , with the key of the device
 /// that hosts it: what a person sees there.
 fn hosted(session: &Session, tab: u64) -> Option<String> {

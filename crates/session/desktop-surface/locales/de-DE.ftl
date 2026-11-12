@@ -1365,10 +1365,11 @@ session-param-paste-destination = Der Ordner, in den die kopierten Dateien einge
 
 session-window-share = Geteilte Fenster
 session-window-share-share = Ein Fenster mit dem Raum teilen
-session-window-share-param-window = Das Fenster, nach der Kennung, die seine App erfassen darf
+session-window-share-param-window = Das Fenster, nach der Kennung, die seine App erfassen darf; weglassen für das Fenster, das der Tab zeigt
 session-window-share-param-tab = Der Tab, in dem das Fenster auf diesem Gerät gezeigt wird
-session-window-share-param-app = Die App, zu der das Fenster gehört
+session-window-share-param-app = Die App, zu der das Fenster gehört; weglassen für die App des Fensters, das der Tab zeigt
 session-window-share-param-workspace = Der Arbeitsbereich, in dem es geteilt wird
+session-window-share-param-share-workspace = Der Arbeitsbereich, in dem es geteilt wird; weglassen für den, in dem der Tab steht
 session-window-share-stop = Das Teilen des Fensters beenden
 session-window-share-allow-input = Den Raum das Fenster bedienen lassen
 session-window-share-param-on = Ob sie es bedienen dürfen; weglassen zum Umschalten

@@ -1349,10 +1349,11 @@ session-param-paste-destination = The folder the copied files are pasted into
 
 session-window-share = Shared windows
 session-window-share-share = Share a window with the workspace
-session-window-share-param-window = The window, by the identifier its app may capture
+session-window-share-param-window = The window, by the identifier its app may capture; leave out for the window the tab shows
 session-window-share-param-tab = The tab the window is shown in on this device
-session-window-share-param-app = The app the window belongs to
+session-window-share-param-app = The app the window belongs to; leave out for the app of the window the tab shows
 session-window-share-param-workspace = The workspace to share it in
+session-window-share-param-share-workspace = The workspace to share it in; leave out for the one the tab stands in
 session-window-share-stop = Stop sharing the window
 session-window-share-allow-input = Let the workspace control the window
 session-window-share-param-on = Whether they may control it; leave out to switch it

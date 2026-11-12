@@ -351,12 +351,13 @@ Two things carry a tab to other devices, and both are the session's, not the
 Browser's.
 
 - **Seeing and typing.** The person shares the tab's window with the
-  workspace. Each member who shows it receives the window's live picture,
-  the engine's own pixels, and their pointer and keys reach the page
-  through a seat of their own while the person allows it. What they type
-  is direct input to the page. Several members view one window at once,
-  each a viewer of its own: one who stops viewing ends their own picture,
-  seat and reach, and nobody else's.
+  workspace (the session's `share`, which takes the window's tab and
+  finds the window itself). Each member who shows it receives the
+  window's live picture, the engine's own pixels, and their pointer and
+  keys reach the page through a seat of their own while the person
+  allows it. What they type is direct input to the page. Several members
+  view one window at once, each a viewer of its own: one who stops
+  viewing ends their own picture, seat and reach, and nobody else's.
 - **Acting.** An agent on another of the person's devices connects to the
   desktop's agent door and works there under a name of its own, as an agent
   on the desktop itself does. Its page actions take their turn in the tab,

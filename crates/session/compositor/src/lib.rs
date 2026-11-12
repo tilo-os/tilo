@@ -1790,6 +1790,20 @@ impl Compositor {
             .collect()
     }
 
+    /// The identifier the mapped window whose [`WindowInfo::id`] is `id` can be captured under, as
+    /// [`Self::shareable_windows`] lists it: what the session shares the window a desk's tab holds
+    /// by. `None` for a window that is not mapped or cannot be captured.
+    #[must_use]
+    pub fn shareable_window_of(&self, id: u64) -> Option<String> {
+        self.data
+            .state
+            .capture
+            .shareable_windows()
+            .into_iter()
+            .find(|(_, info)| info.id == id)
+            .map(|(identifier, _)| identifier)
+    }
+
     /// Where a shareable window (`Compositor::shareable_windows`'s identifier) is in the layout.
     #[must_use]
     pub fn shareable_window_rect(&self, identifier: &str) -> Option<(i32, i32, i32, i32)> {
@@ -2422,14 +2436,7 @@ impl Compositor {
     /// captured at all: a capture that names no window takes this one.
     #[must_use]
     pub fn focused_shareable_window(&self) -> Option<String> {
-        let focused = self.focused_window()?.id;
-        self.data
-            .state
-            .capture
-            .shareable_windows()
-            .into_iter()
-            .find(|(_, info)| info.id == focused)
-            .map(|(identifier, _)| identifier)
+        self.shareable_window_of(self.focused_window()?.id)
     }
 
     /// An activation token for something the session itself did (the person chose a notification,
