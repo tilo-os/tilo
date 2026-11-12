@@ -35,7 +35,7 @@ import {request} from 'node:https';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import * as waits from './waits.mjs';
-import {stepLimit} from './waits.mjs';
+import {stepLimit, deskMetrics, DESK} from './waits.mjs';
 
 const [site, relay, origin, out, rolesFile, earlier] = process.argv.slice(2);
 if (!site || !relay || !origin || !out || !rolesFile) {
@@ -310,7 +310,7 @@ const search = async (tab, command, query, row, opens = null) => {
   // The desk keeps the search up until what it opened has arrived, and the
   // chord toggles it: it is opened only when it is down.
   if (!await tab.evaluate('!!globalThis.tiloMount?.state()?.searchOpen')) {
-    await click(tab, 640, 700);
+    await click(tab, DESK.empty.x, DESK.empty.y);
     await key(tab, 'k', command);
   }
   const chorded = Date.now();
@@ -584,8 +584,7 @@ const anotherBrowser = async () => {
   const launched = await launch({args: browserArgs});
   browsers.push(launched);
   const tab = await launched.tab();
-  await tab.send('Emulation.setDeviceMetricsOverride',
-    {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false}).catch(() => {});
+  await tab.send('Emulation.setDeviceMetricsOverride', deskMetrics).catch(() => {});
   await returning(tab);
   await tab.send('Page.addScriptToEvaluateOnNewDocument', {source: waitSource});
   await recordLoading(launched, tab);
@@ -1490,7 +1489,7 @@ try {
     // the Lounge offers open by now and presents a frame every several
     // seconds through the software rasteriser, and each answer is a presented
     // frame: the waits are the ones a search gets everywhere in this gate.
-    await click(a.tab, 640, 700);
+    await click(a.tab, DESK.empty.x, DESK.empty.y);
     await key(a.tab, 'k', a.command);
     await until(a.tab, '!!globalThis.tiloMount?.state()?.searchOpen', 'the search chord', stepLimit(3));
     await key(a.tab, 'Escape');

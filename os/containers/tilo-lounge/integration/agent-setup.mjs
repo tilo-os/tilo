@@ -28,7 +28,7 @@ import {connect} from 'node:tls';
 import {join, resolve} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
-import {stepLimit} from './waits.mjs';
+import {stepLimit, deskMetrics} from './waits.mjs';
 
 const [site, relay, tiloBin, siteCa, out] = process.argv.slice(2);
 if (!site || !relay || !tiloBin || !siteCa || !out) {
@@ -259,7 +259,7 @@ const visit = async name => {
   });
   await tab.send('Network.enable', {}).catch(() => {});
   await tab.send('Inspector.enable', {}).catch(() => {});
-  await tab.send('Emulation.setDeviceMetricsOverride', {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false}).catch(() => {});
+  await tab.send('Emulation.setDeviceMetricsOverride', deskMetrics).catch(() => {});
   await tab.send('Browser.grantPermissions', {origin: new URL(site).origin,
     permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']}).catch(() => {});
   await tab.navigate(site);

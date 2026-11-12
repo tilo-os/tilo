@@ -21,7 +21,7 @@ import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
-import {stepLimit} from './waits.mjs';
+import {stepLimit, deskMetrics, DESK} from './waits.mjs';
 
 const [site, relay, out] = process.argv.slice(2);
 if (!site || !relay || !out) {
@@ -58,7 +58,7 @@ browser.on(({sessionId, method, params}) => {
 });
 await tab.send('Network.enable', {}).catch(() => {});
 await tab.send('Log.enable', {}).catch(() => {});
-await tab.send('Emulation.setDeviceMetricsOverride', {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false})
+await tab.send('Emulation.setDeviceMetricsOverride', deskMetrics)
   .catch(() => {});
 
 // Every exception the page threw and every console line that reports a
@@ -177,7 +177,7 @@ mark('the page joined the workspace');
 const mac = await tab.evaluate('/Mac/.test(navigator.platform)');
 const box = JSON.parse(await tab.evaluate(`JSON.stringify((() => {
   const r = globalThis.tiloMount?.canvas?.getBoundingClientRect();
-  return r ? {x: r.x + r.width / 2, y: r.y + r.height * 0.85} : {x: 640, y: 700};
+  return r ? {x: r.x + r.width / 2, y: r.y + r.height * 0.85} : DESK.empty;
 })())`));
 for (const type of ['mousePressed', 'mouseReleased']) {
   await tab.send('Input.dispatchMouseEvent', {type, x: box.x, y: box.y, button: 'left', clickCount: 1});

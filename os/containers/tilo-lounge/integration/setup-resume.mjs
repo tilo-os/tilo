@@ -35,7 +35,7 @@ import {chmodSync, mkdirSync, writeFileSync} from 'node:fs';
 import {connect} from 'node:tls';
 import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
-import {stepLimit} from './waits.mjs';
+import {stepLimit, deskMetrics} from './waits.mjs';
 import {clock} from './timing.mjs';
 
 const [site, relay, tiloBin, siteCa, out] = process.argv.slice(2);
@@ -107,7 +107,7 @@ const tabIn = async (context, name) => {
   // Each tab counts as focused, as the one a person works in: the clipboard
   // answers only a focused page, and several tabs share this browser.
   await tab.send('Emulation.setFocusEmulationEnabled', {enabled: true}).catch(() => {});
-  await tab.send('Emulation.setDeviceMetricsOverride', {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false});
+  await tab.send('Emulation.setDeviceMetricsOverride', deskMetrics);
   await tab.send('Browser.grantPermissions', {origin: new URL(site).origin, browserContextId: context,
     permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']}).catch(() => {});
   return tab;

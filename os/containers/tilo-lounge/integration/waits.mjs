@@ -15,6 +15,17 @@
  * inside a minutes-long one. */
 export const STEP_MS = Math.round(1000 * (Number(process.env.TILO_STEP_SECONDS) || 5));
 
+/** The window a driven desk is drawn in. Every pixel of it goes through the
+ * software rasteriser on every frame, so it is the smallest size that still
+ * gets the desk's desktop layout (the narrow layouts begin below 720 px wide
+ * and 600 px tall): 1024 by 640 draws a third fewer pixels than 1280 by 800.
+ * `empty` is a point on the desk below the windows it opens, where a click
+ * gives the page focus without pressing anything. */
+export const DESK = {width: 1024, height: 640, empty: {x: 512, y: 560}};
+
+/** The device metrics that give a tab the desk's window. */
+export const deskMetrics = {width: DESK.width, height: DESK.height, deviceScaleFactor: 1, mobile: false};
+
 /** `n` steps, for what takes a person more than one: a page loading and
  * joining (6), an answer crossing to another person's page (4). */
 export const stepLimit = n => n * STEP_MS;
