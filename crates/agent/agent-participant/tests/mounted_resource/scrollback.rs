@@ -176,10 +176,10 @@ pub async fn run(bundle: &str) {
     };
     native
         .peer
-        .write(route.clone(), &source.take_mutation().unwrap())
+        .write(route.clone(), &source.take_mutation().unwrap().unwrap())
         .unwrap();
     let mut handed = Vec::new();
-    for (changed, mutation) in source.take_record_mutations() {
+    for (changed, mutation) in source.take_record_mutations().unwrap() {
         let part = chat::parts::part_index(&changed).expect("only parts change beside the chat");
         // The host never had part 0: nobody can send the reader its history.
         if part == 0 {
