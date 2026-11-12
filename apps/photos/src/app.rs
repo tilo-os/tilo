@@ -1207,7 +1207,7 @@ impl Photos {
                 &path.to_string_lossy(),
                 1,
                 1,
-                tilo_content::hash_bytes(&bytes),
+                ui::tilo_resource::Bytes::kept_as(&bytes, &tilo_content::hash_bytes(&bytes)),
             );
             self.show_photo(&LibraryPhoto::from_image(image).id);
         }
@@ -1297,8 +1297,9 @@ impl Photos {
         // can already answer for — and one the workspace can be handed.
         // Otherwise the document would name a picture only the path
         // could find, and the path is true on one machine.
-        let content = match self.content.put(bytes.unwrap_or_default()) {
-            Ok(content) => content,
+        let bytes = bytes.unwrap_or_default();
+        let content = match self.content.put(bytes) {
+            Ok(reference) => ui::tilo_resource::Bytes::kept_as(bytes, &reference),
             Err(error) => {
                 tracing::warn!(%error, "photos: could not store an opened original");
                 self.notice = Some(tr("photos-open-failed"));
@@ -1706,7 +1707,7 @@ impl Photos {
         let photo = library
             .photos
             .values()
-            .find(|photo| photo.image.content == open.content)
+            .find(|photo| photo.image.hash() == open.hash())
             .cloned();
         let _ = edits;
         ViewerDetails {
@@ -2117,9 +2118,10 @@ fn to_peniko(img: &Rgba) -> ImageData {
     pixels::to_peniko(img)
 }
 
-/// A local decode-cache key: the content hash, which is immutable.
+/// A local decode-cache key: the content hash, which is immutable and the
+/// same on every device.
 fn decode_key(open: &OpenImage) -> String {
-    open.content.clone()
+    open.hash()
 }
 
 fn thumbnail_key(open: &OpenImage) -> String {

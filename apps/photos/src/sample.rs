@@ -264,8 +264,13 @@ fn gallery() -> &'static [Sample] {
 
 fn sample(name: &str, pattern: &pixels::Rgba) -> Option<Sample> {
     let bytes = pixels::encode_png(pattern)?;
-    let hash = tilo_content::hash_bytes(&bytes);
-    let image = OpenImage::new(name, pattern.w, pattern.h, hash);
+    let reference = tilo_content::hash_bytes(&bytes);
+    let image = OpenImage::new(
+        name,
+        pattern.w,
+        pattern.h,
+        ui::tilo_resource::Bytes::kept_as(&bytes, &reference),
+    );
     Some(Sample {
         bytes,
         photo: LibraryPhoto::from_image(image),
@@ -273,11 +278,14 @@ fn sample(name: &str, pattern: &pixels::Rgba) -> Option<Sample> {
 }
 
 fn not_here_yet() -> LibraryPhoto {
-    placeholder("not-here-yet.png", "0".repeat(64))
+    placeholder("not-here-yet.png", &"0".repeat(64))
 }
 
 fn unreadable() -> LibraryPhoto {
-    placeholder("unreadable-image.png", tilo_content::hash_bytes(UNREADABLE))
+    placeholder(
+        "unreadable-image.png",
+        &tilo_content::hash_bytes(UNREADABLE),
+    )
 }
 
 /// The photograph `scenario` shows open in its window.
@@ -293,8 +301,27 @@ pub(crate) fn opened(scenario: &str) -> Option<String> {
 /// A photograph whose bytes have not arrived here (`loading`) or are not an
 /// image (`error`): what a collaborator's import looks like before or
 /// without its content.
-fn placeholder(name: &str, content: String) -> LibraryPhoto {
-    LibraryPhoto::from_image(OpenImage::new(name, 1200, 800, content))
+fn placeholder(name: &str, hash: &str) -> LibraryPhoto {
+    LibraryPhoto::from_image(OpenImage::new(
+        name,
+        1200,
+        800,
+        ui::tilo_resource::Bytes::Blob {
+            hash: content_hash(hash),
+            len: 0,
+            sealed: None,
+        },
+    ))
+}
+
+/// The 32 bytes a 64-digit hex hash names: a picture whose bytes are not
+/// here.
+fn content_hash(hex: &str) -> [u8; 32] {
+    let mut hash = [0_u8; 32];
+    for (byte, pair) in hash.iter_mut().zip(hex.as_bytes().chunks(2)) {
+        *byte = u8::from_str_radix(std::str::from_utf8(pair).unwrap_or("0"), 16).unwrap_or(0);
+    }
+    hash
 }
 
 /// The library edits that stage `scenario` (`None` for a plain `--shots`,
@@ -481,10 +508,9 @@ mod tests {
             }
             let library = staged.state().unwrap();
             for photo in library.all_photos() {
-                let content = &photo.image.content;
                 if !matches!(name, "loading") {
                     assert!(
-                        store.read(content).is_some(),
+                        photo.image.content.read(&store).is_some(),
                         "{name}: {} has its bytes",
                         photo.id
                     );

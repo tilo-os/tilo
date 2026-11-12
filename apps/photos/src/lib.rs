@@ -85,27 +85,22 @@ pub use app::PhotosApp;
 pub use model::{Edits, LocationProvenance, OpenImage, PhotoLocation, Rect01};
 
 /// Import a Camera portable-media reference into Photos without ever trusting
-/// a machine-local path.  The content is read, verified against its hash, from
-/// `store` first; missing bytes are an actionable refusal rather than a
+/// a machine-local path.  The content is read, verified against the reference,
+/// from `store` first; missing bytes are an actionable refusal rather than a
 /// phantom library entry.
 pub fn camera_import_photo(
     media_id: &str,
     name: &str,
     store: &tilo_content::ContentStore,
 ) -> Result<model::LibraryPhoto, String> {
-    let hash = media_id
+    let reference = media_id
         .strip_prefix("media:blake3:")
-        .filter(|hash| {
-            hash.len() == 64
-                && hash
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        })
+        .filter(|reference| tilo_content::valid_reference(reference))
         .ok_or_else(|| crate::strings::tr("photos-camera-error-identity"))?;
-    // The store verifies what it reads against the hash; content that fails
-    // that check reads as absent.
+    // The store verifies what it reads against the address, and opens sealed
+    // content with the reference's key; content that fails reads as absent.
     let bytes = store
-        .read(hash)
+        .read(reference)
         .ok_or_else(|| crate::strings::tr("photos-camera-error-not-here"))?;
     if bytes.is_empty() || bytes.len() > 64 * 1024 * 1024 {
         return Err(crate::strings::tr("photos-camera-error-integrity"));
@@ -113,7 +108,10 @@ pub fn camera_import_photo(
     let image = pixels::size(&bytes)
         .ok_or_else(|| crate::strings::tr("photos-camera-error-unsupported"))?;
     Ok(model::LibraryPhoto::from_image(OpenImage::new(
-        name, image.0, image.1, hash,
+        name,
+        image.0,
+        image.1,
+        ui::tilo_resource::Bytes::kept_as(&bytes, reference),
     )))
 }
 
@@ -158,7 +156,7 @@ mod camera_import_tests {
 
             let library = library.state().expect("the library reads");
             assert_eq!(library.photos.len(), 1);
-            assert_eq!(library.all_photos().next().unwrap().image.content, hash);
+            assert_eq!(library.all_photos().next().unwrap().image.hash(), hash);
         }
 
         eprintln!("phase camera_import_refuses_missing_or_invalid_portable_bytes");

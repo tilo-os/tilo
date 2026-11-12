@@ -411,10 +411,11 @@ pub fn export_edited_content(
     let photo = library
         .photo(photo_id)
         .ok_or_else(|| "that photograph is no longer in the library".to_string())?;
-    let source_content = &photo.image.content;
     let edits = photo.edits;
-    let source = store
-        .read(source_content)
+    let source = photo
+        .image
+        .content
+        .read(store)
         .ok_or_else(|| "the addressed photograph bytes are unavailable".to_string())?;
     let original = crate::pixels::decode(&source)
         .ok_or_else(|| "the addressed photograph bytes are not a supported image".to_string())?;

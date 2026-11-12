@@ -5,12 +5,12 @@
 //! [`Collection`] and the [`Album`]s that file them. `#[derive(Model)]` is
 //! the whole storage contract; each field merges as its type says (people
 //! and tags per label, a crop and a turn independently). The pixels never
-//! enter the document: a photograph names its bytes by content hash, and
-//! they stay in the app's content store. The record's verbs are in
+//! enter the document: a photograph names its bytes by the reference the
+//! content store answered, and they stay there. The record's verbs are in
 //! [`crate::resource`].
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, Collection, Id, JsonSchema, Model, Refusal, Set};
+use ui::tilo_resource::{self, Bytes, Collection, Id, JsonSchema, Model, Refusal, Set};
 
 /// Bounded, explainable intelligence derived on a device from a photograph.
 ///
@@ -325,7 +325,7 @@ impl LibraryPhoto {
     #[must_use]
     pub fn from_image(image: OpenImage) -> Self {
         Self {
-            id: format!("photos.photo:{}", image.content),
+            id: format!("photos.photo:{}", image.hash()),
             name: image.name.clone(),
             image,
             ..Self::default()
@@ -459,7 +459,7 @@ impl LibraryPhoto {
             || self.image.width == 0
             || self.image.height == 0
             || dimensions > crate::pixels::MAX_DECODED_PIXELS
-            || !is_content_hash(&self.image.content)
+            || matches!(self.image.content, Bytes::Empty | Bytes::Inline(_))
         {
             return Err(Refusal::new(
                 "a photograph is content-addressed, portable and bounded",
@@ -766,11 +766,11 @@ impl Edits {
 
 /// The photograph currently open: its portable identity and dimensions.
 ///
-/// Deliberately carries no bytes. The document names the original by content
-/// hash; the bytes live in the app's content store (`tilo-content`) and the
-/// pixels are decoded beside the document, never written into the CRDT: an
-/// oversized change is dropped by the sync transport and freezes every peer's
-/// replica at the change before it.
+/// Deliberately carries no bytes. The document names the original by the
+/// reference its content store answered; the bytes live there
+/// (`tilo-content`) and the pixels are decoded beside the document, never
+/// written into the CRDT: an oversized change is dropped by the sync
+/// transport and freezes every peer's replica at the change before it.
 #[derive(Model, Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct OpenImage {
     /// File name, as shown. Never an absolute origin path: the bytes resolve
@@ -779,19 +779,19 @@ pub struct OpenImage {
     /// Intrinsic pixel size of the *original*, before any edit.
     pub width: u32,
     pub height: u32,
-    /// blake3 of the picture's bytes — the one name for it that means the
-    /// same thing in every session.
-    pub content: String,
+    /// The picture's bytes, as the content store keeps them: their hash and
+    /// the reference that opens them.
+    pub content: Bytes,
 }
 
 impl OpenImage {
-    /// The picture whose bytes hash to `content`, opened from `origin`.
+    /// The picture whose bytes `content` names, opened from `origin`.
     ///
     /// Only the file name of `origin` is kept: a path is true on one machine,
-    /// and the hash is what every participant resolves. Create one wherever
-    /// the bytes are put into the content store, because a hash in a document
-    /// that no participant can resolve names no picture at all.
-    pub fn new(origin: &str, width: u32, height: u32, content: impl Into<String>) -> Self {
+    /// and the record's reference is what every participant resolves. Create
+    /// one wherever the bytes are put into the content store, because a
+    /// reference to content no participant can reach names no picture at all.
+    pub fn new(origin: &str, width: u32, height: u32, content: Bytes) -> Self {
         let name = std::path::Path::new(origin)
             .file_name()
             .map_or_else(|| origin.to_string(), |s| s.to_string_lossy().into_owned());
@@ -799,7 +799,7 @@ impl OpenImage {
             name,
             width,
             height,
-            content: content.into(),
+            content,
         }
     }
 
@@ -820,12 +820,32 @@ impl OpenImage {
     /// origin so distinct origins are distinct photographs.
     #[cfg(test)]
     pub(crate) fn fixture(origin: &str, width: u32, height: u32) -> Self {
-        Self::new(
+        Self::named(
             origin,
             width,
             height,
-            tilo_content::hash_bytes(origin.as_bytes()),
+            &tilo_content::hash_bytes(origin.as_bytes()),
         )
+    }
+
+    /// The picture named by `hash`, 64 hex digits, whose bytes no store here
+    /// holds: a record naming content this device has yet to receive.
+    #[cfg(test)]
+    pub(crate) fn named(origin: &str, width: u32, height: u32, hash: &str) -> Self {
+        Self::new(origin, width, height, named_content(hash))
+    }
+
+    /// The picture's content hash, which names it the same on every device
+    /// (the reference it is kept under may differ).
+    #[must_use]
+    pub fn hash(&self) -> String {
+        self.content
+            .hash()
+            .iter()
+            .fold(String::with_capacity(CONTENT_HEX_LEN), |mut hex, byte| {
+                let _ = std::fmt::Write::write_fmt(&mut hex, format_args!("{byte:02x}"));
+                hex
+            })
     }
 }
 
@@ -844,7 +864,11 @@ impl OpenImage {
 /// editor drawing it, a participant with no window rendering the crop it was
 /// asked for — needs the same bytes.
 pub fn bytes_of(open: &OpenImage, store: &tilo_content::ContentStore) -> Option<Vec<u8>> {
-    crate::pixels::read_bounded(store.open(&open.content)?, crate::pixels::MAX_ENCODED_BYTES)
+    if let Some(bytes) = open.content.inline() {
+        return Some(bytes.to_vec());
+    }
+    let reference = open.content.reference()?;
+    crate::pixels::read_bounded(store.open(&reference)?, crate::pixels::MAX_ENCODED_BYTES)
 }
 
 /// A stored capture time as people read it: the ISO separator between the
@@ -872,6 +896,23 @@ pub(crate) fn valid_resource_id(value: &str) -> bool {
     !value.trim().is_empty()
         && value.chars().count() <= MAX_RESOURCE_ID_CHARS
         && !value.chars().any(char::is_control)
+}
+
+/// Content named by `hash`, 64 hex digits, kept under it: what a record
+/// names when the bytes were kept before content was sealed.
+#[cfg(test)]
+pub(crate) fn named_content(hash: &str) -> Bytes {
+    let mut bytes = [0_u8; 32];
+    for (byte, pair) in bytes.iter_mut().zip(hash.as_bytes().chunks(2)) {
+        *byte = u8::from_str_radix(std::str::from_utf8(pair).unwrap_or("0"), 16).unwrap_or(0);
+    }
+    // A length the record carries, so the name is of content and not of
+    // nothing: these bytes are nowhere on this device.
+    Bytes::Blob {
+        hash: bytes,
+        len: 1,
+        sealed: None,
+    }
 }
 
 /// Whether `value` is a content hash: 64 lowercase hex digits.
@@ -972,7 +1013,7 @@ pub(crate) fn analysis_names_exact_content(photo: &LibraryPhoto, analysis: &Imag
     ]
     .into_iter()
     .flatten()
-    .all(|provenance| provenance.content == photo.image.content)
+    .all(|provenance| provenance.content == photo.image.hash())
 }
 
 pub(crate) fn merge_image_analysis(

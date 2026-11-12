@@ -79,11 +79,11 @@ mod tests {
     const PATH: &str = "/var/workspace/photos/harbour.png";
 
     fn photo(path: &str) -> LibraryPhoto {
-        LibraryPhoto::from_image(OpenImage::new(
+        LibraryPhoto::from_image(OpenImage::named(
             path,
             1200,
             800,
-            tilo_content::hash_bytes(path.as_bytes()),
+            &tilo_content::hash_bytes(path.as_bytes()),
         ))
     }
 

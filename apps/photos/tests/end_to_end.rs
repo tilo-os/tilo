@@ -789,7 +789,7 @@ fn save_asks_the_chooser_with_a_bare_name() {
         "../harbour.png",
         "",
     ] {
-        let open = photos::OpenImage::new(name, 10, 10, "a".repeat(64));
+        let open = photos::OpenImage::new(name, 10, 10, ui::tilo_resource::Bytes::of(b"a picture"));
         let suggested = photos::app::Photos::suggested_save_name(&open);
         assert_ne!(suggested, open.name);
         let path = std::path::Path::new(&suggested);
@@ -1286,4 +1286,68 @@ fn library_cards_lay_out_inside_the_canvas_at_every_size() {
             }
         }
     }
+}
+
+/// A photograph opened in a workspace that keeps content sealed is ciphertext
+/// in the store, and the record names the reference that opens it: a second
+/// member whose device holds only the ciphertext shows the same picture. A
+/// photograph named by a plain hash, as earlier versions named it, still
+/// shows.
+#[test]
+fn a_photograph_is_kept_sealed_and_a_member_opens_it() {
+    let bytes = pixels::encode_png(&shots_pattern(300, 200)).expect("the pattern encodes");
+    let writer = tilo_content::ContentStore::memory_in_workspace().sealing();
+    let dispatch = ui::framework::testing::dispatcher("so.tilo.photos");
+    let app = PhotosApp::with_content(writer.clone()).with_dispatcher(dispatch.clone());
+    let mut doc = AutoCommit::new();
+    PhotoLibrary::initialize(&mut doc).expect("a new library initializes");
+    app.state().open_contents("harbour.png", &bytes);
+    ui::framework::testing::resolve(&dispatch, &mut doc).expect("the photograph imports");
+
+    let library = library(&doc);
+    let photo = library.all_photos().next().expect("one photograph").clone();
+    let reference = photo
+        .image
+        .content
+        .reference()
+        .expect("the picture is kept outside the record");
+    assert!(tilo_content::is_sealed(&reference), "{reference}");
+    assert_eq!(
+        photo.image.hash(),
+        tilo_content::hash_bytes(&bytes),
+        "the record names the bytes it was opened from"
+    );
+    assert!(
+        !writer.has(&tilo_content::hash_bytes(&bytes)),
+        "the store holds no plaintext"
+    );
+    assert_eq!(
+        photos::model::bytes_of(&photo.image, &writer),
+        Some(bytes.clone()),
+        "the window that opened it shows it"
+    );
+
+    // What a member's device receives is the ciphertext, under its address,
+    // and the record's reference opens it there.
+    let address = tilo_content::content_address(&reference).expect("a reference");
+    let carried = writer.read(&address).expect("the ciphertext");
+    assert_ne!(carried, bytes, "the ciphertext is not the picture");
+    let member = tilo_content::ContentStore::memory_in_workspace();
+    member.put_public(&carried).expect("kept as carried");
+    assert_eq!(
+        photos::model::bytes_of(&photo.image, &member),
+        Some(bytes.clone())
+    );
+
+    // A photograph named by its plain hash, as an earlier version recorded it,
+    // still shows where the bytes were kept so.
+    let plain = tilo_content::ContentStore::memory_in_workspace();
+    let hash = plain.put(&bytes).expect("kept in the clear");
+    let earlier = photos::OpenImage::new(
+        "harbour.png",
+        300,
+        200,
+        ui::tilo_resource::Bytes::kept_as(&bytes, &hash),
+    );
+    assert_eq!(photos::model::bytes_of(&earlier, &plain), Some(bytes));
 }
