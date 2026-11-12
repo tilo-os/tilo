@@ -97,15 +97,15 @@ fn wash(surface: Color, alpha: u8) -> Color {
     crate::tokens::colors::Colors::hairline_on(surface, alpha)
 }
 
-/// How an author is shown: a person's face in their colour, or the agent
+/// How an author is shown in their colour: a person's face, or the agent
 /// mark for software acting for someone.
 fn author_face(author: &HistoryAuthor, colour: Color) -> crate::widget::avatar::AvatarFace<'_> {
-    let face = crate::widget::avatar::AvatarFace::new(&author.name, &author.identity_short);
+    let face = crate::widget::avatar::AvatarFace::new(&author.name, &author.identity_short)
+        .presence(colour);
     if author.relation == crate::widget::history::AuthorRelation::Software {
-        face.hue(crate::tokens::colors::PresenceHue::of_agent(&author.name))
-            .agent()
+        face.agent()
     } else {
-        face.presence(colour)
+        face
     }
 }
 
