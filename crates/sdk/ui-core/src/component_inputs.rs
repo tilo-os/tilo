@@ -26,6 +26,14 @@
 //! read what it changed: a pass it landed during proves nothing, and the
 //! next frame runs the component again.
 //!
+//! Work reports back to its component one way: the channel it answers on is
+//! opened in the component's own context ([`crate::wake::waking_channel`],
+//! [`crate::wake::waking_sync_channel`]) or is its typed local state
+//! ([`crate::LocalState::writer`]), so every message wakes the component
+//! before it can be received. A wake captured for a running component that
+//! reaches no scope can never report back to it, and a debug build fails
+//! where that wire is made ([`crate::wake::FeedsComponent`]).
+//!
 //! Nothing is promised by the app. A read the framework cannot follow yet
 //! says so ([`untracked`]), and the component then syncs on every frame, as
 //! every component did before.
@@ -84,6 +92,10 @@ thread_local! {
 /// Run `pass` as the pass of the component `owner` names, gathering what it
 /// reads outside the component.
 pub(crate) fn reading<R>(owner: &WakeHandle, pass: impl FnOnce() -> R) -> (R, Reads) {
+    // What the pass starts off the frame reports back to the component whose
+    // pass it is; a wake that would reach no component is caught as it is
+    // captured ([`crate::wake::FeedsComponent`]).
+    let _feeding = crate::wake::FeedsComponent::begin();
     let pass_reading = PassReading::begin(owner);
     let result = pass();
     (result, pass_reading.end())

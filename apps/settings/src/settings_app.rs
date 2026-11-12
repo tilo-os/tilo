@@ -52,13 +52,13 @@ pub struct SettingsApp {
     keyboard_map_input: ui::KeyboardMapInput,
     area_reads: crate::effects::AreaReads,
     /// The pane shown waits for its area's read.
-    pane_waits: Cell<bool>,
+    pane_waits: ui::LocalState<bool>,
     /// The generation of the content column last built.
     content_built: Cell<u64>,
     /// The language it was built in ([`ui::i18n::I18nManager::revision`]).
-    content_language: Cell<u64>,
+    content_language: ui::LocalState<u64>,
     /// The Keyboard pane was built without its layout list.
-    keyboard_partial: Cell<bool>,
+    keyboard_partial: ui::LocalState<bool>,
     pane_scroll: RefCell<HashMap<Category, ScrollOffset>>,
     /// What the keyboard drawn on the Keyboard pane shows, as the window
     /// last read it; `None` while no keyboard is drawn.
@@ -111,10 +111,10 @@ impl SettingsApp {
             wallpaper_status: ui::LocalState::new(None),
             areas: crate::area::Areas::default(),
             keyboard_map_input: ui::KeyboardMapInput::default(),
-            pane_waits: Cell::new(false),
+            pane_waits: ui::LocalState::new(false),
             content_built: Cell::new(0),
-            content_language: Cell::new(ui::i18n::I18nManager::revision()),
-            keyboard_partial: Cell::new(false),
+            content_language: ui::LocalState::new(ui::i18n::I18nManager::revision()),
+            keyboard_partial: ui::LocalState::new(false),
             pane_scroll: RefCell::default(),
             keyboard_shown: RefCell::new(None),
             #[cfg(feature = "tilo-os")]
@@ -365,7 +365,7 @@ impl SettingsApp {
         &self.area_reads
     }
 
-    pub(crate) fn pane_waits(&self) -> &Cell<bool> {
+    pub(crate) fn pane_waits(&self) -> &ui::LocalState<bool> {
         &self.pane_waits
     }
 
@@ -375,7 +375,7 @@ impl SettingsApp {
     }
 
     /// The language the content column last built was built in.
-    pub(crate) fn content_language(&self) -> &Cell<u64> {
+    pub(crate) fn content_language(&self) -> &ui::LocalState<u64> {
         &self.content_language
     }
 
@@ -386,7 +386,7 @@ impl SettingsApp {
         self.pane_waits.get() || self.areas.iter().any(crate::area::PaneArea::first_read)
     }
 
-    pub(crate) fn keyboard_partial(&self) -> &Cell<bool> {
+    pub(crate) fn keyboard_partial(&self) -> &ui::LocalState<bool> {
         &self.keyboard_partial
     }
 

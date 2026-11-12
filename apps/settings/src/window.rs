@@ -315,6 +315,7 @@ impl Chrome {
                 !std::mem::take(&mut searched.settings).is_empty()
             };
             if found && app.selected() == category {
+                eprintln!("DIAG refresh: requested pane found");
                 self.refresh();
             }
             self.select(category);
@@ -330,6 +331,7 @@ impl Chrome {
         self.follow_query();
         let searching = !self.searched.borrow().settings.is_empty();
         if searching && self.read_found() {
+            eprintln!("DIAG refresh: read_found");
             self.refresh();
         }
         // The read the pane shown waits for has landed, or the layout list
@@ -338,13 +340,19 @@ impl Chrome {
             || (app.keyboard_partial().get()
                 && !app.areas().iter().any(crate::area::PaneArea::partial))
         {
-            app.keyboard_partial().set(false);
+            eprintln!(
+                "DIAG refresh: pane_waits={} partial={}",
+                app.pane_waits().get(),
+                app.keyboard_partial().get()
+            );
+            app.keyboard_partial().set_if_changed(false);
             self.refresh();
         }
         // A pane drilled into a page or came back out of one: the page is
         // built from its top, titled in the header.
         let pages = app.pages().revision();
         if pages != self.pages_seen.get() {
+            eprintln!("DIAG refresh: pages {pages} != {}", self.pages_seen.get());
             self.pages_seen.set(pages);
             app.forget_scroll(app.selected());
             self.refresh();
@@ -354,6 +362,11 @@ impl Chrome {
         // was built.
         if self.content_shown() && app.content_language().get() != ui::i18n::I18nManager::revision()
         {
+            eprintln!(
+                "DIAG refresh: language {} != {}",
+                app.content_language().get(),
+                ui::i18n::I18nManager::revision()
+            );
             self.refresh();
         }
     }
@@ -608,7 +621,7 @@ fn content(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>, key: &PaneKey) -> Eleme
     // first words a page writes load their catalogues, which moves the
     // revision without any change of language.
     app.content_language()
-        .set(ui::i18n::I18nManager::revision());
+        .set_if_changed(ui::i18n::I18nManager::revision());
     let content: Element = Box::new(
         Container::new()
             .readable()
@@ -624,8 +637,8 @@ fn content(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>, key: &PaneKey) -> Eleme
 /// The body of `category`'s pane: see [`content`].
 fn pane_body(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>, category: Category) -> Element {
     let reading = app.pane_reading();
-    app.pane_waits().set(reading);
-    app.keyboard_partial().set(
+    app.pane_waits().set_if_changed(reading);
+    app.keyboard_partial().set_if_changed(
         category == Category::Keyboard && app.areas().iter().any(crate::area::PaneArea::partial),
     );
     if reading {

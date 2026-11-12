@@ -118,7 +118,7 @@ impl Photos {
             self.notice = Some(tr("photos-import-already-running"));
             return;
         }
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = ui::wake::waking_channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
         let content = self.content.clone();

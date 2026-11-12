@@ -1482,6 +1482,10 @@ impl AppComponent {
         ) -> R,
     ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
         let _entry = captured.enter()?;
+        // What the component's own code starts off the frame reports back to
+        // it: a wake it captures here that reaches no component is a broken
+        // wire, caught where it is made ([`crate::wake::FeedsComponent`]).
+        let _feeding = crate::wake::FeedsComponent::begin();
         let current = self.callback_binding();
         if !captured.same_component(&current) {
             return Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime);
