@@ -3684,6 +3684,11 @@ async fn drive_shovel(
     // the commands that wait for it, in the order they came: one route's
     // join never holds up the rest of the app's connection.
     let mut joining = std::collections::HashMap::<String, Vec<(u64, QueuedSdkCommand)>>::new();
+    // A `Hello` naming a route that is already joining, with the owner's
+    // wait for the primary route that follows it: the route joins once, so
+    // the announcement waits for that join instead of starting another.
+    let mut held_primary: Vec<(u64, PrimaryHello)> = Vec::new();
+    let mut held_primary_ready: Vec<(u64, QueuedSdkCommand)> = Vec::new();
     let (joined_tx, mut joined_rx) = tokio_mpsc::unbounded_channel::<JoinedRoute>();
     // Commands whose route answered, and barriers whose joins ended, taken
     // before anything newer, in the order they first came: each already had
@@ -3747,6 +3752,7 @@ async fn drive_shovel(
             }),
             Some((spec, joined)) = joined_rx.recv() => {
                 let key = spec.channel_id();
+                let joined_ok = joined.is_ok();
                 let mut waiting = joining.remove(&key).unwrap_or_default();
                 match joined {
                     Ok(route) => {
@@ -3788,6 +3794,20 @@ async fn drive_shovel(
                         for (_, waited) in std::mem::take(&mut waiting) {
                             refuse_unjoined(waited.command, &reason, &inbound_tx.state, &key);
                         }
+                        // A switch to this route hears why it is not the
+                        // primary route, as it would from a join of its own.
+                        let before = held_primary.len();
+                        held_primary.retain(|(_, hello)| hello.route.channel_id() != key);
+                        if held_primary.len() != before {
+                            primary = None;
+                            primary_result = Err(reason);
+                            inbound_tx.state.notify_events();
+                            for (_, owed) in std::mem::take(&mut held_primary_ready) {
+                                if let SdkCommand::PrimaryReady(reply) = owed.command {
+                                    let _ = reply.send(primary_result.clone());
+                                }
+                            }
+                        }
                     }
                 }
                 for (waits_for, _, _) in &mut held_barriers {
@@ -3808,6 +3828,18 @@ async fn drive_shovel(
                 }
                 released.sort_by_key(|(arrival, _)| *arrival);
                 replay.extend(released);
+                if joined_ok {
+                    // The route the switch asked for is joined: it becomes
+                    // the primary route, and the owner's wait is answered
+                    // with it, in the order they came.
+                    let mut owed =
+                        take_held_announcements(&mut held_primary, &key, &inbound_tx.state);
+                    if !owed.is_empty() {
+                        owed.append(&mut std::mem::take(&mut held_primary_ready));
+                        owed.sort_by_key(|(arrival, _)| *arrival);
+                        replay.extend(owed);
+                    }
+                }
                 continue;
             }
             // The broker hung up: every call on this connection now fails,
@@ -3916,11 +3948,24 @@ async fn drive_shovel(
         let document = command.document_len().is_some();
         let mut published = true;
         match command {
-            SdkCommand::Hello(PrimaryHello {
-                route: spec,
-                record_kind,
-                handle,
-            }) => {
+            SdkCommand::Hello(hello) => {
+                // A route already joining beside this loop (the record this
+                // window prepared) joins once: a second join of the same
+                // channel replaces the committed read the first one staged,
+                // and leaves the owner with a route it cannot publish on.
+                // So this announcement joins nothing and takes the route as
+                // the primary one when that join ends.
+                if !routes.contains_key(&hello.route.channel_id())
+                    && joining.contains_key(&hello.route.channel_id())
+                {
+                    held_primary.push((arrival, hello));
+                    continue;
+                }
+                let PrimaryHello {
+                    route: spec,
+                    record_kind,
+                    handle,
+                } = hello;
                 participant_handle = handle;
                 let key = spec.channel_id();
                 // The join ends when the broker answers it or it fails, with
@@ -4038,6 +4083,19 @@ async fn drive_shovel(
                 }
             }
             SdkCommand::PrimaryReady(reply) => {
+                if !held_primary.is_empty() {
+                    // The route the owner switched to is still joining: its
+                    // answer is owed once that join ends and the announcement
+                    // replayed here has made it the primary route.
+                    held_primary_ready.push((
+                        arrival,
+                        QueuedSdkCommand {
+                            command: SdkCommand::PrimaryReady(reply),
+                            _reservation: inbound_tx.state.command_bytes.empty_reservation(),
+                        },
+                    ));
+                    continue;
+                }
                 let _ = reply.send(primary_result.clone());
                 // A manager still connecting settles on this answer.
                 inbound_tx.state.notify_events();
@@ -4311,6 +4369,33 @@ async fn personal_cluster_presentation(
     .encode()
     .ok()?;
     Some((workspace, bytes))
+}
+
+/// The announcements of `key`'s route held while it was joining, as commands
+/// to replay once it has joined (or to refuse, when it did not), in the order
+/// they came. Announcements of other routes stay held.
+fn take_held_announcements(
+    held: &mut Vec<(u64, PrimaryHello)>,
+    key: &str,
+    state: &BridgeState,
+) -> Vec<(u64, QueuedSdkCommand)> {
+    let mut released = Vec::new();
+    let mut still_held = Vec::new();
+    for (arrival, hello) in std::mem::take(held) {
+        if hello.route.channel_id() == key {
+            released.push((
+                arrival,
+                QueuedSdkCommand {
+                    command: SdkCommand::Hello(hello),
+                    _reservation: state.command_bytes.empty_reservation(),
+                },
+            ));
+        } else {
+            still_held.push((arrival, hello));
+        }
+    }
+    *held = still_held;
+    released
 }
 
 /// Keep `joined`, the outcome of joining `spec`, where the route's owner and
