@@ -50,10 +50,7 @@ const CARD_WIDTH: f64 = 300.0;
 const CARD_HEIGHT: f64 = 52.0;
 const CARD_GAP: f64 = 6.0;
 const CARD_MARGIN: f64 = 12.0;
-/// The wash an agent's would-click outline lays over the control it would press: light enough to
-/// leave the control's own words legible, strong enough that the place reads at a glance.
-const LOCUS_TINT: f32 = 0.10;
-/// How much more of that wash stands the moment its step was taken, fading over
+/// How much more of an agent's would-click wash stands the moment its step was taken, fading over
 /// [`crate::motion::Attention::FLASH`]: the place a person should look at, once.
 const LOCUS_FLASH: f32 = 0.22;
 
@@ -447,34 +444,22 @@ impl PresenceCtx {
             .min()
     }
 
-    /// Lay the actor's wash under its would-click outline, over the control the action rests on: a
-    /// light tint in the actor's colour, light enough to leave the control's own words legible, so
-    /// a person sees where the agent would press at a glance. Returns the strength it stands at
-    /// `now`; `None` for a step that is not visible here.
-    pub fn draw_agent_locus_tint(
+    /// How strong the wash under an agent's would-click outline stands at `now`: the outline's own
+    /// strength, raised by [`LOCUS_FLASH`] the moment its step was taken and fading over the
+    /// arrival flash, so a person sees where the agent would press at a glance. `None` for a step
+    /// that is not visible here.
+    pub fn agent_locus_tint(
         &self,
-        paint: &mut PaintCtx<'_>,
         interaction: &SemanticInteraction,
-        bounds: Rect,
         now: Instant,
+        theme: &Theme,
     ) -> Option<f32> {
         let entry = self.interactions.get(&interaction.invocation)?;
         if !entry.visible_at(now) || !interaction.actor.kind.acts_for_someone() {
             return None;
         }
         let pulsed_at = entry.pulsed_at.map(|at| at.max(entry.first_received_at));
-        let tint = locus_tint(pulsed_at, now, paint.theme);
-        let user = UserId(interaction.actor.id.clone());
-        let color = super::render::color_for(self, &user, paint.theme);
-        let radius = f64::from(paint.theme.tokens.radii.detail);
-        paint.scene.fill(
-            Fill::NonZero,
-            paint.transform,
-            color.with_alpha_factor(tint),
-            None,
-            &RoundedRect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1, radius),
-        );
-        Some(tint)
+        Some(locus_tint(pulsed_at, now, theme))
     }
 
     /// Paint a cursor-shaped collaboration marker moving toward one exact,
@@ -1007,9 +992,10 @@ fn writes_text(interaction: &SemanticInteraction) -> bool {
     )
 }
 
-/// The strength of the wash over a control an agent would press: [`LOCUS_TINT`] at rest, raised by
-/// [`LOCUS_FLASH`] the moment its step was taken and fading over the arrival flash. A person who
-/// asked for less motion keeps the steady wash and never sees the flash.
+/// The strength of the wash over a control an agent would press: the outline's own
+/// ([`super::render::OUTLINE_FILL`]) at rest, raised by [`LOCUS_FLASH`] the moment its step was
+/// taken and fading over the arrival flash. A person who asked for less motion keeps the steady
+/// wash and never sees the flash.
 fn locus_tint(pulsed_at: Option<Instant>, now: Instant, theme: &Theme) -> f32 {
     let flash = pulsed_at
         .filter(|_| !theme.reduce_motion)
@@ -1021,7 +1007,7 @@ fn locus_tint(pulsed_at: Option<Instant>, now: Instant, theme: &Theme) -> f32 {
                 now.saturating_duration_since(pulsed_at),
             )
         });
-    LOCUS_TINT + LOCUS_FLASH * flash as f32
+    super::render::OUTLINE_FILL + LOCUS_FLASH * flash as f32
 }
 
 fn marker_entry_is_newer(
@@ -1396,9 +1382,10 @@ mod tests {
     fn the_place_an_agent_would_press_is_washed_in_its_colour() {
         let at = crate::time::now();
         let theme = Theme::dark();
-        assert!((locus_tint(None, at, &theme) - LOCUS_TINT).abs() < f32::EPSILON);
+        let at_rest = crate::presence::render::OUTLINE_FILL;
+        assert!((locus_tint(None, at, &theme) - at_rest).abs() < f32::EPSILON);
         assert!(
-            (locus_tint(Some(at), at, &theme) - (LOCUS_TINT + LOCUS_FLASH)).abs() < 0.01,
+            (locus_tint(Some(at), at, &theme) - (at_rest + LOCUS_FLASH)).abs() < 0.01,
             "it flashes as the step is taken"
         );
         let settled = at
@@ -1408,12 +1395,12 @@ mod tests {
                 crate::tokens::MotionSource::Pointer,
             );
         assert!(
-            (locus_tint(Some(at), settled, &theme) - LOCUS_TINT).abs() < 0.01,
+            (locus_tint(Some(at), settled, &theme) - at_rest).abs() < 0.01,
             "the flash is over, the wash stays"
         );
         let still = theme.with_reduce_motion(true);
         assert!(
-            (locus_tint(Some(at), at, &still) - LOCUS_TINT).abs() < f32::EPSILON,
+            (locus_tint(Some(at), at, &still) - at_rest).abs() < f32::EPSILON,
             "no flash for a person who asked for less motion"
         );
     }

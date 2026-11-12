@@ -48,17 +48,20 @@ pub(crate) fn draw_action_presence(
         }
         let user = crate::permissions::UserId(interaction.actor.id.clone());
         let control = control_bounds(tree, bindings, &interaction, bounds).unwrap_or(bounds);
-        // The place the agent would press is washed in its colour and framed in it: the wash light
-        // enough to keep the control's own words legible beneath it, and brighter the moment the
-        // step was taken.
-        presence.draw_agent_locus_tint(paint, &interaction, bounds, now);
-        presence.draw_peer_outline(
+        // An agent's place is washed in its colour and framed in it, brighter the moment its step
+        // is taken; anyone else's outline is the selection's own. One fill either way, at the
+        // outline's own strength or stronger, never a second layer over the control's words.
+        let fill = presence
+            .agent_locus_tint(&interaction, now, paint.theme)
+            .unwrap_or(crate::presence::render::OUTLINE_FILL);
+        presence.draw_peer_outline_filled(
             paint.scene,
             paint.theme,
             paint.transform,
             &user,
             bounds,
             f64::from(paint.theme.tokens.radii.detail),
+            fill,
         );
         // An agent's marker wears the one tag that says who it is and what it
         // is doing; anyone else's outline is labelled beside it.

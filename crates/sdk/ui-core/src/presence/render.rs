@@ -306,12 +306,29 @@ impl PresenceCtx {
         rect: Rect,
         radius: f64,
     ) {
+        self.draw_peer_outline_filled(scene, theme, transform, user, rect, radius, OUTLINE_FILL);
+    }
+
+    /// [`Self::draw_peer_outline`] with its wash at `fill` strength, under the same stroke: an
+    /// agent's would-click place stands at the outline's own strength and flashes brighter the
+    /// moment its step was taken ([`PresenceCtx::agent_locus_tint`]), never in a second layer over
+    /// the control's words.
+    pub(crate) fn draw_peer_outline_filled(
+        &self,
+        scene: &mut Scene,
+        theme: &Theme,
+        transform: Affine,
+        user: &UserId,
+        rect: Rect,
+        radius: f64,
+        fill: f32,
+    ) {
         let color = color_for(self, user, theme);
         let shape = RoundedRect::from_rect(rect, radius);
         scene.fill(
             Fill::NonZero,
             transform,
-            color.with_alpha_factor(0.18),
+            color.with_alpha_factor(fill),
             None,
             &shape,
         );
@@ -463,6 +480,10 @@ impl PresenceCtx {
         scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &strip);
     }
 }
+
+/// How strong the wash under a presence outline stands: light enough that what the object says
+/// stays legible through it, strong enough that the colour reads as the person's.
+pub(crate) const OUTLINE_FILL: f32 = 0.18;
 
 const DOT_R: f64 = 6.5;
 /// Outer edge including the contrast ring — the clearance pill placement
