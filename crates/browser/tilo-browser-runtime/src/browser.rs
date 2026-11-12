@@ -140,6 +140,20 @@ pub(crate) fn wake_desktops() {
     });
 }
 
+/// Schedule a frame for every mount, desk or single application: the page
+/// draws at another device pixel ratio, and each lays out at it on its next
+/// frame.
+fn wake_mounts() {
+    let ids = MOUNTS.with_borrow(|mounts| mounts.keys().copied().collect::<Vec<_>>());
+    LOOP.with_borrow(|proxy| {
+        if let Some(proxy) = proxy {
+            for id in ids {
+                let _ = proxy.send_event(id);
+            }
+        }
+    });
+}
+
 /// Whether any mount has presented a frame: code the first frame does not
 /// need (the spelling dictionaries) waits for it, so that it never shares
 /// the link or the main thread with what that frame does need.
@@ -1009,6 +1023,7 @@ fn proxy() -> Result<EventLoopProxy<u64>, JsValue> {
     let event_loop = EventLoop::<u64>::with_user_event().build().map_err(error)?;
     let proxy = event_loop.create_proxy();
     LOOP.with_borrow_mut(|p| *p = Some(proxy.clone()));
+    scale::install(wake_mounts);
     event_loop.spawn_app(frame_loop::Runner);
     Ok(proxy)
 }
@@ -2104,16 +2119,14 @@ impl Mount {
         }
     }
 
-    // ResizeObserver/winit is the sole source of viewport notifications.
-    // Reading the pair again at redraw also covers scale/size event ordering
-    // and changes that occurred while GPU initialization was pending.
+    // ResizeObserver/winit is the sole source of window reports. Reading the
+    // pair again at redraw also covers scale/size event ordering and changes
+    // that occurred while GPU initialization was pending.
     fn queue_resize(&mut self) -> bool {
         let size = self.window.inner_size();
-        let changed = self.viewport.request(Viewport {
-            width: size.width,
-            height: size.height,
-            dpr: self.window.scale_factor(),
-        });
+        let changed = self
+            .viewport
+            .observe((size.width, size.height), self.window.scale_factor());
         self.pending |= changed;
         changed
     }
@@ -3064,6 +3077,7 @@ mod pacing;
 mod page_exports;
 pub(crate) mod presence;
 mod publication;
+mod scale;
 mod scene;
 mod session_asks;
 use crate::first_frame::{self, GpuStep};
