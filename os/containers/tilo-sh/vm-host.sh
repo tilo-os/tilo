@@ -238,7 +238,7 @@ member_identity() {
     "$enroll" install-cert --identity-root "$work/root" --identity-dir "$work/person" \
       --cert "$work/cert.bin" >&2
     # The start installs `root` as the host's identity and `person` as the
-    # person's record (member/config/tilo/identity), both as the service.
+    # person's record, in the member's profile, both as the service.
     mkdir -p "$identities"
     chmod 0755 "$identities"
     tar -C "$work" -cf "$identities/$pod.tar" --owner=0 --group=0 root person

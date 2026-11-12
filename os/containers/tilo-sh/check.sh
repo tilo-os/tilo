@@ -402,7 +402,7 @@ if [[ $hosted == 1 ]]; then
       mkdir -p "$keys/certified/device-private" "$keys/member/device-private"
       sudo -n cat /var/lib/tilo-sh-local-vm/vm/member/root/device-private/keypair.bin \
         > "$keys/certified/device-private/keypair.bin" 2>/dev/null || true
-      sudo -n podman exec tilo-sh-vm-host-0 cat /var/lib/tilo-hosted/member/root/device-private/keypair.bin \
+      sudo -n podman exec tilo-sh-vm-host-0 cat /var/lib/tilo-hosted/member/profile/identity/device-private/keypair.bin \
         > "$keys/member/device-private/keypair.bin" 2>/dev/null || true
       chmod 0600 "$keys"/*/device-private/keypair.bin
       for side in certified member; do
@@ -410,7 +410,7 @@ if [[ $hosted == 1 ]]; then
       done
       rm -rf "$keys"
       sudo -n podman exec tilo-sh-vm-host-0 sh -c \
-        'ls -la --time-style=full-iso /var/lib/tilo-hosted/member/root/device-private /var/lib/tilo-hosted/member/root/device /var/lib/tilo-hosted/member/root/user-identity' >&2 2>/dev/null || true
+        'ls -la --time-style=full-iso /var/lib/tilo-hosted/member/profile/identity/device-private /var/lib/tilo-hosted/member/profile/identity/device' >&2 2>/dev/null || true
       echo '--- the member, from its start:' >&2
       sudo -n podman logs tilo-sh-vm-host-0 2>&1 | grep -v 'net_report' | head -60 >&2 || true
 =======

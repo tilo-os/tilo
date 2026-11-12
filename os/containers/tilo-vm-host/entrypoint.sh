@@ -19,10 +19,14 @@
 #   3b. the member identity: this host's own Tilo device, certified by the
 #      operator that runs the relay, from TILO_VM_MEMBER_IDENTITIES (a
 #      directory holding <pod name>.tar, made with tilo-enroll device-key and
-#      install-cert), unpacked onto the state disk the first time only, so the
-#      device key stays with the host's disk as the host moves between nodes:
-#      the key and certificate under member/root (TILO_IDENTITY_ROOT), the
-#      person's record under member/config/tilo/identity;
+#      install-cert), unpacked onto the state disk when the disk holds no
+#      identity or another one, so the device key stays with the host's disk as
+#      the host moves between nodes. It goes where the member's profile reads
+#      its identity (`tilo-runtime --profile` names its own TILO_IDENTITY_ROOT
+#      and XDG_CONFIG_HOME under the profile): the key and certificate under
+#      member/profile/identity, the person's record under
+#      member/profile/config/tilo/identity. A profile made under another
+#      identity is that device's, and is dropped with it;
 #   4. the guest: the image the release key signed, fetched once per digest
 #      (TILO_VM_GUEST_REF overrides the one this build pins);
 #   5. `tilo-legacy hosted serve`, jailed, which suspends every VM when the
@@ -90,21 +94,23 @@ chown tilo-hosted:tilo-hosted "$run"
 # 3b. the member identity
 member=$data/member
 pod=${HOSTNAME:-$(hostname)}
-if [ -n "${TILO_VM_MEMBER_IDENTITIES:-}" ] && [ ! -e "$member/root/device-private/keypair.bin" ]; then
-  [ -f "$TILO_VM_MEMBER_IDENTITIES/$pod.tar" ] || { say "no member identity for $pod"; exit 1; }
-  say "installing the member identity of $pod"
-  rm -rf "$member.new"
-  mkdir -m 0700 "$member.new"
-  tar -xf "$TILO_VM_MEMBER_IDENTITIES/$pod.tar" -C "$member.new" --no-same-owner
-  chown -R tilo-hosted:tilo-hosted "$member.new"
-  rm -rf "$member"
-  mv "$member.new" "$member"
-fi
-# The person's record where an identity reads it: $XDG_CONFIG_HOME/tilo/identity.
-if [ -d "$member/person" ] && [ ! -e "$member/config/tilo/identity" ]; then
-  mkdir -p -m 0700 "$member/config/tilo"
-  mv "$member/person" "$member/config/tilo/identity"
-  chown -R tilo-hosted:tilo-hosted "$member/config"
+profile=$member/profile
+if [ -n "${TILO_VM_MEMBER_IDENTITIES:-}" ]; then
+  identities=$TILO_VM_MEMBER_IDENTITIES/$pod.tar
+  [ -f "$identities" ] || { say "no member identity for $pod"; exit 1; }
+  installed=$(sha256sum < "$profile/identity/device-private/keypair.bin" 2>/dev/null || true)
+  if [ "$(tar -xOf "$identities" root/device-private/keypair.bin | sha256sum)" != "$installed" ]; then
+    say "installing the member identity of $pod"
+    rm -rf "$member.new"
+    mkdir -m 0700 "$member.new"
+    tar -xf "$identities" -C "$member.new" --no-same-owner
+    mkdir -m 0700 "$member.new/profile" "$member.new/profile/config" "$member.new/profile/config/tilo"
+    mv "$member.new/root" "$member.new/profile/identity"
+    mv "$member.new/person" "$member.new/profile/config/tilo/identity"
+    chown -R tilo-hosted:tilo-hosted "$member.new"
+    rm -rf "$member"
+    mv "$member.new" "$member"
+  fi
 fi
 
 # 4. the guest
@@ -152,17 +158,18 @@ fi
 
 # 6. the member
 if [ -n "${TILO_TAKE_WORK_RELAY:-}" ]; then
-  [ -e "$member/root/device-private/keypair.bin" ] || { say 'TILO_TAKE_WORK_RELAY is set, but this host has no member identity'; exit 1; }
-  mkdir -p -m 0700 "$member/profile" "$member/home"
-  chown tilo-hosted:tilo-hosted "$member/profile" "$member/home"
-  chmod 0700 "$member/profile"
+  [ -e "$profile/identity/device-private/keypair.bin" ] || { say 'TILO_TAKE_WORK_RELAY is set, but this host has no member identity'; exit 1; }
+  mkdir -p -m 0700 "$profile" "$member/home"
+  chown tilo-hosted:tilo-hosted "$profile" "$member/home"
+  chmod 0700 "$profile"
   (
     while :; do
-      HOME=$member/home XDG_CONFIG_HOME=$member/config TILO_IDENTITY_ROOT=$member/root \
-        TILO_RUNTIME_PROFILE=$member/profile TILO_HOSTED_VM_SOCKET=$run/hosted.sock \
+      # The profile names the member's identity and config itself.
+      HOME=$member/home \
+        TILO_RUNTIME_PROFILE=$profile TILO_HOSTED_VM_SOCKET=$run/hosted.sock \
         TILO_HOSTED_PLANS=${TILO_VM_PLANS:-} \
         setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all -- \
-        tilo-runtime --daemon --profile "$member/profile" || say "the member stopped ($?); starting it again"
+        tilo-runtime --daemon --profile "$profile" || say "the member stopped ($?); starting it again"
       sleep 5
     done
   ) &
