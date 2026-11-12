@@ -8,7 +8,7 @@
 // presenter: a pure permutation of pixels, so both produce identical bytes.
 //
 // `orientation`: 0 normal, 1 rotated 90°, 2 rotated 180°, 3 rotated 270°
-// (`shell::render::orientation::shader_code`).
+// (`tilo_compositor::render::orientation::shader_code`).
 
 fn oriented_source_pixel(scanout: vec2<i32>, surface: vec2<i32>, orientation: u32) -> vec2<i32> {
     switch orientation {

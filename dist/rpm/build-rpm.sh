@@ -49,8 +49,8 @@ check_rpmbuild() { "$repo_root/dist/rpm/rpmbuild.sh" --check; }
 # ---------------------------------------------------------------------------
 # 1. The binaries.
 # ---------------------------------------------------------------------------
-# `shell` is built with --no-default-features on purpose: a normal login
-# session needs none of its optional features. Video
+# `tilo-session` is built on its own below: it pulls the compositor and the
+# whole host-side desktop in, which no other shipped binary needs. Video
 # goes through GStreamer, whose library ABI is stable across Fedora releases.
 if (( run_cargo )); then
     check_rpmbuild
@@ -88,7 +88,7 @@ target_dir=${CARGO_TARGET_DIR:-$repo_root/target}
 [[ $target_dir = /* ]] || target_dir=$repo_root/$target_dir
 target_dir=$(realpath -m "$target_dir")
 rel=${TILO_BIN_DIR:-$target_dir/release}
-for bin in shell tilo-session tilo fs tilo-relay-admin tilo-enroll imager tilo-launcher tilo-unlock-helper tilo-flight-recorder tilo-session-report tilo-install tilo-runtime-bundle \
+for bin in tilo-session fs tilo-relay-admin tilo-enroll imager tilo-launcher tilo-unlock-helper tilo-flight-recorder tilo-session-report tilo-install tilo-runtime-bundle \
            tilo-cli-shim tilo-app-host tilo-ush tilo-model-manager tilo-model-gateway tilo-model-http \
            tilo-legacy app; do
     [[ -x $rel/$bin ]] || { echo "missing $rel/$bin — run without --no-cargo" >&2; exit 1; }

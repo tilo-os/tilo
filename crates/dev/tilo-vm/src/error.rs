@@ -454,7 +454,7 @@ impl CliError {
                     .into()
             }
             Self::InvalidSource(_) => {
-                "use --from worktree, layer:<hash>, sha:<commit> or ci:<tag>, e.g. tilo-vm swap shell --from ci:main-1a2b3c4".into()
+                "use --from worktree, layer:<hash>, sha:<commit> or ci:<tag>, e.g. tilo-vm swap tilo-session --from ci:main-1a2b3c4".into()
             }
             Self::HostBuildUnsupported { .. } => {
                 "build in the VM instead: tilo-vm swap <component> --builder vm   (the default)".into()

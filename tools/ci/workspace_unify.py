@@ -2,7 +2,7 @@
 """Writes crates/dev/workspace-unify, the package that makes every member of a cargo family's build
 build with one feature set, whatever selection of its packages pulls it in.
 
-Cargo unifies a member's features over the packages a command selects, so `-p shell` and `-p notes`
+Cargo unifies a member's features over the packages a command selects, so `-p tilo-session` and `-p notes`
 build `tilo-ui` with different features, and each is a distinct unit: compiled again, cached apart.
 The workspace hack does this for third-party crates; it can't for members, which all depend on it.
 workspace-unify depends on every library the `test` family's whole build builds, with the

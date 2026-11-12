@@ -79,7 +79,7 @@ too. The script writes the provenance record itself, so P01 reads the tree's com
 swap <component> --builder host` from a copy of the tree (`--swap-from`) after the slot is
 up, session components and apps into the run's slot, VM-wide ones into `vm`; `all` swaps
 every userspace component in `os/components.toml`, or name a list (`--input
-swap=shell,app:notes`). P01 then reads `base <commit> + <components> swapped from <ref>`
+swap=tilo-session,app:notes`). P01 then reads `base <commit> + <components> swapped from <ref>`
 and fails unless every requested swap is the layer its slot runs.
 
 `vm-acceptance-cohort` installs the commit's launcher, install, shell and apps+runtime as
@@ -431,10 +431,10 @@ Retain these **canonical `run.json` receipts** under the names below (the CLI's
 | File | Production operation captured |
 | --- | --- |
 | `create-run.json` | `tilo-vm --json slot create SLOT --headless`, with `created=true`, empty generation 0 |
-| `before-run.json` | `slot show SLOT` after selecting the working shell and matched runtime |
-| `activate-run.json` | `swap shell --from layer:CANDIDATE` targeting SLOT, with successful session restart |
+| `before-run.json` | `slot show SLOT` after selecting the working session and matched runtime |
+| `activate-run.json` | `swap tilo-session --from layer:CANDIDATE` targeting SLOT, with successful session restart |
 | `active-run.json` | `slot show SLOT` after candidate readiness succeeds |
-| `fail-run.json` | `swap shell --from layer:FAULT_FIXTURE` targeting SLOT, failing readiness and reporting successful recovery |
+| `fail-run.json` | `swap tilo-session --from layer:FAULT_FIXTURE` targeting SLOT, failing readiness and reporting successful recovery |
 | `recovered-run.json` | `slot show SLOT` after recovery; generation, layers, inventory and provenance must match the active capture |
 | `remove-run.json` | `slot rm SLOT`, only after fresh ownership was acknowledged |
 

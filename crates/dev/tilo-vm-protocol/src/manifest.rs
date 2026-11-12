@@ -600,19 +600,19 @@ mod tests {
         // Phase: bare_dev_feature_reaches_a_single_package_even_with_a_self_dependency.
         {
             let m = Manifest::parse(
-                "[[component]]\nname = \"shell\"\npackages = [\"shell\"]\ndev_features = [\"dev-overrides\"]\n",
+                "[[component]]\nname = \"tilo-session\"\npackages = [\"tilo-session\"]\ndev_features = [\"dev-overrides\"]\n",
             )
             .unwrap();
-            let shell = m.get("shell").unwrap();
+            let session = m.get("tilo-session").unwrap();
             let extra = dev_override_features(
                 &serde_json::json!({"packages": [
-                    {"name": "shell", "features": {"dev-overrides": []}},
+                    {"name": "tilo-session", "features": {"dev-overrides": []}},
                 ]}),
-                &shell.packages,
+                &session.packages,
             );
             assert_eq!(
-                shell.cargo_args(&extra).join(" "),
-                "build --locked --profile release --config profile.release.lto=\"off\" --config profile.release.codegen-units=16 -p shell --features dev-overrides,shell/dev-overrides"
+                session.cargo_args(&extra).join(" "),
+                "build --locked --profile release --config profile.release.lto=\"off\" --config profile.release.codegen-units=16 -p tilo-session --features dev-overrides,tilo-session/dev-overrides"
             );
         }
 

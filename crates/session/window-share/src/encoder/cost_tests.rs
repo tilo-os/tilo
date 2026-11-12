@@ -160,7 +160,7 @@ fn measure(
 }
 
 /// CPU per frame of a streamed window at 60 and 90 Hz. Run alone:
-/// `cargo test -p shell --lib -- --ignored --nocapture window_encode_cost`.
+/// `cargo test -p tilo-window-share --lib -- --ignored --nocapture window_encode_cost`.
 #[test]
 #[ignore = "a measurement, run on its own"]
 fn window_encode_cost() {

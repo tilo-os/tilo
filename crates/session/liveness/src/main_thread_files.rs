@@ -50,20 +50,20 @@ impl FileWalk {
             .unwrap_or_else(|| "?".into())
     }
 
-    /// The loop handler the walk ran under: the shell frame just inside the
-    /// outermost `native::run`.
+    /// The loop handler the walk ran under: the session's frame just inside
+    /// the outermost `run` the binary entered the loop through.
     #[must_use]
     pub fn handler(&self) -> String {
         let frames = self.frames();
         frames
             .iter()
-            .rposition(|frame| frame == "shell::compositor::native::run")
+            .rposition(|frame| frame == LOOP_ENTRY)
             .and_then(|run| {
                 frames
                     .iter()
                     .take(run)
                     .rev()
-                    .find(|frame| frame.starts_with("shell::") || frame.starts_with("<shell::"))
+                    .find(|frame| !frame.ends_with("::run") && is_session_frame(frame))
             })
             .cloned()
             .unwrap_or_else(|| "?".into())
@@ -79,6 +79,23 @@ impl FileWalk {
             })
             .collect()
     }
+}
+
+/// The function the `tilo-session` binary enters its loop through: the
+/// outermost frame of the walk that belongs to the session rather than to
+/// `main`.
+const LOOP_ENTRY: &str = "tilo_session::run";
+
+/// Whether `frame` is code of the session or of the compositor it runs: the
+/// two crates the loop and everything it calls are in.
+fn is_session_frame(frame: &str) -> bool {
+    const SESSION: &[&str] = &[
+        "tilo_session::",
+        "<tilo_session::",
+        "tilo_compositor::",
+        "<tilo_compositor::",
+    ];
+    SESSION.iter().any(|prefix| frame.starts_with(prefix))
 }
 
 /// The standard library, libc, the dynamic loader and the unwinder that
@@ -149,7 +166,7 @@ fn is_runtime_frame(frame: &str) -> bool {
 fn is_storage_frame(frame: &str) -> bool {
     const STORAGE: &[&str] = &[
         "tilo_liveness::main_thread_files::",
-        "shell::compositor::liveness::",
+        "tilo_compositor::liveness::",
         "durable_store::",
         "<durable_store::",
         "app_state::fs_store::",
@@ -601,14 +618,14 @@ mod tests {
             "   3: statx\n   4: std::sys::fs::unix::try_statx\n   5: std::fs::metadata::<&std::path::Path>\n\
              \x20  6: <tilo_identity_host::registry::DirStamp>::of\n\
              \x20            at ./crates/runtime/tilo-identity-host/src/registry.rs:234:20\n\
-             \x20  7: <shell::shell::network::ShellNetwork>::kick_periodic_sync\n\
-             \x20  8: <shell::shell::network::ShellNetwork>::frame_tick\n\
-             \x20  9: shell::compositor::native::run\n  10: shell::linux_main::run\n  11: main",
+             \x20  7: <tilo_session::network::Network>::kick_periodic_sync\n\
+             \x20  8: <tilo_session::network::Network>::frame_tick\n\
+             \x20  9: tilo_session::Session::run\n  10: tilo_session::run\n  11: main",
         );
         assert_eq!(walk.site(), "<tilo_identity_host::registry::DirStamp>::of");
         assert_eq!(
             walk.handler(),
-            "<shell::shell::network::ShellNetwork>::frame_tick"
+            "<tilo_session::network::Network>::frame_tick"
         );
     }
 
@@ -620,10 +637,10 @@ mod tests {
             "   0: <unknown> /lib64/libc.so.6+0x7b350 (build-id 85075e2a)\n\
              \x20  1: <std::sys::fs::unix::File>::open_c\n\
              \x20  2: std::fs::read_to_string\n\
-             \x20  3: shell::shell::host_runtime::proc_stat\n\
-             \x20  4: shell::compositor::native::run\n",
+             \x20  3: tilo_session::host_runtime::proc_stat\n\
+             \x20  4: tilo_session::run\n",
         );
-        assert_eq!(walk.site(), "shell::shell::host_runtime::proc_stat");
+        assert_eq!(walk.site(), "tilo_session::host_runtime::proc_stat");
     }
 
     #[test]
@@ -636,7 +653,8 @@ mod tests {
                  \x20  2: durable_store::waiting::call\n\
                  \x20  3: app_state::fs_store::Store::commit\n\
                  \x20  4: settings_store::write::flush\n\
-                 \x20  5: shell::compositor::native::run\n",
+                 \x20  5: tilo_session::Session::run\n\
+                 \x20  6: tilo_session::run\n",
             )
         };
         assert_eq!(wait.site(), "settings_store::write::flush");
@@ -646,7 +664,7 @@ mod tests {
     fn a_site_drops_generics_closure_numbers_and_hashes() {
         assert_eq!(
             normalize_frame(
-                "settings_store::watch::watch_file_at::<<shell::X as y::Z>::f::{closure#0}>::{closure#3}::h0123456789abcdef"
+                "settings_store::watch::watch_file_at::<<tilo_session::X as y::Z>::f::{closure#0}>::{closure#3}::h0123456789abcdef"
             ),
             "settings_store::watch::watch_file_at::{closure}"
         );

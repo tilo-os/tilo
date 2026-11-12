@@ -323,7 +323,7 @@ impl Modem for SystemModem {
             match reading {
                 Ok(reading) => sim_unlock(&reading),
                 Err(error) => {
-                    tracing::info!(target: "shell::network_secrets", %error, "no modem state for the SIM PIN question");
+                    tracing::info!(target: "tilo_network_secrets", %error, "no modem state for the SIM PIN question");
                     None
                 }
             }
@@ -349,12 +349,12 @@ impl Modem for SystemModem {
             return;
         };
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            tracing::warn!(target: "shell::network_secrets", "no runtime to join the network on");
+            tracing::warn!(target: "tilo_network_secrets", "no runtime to join the network on");
             return;
         };
         drop(runtime.spawn(async move {
             if let Err(error) = activate(&path).await {
-                tracing::warn!(target: "shell::network_secrets", %error, "could not join the network");
+                tracing::warn!(target: "tilo_network_secrets", %error, "could not join the network");
             }
         }));
     }
@@ -386,7 +386,7 @@ fn send_puk_blocking(
             Err(PukRefusal::Wrong { attempts_left })
         }
         Err(error) => {
-            tracing::warn!(target: "shell::network_secrets", %error, "the SIM could not be unlocked with its PUK");
+            tracing::warn!(target: "tilo_network_secrets", %error, "the SIM could not be unlocked with its PUK");
             Err(PukRefusal::Failed)
         }
     }
@@ -607,7 +607,7 @@ impl Sheets for QuestionSheets {
             told.push(path.clone());
         }
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            tracing::warn!(target: "shell::network_secrets", "no runtime to tell that a network could not be joined");
+            tracing::warn!(target: "tilo_network_secrets", "no runtime to tell that a network could not be joined");
             return;
         };
         let details = CannotJoinDetails {

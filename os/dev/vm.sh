@@ -591,7 +591,7 @@ cmd_wait_greeter_return() {
     vm_running || die "qemu exited while waiting for the greeter to return"
     sleep 1
   done
-  cmd_serial 'greetd|shell|session-c[0-9]+.scope' | tail -120 >&2 || true
+  cmd_serial 'greetd|tilo-session|session-c[0-9]+.scope' | tail -120 >&2 || true
   die "timed out waiting for logout to stop Tilo and return to greetd"
 }
 
@@ -658,7 +658,7 @@ cmd_capture_boot() {
   cmd_login
   sleep 8
   msg "post-login screenshot"; local d; d="$(cmd_shot after-login || true)"; [ -n "${d:-}" ] && cp -f "$d" "$dir/02-after-login.png"
-  cmd_serial 'Reached target Graphical|greetd|PAM:authentication.*res=|shell' > "$dir/boot-summary.txt" 2>/dev/null || true
+  cmd_serial 'Reached target Graphical|greetd|PAM:authentication.*res=|tilo-session' > "$dir/boot-summary.txt" 2>/dev/null || true
   msg "artifacts in $dir:"; ls -lh "$dir" >&2
 }
 

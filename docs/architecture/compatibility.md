@@ -16,9 +16,9 @@ behaviour. The one thing that survives every change is the person's data.
   `bootc-fetch-apply-updates.timer`, at least daily, and then applied live,
   component by component, without a reboot (below). Only a kernel,
   bootloader or initramfs change, or an update that could not apply live,
-  waits for a restart of the machine. The shell asks for it, and restarts the
+  waits for a restart of the machine. The session asks for it, and restarts the
   desktop to finish an update, at most every two days together
-  (`shell::system_update`), so the updates of those days apply with one.
+  (`tilo_system_service::update`), so the updates of those days apply with one.
 - Something that needs a newer system than this one (an app build, a
   collaborator's device) starts the system update at once
   (`tilo-deployment-update.service`): what applies live has applied when it
@@ -52,16 +52,16 @@ the machinery `tilo device swap` uses on a development machine:
    components whose files differ from what is live, and the system layer
    keeps what the desktop already runs.
 4. When part waits for the desktop and the screen is locked or blanked for
-   two minutes, the shell starts `tilo-live-update-session.service`
+   two minutes, the session starts `tilo-live-update-session.service`
    (`live:session`): it merges the whole update, restarts the changed session
    services and restarts every desktop in place through `tilo-session`
    (SIGUSR1): the login, the lock and the windows stay.
 5. A restarted unit that fails, or a desktop that does not come back within
    20 s, puts the previous layer back, restarts the same parts again and
    marks the update failed; it then applies with the next restart of the
-   machine, which the shell asks for.
+   machine, which the session asks for.
 
-The state the shell reads is `/run/tilo/live-update/state.json`. Layers
+The state the session reads is `/run/tilo/live-update/state.json`. Layers
 last until the next boot, which boots the staged deployment that holds them
 all; every boot deletes them, and every apply rebuilds its layer from the
 mounted image.
@@ -116,8 +116,9 @@ mounted image.
 ## A mismatch is a state
 
 The launcher never runs a build that speaks another version than the system
-serves. The shell decides first what the person sees
-(`shell::app_versions`); a launch from a terminal (`tilo-launcher
+serves. The store judges each app against the interfaces the system declares
+(`tilo_package_store::interfaces`) and the session shows what that says of a
+place; a launch from a terminal (`tilo-launcher
 run-installed`, the PATH shims, `exec-installed`) does the same, saying so on
 stderr: it updates a build that is behind (or recorded at a package format
 this build does not read) and runs the new one, starts the system update for
@@ -131,9 +132,9 @@ one that is ahead, and exits 75 when the update is not there yet:
 - **The app is ahead** (it needs a newer system): "Opens once Tilo has
   updated", and the system update starts.
 - An app whose shell-ui hello names another version than its manifest is
-  answered with the shell's version and closed, and the side behind updates.
+  answered with the session's version and closed, and the side behind updates.
 
-Between devices (`shell::collaborator_versions`), a device at another peer
+Between devices (`neighbour_wire::PEER_PROTOCOL_VERSION`), a device at another peer
 version is answered with this one's and admitted to nothing, so nothing it
 sends arrives half-applied; each device keeps its own changes, and sync
 resumes by itself once both speak the same version:
