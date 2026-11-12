@@ -34,6 +34,9 @@
 #   --no-build    use the binaries already in target/debug
 #   --no-apps     start without the seeded apps, as a bare session does
 #   --size WxH    the headless output's size (default 1280x800)
+#   --window      show the session in a window on this Wayland desktop (still drawn by lavapipe)
+#   --model-record FILE  give the person this model provider (`tilo-model-gateway
+#                 provision-provider --record` JSON) once the session is up
 #   --dev-rust-views  seed a Rust app's sample resources and views too (Tube's channels and
 #                     videos), so a shell draws their views live: a shot of a Rust view on the
 #                     canvas. Development builds only.
@@ -69,12 +72,16 @@ build=1
 size=1280x800
 apps=(--seed-apps)
 rust_views=0
+window=0
+model_record=
 while (($#)); do
     case $1 in
         --no-build) build=0; shift ;;
         --no-apps) apps=(); rust_views=0; shift ;;
         --size) size=${2:?--size needs WxH}; shift 2 ;;
         --dev-rust-views) rust_views=1; shift ;;
+        --window) window=1; shift ;;
+        --model-record) model_record=${2:?--model-record needs FILE}; shift 2 ;;
         -h|--help) sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p' "$0"; exit 0 ;;
         *) die "unknown option $1 (see --help)" ;;
     esac
@@ -422,6 +429,8 @@ start_gateway
 # Start tilo-session headless with the arguments given, its output in $log, and
 # wait until it printed its control socket, which it does last. It runs on the
 # private bus, which goes when the session does.
+backend=(--backend headless --size "$size")
+host_client=()
 start_session() {
     env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS \
         HOME="$home" XDG_CONFIG_HOME="$home/.config" XDG_DATA_HOME="$home/.local/share" \
@@ -436,7 +445,7 @@ start_session() {
         TILO_COMMUNITY_CONFIG="$community_file" \
         TILO_AGENT_DOOR="$door" \
         setsid "$session_bus" "$dbus_daemon" \
-        "$bin/tilo-session" --backend headless --size "$size" --no-x11 \
+        "${host_client[@]}" "$bin/tilo-session" "${backend[@]}" --no-x11 \
         --system-bus none --test-control "$control" "$@" \
         > "$log" 2>&1 &
     session_pid=$!
@@ -459,7 +468,22 @@ minted=$(TILO_TEST_CONTROL=$control "$bin/tilo-control" raw '{"op":"provision_te
 [[ $minted == *'"throwaway":true'* ]] || die "no throwaway identity: $minted"
 stop_session
 
-say "starting the session headless at $size (log: $log)"
+if ((window)); then
+    [[ -n ${WAYLAND_DISPLAY:-} ]] || die "--window needs a Wayland desktop (WAYLAND_DISPLAY is unset)"
+    case $WAYLAND_DISPLAY in
+        /*) host_display=$WAYLAND_DISPLAY ;;
+        *) host_display=${XDG_RUNTIME_DIR:?}/$WAYLAND_DISPLAY ;;
+    esac
+    [[ -S $host_display ]] || die "host Wayland socket $host_display does not exist"
+    # The nested backend reaches the host through a dumpable helper that hands it the
+    # connection (dist/dev/nested-session.sh explains why).
+    backend=(--backend nested)
+    host_client=(python3 -I "$repo_root/dist/dev/host-wayland.py" "$host_display")
+    export TILO_WINIT_SIZE=${size/x/x}
+    say "starting the session in a window at $size (log: $log)"
+else
+    say "starting the session headless at $size (log: $log)"
+fi
 start_session --shell screen --admit-repl "$bin/tilolang" "${apps[@]}"
 # The door is announced once the session's own doors are up, which can be after its control
 # socket: wait for it as for the socket, while the session lives.
@@ -469,6 +493,17 @@ until grep -q "^TILO_AGENT_DOOR=$door\$" "$log"; do
     ((tries--)) || { tail -40 "$log" >&2; die "the session serves no agent door"; }
     sleep 0.1
 done
+
+if [[ -n $model_record ]]; then
+    env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS \
+        HOME="$home" XDG_CONFIG_HOME="$home/.config" XDG_DATA_HOME="$home/.local/share" \
+        XDG_STATE_HOME="$home/.local/state" XDG_CACHE_HOME="$home/.cache" \
+        XDG_RUNTIME_DIR="$runtime" TILO_IDENTITY_ROOT="$scratch/identity" \
+        TILO_SECRETS_DIR="$secrets" \
+        "$bin/tilo-model-gateway" provision-provider --record < "$model_record" \
+        || die "could not give the person the model provider in $model_record"
+    say "the person's model provider: $model_record"
+fi
 
 cat <<EOF
 TILO_AGENT_DOOR=$door
