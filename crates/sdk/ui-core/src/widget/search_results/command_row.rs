@@ -380,14 +380,20 @@ fn draw_trailing(
     }
 }
 
-/// Where `text`, a row's line searched as a field of `weight`, shows the
-/// query's words as search matched them, merged and in order: the part of a
-/// row a person reads to see why it matched.
-pub(super) fn match_ranges(
+/// What `row` sets off in `text`: the query's words where search matched
+/// them, merged and in order — the part of a row a person reads to see why it
+/// matched. A row that echoes the query sets off nothing: highlighting says
+/// why a row was found, and a row that just says what was typed was found by
+/// nothing ([`CommandRow::echoes_query`]).
+fn marked_spans(
+    row: &CommandRow,
     query: &str,
     text: &str,
     weight: tilo_search::FieldWeight,
 ) -> Vec<std::ops::Range<usize>> {
+    if row.echoes_query {
+        return Vec::new();
+    }
     let mut ranges: Vec<std::ops::Range<usize>> = query
         .split_whitespace()
         .filter_map(|word| tilo_search::locate(word, text, weight))
@@ -401,23 +407,6 @@ pub(super) fn match_ranges(
         }
     }
     merged
-}
-
-/// What `row` sets off in `text`: the query's words where they matched, and
-/// nothing at all in a row that echoes the query. Highlighting says why a row
-/// was found; a row that just says what was typed was found by nothing, and
-/// marking its words marks the person's own sentence ([`CommandRow::echoes_query`]).
-fn marked_spans(
-    row: &CommandRow,
-    query: &str,
-    text: &str,
-    weight: tilo_search::FieldWeight,
-) -> Vec<std::ops::Range<usize>> {
-    if row.echoes_query {
-        Vec::new()
-    } else {
-        match_ranges(query, text, weight)
-    }
 }
 
 /// `text` at `origin`, the parts in `ranges` in a heavier weight.
@@ -504,45 +493,39 @@ mod tests {
     use super::*;
 
     /// A row that says the query back — "Search the web for book a table", "Send to Ada: book a
-    /// table" — is found by nothing: marking its words marks the person's own sentence, so the
-    /// row sets off no span of it, while a row the query really matched keeps its marks.
+    /// table" — is found by nothing: marking its words marks the person's own sentence, so it
+    /// sets off no span of them, while a row the query really matched keeps its marks.
     #[test]
     fn a_row_that_restates_the_query_sets_nothing_off_in_it() {
-        let title = tilo_search::FieldWeight::TITLE;
-        let restated = "Send to Assistant: book a table for two on Friday";
         let echo = CommandRow {
             echoes_query: true,
             ..CommandRow::default()
         };
         assert!(
-            marked_spans(&echo, "book a table for two on Friday", restated, title).is_empty(),
-            "an echo sets off nothing"
-        );
-        let found = CommandRow::default();
-        assert_eq!(
             marked_spans(
-                &found,
-                "book a table",
-                "Search the web for book a table",
-                title
+                &echo,
+                "book a table for two",
+                "Send to Assistant: book a table for two",
+                tilo_search::FieldWeight::TITLE,
             )
-            .first(),
-            Some(&(19..23)),
-            "a row the query matched still shows where"
+            .is_empty(),
+            "an echo sets off nothing"
         );
     }
 
     #[test]
     fn matched_words_are_located_in_the_row_and_prose_is_cut_at_its_end() {
         let title = tilo_search::FieldWeight::TITLE;
+        let row = CommandRow::default();
         assert_eq!(
-            match_ranges("dark the", "Use the dark theme", title),
+            marked_spans(&row, "dark the", "Use the dark theme", title),
             vec![4..7, 8..12],
             "each query word, merged and in order"
         );
-        assert!(match_ranges("dark the", "Brightness", title).is_empty());
+        assert!(marked_spans(&row, "dark the", "Brightness", title).is_empty());
         assert!(
-            match_ranges(
+            marked_spans(
+                &row,
                 "pi",
                 "Insert it where you're typing",
                 tilo_search::FieldWeight::SUBTITLE
@@ -550,7 +533,7 @@ mod tests {
             .is_empty(),
             "two letters inside a word of a description are no match"
         );
-        assert_eq!(match_ranges("pi", "Pixel Editor", title), vec![0..2]);
+        assert_eq!(marked_spans(&row, "pi", "Pixel Editor", title), vec![0..2]);
 
         let theme = Theme::dark();
         let style = theme.text(TextRole::Caption);

@@ -1270,12 +1270,6 @@ impl WebSearch {
         };
         (found.id == id).then_some(found)
     }
-
-    /// Whether `hit` is the row every query gets.
-    #[must_use]
-    pub fn is_fallback(hit: &Hit) -> bool {
-        hit.id.starts_with("search:")
-    }
 }
 
 impl Source for WebSearch {
@@ -2440,7 +2434,9 @@ mod tests {
         );
         let search = web.query("youtube cats").remove(0);
         assert!(web.intent(&search) > 0.0);
-        assert!(WebSearch::is_fallback(&web.query("weather").remove(0)));
+        assert!(WebSearch::is_every_query_row(
+            &web.query("weather").remove(0)
+        ));
     }
 
     #[test]
