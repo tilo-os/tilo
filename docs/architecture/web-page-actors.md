@@ -34,6 +34,17 @@ an agent, an app, a bot. Browser passes the engine a name for that invoker
 with each page action. The engine keeps nothing else about identity and
 decides nothing by it; who may act is decided before the action reaches it.
 
+An agent that works from another of the person's devices is one actor like
+any other, under its own name. Where it works from is said beside the name,
+never inside it. The desktop's agent door verifies the certificate of the
+device a connection comes from. The run that connection works in keeps that
+device, and the action system tells Browser the device with every action of
+the run. Browser takes the device from there and from nowhere else: not from
+what the caller says of itself, and not from the engine, which is passed the
+name alone. An actor on the device that runs the page has no device beside
+its name. So two agents of one device are two actors, and one agent is the
+same actor in everything it does.
+
 Direct input is not an action. A person typing into the page, at the device
 or through a shared window, is the page's own input and is told apart from
 every actor's actions.
@@ -58,9 +69,12 @@ anyway.
 
 **The tab keeps a record.** Every action that operated the page is set down
 in order: who asked, what they asked for, what it acted on, what it wrote and
-how it ended. An element is recorded by its role and name, the description
-that still finds it after its document's refs are gone, so the record reads
-the same on a later page and a step can be done again from it. A secret is
+how it ended. An action of an agent that came from another of the person's
+devices also says that device, beside who asked: `device`, the device's
+key, and `device_name`, what its certificate calls it. An element is
+recorded by its role and name, the description that still finds it after
+its document's refs are gone, so the record reads the same on a later page
+and a step can be done again from it. A secret is
 never in the record, and nor is text the page refused. Reading the page
 takes no place in it. The record answers at once whatever the page is doing,
 so a reviewer is never queued behind the agents they are watching.
@@ -73,7 +87,11 @@ adds to it, and only what its engine listed. Setting an action down is the
 Browser's own writing, not an action of the record: no caller is offered it,
 and the record's door refuses it by name, as a value and in a group, from an
 agent and from the person alike. So nobody sets down an action the engine
-did not list, under their own name or another's. History steps through a tab
+did not list, under their own name or another's. An entry names the device
+the action system gave for the actor it is written as, and no other: one
+that names another device, or a device where the action system gave none,
+is refused. The change that sets an action down carries that device too, so
+the record's history says it of each step. History steps through a tab
 action by action, a
 recording is a stretch of that log ([session replay](session-replay.md)),
 and the person's other devices read the same record. Reading the record
@@ -212,7 +230,10 @@ A form several actors filled is reviewed by its fields, not by an account of
 the work. The review read lists every field with what it holds **now**, read
 from the page itself, and who set that value:
 
-- an actor's action, by actor and the action's place in the record;
+- an actor's action, by actor and the action's place in the record, and
+  by the device the actor worked from when that is not the device that
+  runs the page (`device` and `device_name`, as the record keeps them with
+  that action);
 - direct input into the page;
 - the page's own script;
 - nothing, for a field no one set since the page was first read.
@@ -232,7 +253,11 @@ truth on a screen of their own. `review-page` on `browser.page` shows the
 page's review in the page's place: each form with its questions, what each
 holds now, and who set it (an agent by its name, a person typing, the page's
 own script, or no one), with a mark on a field that no longer holds what was
-set, on a required one left empty and on one the page refuses. A secret is
+set, on a required one left empty and on one the page refuses. An agent
+that worked from another of the person's devices is shown with that device,
+"ada on Studio laptop": by the name the device's certificate gives it, and
+by the first eight digits of its key where it gives none. The record under
+the forms shows it the same way. A secret is
 said as set or not set. Under the forms stands the tab's record, in order,
 with who did each action; what a person typed stands there as typing, and
 what was written into a secret field as set, not shown. What the window held
@@ -335,8 +360,9 @@ Browser's.
 - **Acting.** An agent on another of the person's devices connects to the
   desktop's agent door and works there under a name of its own, as an agent
   on the desktop itself does. Its page actions take their turn in the tab,
-  are recorded under that name, and the person is asked before one that
-  acts on the page unless they let that agent go on.
+  are recorded under that name with the device the door verified it came
+  from (see "Actors"), and the person is asked before one that acts on the
+  page unless they let that agent go on.
 
 So two agents on two machines in one tab are two connections to one
 desktop's door, and a third machine is a third. Nothing is merged.
@@ -344,10 +370,15 @@ desktop's door, and a third machine is a third. Nothing is merged.
 What checks this: the session's window share tests run three sessions, one
 sharing a window and two viewing it. The remote end-to-end run
 (`scripts/e2e-remote/run.py`) has an agent on one machine work on another
-through its door under its own name, and carries two steps for the tab: two
-machines, then three, answer one form in one Browser tab while the tab's
-person reads who set each field. Those two steps do not pass yet, for the
-reason under "Not built yet".
+through its door under its own name, and carries three steps for the tab:
+two machines, then three, answer one form in one Browser tab while the
+tab's person reads who set each field; and the tab's record and that review
+name, beside each agent that came from another machine, the device it came
+from, by its whole key and its name, and none beside the tab's own agent.
+The device's way to the tab is checked in parts on one machine: the door's
+run keeps the device its connection's certificate names, the broker tells an
+application that device and never one the caller names, and the Browser's
+record, its field review and its review screen keep and show it.
 
 ## The cases
 
@@ -392,6 +423,14 @@ reason under "Not built yet".
   change to the record that arrives from another of the person's devices is
   merged as that device wrote it, and is not checked against that device's
   engine.
+- **Devices in the record: what is left.** The device is known for an agent
+  whose connection works in a run of its own, which is every connection the
+  door admits in a workspace that confines its agents to runs. A connection
+  that works in no run is recorded under the door's own name for it and has
+  no device beside it. A private window keeps no record, so its review
+  names no device. The name kept is the one the device had when it acted: a
+  device renamed later is still found by its key. Direct input through a
+  shared window names no device (see "Who types").
 - **Holds in the record: what is left.** When the person denies the action
   whose run reached a hold, the action system ends that invocation and the
   window is not told: the hold is set down as dropped once the window's own
