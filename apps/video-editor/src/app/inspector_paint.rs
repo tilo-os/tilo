@@ -535,20 +535,19 @@ impl VideoEditorApp {
         let name_h = line_height(tr, &name_style);
         let sub_style = theme.text(TextRole::Caption);
         let Some(clip) = clip else {
-            // The empty state: what is (not) selected, and the one thing to
-            // do about it.
-            let shown = elide_at(INSPECTOR_EMPTY_TITLE, (x1 - x0) as f32, &name_style, tr);
+            // The empty state: what is not selected. Nothing here tells a
+            // person to click: the row is in the timeline beside it.
+            let title = crate::resource::CATALOG.t(INSPECTOR_EMPTY_TITLE);
+            let shown = elide_at(&title, (x1 - x0) as f32, &name_style, tr);
             text(scene, tr, tf, &shown, &name_style, c.text_dim, x0, y);
-            y += name_h + S1;
-            let shown = elide_at(INSPECTOR_EMPTY_HINT, (x1 - x0) as f32, &sub_style, tr);
-            text(scene, tr, tf, &shown, &sub_style, c.text_dim, x0, y);
             scene.pop_layer();
             return;
         };
+        let missing = crate::resource::CATALOG.t("video-clip-missing-media");
         let name = self
             .project
             .media(clip.media)
-            .map_or("Missing media", |item| item.name.as_str());
+            .map_or(missing.as_str(), |item| item.name.as_str());
         let name_x = x0;
         let shown = elide_at(name, (x1 - name_x) as f32, &name_style, tr);
         text(

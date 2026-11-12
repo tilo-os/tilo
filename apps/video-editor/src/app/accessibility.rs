@@ -565,7 +565,7 @@ impl VideoEditorApp {
             // The painted empty state's own words, so one state is not
             // described two ways.
             AccessNode::new(Role::StaticText)
-                .with_name(format!("{INSPECTOR_EMPTY_TITLE}. {INSPECTOR_EMPTY_HINT}."))
+                .with_name(crate::resource::CATALOG.t(INSPECTOR_EMPTY_TITLE))
                 .with_key(0)
         });
         // Rows are a flat painted list but a nested tree: walk it once, opening

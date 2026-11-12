@@ -103,34 +103,28 @@ impl VideoEditorApp {
         // letterbox, so it says so, as it does when nothing was.
         let between_clips = !self.project.clips.is_empty()
             && self.project.top_video_clip_at(self.playhead).is_none();
-        if !showed_real || between_clips {
-            // Nothing was composited, so there is no picture. Say why in
-            // words on the letterbox, in the media inks — text only, never an
-            // invented picture or a glyph that looks like a control.
-            let (title, hint) = if self.project.clips.is_empty() {
-                // An empty project: the timeline below already says what to
-                // do, so the picture only says why it is blank.
-                ("Nothing to preview yet", "")
-            } else if self.project.top_video_clip_at(self.playhead).is_none() {
-                (PREVIEW_EMPTY_TITLE, PREVIEW_EMPTY_HINT)
+        // An empty project says nothing here: the timeline below already
+        // shows what to do with it, and a grey letterbox is the honest
+        // picture of a project with nothing in it.
+        if !self.project.clips.is_empty() && (!showed_real || between_clips) {
+            // Nothing was composited over a clip, so there is no picture. Say
+            // why in words on the letterbox, in the media inks — text only,
+            // never an invented picture or a glyph that looks like a control.
+            let title = if self.project.top_video_clip_at(self.playhead).is_none() {
+                crate::resource::CATALOG.t(super::PREVIEW_EMPTY_TITLE)
             } else {
                 // Not an empty state — a capability the box does not have.
                 // Same treatment, different words, and it must not suggest
                 // there is anything to do about it here.
-                preview_unavailable_words()
+                crate::resource::CATALOG.t(super::PREVIEW_UNAVAILABLE)
             };
             let title_style = theme.text(TextRole::Body).strong();
-            let hint_style = theme.text(TextRole::Caption);
             let th = line_height(tr, &title_style);
-            // The hint asks for a step, so it carries the button for it.
-            let offer = title == PREVIEW_EMPTY_TITLE && self.preview_offers_go_to_clip();
-            let (top, go_to_clip) =
-                Self::preview_hint_stack(canvas, tr, theme, !hint.is_empty(), offer);
+            let offer = self.preview_offers_go_to_clip();
+            let (top, go_to_clip) = Self::preview_hint_stack(canvas, tr, theme, th, offer);
             let room = (canvas.width() - S6) as f32;
-            let title = elide_at(title, room, &title_style, tr);
-            let hint = elide_at(hint, room, &hint_style, tr);
+            let title = elide_at(&title, room, &title_style, tr);
             let tw = text_width(tr, &title, &title_style);
-            let hw = text_width(tr, &hint, &hint_style);
             text(
                 scene,
                 tr,
@@ -140,16 +134,6 @@ impl VideoEditorApp {
                 c.media.ink,
                 canvas.center().x - tw / 2.0,
                 top,
-            );
-            text(
-                scene,
-                tr,
-                tf,
-                &hint,
-                &hint_style,
-                c.media.ink_dim,
-                canvas.center().x - hw / 2.0,
-                top + th + S1,
             );
             if let Some(button) = go_to_clip {
                 let label = crate::resource::CATALOG.t(super::go_to_clip::GO_TO_CLIP_LABEL);
@@ -407,13 +391,4 @@ impl VideoEditorApp {
             TransportAction::ToEnd => (Icon::SkipForward, "Jump to end"),
         }
     }
-}
-
-/// What the picture says when this device cannot composite a preview: where
-/// the person is and what still works, never the graphics stack's terms.
-pub(crate) fn preview_unavailable_words() -> (&'static str, &'static str) {
-    (
-        "Preview isn't available here yet",
-        "Editing the timeline still works",
-    )
 }

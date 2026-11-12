@@ -223,14 +223,28 @@ fn stepping_an_animated_slider_writes_a_key_at_the_playhead() {
     assert!(clip.param_at(Param::Opacity, 20.0) < clip.param_at(Param::Opacity, 23.0));
 }
 
+/// The inspector's empty state reads in the window's language, paint and
+/// reader alike.
 #[test]
-fn an_empty_inspector_says_what_to_do() {
+fn an_empty_inspector_reads_in_german() {
+    let catalog = &video_editor::resource::CATALOG;
+    catalog.set_locale("de-DE");
+    let mut app = HeadlessApp::<VideoEditor>::new().unwrap();
+    let found = find(&mut app, |n| {
+        n.label().is_some_and(|l| l == "Kein Clip ausgewählt")
+    })
+    .is_some();
+    catalog.set_locale("en-US");
+    assert!(found, "the empty state is spoken in German");
+}
+
+#[test]
+fn an_empty_inspector_says_what_is_not_selected() {
     let mut app = HeadlessApp::<VideoEditor>::new().unwrap();
     assert!(
         find(&mut app, |n| n
             .label()
-            .is_some_and(|l| l.starts_with("No clip selected"))
-            && n.label().is_some_and(|l| l.contains("Click a clip")))
+            .is_some_and(|l| l == "No clip selected"))
         .is_some()
     );
 }

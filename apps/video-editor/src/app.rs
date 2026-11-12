@@ -183,12 +183,10 @@ const KEY_BOX: f64 = 20.0;
 const BIN_BREAKPOINT: f64 = 900.0;
 
 /// The preview's and the inspector's empty states, in one place each so the
-/// painted words and the spoken ones cannot drift apart. They did: the
-/// inspector said "No clip selected / Click a clip in the timeline" on screen
-/// and "Nothing selected. Select a clip on the timeline to edit it." to a
-/// reader, which is two descriptions of one state.
-const PREVIEW_EMPTY_TITLE: &str = "No clip at playhead";
-const PREVIEW_EMPTY_HINT: &str = "Move the playhead over a clip to see it";
+/// painted words and the spoken ones cannot drift apart. They are catalogue
+/// messages, so a German window says them in German.
+const PREVIEW_EMPTY_TITLE: &str = "video-editor-preview-empty";
+const PREVIEW_UNAVAILABLE: &str = "video-editor-preview-unavailable";
 /// The catalogue message naming the marker list's add button, shared by the
 /// paint and the accessibility tree so a reader is offered the control the
 /// screen actually shows.
@@ -214,8 +212,7 @@ const MARKER_VERBS: [(&str, &str); 3] = [
 /// apart.
 const MIX_METER_KEY: &str = "mix meter";
 
-const INSPECTOR_EMPTY_TITLE: &str = "No clip selected";
-const INSPECTOR_EMPTY_HINT: &str = "Click a clip in the timeline to edit it";
+const INSPECTOR_EMPTY_TITLE: &str = "video-editor-inspector-empty";
 
 /// Below this window width the inspector collapses to an overlay flap from
 /// the right, exactly as the bin does from the left.

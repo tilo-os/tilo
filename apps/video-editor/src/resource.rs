@@ -821,7 +821,7 @@ pub fn reveal_effect(
     }
 }
 
-ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
+ui::embedded_catalog!(pub static CATALOG, ["de-DE", "en-US"]);
 
 /// The editor as a framework app: one window, the whole editor.
 pub struct VideoEditor;
