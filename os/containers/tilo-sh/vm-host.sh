@@ -221,7 +221,10 @@ root_key() { # work
 
 # This host's member device, as the tar the start installs on its state disk
 # (TILO_VM_MEMBER_IDENTITIES): its key, the relay's root certifying it, and
-# the person's record. It prints the device's public key.
+# the person's record. It prints the device's public key. The member holds the
+# workspaces it enters as any of the person's devices does, so it is certified
+# as one (`own`): a host certificate makes a store node, which holds none of
+# the person's own documents, and the member's runtime does not start as one.
 member_identity() {
   local work=$vm/member identities=$vm/member-identities device
   [ -f "$relay_root" ] || fail "$relay_root: the relay's root is not there yet"
@@ -234,7 +237,7 @@ member_identity() {
     root_key "$work"
     "$enroll" certify --root-key "$work/root-key.bin" --identity-root "$work/root" \
       --device "$device" --label "$pod of the local tilo.sh stack" \
-      --capability own --capability host --out "$work/cert.bin" >&2
+      --capability own --out "$work/cert.bin" >&2
     "$enroll" install-cert --identity-root "$work/root" --identity-dir "$work/person" \
       --cert "$work/cert.bin" >&2
     # The start installs `root` as the host's identity and `person` as the

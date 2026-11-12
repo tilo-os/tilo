@@ -1,923 +1,119 @@
-# An HTML renderer for tilo-ui on the web
+# Widgets as HTML
 
-On the web, Tilo draws every app with WebGPU into one canvas. Text selection,
-autofill, passkeys, accessibility and phones all suffer from that. The HTML
-renderer shows the same frames as real HTML instead: ui-core keeps layout and
-widgets, and each frame's scene becomes DOM (boxes, SVG, clips, shadows and
-real text), positioned absolutely. It is on main behind
-`mountDesktop(el, {app, dom: true})`, off by default.
+On the web, a Tilo window can show as a WebGPU canvas or as HTML. The HTML is
+not a copy of the painted frame. Every widget renders itself as HTML, next to
+its paint: the same widgets, the same composition and the same apps as on
+native, with real elements where the canvas has pixels. The page then gets
+what a page should have: real text that the browser lays out, selects and
+finds, `<input>` fields that autofill and take passkeys, native scrollers,
+buttons and list items assistive technology reads, and CSS layout that follows
+the window as it resizes. Pixels may differ from the canvas; what the window
+shows and does is the same.
 
-This document has two parts:
-- **[The foundation](#the-foundation)**: what is on main, how it works, what
-  it measures, and what comes next.
-- **[The spike](#the-spike)**: the time-boxed prototype that chose the
-  approach, with its measurements, the problems it found and the options it
-  recommended. Its numbers are the spike's, not today's.
+It is on main behind `mountDesktop(el, {app, dom: true})`. A page chooses the
+renderer by platform and readiness in code, never from its address.
 
-**The approach in one line:** keep ui-core's layout and widgets. Turn the
-scene each frame already produces into DOM, and give that scene stable
-widget keys so the DOM is reconciled by identity. Per-widget DOM
-implementations of 580 widget types are not needed to get real HTML, and
-they would not make the module smaller.
+## The contract
 
-# The foundation
+`Widget::html(&self, cx: &mut HtmlCx)` (`crates/sdk/ui-core/src/composition.rs`)
+is part of the widget contract, beside `draw`:
 
-## What is on main
+- A **container** composes its children: `cx.children()` puts the widgets
+  its layout node holds into its element. Where they stand where the node's
+  style puts them, the element is a CSS flex or grid container with that
+  style (`flows`), and each child is a flex item at the size the shared
+  layout gave it. A widget that places its children itself (insets, a shell
+  that docks and floats panes) has them placed at their rectangles. Surfaces
+  it lays under them (a sidebar's ground) are `cx.surface(rect, "sidebar")`.
+- A **leaf** names its element and what it shows: `cx.element("li")`,
+  `cx.text(look)` for words set the way the widget sets them (size, weight,
+  leading, colour, line clamp), `cx.field(…)` for an editable field (an
+  `<input>` or `<textarea>`), `cx.blocks(…)` for a document of blocks
+  (paragraphs, headings, list and checklist items, quotes, code, with inline
+  marks and the caret).
+- A widget that is **genuinely drawn** (a chart, a canvas, a map, video)
+  calls `cx.picture()`: the page shows its paint as a `<canvas>` at the
+  screen's density, asked for when what it shows changed.
 
-`mountDesktop(el, {app, dom: true})` shows a mount as HTML. Records, input,
-layout and the frame loop are the canvas path's own; the scene goes to the
-page as DOM operations instead of to WebGPU. The canvas stays in place,
-transparent, as the input surface. Nothing changes for a mount without
-`dom`.
+The trait's default, `HtmlCx::from_layout`, renders a widget from its layout
+node and its role (its children, or a picture for a leaf). It exists only for
+widgets not yet given their own rendering. `tools/policy/check_widget_html.py`
+refuses an `impl Widget` without `fn html` beyond the counts listed in
+`tools/policy/widget_html_baseline.txt`, and asks for a count to be lowered
+once a widget gets its own, so the list only shrinks and new widgets cannot
+skip it.
 
-1. **Stable element identity.** The vello encoding carries keyed marks
-   (`vello_encoding::Mark`): a begin with a key and the origin of what it
-   names, and an end. Like glyph-run text, they ride inside the encoding,
-   so they survive subtree caches, `Scene::append` and transforms.
-   `ui::scene_parts` writes them while a host asks for them
-   (`key_widgets`):
-   - every widget gets one key: its parent's key, its index and its type,
-     or its test id when it has one. A container draws each child through
-     the toolkit's draw paths: `draw_child` / `draw_child_at`, which also
-     cull a child outside the viewport, or `child.draw_child(…)`
-     (`widget::DrawChild`), which keys without culling, for a container
-     that culls itself or draws a child where its rect is not. Calling a
-     child's `Widget::draw` directly is a clippy error (`disallowed-methods`
-     in `clippy.toml` and the crates' own copies), so new code cannot skip
-     the key. Tests may draw the widget under test directly;
-   - widgets that draw many items themselves key each item by its own id
-     (`scene_parts::item_key`): the block editor's blocks and a virtual
-     list's rows.
+Widgets with their own HTML so far: `Text`, `EditableLabel`, `BlockEditor`,
+`Button` (a `<button>` whose face is still its picture), `ListRow`, `Column`,
+`Row`, `Stack`, `Container`, `Scrollable`, `VirtualList`, `NavShell` and its
+header title, `ModalDialog` and `OverflowDoor`. The window's bar of slots,
+which the frame hosts over a page that mounts one app, is a `<header>`
+toolbar of real buttons over its painted band.
 
-   The page (`web/dom-present.mjs`) gives each key one element, placed at
-   the widget's origin, and names everything inside by its kind and place
-   among its kind in the innermost widget or clip. Elements are never
-   reused by position across widgets: an inserted op renumbers only its
-   own kind in its own widget, a moved widget is one position write, and an
-   element is reused only for an op of its own kind.
-2. **Native scroll containers.** A widget with a scroll region
-   (`Widget::primary_vertical_scroll`) reports it as it is drawn, and the
-   page turns the clip of its viewport into an `overflow: auto` container.
-   The content is placed where it lies in the scrolled content and the
-   container is scrolled to the widget's offset. A wheel over it scrolls it
-   natively. Its `scroll` event goes back to the widget
-   (`dom_scrolled` → `apply_primary_vertical_scroll`), and the next frame
-   draws what came into view without moving anything already there. A
-   wrapper that only forwards an inner widget's region (a window, a tile,
-   an app's root) leaves the region to the innermost widget.
-3. **Present from input.** A key, a click or committed text presents its
-   frame in a task right after the input's own (one `MessageChannel`
-   message), so the keydown and the text it commits share one frame and
-   nothing waits for the next animation frame.
-4. **One tree for paint and accessibility.** Every painted leaf is
-   `aria-hidden`. The inspection tree names the key each widget drew under
-   (`paint_key`), and the semantic mirror places that widget's semantic
-   element inside the widget's painted element instead of in its own
-   layer (`semanticBridge(…, host)`). The page then holds one tree: the
-   painted element of a button holds its `<button>`, a field's holds its
-   `<textarea>`. Nodes whose widget drew no key stay in the mirror's layer.
-5. **Theme.** The theme is published on the HTML layer as custom properties
-   (`--tilo-ground`, `--tilo-text`, `--tilo-accent`, `--tilo-radius` and
-   more) with `color-scheme`. Light or dark follows the browser's
-   `prefers-color-scheme` while the person has chosen neither in their
-   settings, and changes with it.
+## How a frame reaches the page
 
-6. **The HTML layer is the hit target** (`web/dom-input.mjs`). The canvas
-   lies under the layer, where winit listens, and the page forwards what it
-   does not handle itself as the same pointer events, without bubbling:
-   - a wheel over a scroll container that can still move moves it in the
-     wheel event itself, so the next frame shows it; any other wheel goes
-     to the runtime;
-   - a touch that lands on a scroll container pans it natively, with the
-     browser's momentum and overscroll. The runtime hears the touch begin
-     and end, so a tap is still a tap, and a pan the browser takes over
-     ends in a cancel, so the runtime never drags what the browser
-     scrolls. Elsewhere a touch is the runtime's (`touch-action: none`);
-   - a press is the runtime's, as on the canvas: its own focus change and
-     selection are prevented, or the page's focus would leave the runtime's
-     editor for the page and the semantic mirror would take it;
-   - `__tiloDom.selectText(true)` hands presses to the page for native
-     selection; while the person makes or holds one, neither the host nor
-     the semantic mirror moves the focus, and the copy shortcut is the
-     browser's;
-   - the runtime's cursor, set on the canvas, shows on the layer.
-7. **Images and gradients.** An image is handed to the page once, as its
-   pixels under an id, and shown as a `<canvas>` placed by the image's own
-   matrix and clipped to what the scene draws it into; both sides forget an
-   image no frame showed for a while. A linear, radial (one centre) or sweep
-   gradient filling a box becomes the CSS gradient that paints the same
-   pixels, laid out against the box. A gradient on a path, a stroke or text
-   still shows its first stop.
-8. **Text as flows.** The runs a widget draws one after another, each
-   further along its line or on a line below, are one element: a block per
-   line, as tall as the step to the next, holding its runs side by side.
-   Each run stands where the toolkit set it: a line's first run is indented
-   to its x, and a run followed on its line is exactly as wide as the step
-   to the next run, so the browser's own advances never move what follows.
-   Line breaks stay the toolkit's. A selection or find-in-page then reads a
-   paragraph as one text, with a line break between its lines. A justified
-   line is one run whose spaces the toolkit stretched; the page sets spaces
-   at the font's own width, so such a run goes over as one run per word.
-9. **Native selection holds.** A frame moves the fewest elements it can
-   (the longest run already in order stays), and never the one holding the
-   page's selection; moving a node takes the selection out of what it
-   holds. Root widgets are numbered per scene and per type, so a widget
-   drawn at the root of another scene (a measuring pass) no longer
-   renumbers the frame's own: on a press that blurred the editor, every
-   root key changed and the note's panel was rebuilt under the selection.
-10. **Canvas islands.** A widget that says it is a picture
-    (`scene_parts::picture`: charts, plots, maps) or that makes
-    `ISLAND_DRAWS` (400) draws of its own is shown as one image of what it
-    drew, cut to the viewport, with its text still text over it. The
-    encoder rasterizes it with the CPU rasterizer the canvas path already
-    has, hashes what it drew, and hands the page a new image only when that
-    changed, naming the one it replaces. An image is drawn at the density
-    of the screen showing it (`device_scale`, the page's device pixel
-    ratio) and placed back at its size in points by its matrix, so a
-    picture is as crisp on a phone as on a desktop; one larger than
-    `ISLAND_PIXELS` (4 M device pixels) is drawn less densely instead,
-    never below one pixel per point. A widget that scrolls natively or
-    holds a field the page shows never becomes an image unasked.
-11. **Real `<input>` for single-line fields.** A text field's semantics
-    carry what it asks to be filled with (`AccessState::autofill`: username,
-    email, current or new password, one-time code, name, telephone), which a
-    `TextInput` takes from its kind or `with_autofill`. On a page shown as
-    HTML a single-line field leaves its text, caret, selection and
-    decorations to the page (`scene_parts::native_field`): it still draws
-    its chrome and placeholder, and reports where its line starts, its
-    baseline, the face, size and colour (`meta.fields`). The semantic
-    mirror makes the field an `<input>` (`type="password"` for a secret,
-    `autocomplete` from the purpose: `username webauthn` on a username, so
-    a page's conditional passkey request is offered there), the presenter
-    shows it in the field's painted element with padding that puts its line
-    where the toolkit's would stand, and the layer lets presses on it
-    through: the browser's caret, selection, IME, autofill and passkeys are
-    the field's. What the person types reaches the widget through the
-    mirror's value and selection actions. A password input keeps what was
-    typed: the tree never holds a secret, so it cannot empty it either. A
-    field moved to another element while the person types in it keeps its
-    focus and caret; the mirror is told the blur and focus are the page's
-    own.
+`FrameHarness::composition()` walks the laid-out layout tree from its root and
+asks each widget node for its `html`; layout-only nodes become plain
+containers with their style. The result (`ui::composition::Composition`) is
+the frame's composition, platform-neutral. The browser runtime hands it to the
+page as JSON for each frame that changed it (`src/browser/dom.rs`,
+`src/dom_code.rs`), and `web/view-present.mjs` reconciles it into elements by
+widget path, writing only the properties that changed.
 
-Everything that only an HTML mount runs is reached through `DOM_CODE`
-(`ui::lazy_code!`): drawing the frame, the toolkit's keying code (the
-`ui::scene_parts::Keyer` it installs; the draw paths carry only the check
-whether one is installed), the encoder (`tilo_cpu_raster::dom`) and the
-presenter that hands frames to the page. The browser desktop splits it into
-its own module (`dom_presenter`) and fetches it the first time a page asks
-for `dom: true`.
+Input:
+
+- The pointer stays the runtime's, as on the canvas: `web/dom-input.mjs`
+  forwards it, so a press, a hover or a drag does what the widget does.
+- A press in a document's text puts the caret where the browser laid that
+  text out: the page reads the offset at the point, and the block editor
+  receives it as a semantic selection on the block (`block-text:` and its
+  id). Keys then reach the editor as they do on the canvas, and the edit
+  comes back in the next frame's composition.
+- A field is the page's own `<input>`: what the person types goes to the
+  widget as its value through the semantic action door.
+- A scroller is native: the page scrolls it, and the offset goes back to the
+  widget (`dom_scrolled`), which composes what came into view.
+- Pictures are asked for after the frame was handed over (`dom_picture`);
+  the runtime rasterizes the widget's own paint on the CPU at the page's
+  device pixel ratio.
+
+The code only an HTML mount runs (the presenter and the pictures'
+rasterizer) is behind `DOM_CODE` (`ui::lazy_code!`), so the desktop bundle
+fetches it the first time a page asks for `dom: true`.
 
 ## Measurements
 
-Three runs of `tools/web/html-renderer/run-measure.sh` on the x86 builder,
-the last on the code as it landed: headless Chrome for Testing, no GPU, so
-WebGPU runs on SwiftShader (its latency is pessimistic, as in the spike).
-The baseline is the plain-DOM page (`baseline.html`, a contenteditable
-document with a sidebar) in the same run. 42 keystrokes, 60 wheel steps (30
-at 390 px), 60 ms apart. Latency is from the input event to the first
-animation frame after the page changed; for a native scroll the change is
-the scroll itself. Raw data of the latest run, with every change below:
-[`html-renderer/results.json`](html-renderer/results.json); the spike's is
-[`html-renderer/spike-results.json`](html-renderer/spike-results.json).
+A development build of the Notes bundle (`wasm-dev`, unoptimized), headless
+Chrome on a laptop, with a note made through Notes' own
+`import-markdown-content` action:
 
-| | HTML, last run | HTML, the three runs | HTML (spike) | WebGPU canvas | Plain DOM, the three runs |
-|---|---|---|---|---|---|
-| typing p50, 1280 px | 23.1 ms | 13.8 – 23.1 ms | 24.6 ms | 266 – 399 ms | 1.9 – 3.2 ms |
-| typing p90, 1280 px | 36.9 ms | 23.2 – 36.9 ms | 39.8 ms | 496 – 882 ms | 3.2 – 3.8 ms |
-| typing p50 / p90, 390 px | 15.7 / 29.7 ms | p50 13.0 – 15.7 ms | 26.4 / 47.9 ms | — | — |
-| wheel scroll p50, 1280 px | 2.8 ms | 2.6 – 4.9 ms | 48.9 ms | 63 – 65 ms | 17.0 – 20.2 ms |
-| wheel scroll p90, 1280 px | 58.1 ms | 38.8 – 58.1 ms | 82.8 ms | 617 – 659 ms | 23.3 – 25.5 ms |
-| wheel scroll p50, 390 px | 21.2 ms | 20.4 – 21.2 ms | 60.8 ms | — | — |
-| property writes per keystroke frame, p50 / max | 2 / 63 | the same | up to 650 | — | — |
-| new elements per keystroke frame, p50 / max | 0 / 7 | the same | — | — | — |
-| presenter time per keystroke frame, p50 / max | 0.6 / 5.3 ms | p50 0.4 – 0.6 ms | 0.3 – 1.3 ms | — | — |
-| memory, all Chrome processes, 1280 px | 932 MB (GPU process 107) | 925 – 932 MB | 939 MB | 1246 MB (GPU process 495) | 513 MB |
+| | 1280 px | 390 px |
+|---|---|---|
+| typing, keydown to the page showing it, p50 / p90 | 41 – 52 / 86 – 89 ms | — |
+| elements in the window | 35 | 27 |
+| presenter time per frame | 0.4 ms | 0.4 ms |
 
-Against the targets:
-- **Typing within one frame of plain DOM:** not yet reliably. The median was
-  within one 16.7 ms frame in two runs (10.6 and 14.5 ms behind) and 20.7
-  ms behind in the third; p90 is one to two frames behind. The page's own
-  work per key is small (2 property writes, no new element, under a
-  millisecond in the presenter); what is left is layout in wasm, its
-  variance on a shared builder, and the browser's style and paint of the
-  changed line. The next step there is measuring the remaining time from a
-  trace on a quiet machine, not from headless timings.
-- **Scrolling close to plain DOM:** met where the scroll is native. At 1280
-  px the median is below the baseline's: the browser moves the container,
-  and the frame that follows only adds what came into view. The p90 is the
-  steps that reach the top of the note: a wheel the container cannot take
-  goes to ui-core and waits for a frame. At 390 px the median matches plain
-  DOM.
-- **No visual difference from WebGPU:** the same note before and after the
-  same keystrokes, HTML against the canvas, compared pixel by pixel
-  (`notes-diff-*.png`): 1.1 – 1.2 % of pixels at 1280 px (light, typed,
-  dark) and 4.5 % at 390 px differ by more than 48 of 255 in a channel,
-  mean difference 1.7 and 5.9, the same in every run. Every difference is on
-  glyph edges: the browser rasterizes and antialiases text itself, where
-  vello does on the canvas. Line breaks, positions, icons, caret and
-  scrollbar are the same. The phone figure is higher only because its text
-  is set at three device pixels per point, so more of each glyph is edge.
-- **Accessibility:** no painted text is exposed to assistive technology (0
-  of 47 text elements). With every widget keyed, 523 semantic elements live
-  inside their widget's painted element and 7 are left in the mirror's
-  layer (before: 14 and 517).
-- **With every widget keyed** (one run on the same builder): typing p50 /
-  p90 19.2 / 32.9 ms at 1280 px and 12.0 / 43.4 ms at 390 px; wheel p50 /
-  p90 16.6 / 59.5 ms at 1280 px and 5.4 / 40.6 ms at 390 px (before: 21.2
-  ms p50). The 1280 px frame holds 241 elements (before: 118), since every
-  widget has one; a scroll frame writes 112 properties and creates 19
-  elements at the median (before: 103 and 13). The 1280 px wheel median is
-  one frame above the previous runs' 2.6 – 4.9 ms with the same work per
-  frame; it needs a run on a quiet machine. Pixel parity with the canvas
-  is unchanged (1.1 – 1.2 % at 1280 px, 4.5 % at 390 px).
-- **Light and dark** follow the emulated `prefers-color-scheme` in the
-  HTML runs with no Tilo setting given.
-- **With the HTML layer as the hit target** (two runs, each with the canvas
-  and plain DOM in the same run, the builder otherwise quiet):
+Typing in an unoptimized build is dominated by layout in wasm; the release
+bundle's numbers come next.
 
-  | | HTML | WebGPU canvas | Plain DOM |
-  |---|---|---|---|
-  | typing p50 / p90, 1280 px | 14.7 – 15.8 / 29.7 – 39.5 ms | 253 – 264 / 489 – 535 ms | 2.0 – 2.2 / 2.8 – 4.3 ms |
-  | wheel p50 / p90, 1280 px | 30.7 – 36.6 / 54.5 – 72.0 ms | 64.8 – 69.1 / 620 – 631 ms | 20.8 – 21.1 / 26.8 – 29.2 ms |
-  | typing p50, 390 px | 17.5 – 19.6 ms | — | — |
-  | wheel p50, 390 px | 22.1 – 27.2 ms | — | — |
-  | touch pan of the note, 390 px | 280 px for a 260 px drag, native | — | — |
+## Next
 
-  The wheel median is about one frame above plain DOM and above the run
-  with the canvas as the hit target (16.6 ms); the work per scroll frame
-  is the same (99 writes, 14 new elements, 1.3 ms in the presenter).
-  Pixel parity is unchanged (1.2 % at 1280 px, 4.5 % at 390 px). A tap
-  opens the note as on the canvas: an earlier difference at 390 px was a
-  passing "Saved" notice caught in one screenshot and not the other.
-- **With paragraphs as flows** (one run with the canvas and plain DOM, one
-  of HTML alone, today's builder): a drag over the note after typing
-  selects from where it was pressed to where it was let go, across lines
-  and paragraphs ("Paragraph 25: … keep every thought close at hand, and
-  the page keeps scrolling. / Paragraph 26: the quick brown fox …"); before,
-  it came back empty. Typing p50 / p90 17.0 – 30.3 / 24.6 – 51.3 ms at 1280
-  px and 14.9 / 25.6 ms at 390 px; wheel p50 21.0 – 22.0 ms (plain DOM 16.4
-  in the same run). 524 semantic elements live inside their widget's
-  painted element, 6 in the mirror's layer. Pixel parity is unchanged at
-  1280 px (1.2 %); at 390 px 5.8 %, from the passing "Saved" notice caught
-  in the HTML screenshot and not the canvas one. The median keystroke
-  still writes 2 properties and creates nothing; the largest frame of the
-  run wrote 1,510 and created 287.
-- **One key, on a quiet machine, with the plain page in the same run**
-  (`tools/web/html-renderer/run-typing.sh`, 20 keys, the desktop bundle;
-  the plain page's median was 0.3 ms, so the run was usable). A key drew two
-  frames. The first reached the page at 7.9 ms p50 and 12.0 p90, wrote 7
-  properties, and spent 4.2 ms in layout and 0.65 ms in the presenter; the
-  browser painted it at **10.2 ms p50 and 14.6 p90** — within one 16.7 ms
-  frame of the plain page. The toolkit's own passes for that frame were sync
-  1.9 ms, build_layout 1.0, apply_layout 0.3, draw 1.9, and 2.2 ms handling
-  the input itself. The second frame wrote nothing and cost 3.1 ms of wasm
-  (sync 0.6, apply 0.2, draw 2.5); it lands 19–120 ms after the key, after
-  the browser has already painted, so it is not on the key's path to the
-  screen. The frame metrics name what asks for it: `queued: component wake`
-  and `queued: input frame pending` — the app's own background update after
-  the edit, which the runtime cannot know changes no pixel until it draws.
-- **Ten apps at 390 px** (`parity.mjs --phone`: 390 × 844 at three device
-  pixels per point, each app mounted alone, HTML and canvas in the same run):
-  Canvas 0.35 %, Chat 0.35 %, Notes 0.29 %, Photos 0.40 %, Clock 0.57 %,
-  Sheets 0.53 %, PDF Viewer 0.30 %, Typst 0.17 %, Video Editor 1.17 % — all
-  glyph and picture edges, the same kind of difference as at 1280 px. Maps
-  is the one app whose frames are not its own: it fetched 141 remote
-  resources as HTML and 20 on the canvas in one run, and its difference is
-  whatever share of its tiles had arrived (28 % in a run where one render had
-  none, 1.9 % where both had most, 0.6 % where both had all). The run now
-  reports each render's remote resource count beside its diff, so that reads
-  as the network, not the renderer. No app of the bundle puts a picture (a
-  chart or plot widget, or a widget past the island threshold) on its first
-  screen or the screens scrolled to here, so islands at a phone's density are
-  covered by the encoder's own test rather than by a pixel diff.
-- **The last run, with every change in this stage** (HTML, canvas and
-  plain DOM in one run; raw data in
-  [`html-renderer/results.json`](html-renderer/results.json)): typing p50 /
-  p90 19.6 / 32.8 ms at 1280 px and 16.1 / 30.8 ms at 390 px (plain DOM
-  2.8 / 3.6, the canvas 395 / 886 on SwiftShader); wheel p50 22.0 ms
-  (plain DOM 17.1). A keystroke frame writes 2 properties at the median
-  and at most 63, and creates at most 7 elements: since root keys hold,
-  no frame rebuilds the mount. The drag after typing selects what it
-  covers. Pixel parity 1.2 % at 1280 px (light, typed, dark) and 4.8 % at
-  390 px. A touch drag of 260 px pans the note 390 px natively. Memory, all
-  Chrome processes: 744 MB as HTML, 1105 MB on the canvas, 514 MB for the
-  plain page.
-- **Every app of the desktop bundle** (`parity.mjs`, all 39, 1280 px,
-  light, each mounted alone and left to settle, HTML and canvas in the same
-  run): the median app differs from the canvas in 0.16 % of its pixels, 37
-  apps in under 0.7 %; the diffs looked at (Maps, Notes, Passwords, Themes)
-  are glyph edges. Two stand out. Themes
-  (1.6 %): its theme previews are small text drawn as part of a picture of
-  a window. ebook (4.8 %): see the open items below. No app logs an error
-  as HTML. 1,074 semantic elements live inside their widget's painted
-  element and 371 in the mirror's layer (Model providers alone has 111 of
-  them); no painted text is exposed to assistive technology. Five apps show
-  a single-line field on their first screen, all as real inputs. Typing
-  into a first field: 6.7 – 23.5 ms p50 (plain DOM 2.1 in the same run).
-  Wheel steps over the middle of the app: 19.7 ms p50 over all apps (plain
-  DOM 18.2); the slowest, 25 – 31 ms, are apps whose middle does not scroll
-  natively, so the wheel goes to the runtime and waits for its frame.
-- **The wheel through the layer** (step 3's 30.7 – 36.6 ms p50, against
-  16.6 ms before it): two ways of scrolling, each run twice against plain
-  DOM on today's builder. With the layer setting the scroll container's offset in
-  the wheel event itself, as main does, the median is 21.0 – 22.8 ms (plain
-  DOM 16.4 – 21.3 ms in the same runs, one outlier at 8.4). Letting the
-  browser scroll the container itself, through a passive listener, gives
-  37.3 – 38.1 ms: Chrome animates a wheel scroll and its first step lands a
-  frame later. Step 3's numbers match the browser's own path, not the code
-  that landed; on main the wheel is at plain DOM's level, and no change was
-  needed.
-- **Size with `dom` off** (fields, islands and the keys' fixes): the
-  desktop bundle's start module is 21,649,224 bytes against 21,639,469 for
-  the main it is based on, built on the same builder: 9.8 KB, 0.05 %,
-  larger: the text field's call that hands its line to the page, the
-  autofill purpose in its semantics, and the picture calls of charts, plots
-  and maps. The HTML module (`dom_presenter`) grew from 53 KB to 91 KB with
-  the island rasterizer.
-- **Size with `dom` off:** keying every widget leaves the desktop bundle's
-  start module (as the `sdk-web-size` check builds it,
-  `tools/web/html-renderer/size.sh`) at 20,295,058 bytes against 20,281,659
-  for the main it is based on, built on the same builder: 13 KB, 0.07 %,
-  larger, with no module among those that grew most. A first version that
-  made every child a trait object grew it by 35 – 67 KB: a type that was
-  never a trait object got a vtable, which brings all of its `Widget`
-  methods in. A child held by value is now drawn through one generic,
-  never-inlined method per type. The keying code, the encoder, the
-  presenter and the HTML frame path stay in their own module
-  (`dom_presenter`), fetched only by a page that asks for `dom: true`.
-
-## Is `dom: true` ready to be the web default?
-
-Not yet. What is ready: every app of the desktop bundle draws as HTML
-without an error, and each of the twenty apps the parity run now works the
-way a person works them agrees with the canvas within 1 % of its pixels but
-for one; text is real, selectable and in one flow per paragraph; scroll
-containers are native, with the browser's wheel and touch; sign-in fields
-are real inputs that autofill and offer passkeys on; the semantic tree is
-one with the painted one for most widgets; a widget key no longer moves when
-the container that draws it leaves a child out; a press on anything in the
-window bar acts, as it does on the canvas; the start module did not grow
-beyond noise.
-What blocks it:
-
-- **Typing in painted text** (the editors: Notes, the word processor) is
-  within one frame of a plain page on a machine quiet enough to say so: with
-  the plain page at 0.3 ms p50, a key was painted at 10.2 ms p50 and 14.6 p90.
-  Earlier figures said otherwise because they were taken on a shared builder
-  whose own plain page measured 2.8 ms, and the page's median there moved by
-  more than the work being measured. Two things are left, and neither is a
-  frame on the key's path: a key still draws a second frame, asked for by the
-  app's own post-edit background update (`queued: component wake`), which
-  writes nothing and costs about 3 ms of wasm after the browser has painted;
-  and the first frame's 4.2 ms of layout. Removing the second frame needs the
-  toolkit to answer "did anything change?" before it draws — a frame that
-  only queued work asked for, whose sync leaves the composition at rest,
-  should draw nothing.
-- **Half the bundle is measured past its first screen.** The parity run
-  mounts each app and types into its first field; `parity.mjs` also drives a
-  scenario for twenty of its forty apps (see **Reproducing**): a seeded note
-  typed into, dragged over and asked for its text menu; the canvas app's
-  dialog and two strokes; the video editor's timeline; and, on first screens
-  after that, Chat (a channel, a message composed, the window menu, the
-  sidebar dragged in), Word Processor (a menu, typing, a selection dragged
-  over it), Sheets (a value typed into a cell, a range dragged over cells, a
-  formula started from the bar, a sheet added), Settings (another pane, a
-  chooser opened, a density picked), Photos (a library side, the album
-  sheet), Calendar (the month picker, a day pressed and let go on another,
-  the event dialog), Activity (two of its views, the window menu), Tasks (an
-  issue written, the board, the window menu), Slides (a slide's background,
-  the overview, the deck named in the bar), Maps (a zoom, the map dragged,
-  the layer chooser), Contacts and Snippets (the new sheet, a library side),
-  Music (two sides, the window menu), Scratchpad (a line typed, the window
-  menu), Passwords (the new sheet, a side), E-book Reader (the chapter list,
-  a bookmark) and Clocks (two cities added). Browser and Files are not web
-  apps and are not in the bundle; the desk's own surfaces — the people
-  overlay and the search palette — are not on a page that shows one app,
-  whose window search is instead a step of its own.
-
-  Every step agrees with the canvas within glyph and picture edges but one,
-  which is ebook (below). Two steps used to disagree, and neither was a
-  rendering difference:
-  - **Calendar's event dialog** differed in 44.8 % of its pixels, the whole
-    window blank where the canvas drew the dialog over a dimmed month. It was
-    not the scrim, nor a layer the encoder dropped: the press that raises the
-    dialog never acted, so the frame the page held was the month from before
-    it, and the canvas's shot was the only one with a dialog in it. A frame
-    replaces the elements under a still pointer, the browser fires a
-    `pointerout` for the removed node, and the page forwarded every
-    `pointerout` to the runtime, which took it as the pointer leaving the
-    surface and ended the press in hand. Every control that acts when a press
-    ends was dead in HTML — every app's window menu, every sheet raised from
-    the bar. A `pointerout` is now a leave only when the pointer is outside
-    the layer's box; the step went to **0.39 %**.
-  - **Settings' Accessibility pane** differed in 16.2 %, which read as HTML
-    painting large near-black areas. The pane itself agrees with the canvas
-    within **0.4 %**; what differed was that the page still showed the pane
-    before it, because the press that opens the pane was dropped. That is a
-    press lost right after the density was changed, and it is lost in **both**
-    renders: on the canvas too, the click after a density change does
-    nothing. It is the app's or the toolkit's bug, not the renderer's, and the
-    scenario now opens the pane before it changes the density. The run also
-    names any step that changed nothing, in either render, so a press the app
-    dropped can no longer read as a pixel difference.
-- **A scrim was painted as black.** A modal's dim is two fills: a soft-light
-  tone stage and a wash. The encoder handed the page the layer's opacity and
-  dropped its blend mode, so the page painted the tone stage as plain black:
-  the sheet behind the canvas app's "New artwork…" read 104,102,98 against
-  the canvas's 184,179,167. The encoder now names the blend (its CSS name)
-  and the page composites the group with it. That step went from 47.25 % of
-  pixels differing to **0.68 %**, and the sheet is now identical to the
-  canvas to the channel. Every modal of the toolkit draws its dim through
-  that one function, so the fix is the sheet's for all of them; the sheets
-  the scenarios raise (Photos' new album, 1.4 %; Settings' chooser, 0.7 %)
-  agree.
-- **ebook is the app that still differs**, in 4.7 % of its first screen's
-  pixels and 2.8 % of its steps. Its text column is not the difference: the
-  page ground and every body line are the same to the channel, line for line
-  and word for word, and for every run followed on its line the browser's
-  step to the last character is the toolkit's advance to within 0.03 %. Two
-  things are. **The book's title in the window bar is missing**: the slot
-  row's location label ("The Lantern-Keeper's Almanac by Wren Halloway", the
-  div at 112,6,996,28 the semantic tree names, which the canvas paints) has
-  no text run of its own in the HTML frame, though every icon of that bar is
-  there. It is 0.05 % of the page's pixels — small, and a whole word missing
-  is not. The other 4.6 % is the text's coverage: HTML carries more ink over
-  fewer pixels — darker, crisper edges against the canvas's softer ones. No
-  CSS text property moves that: `text-rendering: geometricPrecision` makes it
-  worse (4.0 %), `font-synthesis: none` and `font-kerning: none` change
-  nothing. This is one browser's rasterizer against vello's, as it is on
-  every canvas-versus-HTML figure here, and nothing a page sets changes it.
-- **A press after a change of density is dropped, in both renders.** Picking
-  a density in Settings and then pressing a control does nothing, on the
-  canvas as in HTML: the press is dispatched and the tree says it was
-  handled, and nothing moves. It is what made the pane's step read as 16 %
-  before the run could tell a step that changed nothing from one that
-  changed the wrong thing. Nothing in the renderer is involved, so it is
-  left as it is here.
-- **Phones.** Ten apps are measured at 390 px now, and all of them but Maps
-  agree with the canvas within glyph and picture edges; Maps' difference is
-  its remote tiles, which the run now counts per render. A picture — a chart
-  or plot widget, or a widget past the island threshold — is rasterised at
-  the screen's density, so it is no longer soft on a phone; no app of the
-  bundle draws one on the screens measured, so that rests on the encoder's
-  own test. A denser island costs more to draw when it changes: the same
-  picture at three device pixels per point is nine times the pixels, capped
-  at four million.
-- **Real hardware.** Every number here is headless Chromium without a GPU.
-  The tools drive Firefox and WebKit too (`engines.mjs`, Playwright's own
-  builds), and the page is the same in Firefox to within **0.11 – 0.13 %** of
-  its pixels against Chromium's HTML for the canvas app, Chat and Sheets,
-  scenario steps included. Neither engine has the canvas here (`navigator.gpu`
-  is Chromium's alone in these headless builds), so those runs compare HTML
-  with HTML. WebKit mounts the page too: what once read as "the operation
-  failed for an unknown transient reason" was the *session* rather than the
-  engine. Playwright's `browser.newContext()` is an incognito context, and
-  WebKit hands an incognito — a private — session no file store at all:
-  `navigator.storage.getDirectory()` rejects there, and the mount used to stop
-  on that rejection. A page now mounts without app files and says so, and the
-  tools open a throwaway profile instead of an incognito context, which is the
-  session a person has (`boot.sh` below checks both).
+- Give the remaining widgets their own `html`, starting with what the desk
+  and Chat use, and lower the baseline as each lands.
+- Buttons and list rows: their faces as HTML (label, icon, state) rather
+  than a picture.
+- Retire the semantic mirror for HTML mounts: the rendered elements already
+  carry each widget's role, name and state, so focus can move onto them.
+- Remove the scene keying the paint-frame renderer needed (keyed marks in the
+  encoding, glyph runs carrying their characters, the drawn scroll and field
+  lists), which nothing reads any more.
 
 ## Reproducing
 
 ```sh
 # on a build machine, from a worktree of main; fetch the results back after
-tools/web/html-renderer/all.sh   # Notes: --select, --wheel, --phone or --quick run one part
-tools/web/html-renderer/all-desktop.sh   # the sign-in fields, then every app of the desktop bundle
-tools/web/html-renderer/size.sh   # the desktop bundle's start module, with `dom` off
+tools/web/html-renderer/build-notes-web.sh   # the release Notes bundle with app.html
 ```
 
-The desktop bundle `all-desktop.sh` measures is built by the runtime's own
-script, which is the one a deployment uses:
-
-```sh
-crates/browser/tilo-browser-runtime/scripts/build.sh \
-  "$CARGO_TARGET_DIR/htmlrenderer/desktop" --bundle desktop --profile release
-tools/web/html-renderer/run-typing.sh [--keys N] [--trace] [--phone]
-tools/web/html-renderer/run-parity.sh [--scenarios] [--phone] [--apps id,id]
-tools/web/html-renderer/run-parity.sh --browser firefox --against <a Chromium run's directory>
-tools/web/html-renderer/engines.sh install   # Playwright's Firefox and WebKit, for the run above
-tools/web/html-renderer/boot.sh "$CARGO_TARGET_DIR/htmlrenderer/desktop" --browser webkit
-node tools/web/html-renderer/names.mjs "$CARGO_TARGET_DIR/htmlrenderer/desktop" so.tilo.notes --seed note
-node tools/web/html-renderer/names.mjs "$CARGO_TARGET_DIR/htmlrenderer/desktop" so.tilo.chat --unnamed
-```
-
-`boot.sh` is the one check the parity runs cannot stand in for: it loads the
-bundle's page in that engine and says whether the desktop mounted, drew a
-frame and threw nothing — and whether a private window, which the browser
-gives no file store, still mounts and reports `files: 'unavailable'` rather
-than failing. Every visitor on a Mac or an iPhone arrives in WebKit, where a
-mount that only works in Chromium is a locked door.
-
-`run-typing.sh` is what one key costs: the frames it draws and what each
-spent, the toolkit's per-pass timings, the widget paths of what asked for
-each frame, and a Chrome trace of the browser's main thread when asked for
-one. It measures the plain-DOM page first and rejects the run when that page's
-median is above 8 ms, since a machine busy enough to slow a plain page by that
-much says nothing about this one.
-
-`parity.mjs` drives a scenario for twenty of the bundle's forty apps
-(`--scenarios` runs only those): a note seeded through the app's own import
-action and found by the name the sidebar gives it, a selection dragged over
-it, its text menu raised; the canvas app's dialog and strokes; the video
-editor's timeline; and, on the first screens of the rest, what a person does
-with each — a view picked, a line typed, a menu raised from the window bar, a
-sheet put away, the map or the sidebar dragged (the readiness section says
-what each raises). Each step names its target the way assistive technology
-does — from the semantic element itself, the tree a screen reader walks, not
-the widget tree the page keeps for inspection — so both renders are worked
-the same way, and each screenshot is compared after each step, and each is
-also compared with the one before it so a step that moved neither render, or
-only one of them, is named as such rather than left to read as a difference.
-`names.mjs` lists those names, and `--unnamed` lists what a person can act on
-and has none. Where a render put the named control is reported beside the
-diff. `--phone` runs the same apps at 390 px with three device pixels per
-point. When a step cannot find its target it prints the names the tree does
-hold, which is what `names.mjs` lists on its own.
-
-`--browser firefox` or `--browser webkit` runs the same scenarios in that
-engine's own build (`engines.mjs`); `--against DIR` names a Chromium run's
-screenshots to compare that engine's HTML with. Neither engine has WebGPU
-here, so those runs show the HTML renderer alone.
-
-The bundle lands in `$CARGO_TARGET_DIR/htmlrenderer/bundle`; open
-`app.html?render=dom` or `?render=gpu` (`&app=` names another app of the
-bundle, `&theme=light|dark` sets the person's setting). Results, screenshots and the HTML-against-WebGPU diff
-images land in `$CARGO_TARGET_DIR/htmlrenderer/measure`, every app's in
-`$CARGO_TARGET_DIR/htmlrenderer/parity`; they are not in the repository,
-which takes no binary files.
-
-
-# The spike
-
-## What the prototype does
-
-The prototype is on branch `spike/html-renderer`. It is a presentation mode
-of the existing web runtime: `mountDesktop(el, {app, dom: true})`. Records,
-input, the semantics mirror and the frame loop are unchanged. Only the last
-step differs: the scene goes to the page as DOM operations instead of to
-WebGPU.
-
-1. **Glyph runs carry their characters.** `vello_encoding::GlyphRun` gains
-   `text: Option<Arc<str>>` (vendored vello fork), set with
-   `DrawGlyphs::text`. The toolkit's text renderer
-   (`ui-core/src/text_render.rs`) is the only place that draws glyphs, in
-   two spots (plain and rich text). It fills the field when a host calls
-   `ui::text_render::present_text(true)`. The text travels inside the scene,
-   so it survives scene caching, `Scene::append`, transforms and retained
-   parts. The GPU never reads it.
-2. **The scene becomes DOM operations** (`tilo-cpu-raster/src/dom.rs`). The
-   CPU rasterizer's scene walker already decodes vello encodings, and the
-   new module lists each draw as the plainest element that shows it:
-   - axis-aligned rectangles and rounded rectangles become boxes with a
-     background, border and radius;
-   - other paths and icon glyphs become SVG paths;
-   - glyph runs with characters become text;
-   - rectangular clips become `overflow: hidden` boxes, other clips
-     `clip-path`;
-   - blurred rectangles become `box-shadow`;
-   - images become placeholders in the spike.
-
-   Text is set in the very font files the toolkit shaped it with. Each face
-   is registered once as a `FontFace` from its bytes, with its variation
-   axes (`font-variation-settings`) and the font's own ascent and descent,
-   so the browser's baseline lands on the toolkit's.
-3. **The page builds and reconciles the elements**
-   (`tilo-browser-runtime/web/dom-present.mjs`). Elements are reused frame
-   to frame, and only changed properties are written. An unchanged frame
-   writes nothing.
-4. **The canvas stays as the input surface**, transparent above the HTML
-   layer, so winit's pointer and keyboard paths are untouched.
-   `__tiloDom.selectText(true)` lets the pointer through to the HTML layer
-   for native selection.
-
-Notes is the app rendered end to end:
-- Its data is live: a note imported through the app's own `import-markdown`
-  action and opened from the sidebar with a click.
-- Typing re-wraps the paragraph and updates "edited today at …".
-- Scrolling, keyboard focus, light and dark (the person's `appearance.mode`)
-  and the 390 px phone layout all work.
-
-`tools/web/html-renderer/` builds the bundle and runs the measurements in
-headless Chrome on the builder. The scripts are `build-notes-web.sh`,
-`run-measure.sh` and `measure.mjs`; `attribute.py` attributes code size to
-crates.
-
-`run-measure.sh` writes screenshots beside `results.json`; they are not
-in the repository, which takes no binary files:
-
-- `notes-dom-1280.png`, `notes-dom-390.png`: Notes as HTML, light;
-- `notes-dom-1280-dark.png`, `notes-dom-390-dark.png`: the same, dark;
-- `notes-dom-1280-typed.png` and `notes-gpu-1280-typed.png`: HTML and
-  WebGPU after the same keystrokes into paragraph 2;
-- `notes-dom-390-typed.png`: the phone layout after typing;
-- `notes-dom-1280-selected.png`: the browser's own selection.
-
-The HTML and WebGPU frames are visually the same: the same text positions,
-line breaks, icons, caret and scrollbar. The 1280 px light frame has 47 text
-elements and 161 draws, or 118 DOM elements in all.
-
-## Measurements
-
-These numbers come from one release bundle (`wasm-release`, wasm-opt), so
-the two renderers are compared on the same module. Both run in headless
-Chrome for Testing on the x86 builder, with no GPU. WebGPU there runs on
-SwiftShader, Vulkan emulated on the CPU, so the **WebGPU latency and
-GPU-process memory are pessimistic**. On a real GPU they would be much
-lower. The plain-DOM baseline is `tools/web/html-renderer/baseline.html`: a
-contenteditable document of 200 paragraphs with a sidebar.
-
-Latency is measured from the input event's timestamp to the first animation
-frame that starts after the page changed. There were 42 keystrokes and 60
-wheel steps (30 at 390 px), one at a time, 60 ms apart. Raw data:
-[`html-renderer/results.json`](html-renderer/spike-results.json).
-
-| | HTML (DOM mode) | WebGPU canvas | Plain DOM |
-|---|---|---|---|
-| wasm, raw / brotli -q 11 | 47.96 MB / 11.68 MB | same module | — |
-| JS, raw / brotli | 555 KB / 116 KB | same | 1.4 KB |
-| startup fonts, raw / brotli | 406 KB / 181 KB | same | — |
-| first frame after navigation, 1280 / 390 px | 0.95 s / 1.33 s | 1.01 s / 0.98 s | — |
-| typing, p50 / p90, 1280 px | **24.6 / 39.8 ms** | 290 / 510 ms (SwiftShader) | 2.5 / 3.8 ms |
-| typing, p50 / p90, 390 px | 26.4 / 47.9 ms | — | — |
-| wheel scroll, p50 / p90, 1280 px | 48.9 / 82.8 ms | 64 / 611 ms (SwiftShader) | 8.2 / 27.7 ms |
-| wheel scroll, p50 / p90, 390 px | 60.8 / 116.5 ms | — | — |
-| memory, all Chrome processes (PSS), 1280 px | 939 MB (GPU process 108) | 1288 MB (GPU process 522) | 515 MB |
-| memory, 390 px, before interaction | 918 MB | 1009 MB (GPU process 450) | — |
-| per frame in wasm: layout / DOM encode | 0–3 ms / 0.3–0.5 ms | layout same; raster on GPU | — |
-| per frame in JS: reconcile | 0.3–1.3 ms, 0–650 property writes | — | — |
-
-How to read the table:
-
-- **Size is the same module either way.** Turning WebGPU off does not
-  shrink the bundle by itself. The [attribution](html-renderer/attribution.json)
-  of the runtime module's 40.0 MB of function bodies (an unstripped build,
-  by defining crate) shows that a DOM-only page could drop very little:
-  - **GPU renderer, about 0.8 MB (2%):** wgpu 52 KB, naga 542 KB,
-    vello 151 KB, vello_shaders 44 KB.
-  - **Text stack, about 1.6 MB (4%):** harfrust 382 KB, skrifa 500 KB,
-    read_fonts 533 KB, cosmic_text 102 KB and segmentation, and that only
-    if the browser also did text layout.
-  - **Layout:** taffy 258 KB.
-
-  The module is dominated by:
-  - **the toolkit:** tilo_ui 5.7 MB;
-  - **generics:** core and alloc 7 MB;
-  - **serialization:** serde 3.2 MB;
-  - **sync, crypto and networking:** automerge, peer-state, moq, iroh,
-    openmls, rustls, about 5 MB;
-  - **search:** tantivy, about 1.5 MB;
-  - **the desktop crates:** about 2 MB.
-
-  The under-5 MB goal is reached by splitting and lazy loading those, not by
-  the renderer choice.
-- **First frame** is about the same, roughly 1 s, and noisy (±0.4 s between
-  runs). It is dominated by compiling and starting the module. The WebGPU
-  path already shows its first frames from the CPU rasterizer while
-  pipelines compile, so DOM mode removes no visible wait here. On a phone
-  without WebGPU, DOM mode is the difference between a page and an error:
-  `mountDesktop` refuses without WebGPU today.
-- **Typing latency** in DOM mode is about 25 ms against 2.5 ms for plain
-  HTML. The wasm and JS work per keystroke is about 4 ms: layout up to
-  3 ms, encode 0.4 ms, reconcile up to 1.3 ms. The rest is scheduling.
-  Input goes to winit, the frame waits for the next animation frame, and
-  the change shows in the frame after that. A plain page changes the DOM in
-  the input event's own task. Presenting synchronously from the input
-  handler would remove most of the 20 ms.
-- **Scrolling** in DOM mode is wheel → ui-core scroll offset → a whole new
-  frame, and with position-keyed reuse up to 650 property writes per step.
-  A native scroll container costs the browser nothing per step, so this
-  path is slower than plain HTML by design.
-- **Memory:** the DOM page saves the GPU process's working set: 108 MB
-  against 450–520 MB on SwiftShader. A real GPU's figure would be lower but
-  not zero. The renderer process holds a little more for the DOM: about
-  60 MB more at 1280 px.
-
-## What worked
-
-- **Real text from every app, unchanged.** Every app draws through the one
-  scene. With characters on glyph runs, everything the toolkit shows
-  becomes real text, with no app or widget change:
-  - title, metadata, headings, paragraphs and list bullets;
-  - sidebar, outline and toolbar icons;
-  - caret, focus rings, selection highlight, scrollbar.
-
-  A repository-wide count shows why that matters. There are 408 widget
-  types in ui-core and 173 in apps; 164 app `draw` methods across about 50
-  apps; and 1,541 direct paint calls (1,024 toolkit, 517 apps). Hand
-  written DOM for each is the expensive alternative.
-- **Layout parity.** The toolkit lays out (taffy and cosmic-text) and the
-  DOM is absolutely positioned. The browser sets each line in the same font
-  file, so its glyph advances match the toolkit's, and line breaks are the
-  toolkit's. The HTML and WebGPU screenshots match.
-- **The phone layout and light and dark** come for free,
-  because they are the app's own layout and theme.
-- **Live data, typing, focus and scrolling** go through the unchanged
-  input, record and frame paths.
-- **Native selection over the text.** The browser's own drag selection
-  works on the HTML text (`notes-dom-1280-selected.png`).
-  That drag selected sidebar text because an empty clip box lay over the
-  note. Clips and boxes no longer take the pointer, but see the focus
-  problem below.
-- **A small change set.** The prototype adds about 1,000 lines:
-  - glyph-run text in vello: 14;
-  - text renderer: 57;
-  - DOM encoder and walker: 570;
-  - runtime presentation path: 160;
-  - page presenter and host hook: 200.
-
-## The hard problems, with a recommended option each
-
-### 1. Layout ownership: ui-core layout or CSS layout
-
-- **Options:**
-  - (a) ui-core lays out and the DOM is absolutely positioned (the
-    prototype);
-  - (b) translate taffy styles to CSS flexbox and grid and let the browser
-    lay out;
-  - (c) per-widget DOM with CSS layout.
-- **Recommended: (a).** It is the only option that keeps one layout for
-  native and web: the same breakpoints, the same `MANUAL_LAYOUT`
-  widgets (14 manual policies), the same pixels. It needs no change in 580
-  widget types. (b) breaks on every `measure`, manual and
-  `adjust_layout_style` widget. (c) is the per-widget rewrite. The cost of
-  (a) is that resize and reflow run in wasm. At 0–3 ms per frame for Notes
-  that is acceptable.
-
-### 2. Text measurement and text as a document
-
-- **Problem:** the toolkit breaks lines, and the browser sets each line.
-  Widths match because the font files are the same. A mismatch could only
-  shift text within a line, never re-wrap it, because each line is
-  positioned on its own. Per-line spans cost in two ways:
-  - a selection or a screen reader sees lines, not paragraphs;
-  - find-in-page works on the text but cannot match across a line break.
-- **Recommended:** keep per-line placement, but group the lines of one
-  paragraph into one element. Use the toolkit's breaks as forced breaks
-  (`<br>`, `white-space: pre`). The scene needs to say which runs belong to
-  one paragraph, which is the same keying as problem 4. Keep
-  `advance_to_last`, which the encoder already emits, to correct width
-  drift with `letter-spacing` if a face ever disagrees.
-
-### 3. Custom drawing
-
-- **Problem:**
-  - Most custom drawing (charts, the canvas app, maps, video, the code
-    editor's gutter) is paths, images and glyphs. Paths already come out
-    as SVG.
-  - Heavy scenes (thousands of paths, raster images, blend layers) would
-    make thousands of elements.
-  - Images, gradients and luminance masks are placeholders or
-    approximations in the spike: a gradient shows its first stop.
-- **Recommended:** keep scene-to-DOM as the default, and add a *canvas
-  island*. A widget that declares itself a picture, or a subtree whose op
-  count crosses a threshold, is rasterized into one `<canvas>` element at
-  its rect. The CPU rasterizer that already exists (`tilo-cpu-raster`,
-  135 KB of vello_cpu) can do it, or WebGPU when present. Images become
-  `<img>` or `ImageBitmap` canvases fed from the image store. Linear and
-  radial gradients map to CSS gradients.
-
-### 4. Element identity: reconciling by position
-
-- **Problem:** the prototype reuses elements by position in the op list.
-  - **A real bug:** a box that had been the scrollbar came back as the main
-    panel's clip and kept its grey background, painting over the note.
-    That is fixed by keying on the op kind, but it shows the fragility.
-  - One inserted op shifts every later element.
-  - A scroll step rewrites about 600 properties.
-  - CSS transitions and transforms cannot follow a widget.
-- **Recommended:** mark widget boundaries in the scene with stable keys.
-  `ui-core/src/scene_parts.rs` already does this for damage tracking:
-  keyed parts with bounds, carried through scene appends. Emit a part per
-  retained widget (its test id or path), and give the DOM one element per
-  part. The DOM is then reconciled by key. A moved widget is one transform
-  write. Scrolling can move a container instead of rewriting its children.
-  The accessibility element and the painted element can be the same node
-  (problem 6).
-
-### 5. Scrolling and input latency
-
-- **Problem:**
-  - Scrolling is ui-core-driven, so each wheel step is a new frame:
-    49–61 ms p50 against 8 ms native.
-  - Phones expect native momentum and overscroll.
-  - Typing waits one to two animation frames.
-- **Recommended:**
-  - Map scroll regions (`primary_vertical_scroll`, `child_clip` in the
-    inspection tree) to native `overflow: auto` containers. The keyed
-    content is laid out once at its full extent, or virtualized by
-    ui-core's existing `for_each_child_in_clip`. Feed the browser's scroll
-    position back to ui-core as the scroll offset.
-  - Present synchronously from input handlers in DOM mode, with no wait
-    for the next animation frame.
-
-### 6. Accessibility tree mapping
-
-- **What exists:** the web runtime already projects the AccessKit tree as
-  DOM (`web/semantics.mjs`): 532 elements on the Notes page with real roles
-  (button, tree, treeitem, textbox, heading, slider, document), placed over
-  each control, with editable text as textareas.
-- **Problem:** in DOM mode that mirror and the painted text both exist, so
-  assistive technology could read text twice. The prototype does not mark
-  the paint layer `aria-hidden` yet.
-- **Recommended:**
-  - First, mark the paint layer `aria-hidden`; that is today's behaviour
-    with the canvas.
-  - Then, with keyed parts (problem 4), merge the two: the semantic element
-    becomes the container of its painted content. A button's label is then
-    its own text node, and a heading is an `<h2>` around its text.
-
-### 7. Inputs, autofill and passkeys
-
-- **Problem:**
-  - Text fields are drawn by ui-core and fed by one hidden IME textarea.
-    The browser cannot autofill a field it cannot see as an `<input>`, and
-    it offers passkeys only on an input with
-    `autocomplete="username webauthn"`.
-  - **Likely focus conflict:** the host keeps keyboard focus in its hidden
-    editor and takes it back on blur. A native selection made after typing
-    in a note came back empty. In an earlier run, where the click had not
-    focused the editor, the same drag selected real text. The likely cause
-    is that the host takes focus back; that was not verified.
-- **Recommended:**
-  - For single-line fields and the identity flows, render the semantic
-    mirror's editable element as the visible field (`<input>`) at the
-    widget's rect, with the toolkit's font and colours. Add an "autofill
-    purpose" to text-input semantics (username, password, one-time code,
-    email) and stop drawing that field's text in the scene. The browser
-    then owns caret, selection, autofill and passkey UI, and the value
-    flows through the existing `value` and `selection` semantic actions.
-  - Keep the rich editors (Notes, the word processor) on ui-core's editing
-    model.
-  - Make the host stop reclaiming focus while the person has a page
-    selection. Copy should come from the DOM selection.
-
-### 8. Animation and transitions
-
-- **Problem:** ui-core animates by laying out and drawing every frame. In
-  DOM mode each animation frame is encode plus reconcile: 1–5 ms for this
-  note, which is fine for small motion. Large motion (window moves, drawer
-  slides) is many writes per frame.
-- **Recommended:** once elements are keyed (problem 4), a part whose
-  content did not change but moved becomes a `transform` write. That is
-  cheap and composited. Leave timing in ui-core, so motion matches native
-  and respects reduced motion. Do not hand animations to CSS transitions.
-
-### 9. Theming tokens and CSS variables
-
-- **Problem:** the scene carries resolved colours, so theme switches
-  already work: light and dark come from `appearance.mode` and re-render.
-  The page itself does not follow `prefers-color-scheme`. Browser-drawn
-  parts (form controls, scrollbars, autofill popups) need `color-scheme`.
-- **Recommended:**
-  - Default `appearance.mode` to automatic from `prefers-color-scheme` on
-    the web.
-  - Publish the theme's tokens as CSS custom properties on the mount root
-    (surfaces, text, accent, radii, the UI face), together with
-    `color-scheme`, for the elements of problem 7 and for page-native
-    chrome.
-  - Painted content keeps resolved colours; converting every scene colour
-    to a variable gains nothing.
-
-### 10. Apps that mix both
-
-- **Recommended:** both renderers present the same scene, so mixing is per
-  element, not per app. A subtree goes HTML by default, or becomes a canvas
-  island (problem 3) when it is a picture, a video or too heavy. A whole
-  mount can fall back to WebGPU when present, for heavy apps (canvas,
-  video editor, maps). Make WebGPU, vello's GPU renderer and naga a lazily
-  loaded split module (0.8 MB) that only those apps fetch.
-
-## Estimate for a production renderer for all apps
-
-Assuming one engineer who knows ui-core, working from this prototype:
-
-| work | weeks |
-|---|---|
-| Keyed scene parts per retained widget; DOM reconciled by key; paragraph grouping | 3 |
-| Native scroll containers mapped to ui-core scroll regions; synchronous present on input | 2–3 |
-| Images, gradients, blend layers, masks; canvas islands through the CPU rasterizer or WebGPU | 2 |
-| Accessibility merge (semantic element as the container of its paint); `aria-hidden` until then | 2 |
-| Real `<input>` for single-line fields with autofill purposes; passkeys; focus and selection hand-off | 3 |
-| Theme tokens as CSS variables, `color-scheme`, automatic light and dark | 0.5 |
-| WebGPU, vello and naga as a lazy split module; DOM as the default web path | 1 |
-| Visual parity harness (HTML vs WebGPU screenshots for every app scenario) and fixing what it finds across about 70 apps | 3–4 |
-| **Total** | **about 16–19 weeks** |
-
-A per-widget DOM implementation instead (every ui-core widget and every
-app's custom `draw` re-expressed as DOM, CSS layout) is the larger job:
-580 widget types and 164 app `draw` methods. Estimated at 9–12 months. It
-would still need canvas islands, and it splits native and web into two
-layouts.
-
-## Reproducing
-
-```sh
-# on a build machine, from a worktree of branch spike/html-renderer; fetch the
-# results back after
-tools/web/html-renderer/all.sh     # build + measure
-tools/web/html-renderer/attribute.sh
-```
-
-The bundle lands in `$CARGO_TARGET_DIR/htmlrenderer/bundle`. Open
-`notes.html?render=dom` or `?render=gpu`, with `&theme=light|dark`.
+`app.html` mounts one app of the bundle as HTML; `?render=gpu` mounts it on
+the WebGPU canvas to compare.

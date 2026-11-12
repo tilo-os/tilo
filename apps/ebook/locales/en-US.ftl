@@ -302,3 +302,41 @@ ebook-annotation-hint = Select text in the book to highlight it or add a note.
 
 ## The store the library searches
 ebook-store-name = Project Gutenberg
+
+## Actions
+
+ebook-files = Book files
+ebook-files-keep = Keep this device's folders
+ebook-effect-open-book = Open book
+ebook-effect-open-stored = Open stored book
+ebook-effect-previous-page = Previous page
+ebook-effect-next-page = Next page
+ebook-effect-contents = Table of contents
+ebook-effect-notes = Notes
+ebook-effect-settings = Reading settings
+ebook-effect-read-settings = Read reading settings
+ebook-effect-read-font = Read font
+ebook-effect-read-scheme = Read colour scheme
+ebook-effect-open = Open
+ebook-effect-go-to = Go to
+ebook-effect-select-passage = Select passage
+ebook-effect-read-chapter = Read chapter
+ebook-effect-read-book = Read book
+ebook-effect-read-highlight = Read highlight
+ebook-effect-read-annotation = Read annotation
+ebook-effect-share = Share with workspace
+ebook-effect-download = Download and open
+ebook-library-shelve = Put a book on the shelf
+ebook-library-shelve-found = Add a found book
+ebook-library-remove-from-library = Remove from library
+ebook-library-index-book = Keep a book's index
+ebook-library-record-progress = Record reading progress
+ebook-library-add-note = Add note
+ebook-library-add-comment = Add comment
+ebook-library-toggle-bookmark = Bookmark
+ebook-library-highlight = Highlight
+ebook-library-change-color = Change colour
+ebook-library-delete-highlight = Delete highlight
+ebook-library-delete-annotation = Delete annotation
+ebook-library-remove-font = Remove font
+ebook-library-delete-scheme = Delete scheme

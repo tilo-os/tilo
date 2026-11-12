@@ -278,6 +278,7 @@ pub const BUILTINS: &[&str] = &[
     "set",
     "resource",
     "preview_rows",
+    "say",
 ];
 
 /// The fields of `workspace`.

@@ -37,3 +37,16 @@ test('modified text-editing keys are the app\'s, so every text field edits by wo
   assert.equal(keyboardRoute(key('ArrowLeft',{altKey:true}),false,false),'browser','Alt+Left stays history back');
   assert.equal(keyboardRoute(key('KeyL',{ctrlKey:true}),false,false),'browser','Ctrl+L stays the address bar');
 });
+
+test('the search chord is the page\'s, never a key the surface forwards',()=>{
+  // The page's document listener answered the chord before the surface saw it; forwarding it
+  // would let the desk answer the same press a second time.
+  assert.equal(keyboardRoute(key('KeyK',{metaKey:true}),false,true),'browser','Cmd+K on a Mac');
+  assert.equal(keyboardRoute(key('KeyK',{ctrlKey:true}),false,false),'browser','Ctrl+K on Linux');
+  assert.equal(semanticKeyboardRoute(key('KeyK',{metaKey:true}),false,true),'native');
+  assert.equal(semanticKeyboardRoute(key('KeyK',{ctrlKey:true}),false,false),'native');
+  // A typed `k` with no command key is text, which the surface types where its field has the
+  // keyboard: it is never the chord.
+  assert.equal(keyboardRoute(key('KeyK'),false,false),'text');
+  assert.equal(keyboardRoute(key('KeyK'),false,true),'text');
+});

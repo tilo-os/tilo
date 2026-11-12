@@ -98,7 +98,9 @@ profile=$member/profile
 if [ -n "${TILO_VM_MEMBER_IDENTITIES:-}" ]; then
   identities=$TILO_VM_MEMBER_IDENTITIES/$pod.tar
   [ -f "$identities" ] || { say "no member identity for $pod"; exit 1; }
-  installed=$(sha256sum < "$profile/identity/device-private/keypair.bin" 2>/dev/null || true)
+  installed=
+  key=$profile/identity/device-private/keypair.bin
+  if [ -f "$key" ]; then installed=$(sha256sum < "$key"); fi
   if [ "$(tar -xOf "$identities" root/device-private/keypair.bin | sha256sum)" != "$installed" ]; then
     say "installing the member identity of $pod"
     rm -rf "$member.new"

@@ -302,3 +302,41 @@ ebook-annotation-hint = Wähle Text im Buch aus, um ihn zu markieren oder eine N
 
 ## The store the library searches
 ebook-store-name = Project Gutenberg
+
+## Actions
+
+ebook-files = Buchdateien
+ebook-files-keep = Ordner dieses Geräts übernehmen
+ebook-effect-open-book = Buch öffnen
+ebook-effect-open-stored = Gespeichertes Buch öffnen
+ebook-effect-previous-page = Vorherige Seite
+ebook-effect-next-page = Nächste Seite
+ebook-effect-contents = Inhaltsverzeichnis
+ebook-effect-notes = Notizen
+ebook-effect-settings = Leseeinstellungen
+ebook-effect-read-settings = Leseeinstellungen lesen
+ebook-effect-read-font = Schrift lesen
+ebook-effect-read-scheme = Farbschema lesen
+ebook-effect-open = Öffnen
+ebook-effect-go-to = Gehe zu
+ebook-effect-select-passage = Textstelle auswählen
+ebook-effect-read-chapter = Kapitel lesen
+ebook-effect-read-book = Buch lesen
+ebook-effect-read-highlight = Markierung lesen
+ebook-effect-read-annotation = Anmerkung lesen
+ebook-effect-share = Im Arbeitsbereich teilen
+ebook-effect-download = Herunterladen und öffnen
+ebook-library-shelve = Buch ins Regal stellen
+ebook-library-shelve-found = Gefundenes Buch aufnehmen
+ebook-library-remove-from-library = Aus der Bibliothek entfernen
+ebook-library-index-book = Index eines Buchs sichern
+ebook-library-record-progress = Lesefortschritt erfassen
+ebook-library-add-note = Notiz hinzufügen
+ebook-library-add-comment = Kommentar hinzufügen
+ebook-library-toggle-bookmark = Lesezeichen setzen oder entfernen
+ebook-library-highlight = Markieren
+ebook-library-change-color = Farbe ändern
+ebook-library-delete-highlight = Markierung löschen
+ebook-library-delete-annotation = Anmerkung löschen
+ebook-library-remove-font = Schrift entfernen
+ebook-library-delete-scheme = Farbschema löschen

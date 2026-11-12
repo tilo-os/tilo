@@ -695,7 +695,7 @@ fn published_places(
     vocabulary: &'static crate::Vocabulary,
     derived: Rc<dyn Places>,
 ) -> Rc<PublishedDerived> {
-    let epoch = crate::resource::type_epoch();
+    let epoch = crate::resource::words_epoch();
     let kept = PUBLISHED
         .with_borrow(|kept| kept.get(&of).cloned())
         .filter(|kept| kept.epoch == epoch);

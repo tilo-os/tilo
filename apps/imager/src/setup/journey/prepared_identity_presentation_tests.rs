@@ -1,13 +1,18 @@
 use std::sync::Arc;
 use tilo_identity_host::provisioning::IdentityStorage;
 
-struct NoSigningWorkspace;
-impl tilo_identity_host::broker::WorkspaceMembership for NoSigningWorkspace {
+/// The workspace this device has open, owned by the person it signs as: what an
+/// app asking its identity service asks in.
+struct OpenWorkspace(tilo_desktop_model::Workspace);
+impl tilo_identity_host::broker::WorkspaceMembership for OpenWorkspace {
     fn with_workspace(
         &self,
-        _room: &tilo_desktop_model::WorkspaceId,
-        _read: &mut dyn FnMut(&tilo_desktop_model::Workspace),
+        room: &tilo_desktop_model::WorkspaceId,
+        read: &mut dyn FnMut(&tilo_desktop_model::Workspace),
     ) {
+        if &self.0.id() == room {
+            read(&self.0);
+        }
     }
 }
 
@@ -49,10 +54,21 @@ fn negotiated_real_broker_photo_reaches_default_shared_avatar_paint() {
     )
     .unwrap();
     let room = tilo_desktop_model::WorkspaceId::new();
+    let mut open = tilo_desktop_model::Workspace::in_workspace(
+        tilo_desktop_model::WorkspaceSlot::of_workspace(room),
+        room,
+        "Home",
+    );
+    open.policy.owner = Some(
+        tilo_identity_host::registry::identity_for_workspace(&room.to_string())
+            .unwrap()
+            .expect("this device has the person it signs as")
+            .principal_id(),
+    );
     let socket = temp.path().join("identity.sock");
     let _broker = tilo_identity_host::broker::spawn(
         socket.clone(),
-        Arc::new(NoSigningWorkspace),
+        Arc::new(OpenWorkspace(open)),
         Arc::new(()),
         Arc::new(()),
     )

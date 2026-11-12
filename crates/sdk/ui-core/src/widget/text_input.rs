@@ -554,6 +554,9 @@ pub struct TextInput {
     /// A list's inline add: what is typed makes an item when Enter or leaving the field commits
     /// it, and the field clears; nothing typed leaves nothing (Escape, or leaving it empty).
     entry: bool,
+    /// The field holds a value rather than a draft: leaving it commits what it holds, as Enter
+    /// does, and it goes on showing it. A settings field saves without a Save button.
+    leaving_commits: bool,
     /// Trailing show/hide control of a single-line secret field; it owns
     /// the reveal state. The plaintext still never reaches the a11y tree or
     /// `text_review`.
@@ -917,6 +920,7 @@ impl TextInput {
             enter_submits: false,
             submit_requested: false,
             entry: false,
+            leaving_commits: false,
             reveal: RevealToggle::new(),
             reveal_node: None,
             lines: Vec::new(),
@@ -3862,6 +3866,16 @@ impl TextInput {
         self
     }
 
+    /// The field holds a value, not a draft: leaving it commits what it holds, exactly as Enter
+    /// does, and it goes on showing it. A settings field saves with no Save button, so typing a
+    /// name and going on to something else keeps the name.
+    #[must_use]
+    pub fn with_leaving_commits(mut self, on: bool) -> Self {
+        self.leaving_commits = on;
+        self.enter_submits = self.enter_submits || on;
+        self
+    }
+
     /// `true` once per submitting `Enter`; clears on read.
     pub fn take_submit(&mut self) -> bool {
         std::mem::take(&mut self.submit_requested)
@@ -6149,8 +6163,10 @@ impl Widget for TextInput {
             self.core.clear_preedit();
             self.completion.close();
             // A list's entry commits what it holds when the person leaves it: what they typed
-            // is an item, and an entry left empty leaves none.
-            if left && self.entry && !self.text.trim().is_empty() {
+            // is an item, and an entry left empty leaves none. A field holding a value commits
+            // it, empty or not: clearing a status is a value too.
+            let entry_commits = self.entry && !self.text.trim().is_empty();
+            if left && (entry_commits || self.leaving_commits) {
                 self.fire_submit();
             }
         }

@@ -96,3 +96,28 @@ containers-empty-distroboxes-hint = Create a box with distrobox to run it here.
 
 ## Why an engine action cannot run
 containers-engine-offline-message = Container engine actions are unavailable in demo mode
+
+## Actions
+
+containers-view-set-section = Show section
+containers-view-select-container = Select container
+containers-view-set-tab = Show tab
+containers-view-create = Create container
+containers-view-read-container = Read container
+containers-view-open-logs = Open logs
+containers-view-start = Start
+containers-view-stop = Stop
+containers-view-restart = Restart
+containers-view-pause = Pause
+containers-view-unpause = Resume
+containers-view-remove-container = Remove
+containers-view-shell = Open shell
+containers-view-pull-image = Pull image
+containers-view-tag-image = Add image tag
+containers-view-remove-image = Remove image
+containers-view-ask-to-remove-image = Remove image after asking
+containers-view-remove-volume = Remove volume
+containers-view-ask-to-remove-volume = Remove volume after asking
+containers-view-enter-distrobox = Enter distrobox
+containers-engine = Containers
+containers-engine-clear-create = Discard new container

@@ -65,6 +65,18 @@ impl Core {
         }
     }
 
+    /// Do `f` with the state of the view being drawn, when the code now running draws one: what
+    /// it read is a dependency of a boundary only where a view reads it. Code outside a view (an
+    /// action's, an agent's program) reads the host's answers without depending on them.
+    pub(crate) fn in_view(&self, f: impl FnOnce(&mut ViewState)) {
+        let mut frames = self.frames.borrow_mut();
+        if let Ok(top) = frames.top_mut()
+            && let FrameKind::View(vs) = &mut top.kind
+        {
+            f(vs);
+        }
+    }
+
     fn node_index(&self, h: i32) -> HResult<usize> {
         self.with_val(h, |v| match v {
             Value::Node(i) => Ok(*i),

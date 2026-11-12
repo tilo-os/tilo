@@ -38,7 +38,6 @@ impl Passwords {
 
 #[resource(
     kind = "passwords.vault",
-    label = "Password vault",
     read_content = Passwords::read_document
 )]
 impl Passwords {}

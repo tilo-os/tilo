@@ -140,3 +140,34 @@ api-tester-view-headers = Kopfzeilen
 api-tester-split-label = Anfrage und Antwort in der Größe ändern
 api-tester-no-response-hint = Sende die Anfrage, um zu sehen, was zurückkommt.
 api-tester-waiting-response = Die Antwort des Servers steht noch aus.
+
+## Actions
+
+api-tester-effects-import-legacy = Alten Arbeitsbereich importieren
+api-tester-effects-send = Anfrage senden
+api-tester-effects-send-saved = Gespeicherte Anfrage senden
+api-tester-effects-cancel-send = Anfrage abbrechen
+api-tester-effects-copy-response = Antwort kopieren
+api-tester-effects-set-credential = Anmeldung der Anfrage festlegen
+api-tester-effects-pick-environment = Umgebung wählen
+api-tester-effects-set-secret-value = Geheimen Wert festlegen
+api-tester-effects-rename-collection = Sammlung umbenennen…
+api-tester-effects-request-menu = Aktionen der Anfrage
+api-tester-effects-environment-menu = Aktionen der Umgebung
+api-tester-workspace = API-Arbeitsbereich
+api-tester-workspace-import-workspace = Altimport anwenden
+api-tester-workspace-new-request = Neue Anfrage
+api-tester-workspace-new-collection = Neue Sammlung
+api-tester-workspace-delete-collection = Sammlung löschen
+api-tester-workspace-add-request = Anfrage hinzufügen
+api-tester-workspace-save-request = Anfrage speichern
+api-tester-workspace-open-request = Anfrage öffnen
+api-tester-workspace-delete-request = Anfrage löschen
+api-tester-workspace-new-environment = Neue Umgebung
+api-tester-workspace-delete-environment = Umgebung löschen
+api-tester-workspace-use-environment = Umgebung verwenden
+api-tester-workspace-add-variable = Variable hinzufügen
+api-tester-workspace-open-sent = Gesendete Anfrage erneut öffnen
+api-tester-workspace-save-sent = Gesendete Anfrage speichern
+api-tester-workspace-delete-sent = Gesendete Anfrage verwerfen
+api-tester-workspace-record-sent = Gesendete Anfrage erfassen

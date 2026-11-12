@@ -331,6 +331,87 @@ impl FrameHarness {
         })
     }
 
+    /// The row as HTML: a toolbar across the top of the window, each slot a
+    /// real button named as a reader hears it, over the row's painted band.
+    pub(super) fn slot_row_composition(&self) -> Option<crate::composition::Composed> {
+        use crate::composition::{Composed, Own};
+        use std::hash::{Hash, Hasher};
+        let hosted = self.slot_row.as_ref()?;
+        if !hosted.row.is_shown() {
+            return None;
+        }
+        let window = Rect::new(0.0, 0.0, f64::from(self.viewport.0), hosted.inset);
+        let slots = hosted.row.accessibility();
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        serde_json::to_string(&slots)
+            .unwrap_or_default()
+            .hash(&mut hash);
+        window.width().to_bits().hash(&mut hash);
+        format!("{:?}", self.theme.tokens.colors.text_primary).hash(&mut hash);
+        let children = slots
+            .iter()
+            .filter_map(|slot| {
+                let rect = slot.bounds?.to_rect();
+                (rect.width() > 0.0 && rect.height() > 0.0).then(|| Composed {
+                    tag: Some("button"),
+                    fallback: false,
+                    path: format!(
+                        "{WINDOW_SLOTS}#{}",
+                        slot.action_target.as_deref().unwrap_or_default()
+                    ),
+                    widget: "WindowSlot".into(),
+                    rect: [rect.x0, rect.y0, rect.width(), rect.height()],
+                    clip: None,
+                    layout: None,
+                    scroll: None,
+                    semantics: Some(slot.clone()),
+                    own: None,
+                    focusable: true,
+                    flows: false,
+                    surfaces: Vec::new(),
+                    children: Vec::new(),
+                })
+            })
+            .collect();
+        Some(Composed {
+            tag: Some("header"),
+            fallback: false,
+            path: WINDOW_SLOTS.into(),
+            widget: "WindowSlots".into(),
+            rect: [window.x0, window.y0, window.width(), window.height()],
+            clip: None,
+            layout: None,
+            scroll: None,
+            semantics: Some(
+                crate::a11y::AccessNode::new(crate::a11y::Role::Toolbar)
+                    .with_name(self.window_tab().title),
+            ),
+            own: Some(Own::Painted {
+                version: hash.finish(),
+            }),
+            focusable: false,
+            flows: false,
+            surfaces: Vec::new(),
+            children,
+        })
+    }
+
+    /// The row's band alone, at `scale`, for its picture.
+    pub(super) fn paint_slot_row(&mut self, scale: f64) -> Option<(vello::Scene, [f64; 4])> {
+        let hosted = self.slot_row.as_mut()?;
+        let width = f64::from(self.viewport.0);
+        let mut scene = vello::Scene::new();
+        hosted.row.draw(
+            &mut scene,
+            Affine::scale(scale),
+            &mut self.text,
+            &self.theme,
+            &self.presence,
+            0.0,
+        );
+        Some((scene, [0.0, 0.0, width, hosted.inset]))
+    }
+
     /// The window's own actions pressed through the row's semantics since
     /// the last call. The frame stands for no window, so a test reads them.
     #[cfg(test)]

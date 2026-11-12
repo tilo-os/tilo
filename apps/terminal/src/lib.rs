@@ -42,7 +42,7 @@ pub use graphics::TerminalImagePlacement;
 
 pub use crate::inner::{
     Attr, CellColor, GridPos, OpenError, Requester, Selection, TermModes, TerminalBackend,
-    TerminalWidget, parse_target_argument, resolve_login_shell,
+    TerminalWidget, parse_target_argument,
 };
 
 /// Re-exported so hosts can build a command for [`TerminalWidget::spawn_command`]

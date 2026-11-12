@@ -61,7 +61,6 @@ impl GitClient {
 
 #[resource(
     kind = "git_client.repo",
-    label = "Repository",
     read_content = GitClient::read_document
 )]
 impl GitClient {

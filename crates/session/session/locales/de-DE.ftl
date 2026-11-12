@@ -365,6 +365,8 @@ window-move-bringing-edits = Das Fenster kommt mit dem zurück, was nach dem Ver
 profile-action-identities = Deine Identitäten
 profile-action-backup = Deine Identität sichern
 profile-action-pair-device = Ein weiteres Gerät koppeln
+profile-action-connect-agent = Agent oder Rechner verbinden
+profile-action-devices-access = Geräte und Zugriff
 profile-name-not-saved = Dein Name wurde nicht gespeichert
 
 ## A capture, while the capture studio's bar is down: the card the floating

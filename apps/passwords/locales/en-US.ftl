@@ -125,3 +125,25 @@ passwords-empty-content-message = Logins, secure notes, Wi-Fi passwords and API 
 
 ## What the review compares against
 passwords-checked-against-vault = Only the passwords in this vault
+
+## Actions
+
+passwords-effect-add = New item
+passwords-effect-save = Save
+passwords-effect-save-login = Save a login
+passwords-effect-list-logins = List logins
+passwords-effect-cancel = Cancel editing
+passwords-effect-generate = Generate strong password
+passwords-effect-edit = Edit
+passwords-effect-copy = Copy secret
+passwords-effect-copy-identity = Copy username
+passwords-effect-copy-origins = Copy web addresses
+passwords-effect-reveal = Reveal secret
+passwords-effect-hide = Hide secret
+passwords-effect-delete = Delete item
+passwords-effect-favorite = Favorite
+passwords-effect-import = Import passwords
+passwords-effect-export = Export CSV…
+passwords-effect-filter = Filter vault
+passwords-effect-open = Open
+passwords-vault = Password vault

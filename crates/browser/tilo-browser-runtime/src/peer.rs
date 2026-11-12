@@ -2480,7 +2480,7 @@ impl WasmPeer {
                     body,
                     ..
                 } if from != self.device_key => {
-                    crate::window_pictures::heard(self.id, workspace_id, tab, &body);
+                    crate::window_pictures::heard(self.id, workspace_id, from, tab, &body);
                     None
                 }
                 Event::Live {

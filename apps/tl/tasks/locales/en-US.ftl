@@ -119,9 +119,12 @@ d-rs3ubifz = New task
 
 d-zjuy7y7f = New project
     .doc = Starts a project.
+    .w-new-project = New project
 
 d-vwgro4iv = Complete
     .doc = Checks a task off with every task under it, or opens it again with the tasks it is under.
+    .w-complete = Complete
+    .w-reopen = Reopen
 
 d-fykojijd = Add subtask
     .doc = Adds a subtask under a task, in its project and section, and opens a done one: there is work under it now.
@@ -129,24 +132,29 @@ d-fykojijd = Add subtask
 
 d-tmwdrpev = Today
     .doc = Sets the day a task is due by, from the presets or a day the person picks.
+    .w-it-is-done-already = It is done already
 
 d-wclcgiyt = Tomorrow
     .doc = Makes a task due tomorrow.
+    .w-it-is-done-already = It is done already
 
 d-tg5yjcju = Next week
     .doc = Makes a task due at the start of next week.
+    .w-it-is-done-already = It is done already
 
 d-jqhwyztw = Pick date
     .doc = Makes a task due on a day the person picks.
 
 d-x5xnqddo = No date
     .doc = Clears the day a task is due by: it waits in the inbox, undated.
+    .w-it-has-no-date = It has no date
 
 d-3qq23ybf = Remind me
     .doc = Sets the moment whoever is doing a task is reminded of it.
 
 d-vjsjvx7u = No reminder
     .doc = Clears a task's reminder: it is not told of again.
+    .w-it-has-no-reminder = It has no reminder
 
 d-7vjyuy7c = Remind
     .doc = Tells whoever is doing a task, or the one who made it, what it is and when it is due: once, and not of a task already done.
@@ -154,36 +162,45 @@ d-7vjyuy7c = Remind
 
 d-w43ij7uu = No priority
     .doc = Sets how much a task matters.
+    .w-it-has-no-priority = It has no priority
 
 d-pdc7ukxu = Low
     .doc = Marks a task as low priority.
+    .w-it-is-low-already = It is low already
 
 d-cpcxkauo = Medium
     .doc = Marks a task as medium priority.
+    .w-it-is-medium-already = It is medium already
 
 d-kglmmfa7 = High
     .doc = Marks a task as high priority.
+    .w-it-is-high-already = It is high already
 
 d-lrdm4l3c = Urgent
     .doc = Marks a task as urgent.
+    .w-it-is-urgent-already = It is urgent already
 
 d-laxsa3x6 = Project
     .doc = Files a task under a project the person picks.
 
 d-dshqxolf = Inbox
     .doc = Takes a task out of its project, back to the inbox.
+    .w-it-is-in-the-inbox-already = It is in the inbox already
 
 d-c6y4cxdd = Assign
     .doc = Gives a task to someone, or to nobody.
 
 d-berwb3de = Move to
     .doc = Moves a task to a place in the outline: at the end of `parent`'s subtasks (the top level for none), or where `before` stands.
+    .w-a-task-cannot-go-inside-itself = A task cannot go inside itself
 
 d-he6qkhh4 = Indent
     .doc = Moves a task under the task the view shows just over it in its group, as `Ctrl+]` does.
+    .w-nothing-over-it-to-move-under = Nothing over it to move under
 
 d-khy6tj7s = Outdent
     .doc = Moves a task out from under its parent, just after it, as `Ctrl+[` does in an outline.
+    .w-it-is-at-the-top-level = It is at the top level already
 
 d-23y3zdgu = Duplicate
     .doc = Copies a task, with every task under it, just after the one it copies.
@@ -193,12 +210,14 @@ d-ojzyzzxu = Delete
 
 d-rjpcv6es = Delete finished tasks
     .doc = Deletes every finished task and answers how many went: a finished branch goes whole, and a done task with a step still open under it stays.
+    .w-nothing-is-finished-yet = Nothing is finished yet
 
 d-2xixz4sk = Delete project
     .doc = Deletes a project and its sections; its tasks go back to the inbox.
 
 d-2pra5lmb = New section
     .doc = Adds a section at the end of a project's board.
+    .w-new-section = New section
 
 d-xmsyxvog = Rename section
     .doc = Renames a section.
@@ -211,6 +230,8 @@ d-pcn3xgni = New task
 
 d-scjlkb6d = Place in board
     .doc = Puts a task into the lane `s` of its project's board (none for the first) at the place `at` among the tasks already there: what a card's drag names.
+    .w-it-is-in-no-project-s = It is in no project's board
+    .w-that-lane-belongs-to-another-project = That lane belongs to another project
 
 d-kjbukd2o = Rename
     .doc = Renames a project.

@@ -17,7 +17,7 @@
 //! - its module, read from the installation verified as a launch verifies it, in a sealed memfd.
 //!
 //! The person's region formats ride with the instance, and are said again on every host's door
-//! when they change them in Settings ([`Hosts::formats_changed`]): their windows' dates, clocks
+//! when they change them in Settings ([`Hosts::locale_changed`]): their windows' dates, clocks
 //! and weeks follow where they stand, without waiting for a restart.
 //!
 //! The author is the publisher whose key signed the package; a person's own build, signed with
@@ -293,20 +293,24 @@ impl Hosts {
         hosts
     }
 
-    /// Say on every host running now that the person's formats changed: the instances write the
-    /// times and days their windows show again in the new ones (their week's first day, their
-    /// date and clock styles). A host started later is handed them with its first instance.
-    pub fn formats_changed(&self) {
-        let formats = ui::format::region::current();
+    /// Say on every host running now that the person's formats or language changed: the
+    /// instances write the times and days their windows show again in the new formats (their
+    /// week's first day, their date and clock styles), and their windows read their words in the
+    /// language, where they stand. A host started later is handed them with its first instance.
+    pub fn locale_changed(&self) {
+        let locale = runtime_portal::tilolang_host::Locale {
+            formats: ui::format::region::current(),
+            language: ui::i18n::preferred_language().unwrap_or_default(),
+        };
         for (key, host) in self.running().iter() {
-            if let Err(error) = runtime_portal::tilolang_host::send_formats(&host.door, &formats) {
+            if let Err(error) = runtime_portal::tilolang_host::send_locale(&host.door, &locale) {
                 // Its follow thread reads the end of the door and forgets it: the next instance
                 // starts another.
                 tracing::warn!(
                     %error,
                     workspace = %key.workspace,
                     author = %key.author,
-                    "a tilolang host was not told the person's formats changed"
+                    "a tilolang host was not told the person's formats or language changed"
                 );
             }
         }
@@ -781,14 +785,14 @@ mod tests {
             ..before
         };
         ui::format::region::install(sunday);
-        hosts.formats_changed();
+        hosts.locale_changed();
         let handed = runtime_portal::tilolang_host::receive(&theirs).unwrap();
         ui::format::region::install(before);
-        let Some(runtime_portal::tilolang_host::Handed::Formats(formats)) = handed else {
+        let Some(runtime_portal::tilolang_host::Handed::Locale(locale)) = handed else {
             panic!("a runtime host's door carries the formats as formats: {handed:?}");
         };
         assert_eq!(
-            formats, sunday,
+            locale.formats, sunday,
             "the week the person starts on reaches the host its instances run in"
         );
         // The session keeps no other host's door: nothing was said on it, so its end is all the

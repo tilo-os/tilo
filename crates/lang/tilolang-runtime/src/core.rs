@@ -381,6 +381,7 @@ impl Core {
     /// The time of day `hour`:`minute` as the person reads a clock: the host's style, or a
     /// 24-hour clock where it names none (`ShownHost::clock`).
     pub(crate) fn clock_text(&self, hour: u32, minute: u32) -> String {
+        self.read_format();
         self.shown.borrow().as_ref().map_or_else(
             || format!("{hour:02}:{minute:02}"),
             |host| host.clock(hour, minute),

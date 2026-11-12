@@ -205,7 +205,7 @@ pub use interaction::{
 pub use key::{ActionKey, CREATE_ACTION};
 pub use outcome::{
     ActionFailure, ActionOutput, CONTENT_RESOURCE_KIND, EffectReceiptStatus, InvocationId,
-    InvocationUpdate, content_hash, content_resource,
+    InvocationUpdate, content_hash, content_resource, named_reference,
 };
 pub use params::{
     ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ArgError, ArgValue, ArgViolation,

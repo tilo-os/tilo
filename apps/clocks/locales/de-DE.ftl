@@ -108,3 +108,30 @@ clocks-stop-floating = Schweben beenden
 clocks-keep-visible = Stoppuhr sichtbar halten
 clocks-notify-alarm = Wecker
 clocks-notify-timer = Timer abgelaufen
+
+## Actions
+
+clocks-collection = Uhren
+clocks-collection-add-world-clock = Stadt hinzufügen
+clocks-collection-remove-world-clock = Stadt entfernen
+clocks-collection-add-alarm = Wecker hinzufügen
+clocks-collection-set-alarm-enabled = Wecker ein- oder ausschalten
+clocks-collection-edit-alarm = Wecker bearbeiten
+clocks-collection-remove-alarm = Wecker entfernen
+clocks-collection-add-timer = Timer starten
+clocks-collection-pause-timer = Timer pausieren
+clocks-collection-resume-timer = Timer fortsetzen
+clocks-collection-add-minute = Eine Minute hinzufügen
+clocks-collection-remove-timer = Timer entfernen
+clocks-collection-start-stopwatch = Stoppuhr starten
+clocks-collection-pause-stopwatch = Stoppuhr pausieren
+clocks-collection-lap = Runde erfassen
+clocks-collection-reset-stopwatch = Stoppuhr zurücksetzen
+clocks-effects-open-alarm = Wecker hier öffnen
+clocks-effects-show = Bereich anzeigen
+clocks-effects-dismiss-notice = Hinweis schließen
+clocks-effects-snooze-alarm = Wecker schlummern lassen
+clocks-effects-float-timer = Timer schweben lassen
+clocks-effects-float-stopwatch = Stoppuhr schweben lassen
+clocks-on-devices = Uhren auf jedem Gerät
+clocks-on-devices-keep = Uhren dieses Geräts übernehmen

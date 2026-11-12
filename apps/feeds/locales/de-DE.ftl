@@ -90,3 +90,24 @@ feeds-theme-dark = Dunkel
 feeds-font-sans = Ohne Serifen
 feeds-font-serif = Mit Serifen
 feeds-font-mono = Dicktengleich
+
+## Actions
+
+feeds-effects-refresh-all = Alle Abonnements aktualisieren
+feeds-effects-import-opml = OPML importieren…
+feeds-effects-new-folder-form = Neuer Ordner…
+feeds-effects-export-opml = OPML exportieren…
+feeds-effects-reveal-tag = Markierte Artikel anzeigen
+feeds-effects-reader-text-larger = Lesetext vergrößern
+feeds-effects-reader-text-smaller = Lesetext verkleinern
+feeds-effects-reader-font = Leseschrift verwenden
+feeds-effects-reader-paper = Lesepapier verwenden
+feeds-library = Feeds
+feeds-library-add-subscription = Abonnement hinzufügen
+feeds-library-unsubscribe = Abonnement beenden
+feeds-library-mark-feed-read = Abonnement als gelesen markieren
+feeds-library-mark-everything-read = Alle Artikel als gelesen markieren
+feeds-library-new-folder = Neuer Ordner
+feeds-library-delete-folder = Ordner löschen
+feeds-library-import-subscriptions = Abonnements importieren
+feeds-library-refreshed = Abgerufene Artikel erfassen

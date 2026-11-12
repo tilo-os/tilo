@@ -12,6 +12,7 @@ d-2lehvjd6 = Today
 
 d-4z4vz2pv = Morning cleanup
     .doc = Clears the finished tasks, when there are any, and files a note saying how many were done.
+    .w-morning-done = Morning: { $n } done
 
 d-a5wukhyd = Today
     .w-show-all = Show all { $n }

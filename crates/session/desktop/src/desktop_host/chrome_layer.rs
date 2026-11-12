@@ -1121,7 +1121,7 @@ impl DesktopChrome {
                 delta: None,
             }),
             OverviewPick::NewWorkspace => {
-                self.new_workspace(None, None);
+                self.new_workspace(None, None, false);
                 None
             }
             OverviewPick::JoinWorkspace => Some(ChromeEffect::JoinWorkspace),
@@ -1341,14 +1341,22 @@ impl DesktopChrome {
             WorkspaceSlot(self.handle.mint_id()),
             crate::workspace_names::made(None, &tree.workspaces),
         );
-        self.open_workspace(tree, workspace, true);
+        self.open_workspace(tree, workspace, true, true);
     }
 
-    /// Put `workspace` after the others and go there, with a strip of its own made here when
-    /// `fresh_strip` — a workspace a site lets this computer into comes with the strips its site
-    /// holds, and a strip made here would stand on this desk only.
-    fn open_workspace(&self, mut tree: DesktopTree, mut workspace: Workspace, fresh_strip: bool) {
+    /// Put `workspace` after the others and, when `go` , go there, with a strip of its own made
+    /// here when `fresh_strip` — a workspace a site lets this computer into comes with the strips
+    /// its site holds, and a strip made here would stand on this desk only. A desk that shows no
+    /// workspace goes to the one it gets whatever `go` says: there is nowhere else to stay.
+    fn open_workspace(
+        &self,
+        mut tree: DesktopTree,
+        mut workspace: Workspace,
+        fresh_strip: bool,
+        go: bool,
+    ) {
         let id = workspace.slot;
+        let go = go || tree.active_workspace().is_none();
         if fresh_strip {
             let strip = Strip::new(StripId(self.handle.mint_id()), "Main");
             let strip_id = strip.id;
@@ -1356,14 +1364,19 @@ impl DesktopChrome {
             tree.active_strip.insert(id, strip_id);
         }
         tree.workspaces.push(workspace);
-        tree.active = id;
+        if go {
+            tree.active = id;
+        }
         self.handle.replace_tree(tree);
     }
 
     /// Make a workspace after the others and go there; with `join` , the workspace holding that id,
     /// joining it when this computer has none (a workspace that exists is a workspace that exists,
     /// so joining one is holding it, which needs no workspace of the person's own to make).
-    fn new_workspace(&self, join: Option<&str>, name: Option<&str>) {
+    /// In the `background` the workspace is put on the desk and the person stays where they are:
+    /// one their list brings from another of their devices arrives while they are somewhere else,
+    /// and what they open next belongs to the workspace they are in.
+    fn new_workspace(&self, join: Option<&str>, name: Option<&str>, background: bool) {
         let mut tree = self.handle.read(Clone::clone);
         let joining = join.is_some();
         let workspace = if let Some(id) = join {
@@ -1375,9 +1388,13 @@ impl DesktopChrome {
             };
             if let Some(held) = tree.workspaces.iter().find(|held| held.id() == joined) {
                 // Already held, here or from another device: go there rather than make a second
-                // workspace of one workspace.
-                let held = held.slot;
-                tree.active = held;
+                // workspace of one workspace. In the background the person stays where they are,
+                // and the desk is replaced all the same, as it always was here: a replaced desk is
+                // one the session reads and writes its workspaces' records for again, and this
+                // workspace has just taken this device in.
+                if !background {
+                    tree.active = held.slot;
+                }
                 self.handle.replace_tree(tree);
                 return;
             }
@@ -1394,7 +1411,7 @@ impl DesktopChrome {
             let name = crate::workspace_names::made(name, &tree.workspaces);
             Workspace::new(WorkspaceSlot(self.handle.mint_id()), name)
         };
-        self.open_workspace(tree, workspace, !joining);
+        self.open_workspace(tree, workspace, !joining, !background);
     }
 
     /// Branch the workspace `source` names into a new one called `name` (the source's name with
@@ -1982,8 +1999,16 @@ impl DesktopChrome {
                 }
                 return Ok(true);
             }
-            ChromeEffect::NewWorkspace { workspace, name } => {
-                self.new_workspace(workspace.as_deref(), name.as_deref());
+            ChromeEffect::NewWorkspace {
+                workspace,
+                name,
+                background,
+            } => {
+                self.new_workspace(
+                    workspace.as_deref(),
+                    name.as_deref(),
+                    background.unwrap_or(false),
+                );
                 return Ok(true);
             }
             ChromeEffect::BranchWorkspace { source, name } => {

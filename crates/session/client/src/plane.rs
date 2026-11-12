@@ -409,7 +409,7 @@ pub enum Cmd {
     CallPictures(Topic, Vec<CallPicture>),
     /// What this device shows of each device in its call on the topic.
     CallShowing(Topic, Vec<CallShown>),
-    /// The windows whose pages this device draws, by the device hosting them.
+    /// The windows this device draws, by the device hosting them: their pages, or their pictures.
     ShowPages(Topic, Vec<PageShown>),
     /// This device needs a source of a device afresh: a keyframe from its next group on.
     CallPictureRestart(Topic, [u8; 32], tilo_live::video::Source),
@@ -484,7 +484,7 @@ pub struct CallShown {
     pub screen: Vec<tilo_live::video::Layer>,
 }
 
-/// The windows whose pages one device of a workspace hosts, as this device draws them.
+/// The windows one device of a workspace hosts, as this device draws them.
 #[derive(Clone, Debug, Default)]
 pub struct PageShown {
     /// The device hosting the windows.

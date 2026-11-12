@@ -418,3 +418,39 @@ chat-channel-composer-placeholder = Message #{ $channel }
 ## What the window shows
 chat-writing = Writing…
 chat-voice-channel-unnamed = The voice channel could not be named
+
+## Actions
+
+chat-effects-model-control = Ask about this message
+chat-effects-show-agent-reasoning = Show reasoning
+chat-effects-open-channel = Open conversation
+chat-effects-open-category = Open category
+chat-effects-toggle-category = Fold category
+chat-effects-reveal-message = Reveal message
+chat-effects-reveal-message-range = Reveal messages
+chat-effects-open-person = Open person
+chat-effects-open-agent = Open agent conversation
+chat-effects-open-direct-conversation = Open direct conversation
+chat-effects-send-direct-message = Send direct message
+chat-effects-send = Send message
+chat-effects-export-content = Export conversation
+chat-effects-attach-file = Attach file
+chat-effects-share-live-context = Share live context
+chat-effects-stop-sharing-live-context = Stop sharing live context
+chat-effects-live-context-status = Live context status
+chat-effects-open-slack-channel = Open Slack channel in browser
+chat-effects-open-discord-channel = Open Discord channel in browser
+chat-effects-join-call = Join call
+chat-effects-leave-call = Leave call
+chat-effects-mute = Mute
+chat-effects-unmute = Unmute
+chat-effects-deafen = Deafen
+chat-effects-undeafen = Undeafen
+chat-effects-camera-on = Turn camera on
+chat-effects-camera-off = Turn camera off
+chat-effects-share-screen = Share screen
+chat-effects-stop-sharing-screen = Stop sharing screen
+chat-effects-call-status = Call status
+chat-effects-start-call = Start a call
+chat-effects-start-video-call = Start a video call
+chat-effects-select-input = Select microphone

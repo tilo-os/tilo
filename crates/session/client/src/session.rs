@@ -1504,11 +1504,47 @@ impl Task {
                 true
             }
             Command::Client(Cmd::Revoke(entry)) => self.revoke(entry, client),
+            Command::Client(Cmd::SendControl { ws, msg, target }) => {
+                self.send_control(ws, &msg, target, client);
+                true
+            }
             // Handled by the caller's loop.
             Command::Client(Cmd::Reconnect | Cmd::Retry | Cmd::Refresh | Cmd::Stop) => true,
             // What only a desktop's own plane carries: nothing a relay session says.
             Command::Client(_) => true,
         }
+    }
+
+    /// Say one shared window's control message — a person's input on it, a
+    /// viewer's ask or keyframe request — to the device hosting it, through
+    /// the workspace's host: a page has no direct route to any device, and
+    /// the host hands it to that device alone, stamped as this one's. Input
+    /// lands within its frame or not at all, so one said while disconnected
+    /// is dropped.
+    fn send_control(
+        &self,
+        workspace_id: u64,
+        msg: &neighbour_wire::NeighbourMsg,
+        target: iroh_base::EndpointId,
+        client: Option<&RelayClient>,
+    ) {
+        if !matches!(
+            msg,
+            neighbour_wire::NeighbourMsg::RemoteInput { .. }
+                | neighbour_wire::NeighbourMsg::SurfaceKeyframeRequest { .. }
+                | neighbour_wire::NeighbourMsg::SurfaceViewRequest { .. }
+        ) {
+            return;
+        }
+        let (Some(client), Ok(frame)) = (client, postcard::to_allocvec(msg)) else {
+            return;
+        };
+        let _ = client.send(Envelope::RecordContent {
+            workspace_id,
+            to_device_public_key: *target.as_bytes(),
+            from_device_public_key: self.config.cert.device_public_key,
+            frame,
+        });
     }
 
     /// Subscribe to `workspace_id`, now or once connected.

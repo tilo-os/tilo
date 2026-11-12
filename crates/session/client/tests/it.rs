@@ -116,5 +116,7 @@ mod voice_every_workspace;
 mod voice_open;
 #[path = "voice_participation.rs"]
 mod voice_participation;
+#[path = "window_input.rs"]
+mod window_input;
 #[path = "write_before_record.rs"]
 mod write_before_record;

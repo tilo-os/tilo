@@ -106,6 +106,27 @@ fn stored_content_is_offered_on_the_record_route() {
     assert_eq!(store.read(&hash).as_deref(), Some(&b"a picture"[..]));
 }
 
+/// A record's store over a lent store that is itself a record's (an app
+/// worker's, which its host joins to its own route) seals once: the bytes
+/// below it are kept as they come, under the address the reference names.
+#[test]
+fn a_record_store_over_a_sealing_store_seals_once() {
+    let (lent, inner) = record_store("lent");
+    let outer = ContentLane::of("so.tilo.record-content-test", "outer");
+    let store = RecordContent::store(lent.clone(), Arc::clone(&outer));
+    let reference = store.put(b"a picture").unwrap();
+    let address = tilo_content::content_address(&reference).unwrap();
+    assert_eq!(reference.matches('.').count(), 1, "{reference}");
+    let [(offered, sealed)] = inner.take_requests().offers.try_into().unwrap();
+    assert_eq!(
+        offered, address,
+        "the lent store keeps it under that address"
+    );
+    assert_eq!(outer.take_requests().offers, vec![(address, sealed)]);
+    assert_eq!(lent.read(&reference).as_deref(), Some(&b"a picture"[..]));
+    assert_eq!(store.read(&reference).as_deref(), Some(&b"a picture"[..]));
+}
+
 #[test]
 fn missing_content_is_asked_for_once_and_reads_pending_until_it_arrives() {
     let (store, lane) = record_store("wanted");

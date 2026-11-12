@@ -44,22 +44,19 @@ impl ResourceApp for App {
     }
 
     fn view(cx: &mut ViewCx<Greeting>) -> Element {
-        // Every label is a generated key of locales/en-US.ftl, so a message
-        // the catalog does not have is a compile error.
+        // Every label is a message of locales/en-US.ftl; `tilo-app check`
+        // fails on one the catalog does not have.
         let name = cx
             .input(cx.paths().name)
             .with_id("name-input")
-            .with_placeholder(crate::locales::keys::STARTER_NAME_PLACEHOLDER);
+            .with_placeholder("starter-name-placeholder");
         // Read from the resource, so it follows every edit: this window's, a
         // collaborator's, an undo.
         let message = cx.text(|state| greeting(&state.name)).with_id("greeting");
-        let clear = cx.button(
-            crate::locales::keys::STARTER_CLEAR,
-            Greeting::CLEAR.invoke(),
-        );
+        let clear = cx.button("starter-clear", Greeting::CLEAR.invoke());
         Box::new(ui::column![
             Text::new("starter-title").with_role(TextRole::Title),
-            labeled_field(crate::locales::keys::STARTER_NAME_LABEL, name),
+            labeled_field("starter-name-label", name),
             message,
             clear,
         ])

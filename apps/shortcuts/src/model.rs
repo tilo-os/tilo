@@ -591,7 +591,6 @@ impl Workbench {
 
 #[resource(
     kind = "shortcuts.workbench",
-    label = "Shortcuts",
     version = 4,
     migrate = upgrade,
     read_content = Workbench::read_document

@@ -1185,6 +1185,11 @@ impl crate::widget::Decorator for ViewportContent {
 }
 
 impl Widget for Scrollable {
+    /// Its content, in a native scroller of its region.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.children();
+    }
+
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn primary_vertical_scroll(&self) -> Option<crate::widget::PrimaryScrollRegion> {

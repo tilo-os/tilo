@@ -7329,9 +7329,9 @@ impl AppBrokerState {
             tilo_peer_state::workspace_membership::valid_agent_id(&agent)
                 .map_err(|_| "native context contains a noncanonical agent identity")?;
             let is_self = admitted.agent_id.as_deref() == Some(agent.as_str());
-            // The colour its face wears everywhere ([`agent_rgb`]): an app draws it as
-            // the bar does, never in the colour its id would derive here.
-            let colour = ui::tokens::PresenceHue::of_agent(&agent);
+            // The colour its face wears everywhere ([`participant_color`] of an agent): an app
+            // draws it as the bar does, one rule for every surface.
+            let colour = ui::presence::participant_hue(&agent, true);
             collaborators.push(ui::collaboration::Collaborator {
                 id: format!("agent:{agent}"),
                 name: agent,
@@ -13334,7 +13334,7 @@ pub mod tests {
                 .expect("an agent's id names its key");
             assert_eq!(
                 agent.colour,
-                Some(ui::tokens::PresenceHue::of_agent(key)),
+                Some(ui::presence::participant_hue(key, true)),
                 "{key}"
             );
         }

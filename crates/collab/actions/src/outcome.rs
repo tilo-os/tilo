@@ -26,6 +26,14 @@ pub fn content_hash(address: &str) -> Option<&str> {
         .filter(|hash| !hash.is_empty() && !hash.contains(':'))
 }
 
+/// The content reference an argument names: a `tilo.content:<reference>`
+/// address, or the bare reference a plan that carried the content gives.
+pub fn named_reference(value: &str) -> Option<&str> {
+    let value = value.trim();
+    let reference = content_hash(value).unwrap_or(value);
+    tilo_content::valid_reference(reference).then_some(reference)
+}
+
 /// Stable key carried from admission through completion and used to
 /// deduplicate retry-safe calls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -361,7 +361,14 @@ fn history_reads_a_requested_run_from_the_stored_record() {
         .next()
         .map(|(id, _)| id.clone())
         .unwrap();
-    let hash = "ab".repeat(32);
+    // The record names a run's output by the reference the store that ran it
+    // answered, which a sealed store keeps its own key under.
+    let store = tilo_content::ContentStore::memory().sealing();
+    let printed = b"error: signup failed\n";
+    let reference = store.put(printed).unwrap();
+    assert!(tilo_content::is_sealed(&reference));
+    let output = ui::tilo_resource::Bytes::kept_as(printed, &reference);
+    let stored = output.to_json();
     session
         .apply(Terminal::RECORD_RUN.with(Finished {
             command: "cargo test -p signup".to_owned(),
@@ -369,8 +376,7 @@ fn history_reads_a_requested_run_from_the_stored_record() {
             started_ms: 1_000,
             ended_ms: 4_500,
             exit: 101,
-            output: Some(hash.clone()),
-            output_len: 2_048,
+            output: Some(output.clone()),
             truncated: false,
             tool: "cargo".to_owned(),
             undoable: false,
@@ -408,5 +414,13 @@ fn history_reads_a_requested_run_from_the_stored_record() {
     assert_eq!(run["exit"], 101);
     assert_eq!(run["started_ms"], 1_000);
     assert_eq!(run["ended_ms"], 4_500);
-    assert_eq!(run["output"], format!("blake3:{hash}:2048"));
+    assert_eq!(
+        run["output"], stored,
+        "the run names its output by the store's sealed reference"
+    );
+    assert_eq!(
+        output.read(&store).as_deref(),
+        Some(&printed[..]),
+        "and that reference opens the bytes it printed"
+    );
 }

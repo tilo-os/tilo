@@ -121,6 +121,9 @@ const REPORT_PROBLEM: &str = "report-problem";
 /// Chat, which holds the conversation each pair of people shares.
 /// Settings, whose pages a person's own card opens.
 const SETTINGS_APP: &str = "so.tilo.settings";
+/// Settings' page that lists the person's devices and agents and takes them
+/// back: the card's own way to what acts as them.
+const DEVICES_ACCESS: &str = tilo_session::people::DEVICES_ACCESS;
 /// The popovers the bar opens, one at a time.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BarPopover {
@@ -980,9 +983,23 @@ impl BrowserShell {
                         );
                     }
                 }
-                // The Settings pages this person's own card names: the page opens the app.
-                tilo_session::people::PeopleAsk::Settings(_) => {
-                    self.launch(SETTINGS_APP);
+                // The Settings pages this person's own card names: the page opens the app, on
+                // the page the card asked for.
+                tilo_session::people::PeopleAsk::Settings(link) => {
+                    let resource = link
+                        .strip_prefix("settings://")
+                        .map_or_else(|| link.clone(), |slug| format!("settings.section:{slug}"));
+                    self.requests.borrow_mut().push(HostRequest::ShowInApp {
+                        app: SETTINGS_APP.into(),
+                        resource,
+                    });
+                }
+                // How an agent connects, asked of the card: the page shows the
+                // setup its own first screen does.
+                tilo_session::people::PeopleAsk::ConnectAgent => {
+                    self.requests
+                        .borrow_mut()
+                        .push(HostRequest::Action("connect-agent".into()));
                 }
                 // What the host offers about who they are, which their own card lists: performed
                 // as a host action, as search's rows and a banner's buttons are.
@@ -1252,12 +1269,16 @@ impl BrowserShell {
     }
 
     /// What the desktop's layers asked of the page since it last looked.
-    /// Ask the session for the pages of the windows other devices host that this desk shows, and
-    /// stop reading the ones it stopped showing. Whether what it asks changed.
+    /// Ask the session for the windows other devices host that this desk shows, stop reading the
+    /// ones it stopped showing, and send the person's input on them to their hosts. Whether
+    /// anything went.
     fn follow_pages(&self) -> bool {
         let shared = &self.chrome.shared;
         match shared.peer {
-            Some(peer) => crate::pages::follow(peer, &shared.workspace, &self.handle),
+            Some(peer) => {
+                crate::pages::follow(peer, &shared.workspace, &self.handle)
+                    | crate::window_pictures::send_input(peer)
+            }
             None => false,
         }
     }
@@ -1433,6 +1454,14 @@ impl BrowserShell {
                 icon: ui::icons::Icon::Flag,
             });
         }
+        // Everything that acts as this person, and taking any of it back:
+        // Settings' own page, which the page serves as it does here.
+        actions.push(ProfileAction {
+            id: DEVICES_ACCESS.into(),
+            title: tilo_desktop::i18n::t("profile-action-devices-access"),
+            group: ProfileGroup::Devices,
+            icon: ui::icons::Icon::Shield,
+        });
         let rgb = Some(self.chrome.own_chip().rgb);
         // The name in the field is the person's own, without the number
         // others are shown beside it.
@@ -1479,6 +1508,15 @@ impl BrowserShell {
                 return;
             }
             ProfileChoice::Rename(name) => HostRequest::Named(name),
+            // Everything that acts as this person: Settings' own page, opened
+            // in this workspace, as the desktop's card opens it.
+            ProfileChoice::Action(id) if id == DEVICES_ACCESS => {
+                self.requests.borrow_mut().push(HostRequest::ShowInApp {
+                    app: SETTINGS_APP.into(),
+                    resource: "settings.section:devices_sync".into(),
+                });
+                return;
+            }
             ProfileChoice::Action(id) if id == REPORT_PROBLEM => {
                 self.report_problem();
                 return;
@@ -1727,7 +1765,9 @@ impl Widget for BrowserShell {
         for intent in intents {
             self.apply_intent(intent);
         }
-        if let Some(choice) = self.profile.take_choice() {
+        // Every choice the card made since the last frame: a name and a status typed one after
+        // the other are two, never one dropped for the other.
+        while let Some(choice) = self.profile.take_choice() {
             self.apply_profile_choice(choice);
             changed = true;
         }

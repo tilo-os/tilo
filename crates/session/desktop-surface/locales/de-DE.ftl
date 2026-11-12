@@ -1224,6 +1224,7 @@ strip-switcher-remove = Entfernen
 
 ## Ein Problem melden, indem man darauf zeigt
 feedback-report-problem = Problem melden…
+profile-action-devices-access = Geräte und Zugriff
 feedback-picker-hint = Klicke auf das, was nicht funktioniert. Umschalt-Klick oder Ziehen wählt mehr, Scrollen erweitert, Esc verlässt.
 feedback-picker-picked = { $count ->
     [one] 1 Teil gewählt. Umschalt-Klick oder Ziehen wählt mehr.

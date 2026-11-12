@@ -139,7 +139,10 @@ mod test_environment {
                 // recognised however the worktree path spells it.
                 let root = root.canonicalize().unwrap_or(root);
                 for ancestor in root.ancestors() {
-                    let metadata = std::fs::metadata(ancestor)?;
+                    // A root a fixture is about to make does not exist yet.
+                    let Ok(metadata) = std::fs::metadata(ancestor) else {
+                        continue;
+                    };
                     above.insert((metadata.dev(), metadata.ino()));
                 }
             }

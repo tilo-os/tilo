@@ -149,6 +149,10 @@ export function keyboardRoute(event,composing,mac) {
   const lower=key.toLowerCase();
   const primary=mac?Boolean(event.metaKey):Boolean(event.ctrlKey);
   if(primary&&clipboardCommands.has(lower))return 'clipboard';
+  // The desktop search's chord is the page's own: it opened the search before
+  // the surface ever saw the key, and forwarding it is what let the desk open
+  // it again on the same press.
+  if(isDesktopSearchShortcut(event,mac))return 'browser';
   if(primary&&!event.altKey&&applicationCommands.has(lower))return 'forward';
   const altGraph=Boolean(event.ctrlKey&&event.altKey&&!event.metaKey);
   if(key==='Dead')return 'text';
@@ -166,7 +170,8 @@ export function semanticKeyboardRoute(event,composing,mac) {
   if(isDesktopChord(event,mac))return 'forward';
   const key=String(event.key??'').toLowerCase();
   if(key==='enter'&&!event.ctrlKey&&!event.altKey&&!event.metaKey)return 'forward';
-  if(key==='k')return 'forward';
+  // A typed `k` in the palette's field is the field's; the search chord is the page's.
+  if(key==='k'&&!event.ctrlKey&&!event.metaKey&&!event.altKey)return 'forward';
   if(mac)return key==='z'&&event.metaKey&&!event.ctrlKey&&!event.altKey?'forward':'native';
   if(!event.ctrlKey||event.metaKey||event.altKey)return 'native';
   return key==='z'||(key==='y'&&!event.shiftKey)?'forward':'native';

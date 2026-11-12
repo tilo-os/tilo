@@ -172,4 +172,7 @@ serde.workspace = true
 serde_json.workspace = true
 # Another device's window pictures, as its track brings them (src/window_pictures.rs).
 tilo-live = { version = "0.1.0", path = "../../collab/tilo-live" }
+# The input a person gives another device's window, as the wire encodes it.
+neighbour-wire = { version = "0.1.0", path = "../../collab/neighbour-wire" }
+postcard = { workspace = true, features = ["use-std"] }
 

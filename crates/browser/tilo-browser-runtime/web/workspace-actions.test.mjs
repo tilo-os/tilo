@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createWorkspaceActions, invitedLine, JOIN_WORKSPACE, NEW_WORKSPACE, WAITING} from './workspace-actions.mjs';
+import {createWorkspaceActions, invitedLine, INVITE_LINK, JOIN_WORKSPACE, NEW_WORKSPACE, WAITING} from './workspace-actions.mjs';
 
 test('an invited wait-list entry says how long ago it was invited', () => {
   const now = Date.UTC(2026, 9, 24, 12);
@@ -59,7 +59,7 @@ test('the wait list is listed, gets no banner, and each address is invited with 
   const actions = createWorkspaceActions({peer: member, inviteLink: sealedLink,
     ui: {share: async offer => { shared.push(offer); }, waitingList: async list => { listed = list; }, fail: async text => assert.fail(text)}});
   await actions.attach(mount);
-  assert.deepEqual(ids(shown.at(-1)), [JOIN_WORKSPACE.id, WAITING.id]);
+  assert.deepEqual(ids(shown.at(-1)), [INVITE_LINK.id, JOIN_WORKSPACE.id, WAITING.id]);
   assert.equal(banners.length, 0, 'nobody is waiting to be let in, so nothing is offered');
   await actions.perform(WAITING.id);
   assert.deepEqual(await listed.load(), [ed]);
@@ -148,4 +148,61 @@ test('in someone else’s workspace a person with a machine can still make a wor
   await actions.perform(NEW_WORKSPACE.id);
   assert.deepEqual(calls, [['lobby', origin], ['create', 'Acme'], ['enter', WORKSPACE], ['dispose']]);
   assert.equal(opened[0].origin, origin);
+});
+
+test('a person on a host that keeps workspaces of people’s own makes their next one there', async () => {
+  const origin = 'https://lounge.example';
+  const calls = [];
+  // The Lounge: a listed workspace on a host that keeps a workspace of each
+  // person's own for the people its door lets in.
+  const lounge = {origin, workspace: 'lounge', userPublicKey: ADA,
+    host: {hostCert: {user_public_key: bytes('bb'.repeat(32)), device_public_key: Array(32).fill(0xcd),
+      capabilities: {can_own_workspaces: true}}},
+    enterOwnWorkspace: async ({name}) => { calls.push(['own', name]); return {workspace: 'studio-room', name}; }};
+  const opened = [];
+  const {mount, shown} = desktop();
+  const actions = createWorkspaceActions({peer: lounge, machines: () => [],
+    open: async where => { opened.push(where); },
+    ui: {askWorkspaceName: save => save('Studio'), fail: async text => assert.fail(text)}});
+  await actions.attach(mount);
+  assert.ok(ids(shown.at(-1)).includes(NEW_WORKSPACE.id), 'the person is in a workspace of their own making on that host');
+  await actions.perform(NEW_WORKSPACE.id);
+  assert.deepEqual(calls, [['own', 'Studio']]);
+  assert.deepEqual(opened, [{origin, room: 'studio-room', name: 'Studio', hostDevice: 'cd'.repeat(32)}]);
+});
+
+test('one press hands over an invite link: it was made before the press, and copied in it', async () => {
+  const {peer, calls} = adasRoom({owner: false, letsIn: true});
+  const copied = [];
+  const shared = [];
+  const {mount, shown} = desktop();
+  const actions = createWorkspaceActions({peer, inviteLink: sealedLink,
+    ui: {copy: async text => { copied.push(text); return true; },
+      share: async offer => { shared.push(offer); },
+      fail: async text => assert.fail(text)}});
+  await actions.attach(mount);
+  assert.ok(ids(shown.at(-1)).includes(INVITE_LINK.id), 'whoever may invite is handed a link');
+  // Made when the page attached, so the press copies it inside the gesture.
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(calls.filter(call => call[0] === 'invite').length, 1);
+  await actions.perform(INVITE_LINK.id);
+  assert.deepEqual(copied, [SEALED], 'the press copied the link, and nothing was asked');
+  assert.equal(shared.length, 0, 'a copy that took needs no card');
+  // Another is made for the next press, without anyone asking for it.
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(calls.filter(call => call[0] === 'invite').length, 2);
+});
+
+test('a press whose copy the browser refuses shows the link to copy by hand', async () => {
+  const {peer} = adasRoom({owner: false, letsIn: true});
+  const shared = [];
+  const actions = createWorkspaceActions({peer, inviteLink: sealedLink,
+    ui: {copy: async () => false, share: async offer => { shared.push(offer); },
+      fail: async text => assert.fail(text)}});
+  await actions.attach(desktop().mount);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  await actions.perform(INVITE_LINK.id);
+  assert.equal(shared.length, 1, 'the link is shown when the clipboard did not take it');
+  assert.equal(shared[0].link, SEALED);
+  assert.equal(shared[0].copied, true, 'the card tries the clipboard from its own opening');
 });

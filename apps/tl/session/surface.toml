@@ -361,6 +361,11 @@ name = "name"
 required = false
 type = "text"
 
+[[resources.verbs.params]]
+name = "background"
+required = false
+type = "bool"
+
 [[resources.verbs]]
 id = "branch-workspace"
 kind = "outside"

@@ -92,9 +92,9 @@ impl ResourceApp for App {
         let name = cx
             .input(p.name)
             .with_id("name-input")
-            .with_placeholder(crate::locales::keys::CONTROLS_NAME_PLACEHOLDER);
+            .with_placeholder("controls-name-placeholder");
         let updates = cx
-            .checkbox(crate::locales::keys::CONTROLS_UPDATES_LABEL, p.updates)
+            .checkbox("controls-updates-label", p.updates)
             .with_id("updates-checkbox");
         // Everything else goes through `cx.control`: build the control from
         // the `LocalState` it is given and name the field it edits.
@@ -126,18 +126,15 @@ impl ResourceApp for App {
                 Atom,
             )
             .with_id("region-select");
-        let reset = cx.button(
-            crate::locales::keys::CONTROLS_RESET,
-            Preferences::RESET.invoke(),
-        );
+        let reset = cx.button("controls-reset", Preferences::RESET.invoke());
 
         Box::new(ui::column![
             Text::new("controls-title").with_role(TextRole::Title),
-            labeled_field(crate::locales::keys::CONTROLS_NAME_LABEL, name),
+            labeled_field("controls-name-label", name),
             updates,
-            labeled_field(crate::locales::keys::CONTROLS_REFRESH_LABEL, refresh),
-            labeled_field(crate::locales::keys::CONTROLS_VOLUME_LABEL, volume),
-            labeled_field(crate::locales::keys::CONTROLS_REGION_LABEL, region),
+            labeled_field("controls-refresh-label", refresh),
+            labeled_field("controls-volume-label", volume),
+            labeled_field("controls-region-label", region),
             reset,
         ])
     }

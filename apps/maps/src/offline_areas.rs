@@ -45,7 +45,6 @@ impl OfflineAreas {
 
 #[resource(
     kind = "maps.offline-areas",
-    label = "Offline areas",
     read_content = OfflineAreas::read_document
 )]
 impl OfflineAreas {

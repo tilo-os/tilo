@@ -69,10 +69,6 @@ export function applySemanticsPatch(tree,sequence,patch){
   }
   return next;
 }
-// `host`, when the page shows the interface as HTML, holds each widget's
-// painted element (`dom-present.mjs`): a node whose widget was drawn
-// (`paint_key`) lives inside that element instead of in the mirror's own
-// layer, so the drawn and the accessible tree are one.
 // Keys kept for one widget before the ones it no longer names are dropped.
 const KEYS_PER_IDENTITY=4096;
 // Whether two values say the same, looking `depth` objects deep.
@@ -94,6 +90,10 @@ export function sameFace(before,node){
   for(const key of keys)if(key!=='bounds'&&key!=='children'&&!same(before[key],node[key],4))return false;
   return true;
 }
+// `host`, when the page shows the interface as HTML (view-present.mjs): the
+// mirror makes a single-line field an `<input>` the browser can fill in, and
+// leaves the focus where a native selection of the page's text put it
+// (`holdsSelection()`).
 export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
   const elements=new Map();
   const recoverySurfaces=new Set();
@@ -285,7 +285,7 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
     recovery.text+=text;recovery.retained.value=recovery.text;syncRecovery(recovery);
   }
   function createElement(editable,key,role){
-    // A page shown as HTML (`host`) shows a single-line field as its own
+    // A page shown as HTML (`host`) makes a single-line field its own
     // `<input>`, which the browser can fill in and offer passkeys on.
     const element=document.createElement(editable?(host&&role==='TextInput'?'input':'textarea'):role==='Button'?'button':'div');
     element.id=`tilo-semantic-${bridgeId}-${++elementSequence}`;
@@ -569,20 +569,13 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
         // to two places (a shared node) says its path twice, and each place is
         // its own element, under its own ancestors.
         const identity=identityOf(node,place);
-        const home=host&&node.paint_key?host.home(node.paint_key):undefined;
-        const key=semantic(node.semantics,node.path,home??parent,node.path,identity,ancestry,node.path,node.rect);
-        const element=elements.get(key);
-        if(element&&element.tiloHome!==(home?node.paint_key:undefined)){
-          if(element.tiloHome)host.release(element.tiloHome);
-          element.tiloHome=home?node.paint_key:undefined;
-        }
-        if(element&&home)host.adopt(node.paint_key,element);
+        const key=semantic(node.semantics,node.path,parent,node.path,identity,ancestry,node.path,node.rect);
         ancestry=[...ancestry,key];
       }
       for(const child of node.children??[])walk(child,parent,ancestry,[...place,node.path]);
     }
     walk(snapshot.root,root);
-    for(const [key,element] of elements)if(!live.has(key)){shortcuts?.blur?.(element);element.tiloState.active=false;element.route=undefined;if(element.tiloHome)host?.release(element.tiloHome);element.remove();elements.delete(key);}
+    for(const [key,element] of elements)if(!live.has(key)){shortcuts?.blur?.(element);element.tiloState.active=false;element.route=undefined;element.remove();elements.delete(key);}
     for(const recovery of recoveries.values())syncRecovery(recovery);
     // Retained owners and their editable/synthetic children may both report
     // focus. An explicitly focused descendant is the more precise contract.

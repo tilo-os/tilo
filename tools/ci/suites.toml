@@ -627,7 +627,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/semantic-presentation.test.mjs",
   "crates/browser/tilo-browser-runtime/web/semantics.test.mjs",
   "crates/browser/tilo-browser-runtime/web/dom-input.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/dom-present.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/view-present.test.mjs",
   "crates/browser/tilo-browser-runtime/web/peer.test.mjs",
   "crates/browser/tilo-browser-runtime/web/resource-reference.test.mjs",
   "crates/browser/tilo-browser-runtime/web/scrub.test.mjs",
@@ -1647,6 +1647,10 @@ reason = "needs root, KVM, loop devices and the built VM host and hosted guest i
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-wait-list-door.sh"
 reason = "needs the built web desktop bundle, headless Chromium and the built relay and crypto programs, and a mail sink it runs itself; the wait-list-door check runs it in its image"
+
+[[unrequired]]
+suite = "os/containers/tilo-lounge/test-onboarding.sh"
+reason = "one flow of the e2e check, on a host of its own whose door takes people by invitation and whose mails go to a sink it runs: it needs the built web desktop bundle, headless Chromium, the built relay, crypto and tilo command, and minutes of a machine's walls; the e2e check runs it beside the other flows"
 
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-page-tour.sh"

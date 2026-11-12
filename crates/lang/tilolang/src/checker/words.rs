@@ -68,6 +68,38 @@ impl Checker<'_> {
         }
     }
 
+    /// The declaration whose message the words being checked are attributes of: the view or
+    /// action being checked, or the one [`super::FnState::words_of`] names.
+    fn words_owner(&self) -> String {
+        self.st
+            .words_of
+            .clone()
+            .unwrap_or_else(|| self.st.view_id.clone())
+    }
+
+    /// `say("Morning: {n} done")`: words the code writes for a person to read, such as the title
+    /// of a record it makes, as a message of the declaration it is written in. They read in the
+    /// language of whoever runs the code, with each interpolation its argument.
+    pub(super) fn builtin_say(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        match args {
+            [ast::Arg { name: None, value }] if matches!(value.kind, ExprKind::Str(_)) => {
+                self.mark_shown(value);
+                self.expr_as(value, &Ty::Text)
+            }
+            _ => {
+                self.err(
+                    "E022",
+                    span,
+                    "`say` takes the words in quotes, as a person reads them: `say(\"Morning: {n} done\")`",
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                Ex::error()
+            }
+        }
+    }
+
     /// Whether the literal at `span` is one a component shows.
     pub(super) fn shows(&self, span: Span) -> bool {
         self.st.shown.contains(&span)
@@ -113,7 +145,7 @@ impl Checker<'_> {
             });
         }
         let key = self.word_key(&text);
-        let message = format!("{}.{key}", crate::messages::key_of(&self.st.view_id));
+        let message = format!("{}.{key}", crate::messages::key_of(&self.words_owner()));
         let list = self.text_pairs(args);
         let call = Ex::host(
             Imp::Word,
@@ -130,7 +162,7 @@ impl Checker<'_> {
     /// The attribute naming `text` under the view's message: a slug of its words, numbered
     /// when another text of the view has the same slug.
     fn word_key(&mut self, text: &str) -> String {
-        let view = self.st.view_id.clone();
+        let view = self.words_owner();
         let base = format!("w-{}", slug(text));
         let mut key = base.clone();
         let mut n = 1;

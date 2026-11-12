@@ -657,29 +657,12 @@ mod tests {
     }
 
     #[test]
-    fn import_action_presentation_uses_the_active_host_locale_catalog() {
-        ui::I18nManager::install(
-            "en-US",
-            "fr",
-            &[
-                ("en-US", "test-fallback = fallback"),
-                (
-                    "fr",
-                    r"
-imager-import-resource-root = FR imports
-imager-import-badge-root = FR badge
-imager-import-detail-root = FR phase { $phase } { $operations } { $error }
-imager-import-action-read-status = FR lire
-imager-import-action-first-issues = FR première page
-imager-import-action-choose-source = FR source
-imager-import-action-choose-destination = FR destination
-imager-import-action-clear-selection = FR clear
-imager-import-action-prepare-review = FR review
-",
-                ),
-            ],
-        )
-        .unwrap();
+    fn import_action_presentation_reads_the_crates_catalog() {
+        // A test build pins the catalogue's source language, so the words the
+        // row and its actions publish are the shipped ones on every machine;
+        // the languages beside that source are the crate's own (see the
+        // strings tests).
+        assert_eq!(ui::I18nManager::current_locale(), "en-US");
         let projection = ImportProjection {
             phase: ImportStatusPhase::Ready,
             status_is_error: false,
@@ -715,7 +698,10 @@ imager-import-action-prepare-review = FR review
 
         let published = row(&projection).into_resource();
 
-        assert_eq!(published.label, "FR imports");
+        // Every word is a message: the row and its actions name keys the
+        // catalogue carries, in the language the catalogue resolved.
+        assert_eq!(published.label, strings::t("imager-import-resource-root"));
+        assert_ne!(published.label, "imager-import-resource-root");
         assert_eq!(
             published.children[0]
                 .actions
@@ -723,17 +709,25 @@ imager-import-action-prepare-review = FR review
                 .find(|action| action.id == "first-issues")
                 .unwrap()
                 .label,
-            "FR première page"
+            strings::t("imager-import-action-first-issues")
         );
         let statuses = statuses(&projection);
         assert!(statuses.contains(&EffectStatus::labelled(
             ImportEffect::READ_STATUS,
-            "FR lire"
+            strings::t("imager-import-action-read-status")
         )));
         assert!(statuses.contains(&EffectStatus::labelled(
             ImportEffect::CHOOSE_SOURCE,
-            "FR source"
+            strings::t("imager-import-action-choose-source")
         )));
-        assert_eq!(ui::I18nManager::current_locale(), "fr");
+        // The crate's other language ships beside its source and says the
+        // same sentence there.
+        assert!(
+            crate::resource::CATALOG
+                .every_value("imager-import-resource-root")
+                .len()
+                > 1,
+            "the row's name is written in more than the source language"
+        );
     }
 }

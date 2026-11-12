@@ -108,3 +108,30 @@ clocks-stop-floating = Stop floating
 clocks-keep-visible = Keep stopwatch visible
 clocks-notify-alarm = Alarm
 clocks-notify-timer = Timer finished
+
+## Actions
+
+clocks-collection = Clocks
+clocks-collection-add-world-clock = Add a city
+clocks-collection-remove-world-clock = Remove city
+clocks-collection-add-alarm = Add an alarm
+clocks-collection-set-alarm-enabled = Turn an alarm on or off
+clocks-collection-edit-alarm = Edit alarm
+clocks-collection-remove-alarm = Remove alarm
+clocks-collection-add-timer = Start a timer
+clocks-collection-pause-timer = Pause timer
+clocks-collection-resume-timer = Resume timer
+clocks-collection-add-minute = Add one minute
+clocks-collection-remove-timer = Remove timer
+clocks-collection-start-stopwatch = Start the stopwatch
+clocks-collection-pause-stopwatch = Pause the stopwatch
+clocks-collection-lap = Record a lap
+clocks-collection-reset-stopwatch = Reset the stopwatch
+clocks-effects-open-alarm = Open alarm here
+clocks-effects-show = Show a section
+clocks-effects-dismiss-notice = Dismiss notice
+clocks-effects-snooze-alarm = Snooze alarm
+clocks-effects-float-timer = Float timer
+clocks-effects-float-stopwatch = Float stopwatch
+clocks-on-devices = Clocks on each device
+clocks-on-devices-keep = Keep this device's clocks

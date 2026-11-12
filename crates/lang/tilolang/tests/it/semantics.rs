@@ -343,6 +343,35 @@ fn a_templates_text_parameter_carries_its_callers_message() {
     );
 }
 
+/// Every word a person reads is a message: an action's label that follows its subject, why it
+/// cannot run, and the words its body writes with `say` into a record, each under the action's
+/// own message, its interpolation an argument (i18n.md §2).
+#[test]
+fn an_actions_label_its_reasons_and_what_it_says_are_messages() {
+    let c = compile(
+        "type Note {\n    title: Text\n    pinned: Bool\n}\ntype Book {\n    notes: Collection<Note>\n}\nroot Book\ndefault view book for Book\naction pin(n: Note, pinned: Bool = not n.pinned) (\n    label: if pinned { \"Pin\" } else { \"Unpin\" },\n) {\n    require n.title != \"\" \"Name the note first\"\n    n.pinned = pinned\n}\naction tally(b: Book) {\n    let n = b.notes.count(x -> x.pinned)\n    b.notes.insert(Note(title: say(\"{n} pinned\")))\n}\nview book(b: Book) {\n    for n in b.notes {\n        button(pin(n))\n    }\n}",
+    );
+    crate::common::validate(&c.wasm);
+    let source = tilolang::messages::source_catalogue(&c.meta);
+    let pin = tilolang::messages::key_of(c.ids.get("pin").expect("the action"));
+    let tally = tilolang::messages::key_of(c.ids.get("tally").expect("the action"));
+    for line in [
+        format!("{pin} = Pin"),
+        "    .w-pin = Pin".to_owned(),
+        "    .w-unpin = Unpin".to_owned(),
+        "    .w-name-the-note-first = Name the note first".to_owned(),
+        format!("{tally} = Tally"),
+        "    .w-pinned = { $n } pinned".to_owned(),
+    ] {
+        assert!(source.contains(&line), "{line:?} in {source}");
+    }
+    assert_eq!(
+        codes("action a() {\n    let t = \"x\"\n    let s = say(t)\n}"),
+        vec!["E022"],
+        "`say` takes the words themselves"
+    );
+}
+
 // A list's rows are a view of their own (`<view>~row<n>`), and a component called in a row that
 // declares `state` keeps it there: the host binds the state by the id the row's
 // body reads (`<row view id>:<component>.<state>`), so the row's view meta carries it.

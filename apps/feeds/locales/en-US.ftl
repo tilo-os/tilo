@@ -90,3 +90,24 @@ feeds-theme-dark = Dark
 feeds-font-sans = Sans
 feeds-font-serif = Serif
 feeds-font-mono = Mono
+
+## Actions
+
+feeds-effects-refresh-all = Refresh all subscriptions
+feeds-effects-import-opml = Import OPML…
+feeds-effects-new-folder-form = New folder…
+feeds-effects-export-opml = Export OPML…
+feeds-effects-reveal-tag = Show tagged articles
+feeds-effects-reader-text-larger = Increase reader text size
+feeds-effects-reader-text-smaller = Decrease reader text size
+feeds-effects-reader-font = Use reader font
+feeds-effects-reader-paper = Use reader paper
+feeds-library = Feeds
+feeds-library-add-subscription = Add subscription
+feeds-library-unsubscribe = Unsubscribe
+feeds-library-mark-feed-read = Mark a subscription read
+feeds-library-mark-everything-read = Mark all articles as read
+feeds-library-new-folder = New folder
+feeds-library-delete-folder = Delete folder
+feeds-library-import-subscriptions = Import subscriptions
+feeds-library-refreshed = Record fetched articles

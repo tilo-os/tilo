@@ -245,6 +245,17 @@ impl Vm<'_> {
         })
     }
 
+    /// The memory the VM takes from the host while it runs, in MiB: what its
+    /// adapter gives it ([`UTM_MEMORY_MB`] for a UTM VM imported without
+    /// `--memory-mb`).
+    #[must_use]
+    pub fn memory_mb(&self) -> u32 {
+        match (self.entry.memory_mb, self.entry.hypervisor.as_str()) {
+            (None, "utm") => UTM_MEMORY_MB,
+            _ => self.memory(),
+        }
+    }
+
     fn cpus(&self) -> u32 {
         self.entry.cpus.unwrap_or(4)
     }

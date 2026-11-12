@@ -73,7 +73,6 @@ impl Workspace {
 
 #[resource(
     kind = "typst-editor.workspace",
-    label = "Typst workspace",
     read_content = Workspace::read_document
 )]
 impl Workspace {

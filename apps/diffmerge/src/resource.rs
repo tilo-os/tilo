@@ -43,7 +43,6 @@ impl Session {
 
 #[resource(
     kind = "diffmerge.session",
-    label = "Diff & Merge",
     children = Session::places,
     read_content = Session::read_document
 )]

@@ -57,6 +57,8 @@ mod list;
 mod members;
 #[path = "multi_select.rs"]
 mod multi_select;
+#[path = "names.rs"]
+mod names;
 #[path = "outcomes.rs"]
 mod outcomes;
 #[path = "outside.rs"]

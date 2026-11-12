@@ -1863,6 +1863,18 @@ async fn reconcile_roles(
 ) -> anyhow::Result<()> {
     let members = summary(context).await?.members;
     let current = governance.current();
+    // Whom the operator declares, the door lets in, also when it takes people
+    // by invitation: the first owner of a workspace nobody is in yet has no
+    // one to invite them.
+    context
+        .workspaces
+        .admit_declared(
+            &context.workspace,
+            &context.host_cert,
+            current.0.union(&current.1).copied().collect(),
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
     let changes = role_changes(
         &members,
         &current.0,

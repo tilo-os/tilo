@@ -134,11 +134,16 @@ headless Chromium: the page booting, two people chatting and calling, the
 desk's menus and gestures, an invitation, a shared link, a setup through an
 agent and its resumes, the startup identity approving a server key and the
 visa run beside it, fresh visitors' entry into the Lounge, the wait list of a
-door that takes people by invitation, and the chat read back after the relay
+door that takes people by invitation, a stranger's whole onboarding on a host
+of their own (`test-onboarding.sh`: the wait list, the two mails, the
+invitation a person of the host sends from the workspace's wait list, the
+workspace of their own they land in, their passkey, a second workspace, and a
+visitor who still cannot get in), and the chat read back after the relay
 restarts. Each flow runs alone too:
 
 ```
 bash os/containers/tilo-lounge/test-e2e.sh out/web-desktop/bundle /tmp/e2e people-call
+bash os/containers/tilo-lounge/test-onboarding.sh out/web-desktop/bundle /tmp/onboarding
 ```
 
 It needs node, a headless Chrome (`CHROME`, else Playwright's cache), curl,

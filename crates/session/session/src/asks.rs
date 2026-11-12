@@ -61,6 +61,11 @@ impl Shared {
                 people::PeopleAsk::Settings(link) => {
                     crate::quick_settings::open_settings(self, &link);
                 }
+                // How an agent or a computer of theirs connects: Console's Connect place, which
+                // the app opens (or comes forward with) in the workspace in front.
+                people::PeopleAsk::ConnectAgent => {
+                    self.invoke_app_action(LaunchpadAppAction::connect_agent());
+                }
                 // The person's own card offers what the ask on their avatar asks: choosing it there
                 // answers that ask, which goes as it does when they answer it on the avatar.
                 people::PeopleAsk::HostAction(id) => {

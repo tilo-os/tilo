@@ -199,6 +199,34 @@ impl SessionEnvironment {
     }
 }
 
+/// Name the person's language (`de-DE`, the one they chose in Settings, else their device's) in
+/// the `variables` an app starts with, as the locale its messages read in: an app — and the
+/// window of one whose instance a tilolang host runs, which reads no settings of its own — speaks
+/// it from its first frame, whatever locale the session itself was started in. The other
+/// categories (dates, collation) stay the device's; the language names none when `None`.
+pub fn speak(variables: &mut BTreeMap<String, String>, language: Option<&str>) {
+    let Some(language) = language
+        .map(str::trim)
+        .filter(|language| !language.is_empty())
+    else {
+        return;
+    };
+    let posix = language.replace('-', "_");
+    // `LC_ALL` would override the messages' category: what it named stands for every category
+    // as `LANG`, under the messages' own.
+    if let Some(all) = variables.remove("LC_ALL") {
+        variables.insert("LANG".to_owned(), all);
+    }
+    variables.insert("LC_MESSAGES".to_owned(), format!("{posix}.UTF-8"));
+    let base = posix.split('_').next().unwrap_or_default();
+    let fallback = if base == posix {
+        posix.clone()
+    } else {
+        format!("{posix}:{base}")
+    };
+    variables.insert("LANGUAGE".to_owned(), fallback);
+}
+
 /// The variables naming the desktop a process of this session runs on.
 ///
 /// They say Tilo is the desktop, so an app reads its appearance and its menu
@@ -362,5 +390,35 @@ mod tests {
         );
         assert_eq!(env.x11_display.as_deref(), Some(":9"));
         assert!(env.files.is_empty() && env.urls.is_empty());
+    }
+
+    /// The language the person chose reaches an app as its messages' locale, over the locale the
+    /// session was started in, and the device's other categories stay as they were.
+    #[test]
+    fn an_app_speaks_the_language_the_person_chose() {
+        let mut variables = BTreeMap::from([
+            ("LANG".to_owned(), "en_US.UTF-8".to_owned()),
+            ("LC_ALL".to_owned(), "en_GB.UTF-8".to_owned()),
+        ]);
+        speak(&mut variables, Some("de-DE"));
+        assert_eq!(
+            variables.get("LC_MESSAGES").map(String::as_str),
+            Some("de_DE.UTF-8")
+        );
+        assert_eq!(
+            variables.get("LANGUAGE").map(String::as_str),
+            Some("de_DE:de")
+        );
+        assert_eq!(
+            variables.get("LANG").map(String::as_str),
+            Some("en_GB.UTF-8")
+        );
+        assert!(
+            !variables.contains_key("LC_ALL"),
+            "it would hide the person's language"
+        );
+        let mut untouched = BTreeMap::from([("LANG".to_owned(), "en_US.UTF-8".to_owned())]);
+        speak(&mut untouched, None);
+        assert_eq!(untouched.len(), 1, "no language named leaves the device's");
     }
 }

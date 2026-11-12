@@ -261,3 +261,43 @@ calendar-notes-placeholder = Notizen hinzufügen
 
 ## A new event's empty fields
 calendar-title-placeholder = Neuer Termin
+
+## Actions
+
+calendar-effects-sync = Kalender synchronisieren
+calendar-effects-export-ics = ICS exportieren
+calendar-effects-export-ics-content = ICS-Inhalt exportieren
+calendar-effects-import-ics = ICS importieren
+calendar-effects-contact-attendees = Aus Kontakten einladen
+calendar-effects-prepare-in-mail = Einladung in Mail vorbereiten
+calendar-effects-set-color = Kalenderfarbe wählen
+calendar-effects-read-calendar = Kalender lesen
+calendar-effects-set-visibility = Kalender ein- oder ausblenden
+calendar-effects-show-view = Kalenderansicht anzeigen
+calendar-effects-show-all-calendars = Alle Kalender anzeigen
+calendar-effects-show-month = Monat anzeigen
+calendar-effects-show-week = Woche anzeigen
+calendar-effects-show-day = Tag anzeigen
+calendar-effects-show-agenda = Agenda anzeigen
+calendar-effects-show-tasks = Aufgaben anzeigen
+calendar-effects-start-event = Neuer Termin
+calendar-effects-start-task = Neue Aufgabe
+calendar-effects-open = Öffnen
+calendar-calendar = Kalender
+calendar-calendar-new-event = Neuer Termin
+calendar-calendar-new-task = Neue Aufgabe
+calendar-calendar-new-project = Neues Aufgabenprojekt
+calendar-calendar-delete-event = Termin löschen
+calendar-calendar-reschedule = Termin verschieben
+calendar-calendar-set-start = Beginn festlegen
+calendar-calendar-move-to-calendar = In anderen Kalender verschieben
+calendar-calendar-invite = Einladen
+calendar-calendar-delete-task = Aufgabe löschen
+calendar-calendar-delete-project = Projekt löschen
+calendar-calendar-import-items = Kalendereinträge importieren
+calendar-calendar-adopt-remote-event = Termin vom Server übernehmen
+calendar-calendar-adopt-remote-task = Aufgabe vom Server übernehmen
+calendar-calendar-drop-remote-item = Vom Server Gelöschtes entfernen
+calendar-calendar-server-applied = Hochgeladene Änderungen erfassen
+calendar-calendar-server-removed = Löschung auf dem Server erfassen
+calendar-calendar-pulled = Abgerufene Änderungen erfassen

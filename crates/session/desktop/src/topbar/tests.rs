@@ -2393,16 +2393,18 @@ fn a_phone_bar_keeps_its_clock_band_to_itself() {
     );
 }
 
-/// An agent's face on the bar wears its client's hue, as every other face of it does: Claude Code is
-/// the orange its client is known by, not the colour a person with the same name settles on.
+/// A face on the bar wears the colour the workspace settled for that participant — the one its
+/// shell announced, which its People row, its card and its marks in every app wear too — and the
+/// one its kind's id gives it where nothing was announced. The bar picks no colour of its own.
 #[test]
-fn an_agents_face_wears_its_clients_hue() {
-    let faces = |agent: bool| {
+fn an_agents_face_wears_the_colour_the_workspace_settled() {
+    let violet = ui::presence::identity_rgb(ui::tokens::PresenceHue::Violet);
+    let announced = format!("#{:02x}{:02x}{:02x}", violet.0, violet.1, violet.2);
+    let faces = |colour: Option<&str>| {
         let mut workspace = Workspace::new(WorkspaceSlot(1), "Tilo");
-        let mut row = tilo_desktop_model::Collaborator::new("scribe", "Claude Code");
-        if agent {
-            row.role_id = Some(crate::collaborators::AGENT_ROLE_MARKER.into());
-        }
+        let mut row = tilo_desktop_model::Collaborator::new("agent:helper@host", "Claude Code #1");
+        row.role_id = Some(crate::collaborators::AGENT_ROLE_MARKER.into());
+        row.cursor_color = colour.map(str::to_owned);
         workspace.collaborators = vec![row];
         let tree = DesktopTree {
             active: workspace.slot,
@@ -2416,18 +2418,19 @@ fn an_agents_face_wears_its_clients_hue() {
             bar.collaborator_colors.clone(),
         )
     };
-    let (agents, agent_colours) = faces(true);
+    let (agents, announced_colours) = faces(Some(&announced));
     assert_eq!(agents, vec![true]);
-    let (_, person_colours) = faces(false);
-    let (r, g, b) = ui::presence::identity_rgb(ui::tokens::PresenceHue::Orange);
     assert_eq!(
-        agent_colours,
-        vec![Color::from_rgb8(r, g, b)],
-        "the agent's face wears its client's hue"
+        announced_colours,
+        vec![Color::from_rgb8(violet.0, violet.1, violet.2)],
+        "the face wears the colour its own shell announced"
     );
-    assert_ne!(
-        agent_colours, person_colours,
-        "a person of the same name keeps the colour their id settles on"
+    // Nothing announced: the colour its kind's id wears, as every app paints it.
+    let (r, g, b) = ui::presence::participant_color("agent:helper@host", true);
+    assert_eq!(
+        faces(None).1,
+        vec![Color::from_rgb8(r, g, b)],
+        "and the rule's colour where it announced none"
     );
 }
 

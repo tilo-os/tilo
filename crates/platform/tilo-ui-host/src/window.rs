@@ -590,6 +590,7 @@ impl AppWindow {
                 ToUi::Loading => self.show_loading(),
                 ToUi::Activate => self.activations = self.activations.saturating_add(1),
                 ToUi::ShowRun { run } => self.shown_runs.push(run),
+                ToUi::Speak(language) => ui::i18n::I18nManager::set_locale(&language),
                 ToUi::Open {
                     lane,
                     target,

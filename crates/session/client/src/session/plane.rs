@@ -710,11 +710,14 @@ impl Task {
         joined.show_asks(&devices);
     }
 
-    /// Show the pages of `shown` 's windows here, and stop reading the
-    /// devices left out: each owner publishes a window's page only while a
-    /// member asks for it, so this is what makes the page travel.
+    /// Show `shown` 's windows here, and stop reading the devices left out:
+    /// each owner publishes a window only while a member asks for it, so this
+    /// is what makes it travel. A window travels as its page when its app
+    /// draws one and as its pictures otherwise, and only its host knows
+    /// which: both are asked, and the host publishes the one it has.
     pub(super) fn show_pages(&mut self, workspace_id: u64, shown: &[super::PageShown]) {
         use tilo_live::live::Track;
+        use tilo_live::video::Layer;
         let Some(joined) = self.planes.joined_mut(workspace_id) else {
             return;
         };
@@ -722,8 +725,11 @@ impl Task {
         joined.pages = shown
             .iter()
             .map(|entry| {
-                let tracks: BTreeSet<Track> =
-                    entry.tabs.iter().map(|tab| Track::Page(*tab)).collect();
+                let tracks: BTreeSet<Track> = entry
+                    .tabs
+                    .iter()
+                    .flat_map(|tab| [Track::Page(*tab), Track::Window(*tab, Layer::High)])
+                    .collect();
                 (entry.device, tracks)
             })
             .collect();

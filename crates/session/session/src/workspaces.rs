@@ -100,6 +100,17 @@ pub(crate) struct ToEnter {
     pub(crate) held: bool,
 }
 
+/// How a workspace came to this desk, which says whether the person goes there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Arrival {
+    /// The person joined it here: they land in the workspace they joined.
+    Joined,
+    /// Their list brought it from another of their devices, with nobody here asking for it: it
+    /// stands on the desk and the person stays in the workspace they are in, so a window they open
+    /// as it arrives is a window of the workspace they opened it in.
+    Listed,
+}
+
 /// What bringing the list onto this device's desk asks of the session.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct Adoption {
@@ -1051,14 +1062,22 @@ impl crate::Shared {
     /// Open a listed workspace on this desk, named `name` , through the desk's own action for
     /// making one: a workspace of the person's that their other device made opens here without
     /// joining anything anew.
-    pub(crate) fn add_workspace(&self, workspace: &str, name: &str) -> Result<(), String> {
-        let args = serde_json::Map::from_iter([
+    pub(crate) fn add_workspace(
+        &self,
+        workspace: &str,
+        name: &str,
+        arrival: Arrival,
+    ) -> Result<(), String> {
+        let mut args = serde_json::Map::from_iter([
             (
                 "workspace".to_owned(),
                 serde_json::Value::from(workspace.to_owned()),
             ),
             ("name".to_owned(), serde_json::Value::from(name.to_owned())),
         ]);
+        if arrival == Arrival::Listed {
+            args.insert("background".to_owned(), serde_json::Value::from(true));
+        }
         self.ask_of_desk("new-workspace", &args)
     }
 
@@ -1121,7 +1140,7 @@ impl crate::Shared {
                 held_locally = true,
                 "join: this session holds no workspaces or takes no part in the collaboration plane, so the workspace stays as this computer keeps it"
             );
-            self.open_joined_workspace(&joined.granted.workspace, &joined.name);
+            self.open_joined_workspace(&joined.granted.workspace, &joined.name, Arrival::Joined);
             return;
         };
         let slot = tilo_desktop_model::WorkspaceSlot::of_workspace(workspace);
@@ -1237,7 +1256,14 @@ impl crate::Shared {
                     // The slot is made now, once the host admitted this
                     // device: the person lands in the workspace they joined,
                     // and the desk a refused join left is the desk it found.
-                    self.open_joined_workspace(&key, &listed);
+                    // One of their own that their list brought from another
+                    // device is put on the desk behind what they are doing.
+                    let arrival = if enrolled.member {
+                        Arrival::Listed
+                    } else {
+                        Arrival::Joined
+                    };
+                    self.open_joined_workspace(&key, &listed, arrival);
                     if !enrolled.member {
                         // The person is told the workspace is theirs now,
                         // where they are: the sheet closed as soon as they
@@ -1531,7 +1557,7 @@ impl crate::Shared {
         let workspace = opened.workspace.to_string();
         let (Some(sync), Some(engine)) = (&self.sync, &self.engine) else {
             // Nothing here can take a workspace in: the desk shows it as this computer keeps it.
-            if let Err(error) = self.add_workspace(&workspace, &opened.name) {
+            if let Err(error) = self.add_workspace(&workspace, &opened.name, Arrival::Listed) {
                 tracing::warn!(%error, %workspace, "a workspace of the person's was not opened here");
             }
             return;
@@ -1687,10 +1713,11 @@ impl crate::Shared {
     }
 
     /// Open the workspace `workspace_id` on this desk under `name` , through the desk's own action
-    /// for making one: the person lands in the workspace they joined, and the desk keeps it from
-    /// then on.
-    fn open_joined_workspace(&self, workspace_id: &str, name: &str) {
-        if let Err(error) = self.add_workspace(workspace_id, name) {
+    /// for making one: the person lands in the workspace they joined ([`Arrival::Joined`]), one
+    /// their list brought stands on the desk behind where they are ([`Arrival::Listed`]), and the
+    /// desk keeps it from then on.
+    fn open_joined_workspace(&self, workspace_id: &str, name: &str, arrival: Arrival) {
+        if let Err(error) = self.add_workspace(workspace_id, name, arrival) {
             tracing::warn!(%error, %workspace_id, "a joined workspace was not opened");
             tracing::info!(
                 target: JOIN_FLOW_TARGET,

@@ -26,8 +26,8 @@ import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetc
 import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, openInvitation, profileDevice, withCustody} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
-import {createIdentityActions, SIGN_IN, syncProfile} from './identity-actions.mjs';
-import {firstRun, MCP_URL, setupDone} from './first-run.mjs';
+import {createIdentityActions, SIGN_IN, setupOrigin, syncProfile} from './identity-actions.mjs';
+import {firstRun, MCP_URL, openFirstRun, setupDone} from './first-run.mjs';
 import {pickImageFile, squarePhoto} from './profile-photos.mjs';
 import {deviceLabel, pairingFailure, pairSecret, whenRequested} from './pairing.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
@@ -517,8 +517,10 @@ function askLine({label: text, action, save}) {
 }
 
 /** A link to hand on: shown to select, with a button that copies it
- * (inside the person's click, which a browser's clipboard asks for). */
-function shareCard({title, body, link}) {
+ * (inside the person's click, which a browser's clipboard asks for).
+ * `copied`: the link was just written from the press that opened this, so
+ * the button says so and the press is the only one a person makes. */
+function shareCard({title, body, link, copied = false}) {
   return new Promise(resolve => {
     const form = document.createElement('form');
     form.className = 'tilo-entry-card';
@@ -529,15 +531,19 @@ function shareCard({title, body, link}) {
     field.setAttribute('aria-label', 'Link');
     field.addEventListener('focus', () => field.select());
     const copy = Object.assign(document.createElement('button'), {type: 'button', textContent: 'Copy link'});
-    copy.addEventListener('click', async () => {
+    const took = async () => {
       try {
         await navigator.clipboard.writeText(link);
         copy.textContent = 'Copied';
+        return true;
       } catch {
         field.focus();
         copy.textContent = 'Select the link and copy it';
+        return false;
       }
-    });
+    };
+    copy.addEventListener('click', took);
+    if (copied) void took();
     const done = Object.assign(document.createElement('button'), {type: 'submit', textContent: 'Done'});
     form.addEventListener('submit', event => { event.preventDefault(); form.remove(); resolve(); });
     form.append(heading, about, field, copy, done);
@@ -1345,6 +1351,12 @@ export async function startEntryPage({mode}) {
         askWorkspaceName: save => askLine({label: 'Name of the new workspace', action: 'Create', save}),
         chooseMachine: origins => card('Create the workspace on', [...origins.map(origin => [new URL(origin).host, origin]), ['Cancel', null]]),
         share: shareCard,
+        copy: text => navigator.clipboard.writeText(text).then(() => true, () => false),
+        // What the page says of the invitation it keeps ready for one press
+        // (`data-invite-link`): making it, ready to hand over, or failed.
+        said: (what, state) => {
+          if (what === 'invite-link') document.documentElement.dataset.inviteLink = state;
+        },
         waitingList: waitingCard,
         fail: text => card(text, [['Close', null]]),
       },
@@ -1719,8 +1731,9 @@ function offerWaitList({workspace, contact, mail, messages}) {
 /**
  * Signing in at the door with an identity the person already has: their
  * passkey opens it (its envelope from the hosts that keep it), and the page
- * loads again to join as them. A member gets in; anyone else is told this
- * identity is not in `named` yet, with the wait list still there.
+ * loads again to join as them, opening a workspace of their own rather than
+ * the home workspace's shared desktop. A member gets in; anyone else is told
+ * this identity is not in `named` yet, with the wait list still there.
  */
 function offerSignIn({workspace, named, messages}) {
   const say = (key, english, args) => localized(messages, key, english, args);
@@ -1754,6 +1767,11 @@ function offerSignIn({workspace, named, messages}) {
         ...listedWorkspaces({home: workspace}).map(listed => listed.host.origin)].filter(Boolean))];
       const identity = await signInWithPasskey({fetchEnvelope: root => fetchEnvelope(root, origins)});
       try { sessionStorage.setItem(DOOR_SIGNED_IN, identity.userPublicKey); } catch { /* Said less, nothing lost. */ }
+      // Signed in at the door of the site's own workspace, the person comes
+      // back to a workspace of their own, as a tab their agent signed in
+      // does: the home workspace's shared desktop is where people meet, not
+      // where someone starts.
+      try { globalThis.sessionStorage?.setItem(OPEN_OWN, '1'); } catch { /* Then the home workspace stays in front. */ }
       location.reload();
     } catch (error) {
       console.warn('signing in at the door:', error);
@@ -1887,6 +1905,14 @@ function keepIdentity({peer, mount, home, name, runtime, link, naming, photos}) 
     pause: inputPause(), searchChord: mac ? '⌘K' : 'Ctrl+K', showPairLink: pairLinkSheet, askPairing: pairingAsk,
     standIn: standInOf({peer, identity, runtime}), standInStore: globalThis.localStorage,
     profiled: at => peer?.setProfileChanged?.(at),
+    // The card's "Connect an agent" is the first screen's own setup, shown
+    // again with a fresh code: the same prompt and the same MCP address the
+    // person saw when they arrived. On the person's own desktop no workspace
+    // peer is in front, so the code comes from their home host, as the first
+    // screen's did.
+    showAgentSetup: setupOrigin({peer, home})
+      ? () => { connectAnAgent({origin: setupOrigin({peer, home}), identity, runtime, link}); }
+      : null,
   });
   void actions.attach(mount);
   if (peer?.authoredChanges) {
@@ -1962,21 +1988,20 @@ const pageLetIn = new Promise(resolve => { letIn = resolve; });
 const LET_IN_MS = 30_000;
 
 /**
- * The first screen's login codes, from the host at `origin` (for an agent
- * to set Tilo up through this tab's root, or to sign this tab in as a person
- * who has been here), offered once: the tab needs only its person
- * (`identity`) and that host for them, not a session in any workspace.
+ * The codes a person's agent sets Tilo up with, for this tab's root on
+ * `origin`: `make()` hands back a code the agent runs `tilo login` with and
+ * the setup keeps (`resume(saved)` follows it again after a reload), and
+ * `codes` are the host's login codes themselves. Its `ours(saved)` says
+ * whether a kept code is this person's, on this host.
  *
- * The setup code names a pairing link to this tab, into the person's own
+ * The code names a pairing link to this tab, into the person's own
  * workspace on that host. A first visit has none yet, so the link names the
  * one this tab chose (`namedOwnWorkspace`): whichever comes first, the
  * agent's `tilo login` or this page once let in, has the host make it under
  * that name. The tab approves the agent's device through the host's
  * published address, and gives the person a stand-in there.
  */
-function offerFirstRunCodes({origin, identity, runtime, link}) {
-  if (firstRunCodesOffered || !firstRun || !origin || !runtime?.createLoginCode) return;
-  firstRunCodesOffered = true;
+function agentSetupCodes({origin, identity, runtime, link}) {
   const host = new URL(origin).origin;
   const codes = loginCodes(runtime, host);
   let actions = null;
@@ -1991,7 +2016,7 @@ function offerFirstRunCodes({origin, identity, runtime, link}) {
   // What the setup keeps of a code names whose it is: a code kept for
   // another person or host is not this tab's to follow.
   const ours = saved => saved?.person === identity.userPublicKey && saved?.host === host;
-  firstRun.offerSetup(async () => {
+  const make = async () => {
     const agents = await agentActions();
     const pairing = await agents.connectAgent({workspace: setUpIn ?? namedOwnWorkspace(host, identity.userPublicKey)});
     const made = await codes.create(pairing.link);
@@ -2000,7 +2025,8 @@ function offerFirstRunCodes({origin, identity, runtime, link}) {
     void agents.keepStandIn().catch(error => console.warn('first run: stand-in', error));
     return {...made, saved: {...made.saved, person: identity.userPublicKey, host,
       invite: pairing.invite, inviteExpiresAt: pairing.expiresAt}};
-  }, saved => {
+  };
+  const resume = saved => {
     if (!ours(saved)) return null;
     // The link in the code names an invite this tab made before it was
     // loaded again: the agent's device answering it is approved here, as
@@ -2010,7 +2036,40 @@ function offerFirstRunCodes({origin, identity, runtime, link}) {
         .catch(error => console.warn('first run: approving your agent', error));
     }
     return codes.resume(saved);
-  });
+  };
+  return {codes, ours, make, resume};
+}
+
+/**
+ * The agent setup again, from the person's own card: the first screen, in
+ * the same place, with a fresh code (`first-run.mjs` `openFirstRun`). Skip
+ * there only closes it: the person is set up already.
+ */
+function connectAnAgent({origin, identity, runtime, link}) {
+  const run = openFirstRun(document);
+  if (!run) return false;
+  if (!origin || !runtime?.createLoginCode) {
+    run.unavailable({code: 'no-workspace'});
+    return true;
+  }
+  const {make, resume} = agentSetupCodes({origin, identity, runtime, link});
+  run.offerSetup(make, resume);
+  return true;
+}
+
+/**
+ * The first screen's login codes, from the host at `origin` (for an agent
+ * to set Tilo up through this tab's root, or to sign this tab in as a person
+ * who has been here), offered once: the tab needs only its person
+ * (`identity`) and that host for them, not a session in any workspace.
+ * The code itself is [`agentSetupCodes`]'s.
+ */
+function offerFirstRunCodes({origin, identity, runtime, link}) {
+  if (firstRunCodesOffered || !firstRun || !origin || !runtime?.createLoginCode) return;
+  firstRunCodesOffered = true;
+  const setup = agentSetupCodes({origin, identity, runtime, link});
+  firstRun.offerSetup(setup.make, setup.resume);
+  const {codes, ours} = setup;
   // Claimed by a device of the person: this tab asks to be certified as a
   // device of theirs with the invite the claim named, as a pairing link
   // does, and their stand-in on the host approves exactly that request.

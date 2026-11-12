@@ -146,3 +146,33 @@ shortcuts-problem-a-step = A step
 shortcuts-problem-step = Step { $number }
 shortcuts-deleted = Deleted “{ $name }”
 shortcuts-not-finished = Could not finish
+
+## Actions
+
+shortcuts-door-refresh = Reload shortcuts
+shortcuts-door-save = Save shortcut
+shortcuts-door-run = Run shortcut
+shortcuts-door-delete = Delete shortcut
+shortcuts-door-describe = Draft with the agent
+shortcuts-door-refine = Refine with the agent
+shortcuts-workbench = Shortcuts
+shortcuts-workbench-draft-proposal = Open proposed shortcut
+shortcuts-workbench-ignore-proposal = Ignore the proposal
+shortcuts-workbench-allow-proposal = Offer the proposal again
+shortcuts-workbench-new-draft = New shortcut
+shortcuts-workbench-duplicate-draft = Duplicate draft
+shortcuts-workbench-draft-shortcut = Import a shortcut
+shortcuts-workbench-open-shortcut = Edit a saved shortcut
+shortcuts-workbench-duplicate-shortcut = Duplicate saved shortcut
+shortcuts-workbench-set-schedule = Set a schedule
+shortcuts-workbench-discard = Discard draft
+shortcuts-workbench-add-step = Add step
+shortcuts-workbench-replace-step = Change what a step does
+shortcuts-workbench-bind-argument = Bind argument
+shortcuts-workbench-remove-step = Remove step
+shortcuts-workbench-move-step = Move step
+shortcuts-workbench-set-step-policy = Set what a failure does
+shortcuts-workbench-set-nested = Move step into another block
+shortcuts-workbench-set-output = Set what the shortcut reports
+shortcuts-workbench-add-input = Add input
+shortcuts-workbench-remove-input = Remove input

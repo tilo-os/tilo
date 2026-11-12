@@ -66,6 +66,16 @@ export const RESET_PHOTO = Object.freeze({id: 'reset-photo', title: 'Use your in
   subtitle: 'Take your picture away', source: 'identity'});
 export const PAIR = Object.freeze({id: 'pair-device', title: 'Pair a new device',
   subtitle: 'A code or link that opens this workspace there as you', source: 'devices'});
+/** Opening the agent setup again, in the person's card: the first screen's
+ * own flow, with a fresh code (`showAgentSetup`). */
+/** The host an agent's setup code comes from: the workspace in front, else
+ * the person's home host (their own desktop has no workspace peer). */
+export function setupOrigin({peer, home}) {
+  return peer?.origin ?? home?.host?.origin ?? null;
+}
+
+export const CONNECT_AGENT = Object.freeze({id: 'connect-agent', title: 'Connect an agent or computer',
+  subtitle: 'A prompt it runs, or Tilo’s MCP address for an MCP client', source: 'devices'});
 /**
  * How many actions make an identity worth keeping. One post or one moved
  * window is a visitor trying things; five separate ones (writing, sending,
@@ -185,7 +195,7 @@ export function createIdentityActions({
   pause = () => true, later = (run, ms) => setTimeout(run, ms), session = globalThis.sessionStorage,
   searchChord = 'Ctrl+K', showPairLink = () => ({close() {}}), askPairing = () => ({close() {}}),
   invites = openInvites({now}), passkeys = passkeysUsable, onAgent = () => {},
-  standIn = null, standInStore = null, profiled = () => {},
+  standIn = null, standInStore = null, profiled = () => {}, showAgentSetup = null,
 }) {
   const standInKey = `tilo-stand-in:${identity.userPublicKey}`;
   const remembered = () => { try { return standInStore?.getItem(standInKey) ?? null; } catch { return null; } };
@@ -203,7 +213,8 @@ export function createIdentityActions({
   const unkept = () => (withPasskeys ? [KEEP, RECOVERY, SIGN_IN] : [RECOVERY]);
   const actions = () => [...(naming ? [NAME] : []),
     ...(photos ? [PHOTO, ...(photos.current() ? [RESET_PHOTO] : [])] : []),
-    ...(identity.kept ? [RECOVERY] : unkept()), ...(pairing ? [PAIR] : [])];
+    ...(identity.kept ? [RECOVERY] : unkept()),
+    ...(pairing ? [PAIR] : []), ...(showAgentSetup ? [CONNECT_AGENT] : [])];
   // Keep the profile (name and picture) on every host; a refusal throws,
   // an unreachable host is only reported.
   // What the person says they are doing and how they share it, as their
@@ -476,6 +487,10 @@ export function createIdentityActions({
           const origins = [...new Set(lookups())];
           await signIn({rpId, fetchEnvelope: root => find(root, origins)});
           reload();
+        } else if (id === CONNECT_AGENT.id && showAgentSetup) {
+          // The first screen again, with a fresh code: the person's agent runs
+          // `tilo login`, or an MCP-only client is added with Tilo's address.
+          showAgentSetup();
         } else {
           throw new IdentityError('unknown-action', `no identity action ${id}`);
         }

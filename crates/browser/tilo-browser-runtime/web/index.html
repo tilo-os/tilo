@@ -506,6 +506,8 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     #first-run .fr-offer .fr-copy { align-self: flex-end; margin: 0 6px 6px; }
     /* The button that copies the prompt is as wide as the box it copies. */
     #first-run .fr-start > .fr-primary { width: 100%; max-width: 520px; }
+    #first-run .fr-start > .fr-primary:disabled { opacity: 0.4; cursor: default; }
+    #first-run[data-setup=failed] .fr-start > .fr-caption { visibility: hidden; }
     #first-run-sign-in-note { margin: 8px 0 0; font-size: 13px; color: var(--fr-muted); }
     #first-run-sign-in-note:empty { display: none; }
     #first-run-sign-in-note[data-problem=true] { color: var(--fr-problem); }

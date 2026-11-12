@@ -419,3 +419,39 @@ chat-channel-composer-placeholder = Nachricht an #{ $channel }
 ## What the window shows
 chat-writing = Schreibt…
 chat-voice-channel-unnamed = Der Sprachkanal konnte nicht benannt werden
+
+## Actions
+
+chat-effects-model-control = Zu diesem Beitrag fragen
+chat-effects-show-agent-reasoning = Begründung anzeigen
+chat-effects-open-channel = Unterhaltung öffnen
+chat-effects-open-category = Kategorie öffnen
+chat-effects-toggle-category = Kategorie ein- oder ausklappen
+chat-effects-reveal-message = Beitrag anzeigen
+chat-effects-reveal-message-range = Beiträge anzeigen
+chat-effects-open-person = Person öffnen
+chat-effects-open-agent = Unterhaltung mit Agent öffnen
+chat-effects-open-direct-conversation = Direkte Unterhaltung öffnen
+chat-effects-send-direct-message = Direktnachricht senden
+chat-effects-send = Nachricht senden
+chat-effects-export-content = Unterhaltung exportieren
+chat-effects-attach-file = Datei anhängen
+chat-effects-share-live-context = Live-Kontext teilen
+chat-effects-stop-sharing-live-context = Live-Kontext nicht mehr teilen
+chat-effects-live-context-status = Status des Live-Kontexts
+chat-effects-open-slack-channel = Slack-Kanal im Browser öffnen
+chat-effects-open-discord-channel = Discord-Kanal im Browser öffnen
+chat-effects-join-call = Anruf beitreten
+chat-effects-leave-call = Anruf verlassen
+chat-effects-mute = Stummschalten
+chat-effects-unmute = Stummschaltung aufheben
+chat-effects-deafen = Ton aus
+chat-effects-undeafen = Ton an
+chat-effects-camera-on = Kamera einschalten
+chat-effects-camera-off = Kamera ausschalten
+chat-effects-share-screen = Bildschirm teilen
+chat-effects-stop-sharing-screen = Bildschirm nicht mehr teilen
+chat-effects-call-status = Anrufstatus
+chat-effects-start-call = Anruf starten
+chat-effects-start-video-call = Videoanruf starten
+chat-effects-select-input = Mikrofon wählen

@@ -32,7 +32,7 @@ use crate::chrome::{
 use crate::i18n::{t, t_args};
 use tilo_desktop_model::DesktopTree;
 use ui::TextRole;
-use ui::presence::{PresenceCtx, user_color};
+use ui::presence::PresenceCtx;
 use ui::text_render::TextStyle;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -363,8 +363,8 @@ pub struct TopBarChrome {
     cache_fp: CacheFingerprint,
     collaborator_initials: Vec<char>,
     collaborator_names: Vec<String>,
-    /// Same index as `collaborator_initials` . Resolved from `cursor_color` when present, else
-    /// [`ui::presence::user_color`].
+    /// Same index as `collaborator_initials` . The workspace's colour for each, else
+    /// [`ui::presence::participant_color`].
     collaborator_colors: Vec<Color>,
     /// Same index as `collaborator_initials` : drawn with the agent mark.
     collaborator_agents: Vec<bool>,
@@ -1045,7 +1045,9 @@ impl TopBarChrome {
         // Settled over the whole workspace, so a peer's avatar matches the colour their cursor is
         // drawn in elsewhere on the desktop.
         let colors =
-            crate::collaborators::roster_colors_with_local_user(roster, local.unwrap_or(""));
+            crate::collaborators::roster_colors_with_local_user(roster, local.unwrap_or(""), |c| {
+                crate::collaborators::collaborator_is_agent(active_ws, c, now)
+            });
         // Everyone present, the one this person follows first: the bar stands as many faces as it
         // has room for and folds the rest into the count badge, so a narrow bar keeps the face
         // being watched and never drops anyone uncounted.
@@ -1067,21 +1069,13 @@ impl TopBarChrome {
             self.collaborator_initials.push(ch.to_ascii_uppercase());
             self.collaborator_names.push(c.name.clone());
             let agent = crate::collaborators::collaborator_is_agent(active_ws, c, now);
-            // An agent wears its client's hue here as it does in the people panel and on every other
-            // face of it (`rows_of`): one rule decides a face's colour wherever it is drawn, so
+            // A face wears the workspace's colour for them, as the People list and every window
+            // do: [`ui::presence::participant_color`] where the workspace has settled none, so
             // Claude Code reads as Claude Code on the bar too.
-            let (r, g, b) = agent
-                .then(|| ui::tokens::PresenceHue::of_agent_client(&c.name))
-                .flatten()
-                .map_or_else(
-                    || {
-                        colors
-                            .get(&c.id)
-                            .copied()
-                            .unwrap_or_else(|| user_color(&c.id))
-                    },
-                    ui::presence::identity_rgb,
-                );
+            let (r, g, b) = colors
+                .get(&c.id)
+                .copied()
+                .unwrap_or_else(|| ui::presence::participant_color(&c.id, agent));
             self.collaborator_colors.push(Color::from_rgb8(r, g, b));
             self.collaborator_agents.push(agent);
             self.collaborator_ids.push(c.id.clone());

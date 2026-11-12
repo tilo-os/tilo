@@ -207,9 +207,9 @@ impl Operations for RichText {
                 put("blocks", blocks.len().into());
                 EditOp::Remove
             }
-            RichTextAction::ReplaceBody { .. } | RichTextAction::ReplaceFormatted { .. } => {
-                EditOp::Replace
-            }
+            RichTextAction::ReplaceBody { .. }
+            | RichTextAction::ReplaceFormatted { .. }
+            | RichTextAction::ReplaceImported { .. } => EditOp::Replace,
             _ => EditOp::Mark,
         };
         tilo_resource::path::OpDescription { op, args }

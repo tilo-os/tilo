@@ -59,11 +59,24 @@ pub fn chain(path: &Path, create: bool) -> io::Result<Vec<File>> {
 pub fn public_certificate_chain(path: &Path) -> io::Result<Vec<File>> {
     chain_with_privacy(path, false, Privacy::Inherit)
 }
+/// The filesystem a directory at `path` is on: its deepest existing ancestor's,
+/// since a created child stays on its parent's.
+fn destination_device(path: &Path) -> io::Result<u64> {
+    path.ancestors()
+        .find_map(|ancestor| Some(std::fs::symlink_metadata(ancestor).ok()?.dev()))
+        .ok_or_else(invalid)
+}
+
 fn chain_with_privacy(path: &Path, create: bool, privacy: Privacy) -> io::Result<Vec<File>> {
     root()?;
     if !path.is_absolute() {
         return Err(invalid());
     }
+    // Only directories on the destination's own filesystem can change what the
+    // path means: above a mount the mount point cannot be renamed or unlinked,
+    // so an ancestor there (a container's FUSE root, a host's tmpfs) says
+    // nothing about the directory this publishes into.
+    let destination = destination_device(path)?;
     let mut result = vec![
         File::options()
             .read(true)
@@ -78,7 +91,9 @@ fn chain_with_privacy(path: &Path, create: bool, privacy: Privacy) -> io::Result
             return Err(invalid());
         };
         let parent = result.last().ok_or_else(invalid)?;
-        controlled(parent)?;
+        if parent.metadata()?.dev() == destination {
+            controlled(parent)?;
+        }
         let next = match open(parent, name) {
             Err(error) if create && error.kind() == io::ErrorKind::NotFound => {
                 let encoded = CString::new(name.as_encoded_bytes()).map_err(io::Error::other)?;
@@ -92,7 +107,9 @@ fn chain_with_privacy(path: &Path, create: bool, privacy: Privacy) -> io::Result
             }
             other => other?,
         };
-        controlled(&next)?;
+        if next.metadata()?.dev() == destination {
+            controlled(&next)?;
+        }
         result.push(next);
     }
     StorageDirectory::from_file(result.last().ok_or_else(invalid)?.try_clone()?)?

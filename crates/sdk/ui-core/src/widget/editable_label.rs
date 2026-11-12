@@ -455,6 +455,18 @@ impl Widget for EditableLabel {
 
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
+    /// A field holding its value: the page's own input, with its caret,
+    /// selection and IME.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        let value = if self.editing {
+            self.input.value().to_owned()
+        } else {
+            self.value.clone()
+        };
+        let look = crate::composition::TextLook::new(value.clone(), &self.style, self.idle_color);
+        cx.field(value, false, self.placeholder.clone(), look);
+    }
+
     fn own_page_title(&self) -> Option<String> {
         (self.role.heading_level() == Some(1))
             .then(|| self.value.trim().to_owned())

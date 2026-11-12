@@ -50,6 +50,9 @@ const CARD_WIDTH: f64 = 300.0;
 const CARD_HEIGHT: f64 = 52.0;
 const CARD_GAP: f64 = 6.0;
 const CARD_MARGIN: f64 = 12.0;
+/// How much more of an agent's would-click wash stands the moment its step was taken, fading over
+/// [`crate::motion::Attention::FLASH`]: the place a person should look at, once.
+const LOCUS_FLASH: f32 = 0.22;
 
 /// Where an app's activity cards stand in `viewport`: a column at the viewport's top-right corner,
 /// each a card's width and height, the shape and spacing the app draws them with
@@ -441,6 +444,24 @@ impl PresenceCtx {
             .min()
     }
 
+    /// How strong the wash under an agent's would-click outline stands at `now`: the outline's own
+    /// strength, raised by [`LOCUS_FLASH`] the moment its step was taken and fading over the
+    /// arrival flash, so a person sees where the agent would press at a glance. `None` for a step
+    /// that is not visible here.
+    pub fn agent_locus_tint(
+        &self,
+        interaction: &SemanticInteraction,
+        now: Instant,
+        theme: &Theme,
+    ) -> Option<f32> {
+        let entry = self.interactions.get(&interaction.invocation)?;
+        if !entry.visible_at(now) || !interaction.actor.kind.acts_for_someone() {
+            return None;
+        }
+        let pulsed_at = entry.pulsed_at.map(|at| at.max(entry.first_received_at));
+        Some(locus_tint(pulsed_at, now, theme))
+    }
+
     /// Paint a cursor-shaped collaboration marker moving toward one exact,
     /// current action locus. This is visual narration only: it does not write
     /// pointer, focus, caret, selection, hover, or input state.
@@ -552,8 +573,13 @@ impl PresenceCtx {
         // beside it, or floating where the pointer is, says the same agent twice.
         // Its caret is where it acts then, so no pointer is drawn either: a pointer of its own
         // stood on the very words the caret had just written, or apart from them where it last
-        // pointed.
-        let worn = self.caret_tags().iter().any(|tag| tag.user == user);
+        // pointed. A caret standing anywhere else (an agent writing in one field while it presses
+        // a control in another) is no mark on *this* place: the place it would press keeps its own
+        // tag, or a bare outline is all a person sees of the step.
+        let worn = self
+            .presence_marks()
+            .iter()
+            .any(|mark| mark.user == user && intersects(mark.rect, visible_locus));
         let bounds = if worn {
             Rect::from_origin_size(tip, (0.0, 0.0))
         } else {
@@ -966,6 +992,24 @@ fn writes_text(interaction: &SemanticInteraction) -> bool {
     )
 }
 
+/// The strength of the wash over a control an agent would press: the outline's own
+/// ([`super::render::OUTLINE_FILL`]) at rest, raised by [`LOCUS_FLASH`] the moment its step was
+/// taken and fading over the arrival flash. A person who asked for less motion keeps the steady
+/// wash and never sees the flash.
+fn locus_tint(pulsed_at: Option<Instant>, now: Instant, theme: &Theme) -> f32 {
+    let flash = pulsed_at
+        .filter(|_| !theme.reduce_motion)
+        .map_or(0.0, |pulsed_at| {
+            1.0 - crate::motion::Attention::FLASH.progress_after(
+                crate::motion::Direction::Exit,
+                theme.motion(),
+                crate::tokens::MotionSource::Pointer,
+                now.saturating_duration_since(pulsed_at),
+            )
+        });
+    super::render::OUTLINE_FILL + LOCUS_FLASH * flash as f32
+}
+
 fn marker_entry_is_newer(
     candidate: &InteractionPresenceEntry,
     current: &InteractionPresenceEntry,
@@ -986,6 +1030,11 @@ fn valid_marker_rect(rect: Rect) -> bool {
 
 fn point_in_rect(rect: Rect, point: Point) -> bool {
     point.x >= rect.x0 && point.x <= rect.x1 && point.y >= rect.y0 && point.y <= rect.y1
+}
+
+/// Whether two rects share any area: a caret standing on the place a marker rests.
+fn intersects(a: Rect, b: Rect) -> bool {
+    a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1
 }
 
 fn viewport_diagonal(viewport: Rect) -> f64 {
@@ -1281,6 +1330,78 @@ mod tests {
             tags,
             vec!["Claude Code · Agent".to_owned()],
             "one tag, at its caret"
+        );
+    }
+
+    /// A tag of the agent's standing elsewhere — at the caret in the field it just wrote — says
+    /// nothing about the control it would press next: that place keeps its own tag, or a person
+    /// seeing the step has only a thin outline to go by.
+    #[test]
+    fn a_tag_elsewhere_leaves_the_would_click_place_labelled() {
+        let at = crate::time::now();
+        let theme = Theme::default();
+        let mut presence = PresenceCtx::empty();
+        presence.set_display_name(UserId("quill".into()), "Claude Code");
+        let agent = interaction(41, 1, InteractionPhase::Applying);
+        presence.apply_interaction_at(agent.clone(), at).unwrap();
+        let claude = UserId("quill".into());
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        // Its caret stands in another field, far from the button it acts on.
+        presence.draw_peer_caret_labeled_in(
+            &mut scene,
+            &theme,
+            &mut text,
+            Affine::IDENTITY,
+            &claude,
+            "Claude Code · Agent",
+            super::super::LabeledCaret::new(Rect::new(600.0, 80.0, 602.0, 98.0)),
+        );
+        let locus = Rect::new(100.0, 296.0, 400.0, 322.0);
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let marker = paint_marker(&mut presence, &agent, locus, viewport, "note", at, &theme)
+            .expect("the action is marked");
+        assert!(
+            !marker.bounds.is_zero_area(),
+            "the place it would press wears its tag: {:?}",
+            marker.bounds
+        );
+        let tags: Vec<String> = presence
+            .caret_tags()
+            .into_iter()
+            .filter(|tag| tag.user == claude)
+            .map(|tag| tag.label)
+            .collect();
+        assert_eq!(tags.len(), 2, "one at its caret, one where it would press");
+    }
+
+    /// The place an agent would press is washed in its colour, so it reads at a glance: light at
+    /// rest, brighter the moment its step was taken, and steady for a person who asked for less
+    /// motion.
+    #[test]
+    fn the_place_an_agent_would_press_is_washed_in_its_colour() {
+        let at = crate::time::now();
+        let theme = Theme::dark();
+        let at_rest = crate::presence::render::OUTLINE_FILL;
+        assert!((locus_tint(None, at, &theme) - at_rest).abs() < f32::EPSILON);
+        assert!(
+            (locus_tint(Some(at), at, &theme) - (at_rest + LOCUS_FLASH)).abs() < 0.01,
+            "it flashes as the step is taken"
+        );
+        let settled = at
+            + crate::motion::Attention::FLASH.settle_time(
+                crate::motion::Direction::Exit,
+                theme.motion(),
+                crate::tokens::MotionSource::Pointer,
+            );
+        assert!(
+            (locus_tint(Some(at), settled, &theme) - at_rest).abs() < 0.01,
+            "the flash is over, the wash stays"
+        );
+        let still = theme.with_reduce_motion(true);
+        assert!(
+            (locus_tint(Some(at), at, &still) - at_rest).abs() < f32::EPSILON,
+            "no flash for a person who asked for less motion"
         );
     }
 

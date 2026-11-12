@@ -7,7 +7,7 @@
 //! passes on what it asked ([`DesktopHandle::declare_bar`] and its siblings), and takes back what
 //! the person did there for the app's connection ([`DesktopHandle::take_bar_events`]).
 
-use super::{DesktopHandle, DesktopSurface, descriptor, route_of};
+use super::{DesktopHandle, DesktopSurface, TabId, descriptor, route_of};
 use crate::navigation::Admitted;
 use ui::hosted_window::HostedWindow;
 use ui::widget::WindowGroup;
@@ -151,6 +151,63 @@ impl DesktopHandle {
             }
         }
         shown
+    }
+
+    /// Press the control `name` of `tab`'s window: the one *that* window shows, whichever other
+    /// window goes by the same name. What a person pointing at the window in front presses.
+    ///
+    /// # Errors
+    /// `tab`'s window is not drawn, shows no control by that name, or it answers nothing of
+    /// `action`.
+    pub fn press_window_control_in(
+        &self,
+        tab: TabId,
+        name: &str,
+        action: TargetAction,
+    ) -> Result<(), String> {
+        let mut shared = self.shared.borrow_mut();
+        let Some((connection, targets)) = shared.bars.targets.get(&tab) else {
+            return Err(format!("no window {tab} shows a control named {name}"));
+        };
+        let Some(target) = targets
+            .iter()
+            .find(|target| target.name == name && target.actions.contains(&action))
+        else {
+            return Err(format!("window {tab} shows no control named {name}"));
+        };
+        let (name, role) = (target.name.clone(), target.role.clone());
+        let connection = *connection;
+        shared.bars.presses.push((connection, name, role, action));
+        shared.changed();
+        Ok(())
+    }
+
+    /// The window a press by name reaches first: the active window of the strip the person works
+    /// on, whose content is what stands in front of them. `None` while the desk shows none.
+    #[must_use]
+    pub fn window_in_front(&self) -> Option<TabId> {
+        let shared = self.shared.borrow();
+        let tree = &shared.tree;
+        let strip_id = tree.active_strip_id()?;
+        let group_id = tree.active_group_for(strip_id)?;
+        let workspace = tree.active_workspace()?;
+        let strip = workspace.strips.iter().find(|strip| strip.id == strip_id)?;
+        let group = strip
+            .window_groups
+            .iter()
+            .find(|group| group.id == group_id)?;
+        Some(group.active_tab)
+    }
+
+    /// Whether the app of `tab` described a control named `name` for its window's content.
+    #[must_use]
+    pub fn window_offers(&self, tab: TabId, name: &str) -> bool {
+        let shared = self.shared.borrow();
+        shared
+            .bars
+            .targets
+            .get(&tab)
+            .is_some_and(|(_, targets)| targets.iter().any(|target| target.name == name))
     }
 
     /// Press the control `name` of a window the desk shows, as an assistive

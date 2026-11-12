@@ -39,7 +39,6 @@ impl Workspace {
 
 #[resource(
     kind = "api-tester.workspace",
-    label = "API workspace",
     initialize = Workspace::blank,
     search = Workspace::search,
     read_content = Workspace::read_document

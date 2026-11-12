@@ -1896,6 +1896,32 @@ fn the_search_shortcut_closes_open_search_and_a_host_can_toggle_it() {
     assert!(!handle.search_open());
 }
 
+/// A search the person closed and opened again starts empty: the last query is not left in the
+/// field as plain text with the caret after it, where the next search would append to it.
+#[test]
+fn a_search_opened_again_starts_with_an_empty_field() {
+    let (mut driver, handle, _) = mount();
+    let mut chrome = chrome_at(&handle, (1200, 800));
+    handle.open_search(Scope::Workspace, Some("notes".into()));
+    driver.relayout();
+    chrome.relayout();
+    settle_search(&mut driver, &mut chrome, &handle);
+    assert_eq!(handle.search_rows().0, "notes");
+    handle.toggle_search();
+    driver.relayout();
+    chrome.relayout();
+    assert!(!handle.search_open(), "the toggle closed it");
+    handle.toggle_search();
+    driver.relayout();
+    chrome.relayout();
+    assert!(handle.search_open(), "the toggle opened it again");
+    assert_eq!(
+        handle.search_rows().0,
+        "",
+        "the field kept the last search's text: typing would append to it"
+    );
+}
+
 #[test]
 fn a_host_command_from_search_runs_against_the_focused_window() {
     let (mut driver, handle, _) = mount();

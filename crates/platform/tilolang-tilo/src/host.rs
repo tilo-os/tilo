@@ -1584,6 +1584,17 @@ impl Host {
     /// names ([`RootView::default`] takes the package's first root and that type's default
     /// view).
     pub fn open_layer(&self, app: &str, chosen: &RootView) -> Result<ViewInstance, HostError> {
+        self.open_layer_at(app, chosen).map(|(_, view)| view)
+    }
+
+    /// [`Self::open_layer`] with the resource it opened: the window's lane keeps the root it
+    /// shows, so what is opened is resolved once rather than once for the root and once for the
+    /// view.
+    pub fn open_layer_at(
+        &self,
+        app: &str,
+        chosen: &RootView,
+    ) -> Result<(ResourceRef, ViewInstance), HostError> {
         let package = self
             .package(app)
             .ok_or_else(|| HostError::NotFound(format!("package {app}")))?;
@@ -1599,10 +1610,12 @@ impl Host {
                 chosen.view.as_deref().unwrap_or("the root")
             ))
         })?;
-        Ok(self
-            .inner
-            .runtime
-            .open_view(&self.inner.viewer, &view, vec![Value::resource(&root)])?)
+        let opened = self.inner.runtime.open_view(
+            &self.inner.viewer,
+            &view,
+            vec![Value::resource(&root)],
+        )?;
+        Ok((root, opened))
     }
 
     /// Open the window of `resource`, as `open(r)` in a view asks: through `view`, or the default

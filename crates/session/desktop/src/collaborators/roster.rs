@@ -97,30 +97,28 @@ fn rows_of(
     roster: &[Collaborator],
     local_user: &str,
 ) -> Vec<RosterRow> {
-    let colors = roster_colors_with_local_user(roster, local_user);
     let now = tilo_clock::unix_now();
     let agents = agent_members(workspace, now);
+    let of = |participant: &Collaborator| {
+        has_agent_marker(participant)
+            || workspace.is_some_and(|workspace| {
+                is_workspace_bot(workspace, participant) || names_agent(&agents, participant)
+            })
+    };
+    let colors = roster_colors_with_local_user(roster, local_user, of);
     let rows: Vec<RosterRow> = roster
         .iter()
         .map(|participant| {
             let is_bot =
                 workspace.is_some_and(|workspace| is_workspace_bot(workspace, participant));
-            let is_agent =
-                is_bot || names_agent(&agents, participant) || has_agent_marker(participant);
-            // An agent wears its client's hue (`PresenceHue::of_agent_client`), as every face of
-            // it does.
-            let client_hue = is_agent
-                .then(|| ui::tokens::PresenceHue::of_agent_client(&participant.name))
-                .flatten();
-            let (red, green, blue) = client_hue.map_or_else(
-                || {
-                    colors
-                        .get(&participant.id)
-                        .copied()
-                        .unwrap_or_else(|| ui::presence::user_color(&participant.id))
-                },
-                ui::presence::identity_rgb,
-            );
+            let is_agent = of(participant);
+            // One rule decides a face's colour wherever it is drawn: the workspace's, as their
+            // own shell publishes it, else the one their kind wears
+            // ([`ui::presence::participant_color`]).
+            let (red, green, blue) = colors
+                .get(&participant.id)
+                .copied()
+                .unwrap_or_else(|| ui::presence::participant_color(&participant.id, is_agent));
             RosterRow {
                 id: participant.id.clone(),
                 initial: roster_initial(&participant.name),
@@ -270,10 +268,14 @@ fn display_role_id(id: &str) -> String {
         .map_or_else(|| id.to_string(), crate::workspace_settings::role_label)
 }
 
-/// What colour each person on `roster` is drawn in, with `local` the principal this device speaks as.
+/// What colour each person on `roster` is drawn in, with `local` the principal this device speaks
+/// as and `is_agent` saying which of them is software: a person is settled by their identity, an
+/// agent by what it is ([`ui::presence::participant_color`]), so one actor is one colour on the
+/// bar, in the People list and in every window.
 pub fn roster_colors_with_local_user(
     roster: &[Collaborator],
     local: &str,
+    is_agent: impl Fn(&Collaborator) -> bool,
 ) -> HashMap<String, (u8, u8, u8)> {
     let chosen: HashMap<String, (u8, u8, u8)> = roster
         .iter()
@@ -284,13 +286,22 @@ pub fn roster_colors_with_local_user(
                 .map(|rgb| (c.id.clone(), rgb))
         })
         .collect();
-    let mut ids: Vec<&str> = roster.iter().map(|c| c.id.as_str()).collect();
+    let mut naturals: Vec<(&str, (u8, u8, u8))> = roster
+        .iter()
+        .map(|c| {
+            (
+                c.id.as_str(),
+                ui::presence::participant_color(&c.id, is_agent(c)),
+            )
+        })
+        .collect();
     if !local.is_empty() {
-        ids.push(local);
+        let agent = roster.iter().find(|c| c.id == local).is_some_and(&is_agent);
+        naturals.push((local, ui::presence::participant_color(local, agent)));
     }
     // The person at this device is honoured first: their own colour is not given to anyone on
     // the roster.
-    ui::presence::settle_colors_around(&ids, &chosen, (!local.is_empty()).then_some(local))
+    ui::presence::settle_colors_of(&naturals, &chosen, (!local.is_empty()).then_some(local))
 }
 
 fn roster_initial(name: &str) -> char {

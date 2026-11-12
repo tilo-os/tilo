@@ -51,8 +51,12 @@ RUN dnf install -y --setopt=install_weak_deps=False \
       util-linux \
  && dnf clean all \
  && rm -rf /var/cache/dnf /var/cache/libdnf5
+# Every directory of the tenant's home is the tenant's, the parents too: a
+# program of theirs (the Linux apps session among them) makes its state, cache
+# and configuration there.
 RUN useradd --create-home --uid 1000 --user-group --shell /bin/bash tilo \
- && install -d -o tilo -g tilo /home/tilo/.local/bin /home/tilo/.local/share
+ && install -d -o tilo -g tilo /home/tilo/.local /home/tilo/.local/bin /home/tilo/.local/share \
+      /home/tilo/.local/state /home/tilo/.cache /home/tilo/.config
 COPY --from=hosted-agent /tilo-legacy-agent /usr/libexec/tilo/tilo-legacy-agent
 COPY os/hosted-guest/hosted-init /usr/libexec/tilo/hosted-init
 RUN set -eu; \

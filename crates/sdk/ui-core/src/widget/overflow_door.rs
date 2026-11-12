@@ -247,6 +247,11 @@ impl OverflowDoor {
 }
 
 impl Widget for OverflowDoor {
+    /// What it holds back, where it opens.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.children();
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

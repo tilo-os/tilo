@@ -69,6 +69,18 @@ impl LaunchpadAppAction {
             action: ask.action().to_owned(),
         }
     }
+
+    /// The app action that shows how an agent connects: Console's own Connect place, with the
+    /// commands that add Tilo to a client and the agents already let in.
+    #[must_use]
+    pub fn connect_agent() -> Self {
+        Self {
+            app_id: "so.tilo.console".to_owned(),
+            display_name: "Console".to_owned(),
+            resource: "console.effects".to_owned(),
+            action: "view-connect".to_owned(),
+        }
+    }
 }
 
 /// A welcome verb of the empty desk, declared once: the card that shows it,

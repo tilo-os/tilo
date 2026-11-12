@@ -28,6 +28,7 @@ use std::time::Instant;
 use crate::common::people::{
     Device, Person, Site, joined_within, show, two_devices_of_one_person, wait_shown,
 };
+use serde_json::json;
 use tilo_relay_protocol::workspaces::WorkspaceRole;
 
 /// The app whose window is opened on the desks here.
@@ -91,6 +92,61 @@ fn an_edit_on_one_device_of_a_person_reaches_the_other() {
 
     let _from_phone = phone.window(NOTES, "From the phone");
     wait_shown(&site, &[&laptop, &phone], "From the phone");
+}
+
+/// A workspace the person makes on their phone arrives on their laptop's desk and leaves the
+/// laptop where it is: the person stays in the workspace they went to, and what they open next is a
+/// window of it. A workspace their own join brings is the one they land in; one their list brings
+/// from another device is on the desk for when they go there.
+#[test]
+fn a_workspace_made_on_another_device_arrives_without_taking_the_front() {
+    let (site, _ada, laptop, phone) = two_devices_of_one_person();
+    show(&laptop, &site);
+    laptop.wait_showing(&site.workspace);
+
+    // Made on the phone while the laptop shows the site's workspace: the phone hosts it, the
+    // person's list names it, and the laptop enters it there as their further device.
+    let before = phone.on_desk();
+    let made = phone.act_wait("actions", "workspace.create", &json!({}));
+    assert_eq!(
+        made["answer"]["receipt"]["update"]["state"],
+        json!("succeeded"),
+        "{} makes a workspace: {made}\n{}",
+        phone.label,
+        phone.diagnostic()
+    );
+    tilo_test_env::wait_until("the phone's desk holds the workspace it made", || {
+        phone.on_desk().len() > before.len()
+    });
+    let made = phone
+        .on_desk()
+        .into_iter()
+        .find(|workspace| !before.contains(workspace))
+        .expect("the workspace the phone made");
+
+    tilo_test_env::wait_until(
+        format!("{} holds {made}, made on the phone", laptop.label),
+        || laptop.on_desk().contains(&made),
+    );
+    assert_eq!(
+        laptop.showing().as_deref(),
+        Some(site.workspace.as_str()),
+        "{} stays in the workspace its person went to when {made} arrives from their phone; \
+         its desk holds {:?}\n{}",
+        laptop.label,
+        laptop.on_desk(),
+        laptop.join_flow()
+    );
+
+    // What the person opens next is a window of the workspace they are in, which its site keeps.
+    let _after = laptop.window(NOTES, "After the arrival");
+    wait_shown(&site, &[&laptop], "After the arrival");
+    assert_eq!(
+        laptop.showing().as_deref(),
+        Some(site.workspace.as_str()),
+        "{} is still in the workspace it opened the window in",
+        laptop.label
+    );
 }
 
 /// The copy takes the workspace up again as Ada's own further device: the
@@ -230,6 +286,11 @@ fn a_copy_started_while_the_host_is_away_refuses_its_apps_actions_saying_why() {
     tilo_test_env::wait_until(format!("{} holding Chat for its host", copy.label), || {
         copy.state().to_string().contains("to take this device in")
     });
+    // The copy says it holds the workspace but waits for its host, which is not this device: what
+    // `tilo-vm vm branch` reads to know a branch was taken in.
+    let row = held_row(&copy, &site);
+    assert_eq!(row["awaiting_host"], true, "{row}");
+    assert_eq!(row["hosted_here"], false, "{row}");
     // Opening an app meanwhile is refused at once, saying why.
     let asked = std::time::Instant::now();
     let opened = copy.act("applications", CHAT, &serde_json::json!({}));
@@ -385,6 +446,19 @@ fn a_copy_lists_the_logins_its_source_saved_and_runs_its_providers_actions() {
     );
 }
 
+/// What `device` says of the workspace `site` serves (`workspace_hosts`): who hosts it, and
+/// whether its host took `device` in yet. `Null` while `device` does not hold it.
+fn held_row(device: &Device, site: &Site) -> serde_json::Value {
+    device.ask(&serde_json::json!({"op": "workspace_hosts"}))["answer"]["workspaces"]
+        .as_array()
+        .and_then(|held| {
+            held.iter()
+                .find(|row| row["room"].as_str() == Some(site.workspace.as_str()))
+                .cloned()
+        })
+        .unwrap_or_default()
+}
+
 /// Wait until `site` took `device` in as a device of its person's own: the workspace's record names
 /// this device, and its apps join there as it.
 fn wait_admitted(device: &Device, site: &Site) {
@@ -398,6 +472,7 @@ fn wait_admitted(device: &Device, site: &Site) {
         if log
             .lines()
             .any(|line| line.contains(&admitted) && line.contains("member=true"))
+            && held_row(device, site)["awaiting_host"] == false
         {
             return;
         }

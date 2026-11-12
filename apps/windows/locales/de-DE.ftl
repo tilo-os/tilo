@@ -237,3 +237,31 @@ windows-windows-routes = { $op ->
        *[vm] in der Windows-VM
     } öffnet
 }
+
+## Actions
+
+windows-effect-show = Im Windows-Manager anzeigen
+windows-effect-read-app = Anwendung lesen
+windows-effect-install = Windows-Anwendung installieren
+windows-effect-import-iso = Windows-ISO importieren
+windows-effect-recovery = Wiederherstellungs-Desktop öffnen
+windows-effect-start = Windows starten
+windows-effect-restart = Windows neu starten
+windows-effect-suspend = Windows anhalten
+windows-effect-resume = Windows fortsetzen
+windows-effect-shutdown = Windows herunterfahren
+windows-effect-temporary-network = Für die Aktivierung verbinden
+windows-effect-update-network = Für Windows Update verbinden
+windows-effect-revoke-network = Temporären Netzzugang beenden
+windows-effect-install-private-capsule = In einer privaten Kapsel installieren
+windows-effect-install-windows-appliance = In der Windows-Appliance installieren
+windows-effect-launch = Starten
+windows-effect-launch-vm-fallback = In der Windows-Appliance öffnen
+windows-effect-open-file = Datei in Windows öffnen
+windows-effect-publish = Starter veröffentlichen
+windows-effect-retry-install = Installation wiederholen
+windows-effect-escalate-install = In der Windows-Appliance installieren
+windows-effect-remove-launcher = Starter entfernen
+windows-effect-uninstall = Deinstallieren
+windows-effect-delete-data = Anwendungsdaten löschen
+windows-manager = Windows-Manager

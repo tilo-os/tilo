@@ -2260,6 +2260,13 @@ impl Button {
 }
 
 impl Widget for Button {
+    /// A real button; its face is its paint until the toolkit's button
+    /// faces render as HTML of their own.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("button");
+        cx.picture();
+    }
+
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,

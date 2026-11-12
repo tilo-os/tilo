@@ -50,10 +50,23 @@ pub const HOSTED_ENV: &str = "TILO_TILOLANG_HOSTED";
 
 pub const INSTANCE_VERB: &[u8] = b"instance";
 
-/// The verb of the person's formats, as the session hands them to a host whose instances are
-/// already running: which clock their dates and times read by changed in Settings. The request is
-/// the [`RegionFormats`], JSON; the door carries no descriptor with it.
-pub const FORMATS_VERB: &[u8] = b"formats";
+/// The verb of the person's formats and language, as the session hands them to a host whose
+/// instances are already running: which clock their dates and times read by, or which language
+/// their windows read in, changed in Settings. The request is the [`Locale`], JSON; the door
+/// carries no descriptor with it.
+pub const LOCALE_VERB: &[u8] = b"locale";
+
+/// The person's region formats and language, as the session hands them to a host whose instances
+/// are already running ([`LOCALE_VERB`]).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Locale {
+    /// The clock and the date style their dates and times read by.
+    pub formats: RegionFormats,
+    /// The language their windows read in (`de-DE`), as [`InstanceRequest::language`] names it;
+    /// empty where the session names none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub language: String,
+}
 
 /// The verb of a task handed to a task's host.
 pub const TASK_VERB: &[u8] = b"task";
@@ -200,8 +213,9 @@ pub struct TaskFds {
 pub enum Handed {
     Instance(InstanceRequest, InstanceFds),
     Task(TaskRequest, TaskFds),
-    /// The person's formats, which their instance's clock and dates read by from now on.
-    Formats(RegionFormats),
+    /// The person's formats and language, which their instances' clock and dates read by, and
+    /// their windows read in, from now on.
+    Locale(Locale),
 }
 
 const APPS_MAGIC: &[u8; 8] = b"tlappsl1";
@@ -496,21 +510,22 @@ pub fn send_instance(
     }
 }
 
-/// Say on the host behind `door` that the person's formats changed: the clock and the date style
-/// their instances write in a sentence, and their windows show, from now on.
+/// Say on the host behind `door` that the person's formats or language changed: the clock and the
+/// date style their instances write in a sentence, and the language their windows read in, from
+/// now on.
 ///
 /// # Errors
 /// The socket's error, a request that does not encode, or [`io::ErrorKind::Unsupported`] off
 /// Linux.
-pub fn send_formats(door: &Descriptor, formats: &RegionFormats) -> io::Result<()> {
-    let encoded = serde_json::to_vec(formats).map_err(io::Error::other)?;
+pub fn send_locale(door: &Descriptor, locale: &Locale) -> io::Result<()> {
+    let encoded = serde_json::to_vec(locale).map_err(io::Error::other)?;
     if encoded.len() > MAX_MESSAGE {
         return Err(io::ErrorKind::InvalidInput.into());
     }
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsFd as _;
-        crate::door::send(door.as_fd(), &[FORMATS_VERB, &encoded], &[])
+        crate::door::send(door.as_fd(), &[LOCALE_VERB, &encoded], &[])
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -556,7 +571,7 @@ pub fn receive_instance(door: &Descriptor) -> io::Result<Option<(InstanceRequest
     match receive(door)? {
         None => Ok(None),
         Some(Handed::Instance(request, fds)) => Ok(Some((request, fds))),
-        Some(Handed::Task(..) | Handed::Formats(..)) => Err(io::Error::new(
+        Some(Handed::Task(..) | Handed::Locale(..)) => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "the door carried something other than an instance",
         )),
@@ -598,13 +613,13 @@ pub fn receive(door: &Descriptor) -> io::Result<Option<Handed>> {
             }
             return Ok(Some(Handed::Task(request, TaskFds { program, apps })));
         }
-        if verb == FORMATS_VERB {
-            let formats: RegionFormats = serde_json::from_slice(request)
+        if verb == LOCALE_VERB {
+            let locale: Locale = serde_json::from_slice(request)
                 .map_err(|_| invalid("formats that do not decode"))?;
             if !fds.is_empty() {
                 return Err(invalid("formats carrying a connection"));
             }
-            return Ok(Some(Handed::Formats(formats)));
+            return Ok(Some(Handed::Locale(locale)));
         }
         if verb != INSTANCE_VERB {
             return Err(invalid("the door carried something other than an instance"));
@@ -780,22 +795,25 @@ mod tests {
     #[test]
     fn the_persons_formats_cross_the_door_between_instances() {
         let (shell, host) = pair().unwrap();
-        let formats = RegionFormats {
-            date: tilo_formats::DateStyle::Iso,
-            time: tilo_formats::TimeStyle::H12,
-            ..RegionFormats::default()
+        let locale = Locale {
+            formats: RegionFormats {
+                date: tilo_formats::DateStyle::Iso,
+                time: tilo_formats::TimeStyle::H12,
+                ..RegionFormats::default()
+            },
+            language: "de-DE".into(),
         };
-        send_formats(&shell, &formats).unwrap();
+        send_locale(&shell, &locale).unwrap();
         assert_eq!(
             receive(&host).unwrap().map(|handed| match handed {
-                Handed::Formats(formats) => formats,
-                other => panic!("a formats message arrives as formats: {other:?}"),
+                Handed::Locale(locale) => locale,
+                other => panic!("a locale message arrives as one: {other:?}"),
             }),
-            Some(formats),
-            "the person's clock and date style reach the host as they set them"
+            Some(locale.clone()),
+            "the person's clock, date style and language reach the host as they set them"
         );
         // Said again while a host waits on an instance: it arrives as formats, never as one.
-        send_formats(&shell, &formats).unwrap();
+        send_locale(&shell, &locale).unwrap();
         assert!(
             receive_instance(&host).is_err(),
             "a host waiting on an instance does not take formats for one"

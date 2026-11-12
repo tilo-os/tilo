@@ -24,15 +24,8 @@ use crate::runtime::{ResourceRef, ViewEvent};
 impl Instance {
     /// Open the package's root view.
     pub(super) fn open_root(&mut self, host: &Host) {
-        let target = match host.root_of_layer(&self.app, &self.root_view) {
-            Ok(target) => target,
-            Err(error) => {
-                tracing::warn!(app = self.app, %error, "the app has no root to open");
-                return;
-            }
-        };
-        match host.open_layer(&self.app, &self.root_view) {
-            Ok(view) => {
+        match host.open_layer_at(&self.app, &self.root_view) {
+            Ok((target, view)) => {
                 self.root = Some(Shown::new(target, self.spaced(Lane::Root, view)));
                 if self.detail.take().is_some() {
                     self.out.push(ToUi::Close);

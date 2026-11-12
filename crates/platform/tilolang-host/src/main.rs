@@ -208,11 +208,11 @@ fn run(door: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
                         }
                     }
                 }
-                Ok(Some(Handed::Formats(formats))) => {
-                    // The person set another clock or date style: every instance writes its
-                    // times again, and its window shows what it wrote.
-                    if host.set_formats(formats) {
-                        tracing::info!("the person's formats changed");
+                Ok(Some(Handed::Locale(locale))) => {
+                    // The person set another clock, date style or language: every instance
+                    // writes its times and its words again, and its window shows them.
+                    if host.set_locale(&locale) {
+                        tracing::info!("the person's formats or language changed");
                     }
                 }
                 Ok(Some(Handed::Task(request, fds))) => {

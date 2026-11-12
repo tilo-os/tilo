@@ -188,7 +188,6 @@ impl RecentEnvironments {
 
 #[resource(
     kind = "terminal.recent-environments",
-    label = "Recent environments",
     read_content = RecentEnvironments::read_document
 )]
 impl RecentEnvironments {

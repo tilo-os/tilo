@@ -2796,11 +2796,17 @@ impl TerminalWidget {
         edits: &mut ui::widget::Edits<'_>,
     ) {
         for (run, asked) in std::mem::take(&mut self.runs.ended) {
+            // The run's output is kept where this window keeps content, and
+            // the run names it by the reference that store answered: a
+            // record's content travels sealed, so a plain hash would name
+            // nothing its readers could open.
             let output = if run.output.is_empty() {
                 None
             } else {
                 match self.content.put(&run.output) {
-                    Ok(hash) => Some(hash),
+                    Ok(reference) => {
+                        Some(ui::tilo_resource::Bytes::kept_as(&run.output, &reference))
+                    }
                     Err(error) => {
                         tracing::warn!(%error, "terminal could not keep a run's output");
                         None
@@ -2827,11 +2833,6 @@ impl TerminalWidget {
                 tool: crate::parse::tool_of(&run.command).to_owned(),
                 undoable: crate::undoability::of(&run.command) == Some(true),
                 items: crate::parse::items(&run.command, &run.output),
-                output_len: if output.is_some() {
-                    u64::try_from(run.output.len()).unwrap_or(u64::MAX)
-                } else {
-                    0
-                },
                 output,
                 command: run.command,
                 cwd: run.cwd,
@@ -5656,79 +5657,6 @@ pub(crate) fn snap_to_device_pixels(transform: Affine, rect: Rect) -> Rect {
     )
 }
 
-/// Resolve the user's native shell for the standalone fallback path.
-/// Windows uses `COMSPEC`, falling back to `cmd.exe`.
-///
-/// Unix resolution order:
-/// 1. **`$SHELL`** when set and non-empty — the user's explicit preference
-///    (this is how fish, when it is the login shell, gets launched here).
-/// 2. **The passwd database** (`getpwuid(getuid()).pw_shell`) — the login
-///    shell the system records for this account. A login session that spawned
-///    the terminal through a path that does not export `$SHELL` still lands on
-///    the right shell instead of a hardcoded `/bin/sh`.
-/// 3. **`/bin/sh`** — last resort so a session never fails to start.
-pub fn resolve_login_shell() -> String {
-    #[cfg(windows)]
-    {
-        std::env::var("COMSPEC")
-            .ok()
-            .filter(|shell| !shell.trim().is_empty())
-            .unwrap_or_else(|| "cmd.exe".into())
-    }
-    #[cfg(unix)]
-    resolve_login_shell_with(std::env::var("SHELL").ok(), login_shell_from_passwd())
-}
-
-/// Pure core of [`resolve_login_shell`], with the two environment lookups
-/// injected so the precedence is testable without mutating process-global
-/// state (which would race parallel tests).
-#[cfg(unix)]
-pub(crate) fn resolve_login_shell_with(
-    shell_env: Option<String>,
-    passwd_shell: Option<String>,
-) -> String {
-    if let Some(s) = shell_env
-        && !s.is_empty()
-    {
-        return s;
-    }
-    if let Some(s) = passwd_shell
-        && !s.is_empty()
-    {
-        return s;
-    }
-    "/bin/sh".into()
-}
-
-/// The command the Host target runs off Tilo: the user's native shell as chosen
-/// by [`resolve_login_shell`], with the process environment inherited.
-pub(crate) fn login_shell_command() -> CommandBuilder {
-    CommandBuilder::new(resolve_login_shell())
-}
-
-/// The login shell recorded for the current real user in the passwd database
-/// (`pw_shell`). `None` if the entry is missing or has an empty shell field.
-#[cfg(unix)]
-pub(crate) fn login_shell_from_passwd() -> Option<String> {
-    use std::ffi::CStr;
-    // SAFETY: `getpwuid` returns a pointer into a static buffer owned by libc
-    // (valid until the next passwd/`getpwuid` call, of which we make none
-    // before copying out). We null-check before dereferencing, and copy the
-    // `pw_shell` C string into an owned `String` while the pointer is live.
-    unsafe {
-        let uid = tilo_process::uid();
-        let pw = libc::getpwuid(uid);
-        if pw.is_null() {
-            return None;
-        }
-        let shell = (*pw).pw_shell;
-        if shell.is_null() {
-            return None;
-        }
-        Some(CStr::from_ptr(shell).to_string_lossy().into_owned())
-    }
-}
-
 /// A PTY master with no process behind it.
 struct NullMaster;
 impl MasterPty for NullMaster {
@@ -5900,7 +5828,9 @@ impl TerminalBackend {
                     cmd.args(rest);
                     cmd
                 } else {
-                    login_shell_command()
+                    // The login shell this account starts, with the process
+                    // environment inherited.
+                    CommandBuilder::new(tilo_process::login_shell::login_shell())
                 };
                 Self::with_command(cmd).map_err(|error| OpenError::Failed(error.to_string()))
             }

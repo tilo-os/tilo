@@ -1,15 +1,15 @@
 //! A mount shown as HTML (`mountDesktop(el, {dom: true})`): each frame's
-//! scene goes to the page's DOM presenter (`web/dom-present.mjs`) as DOM
-//! operations instead of to the GPU. Layout, input, semantics and records
-//! take the same paths as a frame drawn on the canvas.
+//! composition ([`ui::composition`]) goes to the page's presenter
+//! (`web/view-present.mjs`), which renders it as elements, instead of the
+//! scene going to the GPU. Layout, input, semantics and records take the same
+//! paths as a frame drawn on the canvas.
 //!
 //! Three things differ from a drawn frame:
-//! - widgets mark their draws with keys (`ui::scene_parts::key_widgets`,
-//!   with the code that comes with the presenter's), so
-//!   the page keeps one element per widget from frame to frame;
-//! - the scroll regions the frame drew go along, and the page shows each as
-//!   a native scroll container; where the person scrolls it comes back
-//!   through [`dom_scrolled`];
+//! - the page renders what the widgets are and how they are laid out, not
+//!   what they painted; a widget that is its paint (an icon, a chart) is
+//!   shown as its picture, which the page asks for ([`dom_picture`]);
+//! - the page scrolls a widget's scroll region natively, and where the
+//!   person scrolls comes back through [`dom_scrolled`];
 //! - a frame an input asks for is presented before the browser's next
 //!   paint, in a task right after the input's own
 //!   ([`Mount::present_after_input`]), not at the next animation frame.
@@ -120,15 +120,14 @@ struct Shown {
 }
 
 /// Show the next mount made as HTML rather than on a WebGPU canvas: each
-/// frame calls `present(meta, ops, fonts)` with the frame's DOM operations
-/// (`tilo_cpu_raster::dom`), and text in the scene carries its characters.
+/// frame calls `present(meta, composition)` with the frame's composition
+/// ([`ui::composition`]) as JSON.
 ///
 /// The theme is the page's, whichever way a mount shows it
 /// ([`crate::page_theme`]): the page starts following the browser's light
 /// or dark before anything mounts, so no theme is set here.
 #[wasm_bindgen]
 pub fn present_as_dom(present: Function) {
-    ui::text_render::present_text(true);
     PRESENTER.with_borrow_mut(|slot| *slot = Some(Presenter { present }));
 }
 
@@ -164,31 +163,38 @@ pub(super) fn forget(id: u64) {
     QUEUED.with_borrow_mut(|queued| queued.remove(&id));
 }
 
-/// The person scrolled the region keyed `key` (16 hex digits) of mount
-/// `id` to `offset` CSS pixels: the widget that drew it scrolls there, and
-/// the next frame draws what came into view. Returns whether the region is
-/// still there.
+/// The person scrolled the scroller of the widget at `path` of mount `id`
+/// to `offset` CSS pixels: the widget scrolls there, and the next frame
+/// composes what came into view. Returns whether the widget took it.
 ///
 /// # Errors
 ///
 /// Rejects a closed mount.
 #[wasm_bindgen]
-pub fn dom_scrolled(id: u64, key: &str, offset: f64) -> Result<bool, JsValue> {
-    let Ok(key) = u64::from_str_radix(key, 16) else {
-        return Ok(false);
-    };
+pub fn dom_scrolled(id: u64, path: &str, offset: f64) -> Result<bool, JsValue> {
     with_mount(id, |m| {
-        let found = MOUNTS.with_borrow(|mounts| {
-            mounts
-                .get(&id)
-                .and_then(|shown| shown.code.as_ref())
-                .is_some_and(|code| code.scrolled(m.frame.root_widget_mut(), key, offset))
-        });
-        if found {
+        let scrolled = m.frame.scroll_composed(path, offset);
+        if scrolled {
             m.pending = true;
             m.window.request_redraw();
         }
-        Ok(found)
+        Ok(scrolled)
+    })
+}
+
+/// The picture of the widget at `path` of mount `id`, which shows its own
+/// paint ([`ui::composition::Own::Painted`]), at `scale` device pixels per
+/// CSS pixel: `[width, height, straight RGBA]`, or null.
+///
+/// # Errors
+///
+/// Rejects a closed mount.
+#[wasm_bindgen]
+pub fn dom_picture(id: u64, path: &str, scale: f64) -> Result<JsValue, JsValue> {
+    with_mount(id, |m| {
+        Ok(crate::dom_code::DOM_CODE
+            .get()
+            .map_or(JsValue::NULL, |code| (code.paint)(m, path, scale)))
     })
 }
 
@@ -368,13 +374,19 @@ impl Mount {
     }
 }
 
-/// Lay out and present one frame of `m` as HTML: the scene goes to the
-/// page's DOM presenter as operations ([`tilo_cpu_raster::dom`]) instead of
-/// to the GPU. Input, semantics and records take the same paths as a drawn
+/// Lay out and present one frame of `m` as HTML: its composition goes to
+/// the page's presenter instead of its scene to the GPU. Input, semantics and records take the same paths as a drawn
 /// frame. Part of the presentation's code (`crate::dom_code`), reached only
 /// through it.
 pub(crate) fn draw_dom_frame(m: &mut Mount) -> Result<(), String> {
     m.draw_dom_frame()
+}
+
+impl Mount {
+    /// The mount's frame, for the presentation's code.
+    pub(crate) fn frame_mut(&mut self) -> &mut ui::headless::FrameHarness {
+        &mut self.frame
+    }
 }
 
 impl Mount {
@@ -385,20 +397,15 @@ impl Mount {
             self.held = "nothing to draw";
             return Ok(());
         }
-        if !ui::scene_parts::keys_widgets() {
-            ui::scene_parts::key_widgets(Some(ui::scene_parts::keyer()));
-        }
         let started = web_time::Instant::now();
         if !self.lay_out_dom(replica, theme_changed)? {
             return Ok(());
         }
         let layout_ms = started.elapsed().as_secs_f64() * 1000.0;
-        let input = self.frame.frame_render_input();
+        let background = self.frame.frame_render_input().background;
         let theme_generation = self.theme_seen;
-        let requested = self.viewport.requested();
-        let viewport = requested.logical_size();
-        // Pictures are drawn at the density of the screen showing them.
-        let device_scale = requested.dpr;
+        let composition =
+            serde_json::to_string(&self.frame.composition()).map_err(|error| error.to_string())?;
         let presented = MOUNTS.with_borrow_mut(|mounts| {
             let shown = mounts.get_mut(&self.id)?;
             let publish_theme = shown.theme_published != Some(theme_generation);
@@ -409,10 +416,8 @@ impl Mount {
                 .present(crate::dom_code::Frame {
                     present: &shown.presenter.present,
                     id: self.id,
-                    scene: input.scene,
-                    background: input.background,
-                    viewport,
-                    device_scale,
+                    composition,
+                    background,
                     layout_ms,
                     theme: publish_theme.then(|| self.frame.theme()),
                 });

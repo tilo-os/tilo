@@ -97,6 +97,13 @@ with tempfile.TemporaryDirectory(prefix='tilo-cef-pointer-input-') as profile:
             if predicate(event):
                 return event
 
+    def came(what, predicate):
+        """An event `predicate` accepts: one already seen, or the next one."""
+        for event in seen:
+            if predicate(event):
+                return event
+        return until(what, predicate)
+
     def title(expected):
         return until(f'title {expected!r}',
                      lambda e: e['event'] == 'title' and e['title'] == expected)
@@ -113,6 +120,10 @@ with tempfile.TemporaryDirectory(prefix='tilo-cef-pointer-input-') as profile:
         send({'op': 'resize', 'width': 800, 'height': 400, 'scale_factor': 1.0})
         send({'op': 'navigate', 'url': URL})
         title('ready')
+        # The title is set while the page still loads, and a frame that follows it may be one
+        # painted before the page was laid out: a pointer moved then is over nothing yet. The
+        # page is under the pointer once it loaded.
+        came('the page loaded', lambda e: e['event'] == 'loaded' and e.get('url') == URL)
         until('a painted page', lambda e: e['event'] == 'frame')
 
         # The shape follows the page under the pointer.

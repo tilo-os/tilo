@@ -1251,7 +1251,7 @@ fn the_palette_rows_say_each_thing_once_and_only_to_people() {
         );
     }
     for label in [
-        "Add a subscription",
+        "Add subscription",
         "New folder",
         "Increase reader text size",
         "Use reader paper",

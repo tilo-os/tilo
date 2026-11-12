@@ -149,3 +149,32 @@ contacts-review-duplicate = Mögliches Duplikat prüfen
 
 ## A book someone may only read
 contacts-view-only-message = Du kannst dieses Adressbuch ansehen, aber nichts hinzufügen.
+
+## Actions
+
+contacts-accounts-open-accounts = Verknüpfte Konten verwalten
+contacts-accounts-close-accounts = Zurück zu den Kontakten
+contacts-accounts-select-account-person = Kontakt wählen
+contacts-accounts-review-account = Verknüpftes Konto prüfen
+contacts-accounts-edit-account = Verknüpftes Konto bearbeiten
+contacts-accounts-review-account-revocation = Entfernen des Kontos prüfen
+contacts-accounts-confirm-account-review = Kontoänderung bestätigen
+contacts-accounts-cancel-account-review = Kontoänderung verwerfen
+contacts-effect-open-group = Gruppe öffnen
+contacts-effect-open-favorites = Favoriten öffnen
+contacts-effect-sort-contacts = Kontakte sortieren
+contacts-effect-open-review = Mögliche Dublette prüfen
+contacts-effect-edit-field = Feld bearbeiten
+contacts-effect-open-website = Website öffnen
+contacts-effect-read-duplicate = Mögliche Dublette lesen
+contacts-effect-import-vcard = vCard importieren
+contacts-effect-export-all-vcard = Alle Kontakte exportieren
+contacts-effect-export-contact = Kontakt exportieren
+contacts-effect-export-vcard-content = vCard-Inhalt exportieren
+contacts-effect-keep-existing = Vorhandenen Kontakt behalten
+contacts-effect-import-as-new = Als neuen Kontakt importieren
+contacts-book = Kontakte
+contacts-book-new-contact = Neuer Kontakt
+contacts-book-add-contacts = Kontakte hinzufügen
+contacts-book-delete-contact = Kontakt löschen
+contacts-book-merge-contacts = Kontakte zusammenführen

@@ -323,11 +323,12 @@ enum Op {
     Unlock,
     Watch,
     Windows,
+    WorkspaceHosts,
 }
 
 impl Op {
     /// Every op the protocol answers, in the order the refusal names them.
-    const ALL: [Self; 30] = [
+    const ALL: [Self; 31] = [
         Self::ActionsCancel,
         Self::ActionsEnumerate,
         Self::ActionsInvoke,
@@ -358,6 +359,7 @@ impl Op {
         Self::Unlock,
         Self::Watch,
         Self::Windows,
+        Self::WorkspaceHosts,
     ];
 
     /// The op `request` names, or `None` for one the protocol does not answer at all.
@@ -393,6 +395,7 @@ impl Op {
             "unlock" => Self::Unlock,
             "watch" => Self::Watch,
             "windows" => Self::Windows,
+            "workspace_hosts" => Self::WorkspaceHosts,
             _ => return None,
         })
     }
@@ -430,6 +433,7 @@ impl Op {
             Self::Unlock => "unlock",
             Self::Watch => "watch",
             Self::Windows => "windows",
+            Self::WorkspaceHosts => "workspace_hosts",
         }
     }
 
@@ -452,6 +456,7 @@ impl Op {
                 | Self::StateDump
                 | Self::Watch
                 | Self::Windows
+                | Self::WorkspaceHosts
         )
     }
 }
@@ -1170,6 +1175,9 @@ fn asked_of_desk(
         Op::ProfileStatus => json!({"answer": crate::diagnostics::reading()}),
         Op::ProfileStop => json!({"answer": {"profile": tilo_frame_metrics::profile::stop()}}),
         Op::StateDump => shown(ctx, desk.handle.read(|tree| state_dump(tree, desk))),
+        Op::WorkspaceHosts => desk
+            .handle
+            .read(|tree| state::workspace_hosts(tree, desk, ctx)),
         Op::Windows => {
             // Nothing shows a window while the screen is locked.
             let rows = if ctx.gate != Gate::Dev && desk.locked {
@@ -2590,6 +2598,7 @@ mod tests {
             Op::StateDump,
             Op::Watch,
             Op::Windows,
+            Op::WorkspaceHosts,
         ];
         for op in Op::ALL {
             let served_there = owner.contains(&op);
@@ -2608,7 +2617,7 @@ mod tests {
         }
         // Every op the protocol answers is in the list, each once.
         let mut names: Vec<&str> = Op::ALL.iter().map(|op| op.name()).collect();
-        assert_eq!(names.len(), 30, "the protocol's ops");
+        assert_eq!(names.len(), 31, "the protocol's ops");
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), Op::ALL.len(), "{names:?}");

@@ -188,7 +188,7 @@ export function setupFailure(error, {site = HOME_SITE} = {}) {
   if (code === 'copy-failed') return 'Your browser did not let Tilo copy the prompt. Select it and copy it yourself.';
   if (code === 'not-a-device') return 'That computer is not signed in to Tilo as you. Try your agent on one that is, or use a passkey.';
   if (code === 'not-let-in') return 'This tab isn’t let in yet. Try again in a moment.';
-  if (code === 'not-loaded') return 'Tilo has not finished loading in this tab. Reload the page to try again.';
+  if (code === 'not-loaded') return 'Tilo didn’t finish loading in this tab.';
   if (code === 'timeout' || code === 'unreachable' || error?.name === 'TypeError') return `Couldn’t reach ${hostOf(site)}. Check your connection, then try again.`;
   return `${hostOf(site)} did not make a code. Try again, or skip for now.`;
 }
@@ -359,8 +359,12 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
   const show = kind => {
     const at = codes[kind];
     const text = at.made ? prompts[kind](at.made.code, {site}) : null;
+    // A page that did not load is said once, in the setup's box, whose
+    // button reloads it: the sign-in beside it waits on the same load.
+    const unloaded = !at.make && at.error?.code === 'not-loaded';
     view.offer(kind, at.made ? {text, code: at.made.code}
-      : at.error ? {problem: setupFailure(at.error, {site})} : {note: codeWait(site)});
+      : unloaded && kind !== 'setup' ? {}
+      : at.error ? {problem: setupFailure(at.error, {site}), ...(unloaded ? {reload: true} : {})} : {note: codeWait(site)});
     if (kind === 'setup' && manualShown) showManual();
     if (expiredKind === kind) drawExpired();
   };
@@ -819,12 +823,16 @@ export function domView(document) {
   const notes = {setup: 'first-run-offer-note', signIn: 'first-run-sign-in-note'};
   return {
     start() { state(''); this.manual(false); $('first-run-heading').focus({preventScroll: true}); },
-    offer(kind, {text = null, note = null, problem = null}) {
+    offer(kind, {text = null, note = null, problem = null, reload = false}) {
       // Whether a code is ready, for tests and tools driving the page.
       $('first-run').dataset[kind === 'setup' ? 'setup' : 'signIn'] = text ? 'ready' : problem ? 'failed' : 'waiting';
       if (kind === 'setup') {
         showPrompt($('first-run-offer'), text);
         $('first-run-offer-retry').hidden = !problem;
+        // Only reloading the page helps a page that did not load.
+        $('first-run-offer-retry').textContent = reload ? 'Reload' : 'Try again';
+        // Nothing to copy until there is a prompt again.
+        $('first-run-agent').disabled = Boolean(problem);
       }
       const line = $(notes[kind]);
       line.textContent = problem ?? (kind === 'setup' ? note ?? '' : '');
@@ -919,8 +927,13 @@ export function domView(document) {
     signInFailed() { say('That passkey did not sign you in. Try another, or sign in with your agent.'); },
     close() {
       $('first-run').dataset.closing = '';
-      // The screen fades, then leaves the page; reduced motion skips the fade.
-      const done = () => { root.removeAttribute('data-first-run'); $('first-run')?.remove(); };
+      // The screen fades, then leaves the page: reduced motion skips the fade. It stays in the
+      // document, hidden, so the person's card can show it again ("Connect an agent"): the
+      // setup is one flow, wherever it is opened.
+      const done = () => {
+        root.removeAttribute('data-first-run');
+        $('first-run')?.removeAttribute('data-closing');
+      };
       if (globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches) done();
       else setTimeout(done, 280);
     },
@@ -957,6 +970,31 @@ function copyBySelection(text, document) {
  * once it can (`offerSetup`, `offerAgentSignIn`, `offerSignIn`). */
 export function startFirstRun(document = globalThis.document, {storage} = {}) {
   if (document?.documentElement?.dataset?.firstRun === undefined || !document.getElementById?.('first-run')) return null;
+  return wireFirstRunScreen(document, storage);
+}
+
+/**
+ * Show the first screen again, once the person is set up: the same flow, in
+ * the same place, for a person who wants their agent connected later (their
+ * card's "Connect an agent"). The page hands it a code as it did the first
+ * time (`offerSetup`); Skip here only closes it, since there is nothing left
+ * to open.
+ */
+export function openFirstRun(document = globalThis.document, {storage} = {}) {
+  const screen = document?.getElementById?.('first-run');
+  if (!screen) return null;
+  const root = document.documentElement;
+  // Hidden while the fresh screen is written into, so it appears at once and whole.
+  root.removeAttribute('data-first-run');
+  screen.removeAttribute('data-closing');
+  const run = wireFirstRunScreen(document, storage);
+  run?.whenDone(() => {});
+  root.setAttribute('data-first-run', '');
+  return run;
+}
+
+/** The screen's buttons wired to a controller of its own. */
+function wireFirstRunScreen(document, storage) {
   const run = createFirstRun({view: domView(document), clipboard: pageClipboard(), storage: storage ?? globalThis.localStorage,
     site: globalThis.location?.origin});
   const on = (id, handler) => document.getElementById(id)?.addEventListener('click', handler);

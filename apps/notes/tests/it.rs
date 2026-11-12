@@ -185,3 +185,5 @@ mod notion_import;
 
 #[path = "desk_window_controls.rs"]
 mod desk_window_controls;
+#[path = "html_composition.rs"]
+mod html_composition;

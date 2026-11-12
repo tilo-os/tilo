@@ -340,6 +340,10 @@ pub struct RecordContent {
 impl RecordContent {
     /// `local`, joined to the route `lane` reaches.
     pub fn store(local: ContentStore, lane: Arc<ContentLane>) -> ContentStore {
+        // What reaches this backend is already as it is kept (sealed, or
+        // public): `local` stores it under its own address, never sealing it
+        // again, as a lent store that seals would.
+        let local = local.unsealed();
         ContentStore::from_backend(Arc::new(Self { local, lane })).sealing()
     }
 

@@ -651,16 +651,12 @@ impl crate::Published for DesktopHost {
     /// tree to itself, so this is the one place they are named.
     fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
         let mut shown = crate::Published::controls(&mut self.desk.borrow_mut().host);
-        let chrome: std::collections::BTreeSet<String> =
-            shown.iter().map(|(name, _)| name.clone()).collect();
+        // Every window's own controls stand where they stand, beside the desk's: two windows go
+        // by the same names — each window's sidebar toggle, each window's "More actions" — and
+        // each is named where it is drawn. A window's control is never the desk's because they
+        // share a name; a press by name reaches the window in front ([`Self::press_action`]).
         for (name, rect) in self.desk.borrow().policy.handle().window_controls() {
-            // A name the desk's own chrome shows keeps meaning there: what a
-            // window adds are the names the desk does not have. Two windows of
-            // an app describe controls by the same names, and each is listed
-            // where it stands, so a window floating over the desk is as
-            // readable as one in its strip: a press by name reaches the first
-            // window that shows it ([`Self::press_action`]).
-            if !chrome.contains(&name) {
+            if !shown.iter().any(|(seen, at)| seen == &name && *at == rect) {
                 shown.push((name, rect));
             }
         }
@@ -677,23 +673,54 @@ impl crate::Published for DesktopHost {
         action: ui::window_targets::TargetAction,
     ) -> Result<(), String> {
         let mut desk = self.desk.borrow_mut();
-        // A name the desk's own chrome shows keeps meaning there, as
-        // `controls` says.
-        if crate::Published::controls(&mut desk.host)
-            .iter()
-            .any(|(shown, _)| shown == name)
-        {
+        // Where the window in front stands, and whether it draws a control of that name itself:
+        // taken before the desk's own tree is built, which changes it.
+        let (front, front_window, front_draws_it, a_window_draws_it) = {
+            let handle = desk.policy.handle();
+            let front = handle.window_in_front();
+            (
+                front,
+                front.and_then(|tab| handle.window_rect(tab)),
+                front.is_some_and(|tab| handle.window_offers(tab, name)),
+                handle
+                    .window_controls()
+                    .iter()
+                    .any(|(shown, _)| shown == name),
+            )
+        };
+        let chrome = crate::Published::controls(&mut desk.host);
+        // A control the desk draws in the front window's own chrome — its bar's buttons — is that
+        // window's: it answers for it as its app's content does.
+        let in_fronts_chrome = front_window.is_some_and(|window| {
+            chrome.iter().any(|(shown, rect)| {
+                let (x, y, width, height) = *rect;
+                let (centre_x, centre_y) = (x + width / 2.0, y + height / 2.0);
+                shown == name
+                    && centre_x >= window.x0
+                    && centre_x < window.x1
+                    && centre_y >= window.y0
+                    && centre_y < window.y1
+            })
+        });
+        if in_fronts_chrome {
+            return crate::Published::press_action(&mut desk.host, name, action);
+        }
+        // The window in front answers for its own content: a person pointing at a control there
+        // presses that window's, never one behind it that goes by the same name — another
+        // window's sidebar toggle.
+        if front_draws_it && let Some(front) = front {
+            return desk
+                .policy
+                .handle()
+                .press_window_control_in(front, name, action);
+        }
+        if chrome.iter().any(|(shown, _)| shown == name) {
             return crate::Published::press_action(&mut desk.host, name, action);
         }
         // The control is one a window's app draws: the press reaches it as its
         // own assistive technology's activation does.
-        let handle = desk.policy.handle();
-        if handle
-            .window_controls()
-            .iter()
-            .any(|(shown, _)| shown == name)
-        {
-            return handle.press_window_control(name, action);
+        if a_window_draws_it {
+            return desk.policy.handle().press_window_control(name, action);
         }
         Err(format!("no control named {name}"))
     }

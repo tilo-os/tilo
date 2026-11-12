@@ -183,3 +183,19 @@ messages-person-accounts-active = Das für einen Dienst verwendete Konto
 messages-message-drafts-drafts = Die ungesendeten Worte, die je Unterhaltung aufbewahrt werden
 
 messages-conversation-with = Unterhaltung mit { $person }
+
+## Actions
+
+tilo-messages = Nachrichten
+tilo-messages-deliver-message = Nachricht zustellen
+tilo-messages-send-message = Nachricht senden
+tilo-messages-reply = Antworten
+tilo-messages-view-select-setup-account = Konto wählen
+tilo-messages-view-open-person = Person öffnen
+tilo-messages-view-open-conversation = Unterhaltung öffnen
+tilo-messages-view-select-route = Versandweg wählen
+tilo-messages-view-back = Zurück zu den Personen
+tilo-messages-view-confirm-account = Konto prüfen
+tilo-messages-view-search-messages = Nachrichten durchsuchen
+tilo-messages-view-export-content = Unterhaltungen exportieren
+tilo-messages-view-send = Nachricht senden

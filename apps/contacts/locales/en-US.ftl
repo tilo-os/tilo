@@ -149,3 +149,32 @@ contacts-review-duplicate = Review possible duplicate
 
 ## A book someone may only read
 contacts-view-only-message = You can view this address book, but not add to it.
+
+## Actions
+
+contacts-accounts-open-accounts = Manage connected accounts
+contacts-accounts-close-accounts = Return to contacts
+contacts-accounts-select-account-person = Choose contact
+contacts-accounts-review-account = Review connected account
+contacts-accounts-edit-account = Edit connected account
+contacts-accounts-review-account-revocation = Review account removal
+contacts-accounts-confirm-account-review = Confirm account change
+contacts-accounts-cancel-account-review = Cancel account change
+contacts-effect-open-group = Open group
+contacts-effect-open-favorites = Open favorites
+contacts-effect-sort-contacts = Sort contacts
+contacts-effect-open-review = Review possible duplicate
+contacts-effect-edit-field = Edit field
+contacts-effect-open-website = Open website
+contacts-effect-read-duplicate = Read possible duplicate
+contacts-effect-import-vcard = Import vCard
+contacts-effect-export-all-vcard = Export all contacts
+contacts-effect-export-contact = Export contact
+contacts-effect-export-vcard-content = Export vCard content
+contacts-effect-keep-existing = Keep existing contact
+contacts-effect-import-as-new = Import as new contact
+contacts-book = Contacts
+contacts-book-new-contact = New contact
+contacts-book-add-contacts = Add contacts
+contacts-book-delete-contact = Delete contact
+contacts-book-merge-contacts = Merge contacts

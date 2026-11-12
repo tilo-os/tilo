@@ -15,6 +15,7 @@ pub mod environment;
 pub use tilo_platform_caps::{Availability, availability, available};
 #[cfg(unix)]
 pub mod local_socket;
+pub mod login_shell;
 pub mod rendezvous;
 pub mod shared_memory;
 pub mod tools;

@@ -201,11 +201,10 @@ pub struct Finished {
     pub started_ms: i64,
     pub ended_ms: i64,
     pub exit: i32,
-    /// The content hash of the raw output (lower-case hex), when it printed
-    /// anything.
+    /// The raw output, kept where the window that ran it keeps content: the
+    /// reference it carries is what the record names it by.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output: Option<String>,
-    pub output_len: u64,
+    pub output: Option<Bytes>,
     pub truncated: bool,
     pub tool: String,
     /// Whether what it changed can be undone later: read from the command
@@ -316,7 +315,6 @@ impl Terminal {
 
 #[resource(
     kind = "terminal.session",
-    label = "Terminal",
     params = session,
     effects = TerminalEffect,
     read_content = Terminal::read_document
@@ -388,14 +386,7 @@ impl Terminal {
         cx: &mut ActionCx,
         #[param("The run, as the session marked it", flatten)] run: Finished,
     ) -> Result<(), Refusal> {
-        let output = match &run.output {
-            Some(hash) => Bytes::Blob {
-                hash: content_hash(hash).ok_or("the output is not a content hash")?,
-                len: run.output_len,
-                sealed: None,
-            },
-            None => Bytes::Empty,
-        };
+        let output = run.output.unwrap_or_default();
         let asked = run
             .request
             .as_ref()
@@ -514,18 +505,6 @@ impl Terminal {
         requests.push(cx.id(), request);
         Ok(())
     }
-}
-
-/// The 32 bytes a lower-case hex content hash names.
-fn content_hash(hex: &str) -> Option<[u8; 32]> {
-    if !tilo_content::valid_hash(hex) {
-        return None;
-    }
-    let mut out = [0_u8; 32];
-    for (byte, pair) in out.iter_mut().zip(hex.as_bytes().chunks(2)) {
-        *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
-    }
-    Some(out)
 }
 
 /// Keep explicit reads bounded even when retained output contains very long

@@ -673,6 +673,29 @@ async def gui() -> dict[str, object]:
             not (isinstance(opened, dict) and "refused" in opened),
             f"the account with a card opens a Linux app ({opened})",
         )
+        # The app runs, as the tenant, before anyone looks at it: what it costs
+        # the VM is measured with its window up.
+        await asyncio.sleep(5)
+        isolation, _ = await asked(one, outcome(ows.do("terminal#run", command=GUI_ISOLATION_COMMAND)))
+        said = str((isolation or {}).get("output") or "")
+        check(
+            any(line.split() == ["tilo", "xterm"] for line in said.splitlines()),
+            f"the app runs as the tenant ({said.strip()!r})",
+        )
+        check(
+            not any(line.split()[:1] == [BROWSER_USER] for line in said.splitlines() if line.strip()),
+            f"nothing of it runs as Browser's account ({said.strip()!r})",
+        )
+        check("browser-home-closed" in said, f"the app's account cannot read Browser's profile ({said.strip()!r})")
+        after = await vm_memory(ows, one, "with the app open")
+        report: dict[str, object] = {
+            "app": GUI_APP,
+            "open_seconds": round(open_seconds, 2),
+            "memory_before": before,
+            "memory_after": after,
+            "memory_added_mib": int(after["used_mib"]) - int(before["used_mib"]),
+        }
+        write_json("gui.json", report)
         say("a person is invited into the workspace, to see it on their desk")
         invitation = await ows.members.invite(role="editor", email="gui-person@example.invalid")
         began = time.perf_counter()
@@ -699,29 +722,12 @@ async def gui() -> dict[str, object]:
         # clock source, so this is the keys' way to the app, roughly.
         keys_ms = ran_ms - int(typed_at) if ran_ms and typed_at else None
         say("the typing took effect", f"{written.strip()!r}, the Enter key ran it {keys_ms} ms after the first key went")
-        isolation, _ = await asked(one, outcome(ows.do("terminal#run", command=GUI_ISOLATION_COMMAND)))
-        said = str((isolation or {}).get("output") or "")
-        check(
-            any(line.split() == ["tilo", "xterm"] for line in said.splitlines()),
-            f"the app runs as the tenant ({said.strip()!r})",
-        )
-        check(
-            not any(line.split()[:1] == [BROWSER_USER] for line in said.splitlines() if line.strip()),
-            f"nothing of it runs as Browser's account ({said.strip()!r})",
-        )
-        check("browser-home-closed" in said, f"the app's account cannot read Browser's profile ({said.strip()!r})")
-        after = await vm_memory(ows, one, "with the app open")
-        report = {
-            "app": GUI_APP,
-            "open_seconds": round(open_seconds, 2),
+        report.update({
             "window": window,
             "desk_seconds": round(time.perf_counter() - began, 2),
             "written": written.strip(),
             "keys_to_app_ms": keys_ms,
-            "memory_before": before,
-            "memory_after": after,
-            "memory_added_mib": int(after["used_mib"]) - int(before["used_mib"]),
-        }
+        })
         write_json("gui.json", report)
         return report
     finally:

@@ -63,6 +63,11 @@ impl Stack {
 }
 
 impl Widget for Stack {
+    /// Its children, as its layout node stacks them.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.children();
+    }
+
     crate::provides!(
         dyn crate::permissions::capability::PermissionGated,
         dyn crate::presence::capability::PublishesPresence

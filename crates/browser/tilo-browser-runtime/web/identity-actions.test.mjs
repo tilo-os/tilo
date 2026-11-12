@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  ACTION_GAP_MS, ASK_AFTER_ACTIONS, createIdentityActions, KEEP, LINKED_ID, NAME, PAIR, passkeysUsable, PHOTO, RECOVERY, RESET_PHOTO,
-  REVOKE_DEVICE, SIGN_IN, syncProfile,
+import {setupOrigin,
+  ACTION_GAP_MS, ASK_AFTER_ACTIONS, CONNECT_AGENT, createIdentityActions, KEEP, LINKED_ID, NAME, PAIR, passkeysUsable, PHOTO,
+  RECOVERY, RESET_PHOTO, REVOKE_DEVICE, SIGN_IN, syncProfile,
 } from './identity-actions.mjs';
 import {openInvites} from './pairing.mjs';
 import {IdentityError} from './identity.mjs';
@@ -425,6 +425,27 @@ async function pairingFixture({invites = [INVITE_A, INVITE_B]} = {}) {
 const request = (digest, invite, extra = {}) => ({digest, pairingCode: '123456', label: 'Safari on iPhone', device: 'ee'.repeat(32),
   invite, requestedAtMs: 0, ...extra});
 
+test('the card offers the agent setup, and choosing it shows that setup again', async () => {
+  const identity = fakeIdentity();
+  const mount = fakeMount();
+  let shown = 0;
+  const actions = createIdentityActions({identity, session: memorySession(), passkeys: async () => false,
+    showAgentSetup: () => { shown += 1; }});
+  await actions.attach(mount);
+  assert.ok(mount.actions.includes(CONNECT_AGENT.id), 'the card offers it beside the devices');
+  assert.equal(mount.subtitles[CONNECT_AGENT.id], CONNECT_AGENT.subtitle);
+  await actions.perform(CONNECT_AGENT.id);
+  assert.equal(shown, 1, 'the first screen\'s own setup, with a fresh code');
+});
+
+test('without a page that can show the setup, the card offers nothing it cannot do', async () => {
+  const identity = fakeIdentity();
+  const mount = fakeMount();
+  const actions = createIdentityActions({identity, session: memorySession(), passkeys: async () => false});
+  await actions.attach(mount);
+  assert.ok(!mount.actions.includes(CONNECT_AGENT.id));
+});
+
 test('each pairing link names a fresh invite, shown on a sheet that can copy it, open for ten minutes', async () => {
   const pairing = await pairingFixture();
   assert.ok(pairing.mount.actions.includes(PAIR.id));
@@ -663,4 +684,13 @@ test('no stand-in where the person never had one, or there is no host to keep on
   await actions.perform(KEEP.id);
   assert.deepEqual(fake.asked, [], 'nothing to retire');
   assert.equal(await createIdentityActions({identity: fakeIdentity(), passkeys: withPasskeys}).keepStandIn(), null);
+});
+
+test('an agent setup code comes from the workspace in front, else the home host', () => {
+  const home = {host: {origin: 'https://eu1.tilo.sh'}};
+  assert.equal(setupOrigin({peer: {origin: 'https://other.example'}, home}), 'https://other.example');
+  // The person's own desktop has no workspace peer: the card still offers
+  // the setup, from the home host.
+  assert.equal(setupOrigin({peer: null, home}), 'https://eu1.tilo.sh');
+  assert.equal(setupOrigin({peer: null, home: null}), null);
 });
