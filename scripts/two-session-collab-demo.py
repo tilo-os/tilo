@@ -273,6 +273,10 @@ def main() -> int:
                 build_first=args.build, remote=args.remote_exec) as (
             host, peer, host_workspace, link):
         room = host_workspace["room"]
+        token = uuid.uuid4().hex[:8]
+        note_title = f"Release plan {token}"
+        note_body = f"Ship the {token} build on Friday."
+        task_title = f"Book the studio for {token}"
         try:
             step("1", "two sessions of different people, in one workspace")
             note(f"workspace {host_workspace['name']} ({room}), the link is {len(link)} characters")

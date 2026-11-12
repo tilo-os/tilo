@@ -553,6 +553,8 @@ pub struct FrameHarness {
     /// Whether the surface this tree draws holds the keyboard: its fields keep their text and
     /// selection without it, and paint no caret ([`crate::caret_owner`]).
     keyboard_held: bool,
+    /// [`crate::host_core::KeyHost::keyboard_entry_owed`].
+    keyboard_entry_owed: bool,
     /// Whether this layout's keyboard came from a control answering by name alone; the frame's own
     /// snapshot of where the keyboard was outranks a name.
     focus_by_name: bool,
@@ -1563,6 +1565,7 @@ impl FrameHarness {
             focused: None,
             focus_name: None,
             keyboard_held: true,
+            keyboard_entry_owed: false,
             focus_by_name: false,
             focus_trap_active: false,
             active_input_instance: None,
@@ -3160,6 +3163,7 @@ impl FrameHarness {
         if result.is_ok() {
             self.activate_requested_app();
             self.apply_focus_request();
+            crate::host_core::KeyHost::hand_owed_keyboard(self);
         }
         result
     }
@@ -6367,6 +6371,9 @@ impl FrameHarness {
             return;
         };
         self.send_with_host_navigation(event, false);
+        if matches!(event, WindowEvent::Focused(false)) {
+            self.keyboard_entry_owed = false;
+        }
         if matches!(event, WindowEvent::Focused(true)) {
             // As in the native window: the window took the keyboard.
             self.hand_keyboard_to_app();
@@ -9046,6 +9053,10 @@ impl crate::host_core::KeyHost for FrameHarness {
                     })
             })
             .collect()
+    }
+
+    fn keyboard_entry_owed(&mut self) -> &mut bool {
+        &mut self.keyboard_entry_owed
     }
 
     fn key_fallback_acted(&mut self) {

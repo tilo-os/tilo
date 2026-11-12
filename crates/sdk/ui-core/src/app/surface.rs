@@ -189,6 +189,7 @@ impl App {
             WindowEvent::Focused(false) => {
                 self.input.keyboard_layout = None;
                 self.input.window_focused = false;
+                self.input.keyboard_entry_owed = false;
                 // The field the person left keeps its text and selection, and gives up the caret
                 // with the keyboard: the frame is drawn again where the caret stood.
                 if self.input.keyboard_held {

@@ -2607,6 +2607,7 @@ impl App {
             }
             // The tree this rebuild made is the one a control asked focus in.
             requested = self.apply_focus_request();
+            crate::host_core::KeyHost::hand_owed_keyboard(self);
         }
         self.invalidate_widget_resource_cache();
         // What the window's layout needs follows the tree and the theme it
