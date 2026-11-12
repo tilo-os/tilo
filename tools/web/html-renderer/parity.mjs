@@ -260,11 +260,85 @@ const SCENARIOS = {
   ],
   'so.tilo.calendar': [
     // The month picker: a popover over the window, which both renders must
-    // place and paint alike.
-    {click: '2026-11-11 Month'},
+    // place and paint alike, raised from the sidebar's own chooser.
+    {click: 'Month', role: 'ComboBox'},
     {shot: 'month-picker'},
     {key: 'Escape'},
     {shot: 'picker-closed'},
+    // A day pressed and let go on another: the event the day holds moves.
+    {drag: ['Open Thu, Nov 12', 'Open Sat, Nov 14']},
+    {shot: 'day-drag'},
+    // A dialog over the month: the sheet behind it dims, and one scrim
+    // painted plainly is a different month.
+    {click: 'New event'},
+    {shot: 'new-event'},
+    {key: 'Escape'},
+    {shot: 'event-closed'},
+  ],
+  'so.tilo.chat': [
+    // A channel, a message typed into the composer, and the window's own
+    // menu — each a part of the page that only one render could have got
+    // wrong on its own.
+    {click: 'voice', role: 'TreeItem'},
+    {shot: 'channel'},
+    {click: 'Message composer'},
+    {type: 'Parity says hello.'},
+    {shot: 'composed'},
+    {click: 'More actions'},
+    {shot: 'menu'},
+    {key: 'Escape'},
+    {shot: 'menu-closed'},
+    // The sidebar handle dragged in: the message column takes the room.
+    {drag: [['Resize sidebar', 0, 200], ['Resize sidebar', 160, 200]]},
+    {shot: 'sidebar-dragged'},
+  ],
+  'so.tilo.word-processor': [
+    // A menu over the document, then typing in it, then a selection dragged
+    // over what was typed.
+    {click: 'Format'},
+    {shot: 'format-menu'},
+    {key: 'Escape'},
+    {shot: 'menu-closed'},
+    {click: 'Document editor'},
+    {type: 'A line set in the word processor. '},
+    {shot: 'typed'},
+    {drag: [['Document editor', -400, -140], ['Document editor', -120, -110]]},
+    {shot: 'selected'},
+  ],
+  'so.tilo.sheets': [
+    // A value typed into a cell, then a range dragged over, then a formula
+    // started from the formula bar.
+    {click: 'A1', role: 'Cell'},
+    {type: '42'},
+    {shot: 'typed-cell'},
+    {drag: [['A1', 0, 0], ['C3', 0, 0]]},
+    {shot: 'range'},
+    {click: 'Start a formula'},
+    {type: 'SUM('},
+    {shot: 'formula'},
+    {click: 'Add sheet'},
+    {shot: 'new-sheet'},
+  ],
+  'so.tilo.settings': [
+    // Another pane from the sidebar, a chooser opened over it, and a density
+    // picked: three kinds of control, none of them a window bar's button.
+    {click: 'Accessibility', role: 'TreeItem'},
+    {shot: 'pane'},
+    {click: 'Interface size', role: 'ComboBox'},
+    {shot: 'chooser'},
+    {key: 'Escape'},
+    {shot: 'chooser-closed'},
+    {click: 'Compact', role: 'RadioButton'},
+    {shot: 'density'},
+  ],
+  'so.tilo.photos': [
+    // The sides of the library, and the sheet a new album raises.
+    {click: 'Albums', role: 'TreeItem'},
+    {shot: 'albums'},
+    {click: 'New album'},
+    {shot: 'new-album'},
+    {key: 'Escape'},
+    {shot: 'album-closed'},
   ],
 };
 
