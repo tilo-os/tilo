@@ -150,12 +150,17 @@ pdf-comment-resolve = Resolve
 pdf-comment-reopen = Reopen
 pdf-comment-edit = Edit comment
 pdf-comment-delete = Delete comment
+pdf-viewer-comment-placeholder = Write a comment…
 pdf-comment-empty = Empty comment
 pdf-author-you = You
 pdf-author-someone = Someone
 pdf-contents-empty = This document has no contents
 
-pdf-signature-heading = Your signature
+pdf-viewer-signature-your = Your signature
+pdf-viewer-signing-as = Signing as
+pdf-signature-your-name = Your name
+pdf-viewer-signature-placed = Placed
+pdf-viewer-signature-placed-note = No signature is placed yet.
 pdf-signature-type = Type
 pdf-signature-draw = Draw
 pdf-signature-draw-hint = Draw your signature here
@@ -172,43 +177,6 @@ pdf-signature-unnamed = Signature
 pdf-imported-page-loading = Imported page is loading…
 pdf-imported-page-waiting = The imported page arrives once someone who has it is online.
 pdf-imported-page-unavailable = Imported page is unavailable
-
-## The review panel: the comments a document's readers left, and the
-## signatures they placed on it.
-
-pdf-comments-empty-title = No comments yet
-pdf-comments-empty-message = Select text to comment on it, or add a note with the Note tool.
-pdf-comments-one-open = 1 comment, open
-pdf-comments-one-resolved = 1 comment, resolved
-pdf-comments-all-resolved = { $total } comments, all resolved
-pdf-comments-open = { $total } comments, { $open } open
-pdf-viewer-comment-placeholder = Write a comment…
-pdf-comment-reply = Reply
-pdf-comment-reply-placeholder = Reply…
-pdf-comment-resolve = Resolve
-pdf-comment-reopen = Reopen
-pdf-comment-edit = Edit comment
-pdf-comment-delete = Delete comment
-pdf-comment-empty = Empty comment
-pdf-author-you = You
-pdf-author-someone = Someone
-pdf-contents-empty = This document has no contents
-
-pdf-viewer-signature-your = Your signature
-pdf-signature-type = Type
-pdf-signature-draw = Draw
-pdf-viewer-signing-as = Signing as
-pdf-signature-your-name = Your name
-pdf-signature-draw-hint = Draw your signature here
-pdf-signature-clear = Clear
-pdf-signature-place = Place on page
-pdf-signature-cancel = Cancel
-pdf-signature-place-hint = Click on a page to place your signature.
-pdf-viewer-signature-placed = Placed
-pdf-viewer-signature-placed-note = No signature is placed yet.
-pdf-signature-delete = Delete signature
-pdf-signature-annotation = Signed by { $signer } on { $date }
-pdf-signature-unnamed = Signature
 
 ## The page and the zoom
 

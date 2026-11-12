@@ -151,12 +151,17 @@ pdf-comment-resolve = Erledigen
 pdf-comment-reopen = Wieder öffnen
 pdf-comment-edit = Kommentar bearbeiten
 pdf-comment-delete = Kommentar löschen
+pdf-viewer-comment-placeholder = Kommentar schreiben …
 pdf-comment-empty = Leerer Kommentar
 pdf-author-you = Du
 pdf-author-someone = Jemand
 pdf-contents-empty = Dieses Dokument hat keinen Inhalt
 
-pdf-signature-heading = Deine Unterschrift
+pdf-viewer-signature-your = Deine Unterschrift
+pdf-viewer-signing-as = Du unterschreibst als
+pdf-signature-your-name = Dein Name
+pdf-viewer-signature-placed = Platziert
+pdf-viewer-signature-placed-note = Noch keine Unterschrift platziert.
 pdf-signature-type = Tippen
 pdf-signature-draw = Zeichnen
 pdf-signature-draw-hint = Zeichne deine Unterschrift hier
@@ -174,43 +179,6 @@ pdf-signature-unnamed = Unterschrift
 pdf-imported-page-loading = Importierte Seite wird geladen …
 pdf-imported-page-waiting = Die importierte Seite kommt an, sobald jemand, der sie hat, online ist.
 pdf-imported-page-unavailable = Importierte Seite ist nicht verfügbar
-
-## Die Prüf-Seitenleiste: die Kommentare der Lesenden und die platzierten
-## Unterschriften.
-
-pdf-comments-empty-title = Noch keine Kommentare
-pdf-comments-empty-message = Markiere Text, um ihn zu kommentieren, oder füge mit dem Notiz-Werkzeug eine Notiz hinzu.
-pdf-comments-one-open = 1 Kommentar, offen
-pdf-comments-one-resolved = 1 Kommentar, erledigt
-pdf-comments-all-resolved = { $total } Kommentare, alle erledigt
-pdf-comments-open = { $total } Kommentare, { $open } offen
-pdf-viewer-comment-placeholder = Kommentar schreiben …
-pdf-comment-reply = Antworten
-pdf-comment-reply-placeholder = Antworten …
-pdf-comment-resolve = Erledigen
-pdf-comment-reopen = Wieder öffnen
-pdf-comment-edit = Kommentar bearbeiten
-pdf-comment-delete = Kommentar löschen
-pdf-comment-empty = Leerer Kommentar
-pdf-author-you = Du
-pdf-author-someone = Jemand
-pdf-contents-empty = Dieses Dokument hat keinen Inhalt
-
-pdf-viewer-signature-your = Deine Unterschrift
-pdf-signature-type = Tippen
-pdf-signature-draw = Zeichnen
-pdf-viewer-signing-as = Du unterschreibst als
-pdf-signature-your-name = Dein Name
-pdf-signature-draw-hint = Zeichne deine Unterschrift hier
-pdf-signature-clear = Leeren
-pdf-signature-place = Auf der Seite platzieren
-pdf-signature-cancel = Abbrechen
-pdf-signature-place-hint = Klicke auf eine Seite, um deine Unterschrift zu platzieren.
-pdf-viewer-signature-placed = Platziert
-pdf-viewer-signature-placed-note = Noch keine Unterschrift platziert.
-pdf-signature-delete = Unterschrift löschen
-pdf-signature-annotation = Unterschrieben von { $signer } am { $date }
-pdf-signature-unnamed = Unterschrift
 
 ## Die Seite und der Zoom
 

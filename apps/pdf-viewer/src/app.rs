@@ -5021,7 +5021,7 @@ impl Widget for PdfApp {
         if !self.has_document {
             return Some(
                 AccessNode::new(Role::Window)
-                    .with_name(ui::i18n::I18nManager::lookup_plain("pdf-title"))
+                    .with_name(crate::t("pdf-title"))
                     .with_bounds(self.rect)
                     .with_children(self.empty_state_nodes()),
             );
@@ -5061,7 +5061,7 @@ impl Widget for PdfApp {
             })
             .collect();
         let page_list = AccessNode::new(Role::List)
-            .with_name(ui::i18n::I18nManager::lookup_plain("pdf-a11y-pages"))
+            .with_name(crate::t("pdf-a11y-pages"))
             .with_hashed_key("pdf.pages")
             .with_children(page_nodes);
 
@@ -5079,7 +5079,7 @@ impl Widget for PdfApp {
                         ("pages", pages.to_string().into()),
                     ],
                 ))
-                .with_description(ui::i18n::I18nManager::lookup_plain("pdf-a11y-canvas"))
+                .with_description(crate::t("pdf-a11y-canvas"))
                 .with_value(crate::t_args(
                     "pdf-a11y-zoom",
                     &[("zoom", ((self.zoom() * 100.0).round() as u32).into())],
@@ -5110,9 +5110,7 @@ impl Widget for PdfApp {
                 .collect();
             content_children.push(
                 AccessNode::new(Role::List)
-                    .with_name(ui::i18n::I18nManager::lookup_plain(
-                        "pdf-a11y-search-results",
-                    ))
+                    .with_name(crate::t("pdf-a11y-search-results"))
                     .with_hashed_key("pdf.search.results")
                     .with_children(result_nodes),
             );
@@ -5251,9 +5249,7 @@ impl Widget for PdfApp {
             };
             content_children.push(
                 AccessNode::new(Role::Group)
-                    .with_name(ui::i18n::I18nManager::lookup_plain(
-                        "pdf-a11y-review-sidebar",
-                    ))
+                    .with_name(crate::t("pdf-a11y-review-sidebar"))
                     .with_children(vec![
                         AccessNode::new(Role::TabBar)
                             .with_name(crate::t("pdf-a11y-tabs"))
@@ -5278,7 +5274,7 @@ impl Widget for PdfApp {
                 .with_children(controls),
             page_list,
             AccessNode::new(Role::Group)
-                .with_name(ui::i18n::I18nManager::lookup_plain("pdf-a11y-document"))
+                .with_name(crate::t("pdf-a11y-document"))
                 .with_hashed_key("pdf.content")
                 .with_children(content_children),
         ];
@@ -5289,7 +5285,7 @@ impl Widget for PdfApp {
         }
         Some(
             AccessNode::new(Role::Window)
-                .with_name(ui::i18n::I18nManager::lookup_plain("pdf-title"))
+                .with_name(crate::t("pdf-title"))
                 .with_bounds(self.rect)
                 .with_children(window_children),
         )
