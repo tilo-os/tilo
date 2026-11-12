@@ -14,7 +14,7 @@
 //
 // usage: node tour.mjs SITE_URL RELAY_ORIGIN OUT_DIR [TILO_BIN SITE_CA]
 import {execFile, spawn} from 'node:child_process';
-import {chmodSync, mkdirSync, writeFileSync} from 'node:fs';
+import {chmodSync, mkdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {connect} from 'node:tls';
 import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
@@ -44,6 +44,21 @@ let shotNo = 0;
 // it was, and what each wait ended on.
 let quietMs = 0;
 const quietHow = {};
+
+// The apps a person's everyday round opens here, in the order the tour walks them.
+const everyday = ['Notes', 'Sheets', 'Files', 'Chat', 'Canvas', 'Word Processor', 'Calendar', 'Browser'];
+// What this page has, by name, as its bundle lists it (`apps.json`): the apps a window here can
+// show. An app that runs only in Tilo on a computer has no row in the page's search and no window
+// to open, so the tour never asks for one — searching for it would walk a person into a card that
+// says nothing matched, and pressing Enter there rightly does nothing.
+const bundle = process.env.TILO_BUNDLE;
+const pageApps = bundle
+  ? (() => { try { return JSON.parse(readFileSync(join(bundle, 'apps.json'), 'utf8')); } catch { return null; } })()
+  : null;
+if (bundle && !pageApps?.applications?.length) {
+  report.problems.push(`the bundle at ${bundle} lists no apps, so the tour cannot tell which this page can open`);
+}
+const pageHas = name => !pageApps?.applications || pageApps.applications.some(app => app.name === name);
 
 // The computer the agent runs on, as agent-setup.mjs sets it up: its own home,
 // a `claude` that records how it was asked to add Tilo's tools, and the relay's
@@ -128,7 +143,8 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
     await sleep(300);
     return JSON.parse(await tab.evaluate(`(() => {
       const out = [];
-      const node = (n, depth) => { const b = n.bounds ?? n.rect; out.push([depth, n.role ?? '', n.name ?? '', n.value ?? '',
+      const node = (n, depth) => {
+        if (!n) return; const b = n.bounds ?? n.rect; out.push([depth, n.role ?? '', n.name ?? '', n.value ?? '',
         b ? (Array.isArray(b) ? b : [b.x0 ?? b.x, b.y0 ?? b.y, b.x1 ?? b.x + b.width, b.y1 ?? b.y + b.height]).map(Math.round) : null]);
         (n.children || []).forEach(c => node(c, depth + 1)); };
       const walk = n => { if (n.semantics) node(n.semantics, 0); (n.children || []).forEach(walk); };
@@ -137,6 +153,17 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
       return JSON.stringify(out);
     })()`).catch(() => '[]'));
   };
+  // The open search's card, as the page publishes it: the query its field holds and the rows it
+  // offers, each as a name with what it says under it — a row that could not be carried out says
+  // why there.
+  const card = async () => tab.evaluate(`(() => {
+    const state = globalThis.tiloMount && globalThis.tiloMount.state ? globalThis.tiloMount.state() : null;
+    return JSON.stringify({
+      open: state ? state.searchOpen === true : null,
+      searching: state ? state.searchSearching === true : null,
+      card: state ? state.searchCard || null : null,
+    });
+  })()`).catch(error => `unreadable: ${String(error && error.message ? error.message : error).slice(-300)}`);
   const shoot = async label => {
     const file = `${String(++shotNo).padStart(2, '0')}-${name}-${label.replace(/[^a-z0-9]+/gi, '-')}`;
     // WebP keeps forty screens small enough to read back from a log.
@@ -229,16 +256,22 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
     console.log(`TIMING tour=${name} step=${what} seconds=${((Date.now() - began) / 1000).toFixed(1)}`);
   };
   const mac = false;
+  // Search's own Escape clears the query and the next closes it, so a search left standing with
+  // a query takes two: press until it is gone. Whether it went.
+  const closeSearch = async () => {
+    for (let pressed = 0; pressed < 3; pressed++) {
+      if (!await waits.searchOpen(tab)) return true;
+      await key('Escape');
+      if (await tab.waitFor('!globalThis.tiloMount?.state()?.searchOpen', {timeout: 10_000}).then(() => true, () => false)) return true;
+    }
+    return !await waits.searchOpen(tab);
+  };
   const search = async (query, pick = null) => {
     // Every search starts fresh: one left open by a row that keeps it up
     // (an answer) is closed first, so the query is not appended to it.
-    if (await waits.searchOpen(tab)) {
-      await key('Escape');
-      if (!await tab.waitFor('!globalThis.tiloMount?.state()?.searchOpen', {timeout: 10_000}).then(() => true, () => false)) {
-        report.problems.push(`${name}: Escape left the search open`);
-        await shoot('search-stuck');
-        await key('Escape');
-      }
+    if (!await closeSearch()) {
+      report.problems.push(`${name}: Escape left the search open`);
+      await shoot('search-stuck');
     }
     // The keyboard goes to the desk without a click: a click to give it focus lands on whatever
     // stands there, a row of a search still up or a window's button.
@@ -255,16 +288,30 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
   // search stays up until an app's window has arrived, which on a page
   // includes fetching the app's code.
   const opened = async () => {
+    // What Enter is about to choose, for the log: the card's own rows and the query it holds.
+    const before = await card();
+    console.log(`  card: ${before}`);
+    // A card that found nothing has no row for Enter to open, and pressing it would only leave the
+    // search standing: the step says what it could not find instead.
+    const shown = typeof before === 'string' ? JSON.parse(before) : null;
+    if (shown?.card && shown.card.rows.length === 0) {
+      report.problems.push(`${name}: nothing matched “${shown.card.query}”`);
+      return;
+    }
     await key('Enter');
     const closed = await tab.waitFor('!globalThis.tiloMount?.state()?.searchOpen', {timeout: 90_000})
       .then(() => true, () => false);
     if (!closed) {
-      report.problems.push(`${name}: the search stayed open after Enter`);
-      // What it stood on: the field and its first rows, and whether it still searched.
-      const state = await tab.evaluate(`JSON.stringify((({searchSearching, frames}) => ({searchSearching, frames}))(globalThis.tiloMount?.state() ?? {}))`).catch(() => '?');
-      const rows = (await names()).filter(([, role, n]) => n && /TextInput|SearchBox|ListItem|Option|MenuItem|Row/i.test(role)).slice(0, 12)
-        .map(([, role, n]) => `${role}:${n}`);
-      console.log(`  search stayed open: ${state} ${JSON.stringify(rows).slice(0, 1500)}`);
+      // What it stood on: a card that found nothing has no row Enter could open — it says so — and
+      // that is a query this page has no answer to, not a search that would not go.
+      const after = await card();
+      const shown = typeof after === 'string' ? JSON.parse(after) : null;
+      if (shown?.card && shown.card.rows.length === 0) {
+        report.problems.push(`${name}: nothing matched “${shown.card.query}”`);
+      } else {
+        report.problems.push(`${name}: the search stayed open after Enter`);
+      }
+      console.log(`  search stayed open: ${after}`);
     }
     await sleep(500);
     // What the desk holds now, and what the page last said, for the log.
@@ -338,7 +385,7 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
     return;
   }
   await step('search-empty', async () => { await search(''); await shoot('search-open'); await key('Escape'); await quiet(500); });
-  for (const app of ['Notes', 'Sheets', 'Files', 'Chat', 'Canvas', 'Word Processor', 'Calendar', 'Browser']) {
+  for (const app of everyday.filter(app => pageHas(app))) {
     await step(`open-${app}`, async () => {
       await search(app.toLowerCase());
       await shoot(`search-${app}`);
@@ -377,7 +424,9 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
     await quiet(1500); await shoot('own-card');
     await key('Escape'); await quiet(500);
   });
-  await step('invite', async () => { await search('invite'); await shoot('search-invite'); await opened(); await quiet(); await shoot('invite'); });
+  // The workspace's own verb: "invite" alone leads with an app's invitation to one of its own
+  // things (a calendar event, a contact), which is not what the page's invite sheet is.
+  await step('invite', async () => { await search('invite people'); await shoot('search-invite'); await opened(); await quiet(); await shoot('invite'); });
   agent?.stop();
   await tab.close().catch(() => {});
 };
@@ -385,13 +434,20 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
 // One appearance after another: three desks drawn at once share one software
 // rasteriser and one machine, and the tour then reads pages that never arrived
 // (measured: 19 minutes with three at once against 23 one after another, and
-// screens of a search that was still opening).
-await tour({name: 'desk', width: 1280, height: 800});
-mark('the desk appearance');
-await tour({name: 'dark', width: 1280, height: 800, scheme: 'dark'});
-mark('the dark appearance');
-await tour({name: 'phone', width: 390, height: 844, mobile: true});
-mark('the phone appearance');
+// screens of a search that was still opening). One appearance that stops — a
+// stalled page, a program that never answers — is a problem written down, not
+// the end of the tour: the others are walked and kept as pictures all the same,
+// and each is timed from the mark it leaves.
+const appearance = async (options, at) => {
+  try { await tour(options); } catch (error) {
+    report.problems.push(`${options.name}: the tour stopped: ${error.message?.slice(0, 400) ?? error}`);
+    console.log(`problem in ${options.name}: the tour stopped: ${error.message?.slice(0, 400) ?? error}`);
+  }
+  mark(at);
+};
+await appearance({name: 'desk', width: 1280, height: 800}, 'the desk appearance');
+await appearance({name: 'dark', width: 1280, height: 800, scheme: 'dark'}, 'the dark appearance');
+await appearance({name: 'phone', width: 390, height: 844, mobile: true}, 'the phone appearance');
 writeFileSync(join(out, 'report.json'), JSON.stringify(report, null, 2));
 await browser.close().catch(() => {});
 console.log(`TIMING quiet=${(quietMs / 1000).toFixed(1)}s of the tour was waiting for the desk to stand still (${Object.entries(quietHow).map(([how, n]) => `${n} ${how}`).join(', ')})`);
