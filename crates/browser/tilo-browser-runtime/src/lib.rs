@@ -257,6 +257,8 @@ mod rooms;
 mod entered;
 // When a status carries the semantics tree: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
+mod disk_key;
+#[cfg(any(target_arch = "wasm32", test))]
 #[cfg_attr(
     not(target_arch = "wasm32"),
     allow(
