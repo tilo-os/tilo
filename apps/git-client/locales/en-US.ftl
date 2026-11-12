@@ -192,3 +192,36 @@ git-show-commit-file = Show this file's changes in the commit
 git-whitespace-name = Show whitespace
 git-wrap-name = Wrap long lines
 git-window-name = Git
+
+## Actions
+
+git-client-effect-open-repository = Open repository
+git-client-effect-choose-repository = Choose repository
+git-client-effect-run-approved-check = Run approved project check
+git-client-effect-show-changes = Show changes
+git-client-effect-show-history = Show history
+git-client-effect-show-branches = Show branches and remotes
+git-client-effect-open-change = Open diff
+git-client-effect-read-change = Read change
+git-client-effect-open-commit = Open commit
+git-client-effect-stage-all = Stage all changes
+git-client-effect-unstage-all = Unstage all changes
+git-client-effect-stage-file = Stage file
+git-client-effect-unstage-file = Unstage file
+git-client-effect-discard-file = Discard file changes
+git-client-effect-commit = Commit staged changes
+git-client-effect-create-branch = Create branch
+git-client-effect-create-worktree = Create linked worktree
+git-client-effect-checkout-branch = Check out branch
+git-client-effect-delete-branch = Delete branch
+git-client-effect-save-stash = Stash working changes
+git-client-effect-apply-stash = Apply stash
+git-client-effect-fetch = Fetch remote
+git-client-effect-pull = Pull from remote
+git-client-effect-push = Push to remote
+git-client-effect-diff-layout = Switch diff layout
+git-client-effect-syntax-highlight = Turn syntax highlighting on or off
+git-client-effect-show-whitespace = Show or hide whitespace
+git-client-effect-wrap-lines = Wrap long lines
+git-client-repo = Repository
+git-client-repo-record-repository = Record the repository's state

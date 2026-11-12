@@ -143,3 +143,33 @@ shortcuts-problem-a-step = Ein Schritt
 shortcuts-problem-step = Schritt { $number }
 shortcuts-deleted = “{ $name }” gelöscht
 shortcuts-not-finished = Konnte nicht abgeschlossen werden
+
+## Actions
+
+shortcuts-door-refresh = Kurzbefehle neu laden
+shortcuts-door-save = Kurzbefehl sichern
+shortcuts-door-run = Kurzbefehl ausführen
+shortcuts-door-delete = Kurzbefehl löschen
+shortcuts-door-describe = Mit dem Agenten entwerfen
+shortcuts-door-refine = Mit dem Agenten nachschärfen
+shortcuts-workbench = Kurzbefehle
+shortcuts-workbench-draft-proposal = Vorgeschlagenen Kurzbefehl öffnen
+shortcuts-workbench-ignore-proposal = Vorschlag nicht mehr anbieten
+shortcuts-workbench-allow-proposal = Vorschlag wieder anbieten
+shortcuts-workbench-new-draft = Neuer Kurzbefehl
+shortcuts-workbench-duplicate-draft = Entwurf duplizieren
+shortcuts-workbench-draft-shortcut = Kurzbefehl importieren
+shortcuts-workbench-open-shortcut = Gespeicherten Kurzbefehl bearbeiten
+shortcuts-workbench-duplicate-shortcut = Gespeicherten Kurzbefehl duplizieren
+shortcuts-workbench-set-schedule = Zeitplan festlegen
+shortcuts-workbench-discard = Entwurf verwerfen
+shortcuts-workbench-add-step = Schritt hinzufügen
+shortcuts-workbench-replace-step = Schritt ändern
+shortcuts-workbench-bind-argument = Argument binden
+shortcuts-workbench-remove-step = Schritt entfernen
+shortcuts-workbench-move-step = Schritt verschieben
+shortcuts-workbench-set-step-policy = Verhalten bei Fehlern festlegen
+shortcuts-workbench-set-nested = Schritt in anderen Block verschieben
+shortcuts-workbench-set-output = Ergebnis des Kurzbefehls festlegen
+shortcuts-workbench-add-input = Eingabe hinzufügen
+shortcuts-workbench-remove-input = Eingabe entfernen

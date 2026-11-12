@@ -418,7 +418,6 @@ impl Deck {
 
 #[resource(
     kind = "slides.deck",
-    label = "Deck",
     initialize = Deck::starter,
     search = crate::search::entries,
     facts = crate::outline::facts,

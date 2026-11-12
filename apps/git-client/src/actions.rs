@@ -95,7 +95,7 @@ pub enum GitClientEffect {
     /// many lines were added and removed, and the diff itself. It is the
     /// changed file's read: what discloses its row, so staging, unstaging
     /// and discarding it are offered to whoever may read it, an agent too.
-    #[effect(view, row, returns, label = "Read change")]
+    #[effect(view, row, returns)]
     ReadChange {
         #[param("Where the change is: staged, unstaged or untracked")]
         area: String,

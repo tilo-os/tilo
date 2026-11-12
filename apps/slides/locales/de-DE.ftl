@@ -222,3 +222,37 @@ slides-a11y-presenting = { $deck } wird vorgeführt
 
 ## What the window shows
 slides-slide-number = Folie { $number }
+
+## Actions
+
+slides-deck = Präsentation
+slides-deck-add-slide = Folie hinzufügen
+slides-deck-insert-slide = Folie einfügen
+slides-deck-duplicate-slide = Folie duplizieren
+slides-deck-delete-slide = Folie löschen
+slides-deck-move-slide = Folie verschieben
+slides-deck-set-text = Folientext setzen
+slides-deck-add-element = Element hinzufügen
+slides-deck-insert-element = Element einfügen
+slides-deck-delete-element = Element löschen
+slides-deck-bring-to-front = In den Vordergrund
+slides-deck-send-to-back = In den Hintergrund
+slides-deck-replace-deck = Präsentation ersetzen
+slides-effect-editor = Editor anzeigen
+slides-effect-overview = Folienübersicht anzeigen
+slides-effect-present = Präsentation starten
+slides-effect-present-largest-external = Auf größtem externen Bildschirm präsentieren
+slides-effect-present-primary-external = Auf externem Hauptbildschirm präsentieren
+slides-effect-end-presentation = Präsentation beenden
+slides-effect-show-slide-list = Folienliste anzeigen
+slides-effect-show-properties = Eigenschaften anzeigen
+slides-effect-open-slide = Folie öffnen
+slides-effect-open-element = Element zeigen
+slides-effect-edit-text = Text bearbeiten
+slides-effect-open-notes = Notizen öffnen
+slides-effect-insert-picture = Bild einfügen
+slides-effect-open-presentation = Präsentation öffnen
+slides-effect-save-as = Präsentation speichern
+slides-effect-read-deck = Präsentation als Text lesen
+slides-effect-import-pptx-content = Präsentation aus Inhalt importieren
+slides-effect-export-pptx-content = Präsentation als Inhalt exportieren
