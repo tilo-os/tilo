@@ -605,6 +605,21 @@ interaction-committed = Committed
 interaction-failed = Failed
 interaction-cancelled = Cancelled
 interaction-progress = { $label } - { $done }/{ $total }
+
+# What one step of work is, as a person reads it beside the actor's face, in
+# the people list and on the card drawn where the step happens: the kind of
+# work the action's own declaration names, on the record or item it acts in.
+# The record is the item's title where the step names one.
+step-creating = Creating in { $record }
+step-writing = Writing in { $record }
+step-editing = Editing { $record }
+step-deleting = Deleting { $record }
+step-moving = Moving { $record }
+step-reading = Reading { $record }
+step-running = Running { $command }
+step-running-in = Running in { $record }
+step-working = Working in { $record }
+step-working-alone = Working
 # A peer whose caret a text widget draws in its own text: where they are, said
 # to a reader. A selection says that instead.
 presence-writing-here = { $name } is writing here
@@ -1277,19 +1292,5 @@ media-playback-settings = Playback settings
 media-toggle-on = On
 media-toggle-off = Off
 floating-window-title = Floating window
-# What one step of work is, as a person reads it beside the actor's face, in
-# the people list and on the card drawn where the step happens: the kind of
-# work the action's own declaration names, on the record or item it acts in.
-# The record is the item's title where the step names one.
-step-creating = Creating in { $record }
-step-writing = Writing in { $record }
-step-editing = Editing { $record }
-step-deleting = Deleting { $record }
-step-moving = Moving { $record }
-step-reading = Reading { $record }
-step-running = Running { $command }
-step-running-in = Running in { $record }
-step-working = Working in { $record }
-step-working-alone = Working
 now-playing-seek = Playback position
 now-playing-seek-help = Use Left and Right Arrow to move five seconds
