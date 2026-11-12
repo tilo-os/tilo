@@ -36,6 +36,11 @@ pub(crate) struct Restore {
     waiting: VecDeque<Saved>,
     /// The one whose app was asked for and whose window has not come yet.
     opening: Option<Opening>,
+    /// The ones of a workspace this device waits for its host to admit it to: each tab says so,
+    /// and its app is asked for once the host took the device in, as if it had just been reached.
+    held: Vec<Saved>,
+    /// When [`Self::held`] was last read against admission: once a second, not on every pass.
+    held_checked: Option<Instant>,
 }
 
 /// A window the person left open, and the app that opens it again.
@@ -97,6 +102,8 @@ impl Restore {
         Self {
             waiting: saved.into_iter().map(|(_, saved)| saved).collect(),
             opening: None,
+            held: Vec::new(),
+            held_checked: None,
         }
     }
 
@@ -125,13 +132,22 @@ impl Restore {
     }
 
     /// Ask for the next saved window when the one before has come, or say in its tab why it did
-    /// not.
-    pub(crate) fn follow(&mut self, desktop: &DesktopHost, apps: Option<&Apps>) {
+    /// not. A window of a workspace whose host has not taken this device in yet (`awaited` names
+    /// that host, by the workspace's id) is held: its tab says what it waits for, and its app is
+    /// asked for once the host admitted the device. Started before, the app would take part in
+    /// nothing there, and would not join once the device is admitted.
+    pub(crate) fn follow(
+        &mut self,
+        desktop: &DesktopHost,
+        apps: Option<&Apps>,
+        awaited: &dyn Fn(&str) -> Option<String>,
+    ) {
         let Some(apps) = apps else {
             // This session starts no apps at all, so nothing will come for a saved window: the tabs
             // stay as they are.
             return;
         };
+        self.release_admitted(desktop, awaited);
         loop {
             if let Some(opening) = &self.opening {
                 let waiting = desktop.with_policy(|policy| policy.waits_for_window(opening.tab));
@@ -160,9 +176,44 @@ impl Restore {
             if coming {
                 continue;
             }
+            let host = workspace_holding(desktop, saved.tab, |held| held.id().to_string())
+                .and_then(|workspace| awaited(&workspace));
+            if let Some(host) = host {
+                let note = waits_for_host(&saved.name, &host);
+                desktop.with_policy(|policy| policy.note_in_tab(saved.tab, &note));
+                self.held.push(saved);
+                continue;
+            }
             if self.open(desktop, apps, saved) {
                 return;
             }
+        }
+    }
+
+    /// The held windows whose workspace's host took this device in since: asked for next, in the
+    /// order they were held, ahead of the ones not asked for yet.
+    fn release_admitted(
+        &mut self,
+        desktop: &DesktopHost,
+        awaited: &dyn Fn(&str) -> Option<String>,
+    ) {
+        if self.held.is_empty()
+            || self
+                .held_checked
+                .is_some_and(|at| at.elapsed() < Duration::from_secs(1))
+        {
+            return;
+        }
+        self.held_checked = Some(Instant::now());
+        let (admitted, still): (Vec<Saved>, Vec<Saved>) = std::mem::take(&mut self.held)
+            .into_iter()
+            .partition(|saved| {
+                workspace_holding(desktop, saved.tab, |held| held.id().to_string())
+                    .is_none_or(|workspace| awaited(&workspace).is_none())
+            });
+        self.held = still;
+        for saved in admitted.into_iter().rev() {
+            self.waiting.push_front(saved);
         }
     }
 
@@ -273,6 +324,14 @@ fn would_not_start(name: &str, why: &str) -> String {
     t_args(
         "desk-window-would-not-start",
         &[("app", name.into()), ("why", why.into())],
+    )
+}
+
+/// What a tab says while its app waits for `host` to take this device into its workspace.
+fn waits_for_host(name: &str, host: &str) -> String {
+    t_args(
+        "desk-window-waits-for-host",
+        &[("app", name.into()), ("host", host.into())],
     )
 }
 

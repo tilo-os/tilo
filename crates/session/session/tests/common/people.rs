@@ -76,7 +76,7 @@ pub struct Site {
     pub entry: String,
     /// The door the site serves, kept up until the site is dropped.
     _door: Responder,
-    _state: tempfile::TempDir,
+    state: tempfile::TempDir,
 }
 
 impl Drop for Site {
@@ -165,7 +165,7 @@ impl Site {
             name: name.to_owned(),
             entry,
             _door: door,
-            _state: state,
+            state,
         }
     }
 
@@ -1565,6 +1565,57 @@ impl Device {
         self.install("so.tilo.chat", chat_install());
     }
 
+    /// Install Passwords in this device's store, as a device with the app installed has it.
+    pub fn install_passwords(&self) {
+        self.install("so.tilo.passwords", passwords_install());
+    }
+
+    /// Install Model Providers in this device's store, as a device with the app installed has it.
+    pub fn install_model_providers(&self) {
+        self.install("so.tilo.model-providers", model_providers_install());
+    }
+
+    /// The provider and id this device lists for the running `app`'s `operation`, once the app
+    /// published it: a provider the session names by the app's live connection.
+    pub fn app_action(&self, app: &str, operation: &str) -> (String, String) {
+        let mut named = None;
+        tilo_test_env::wait_until(
+            format!("{} publishes {app}'s {operation}", self.label),
+            || {
+                named = self.actions()["answer"]["actions"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|row| {
+                        row["application"] == app
+                            && row["operation"] == operation
+                            && row["provider"]
+                                .as_str()
+                                .is_some_and(|provider| provider.parse::<u64>().is_ok())
+                    })
+                    .map(|row| {
+                        (
+                            row["provider"].as_str().expect("a provider").to_owned(),
+                            row["id"].as_str().expect("an action's id").to_owned(),
+                        )
+                    });
+                named.is_some()
+            },
+        );
+        named.expect("the action the app published")
+    }
+
+    /// Invoke the running `app`'s `operation` with `args` and wait until it settled, as a program
+    /// of the person's does: the receipt, the person's confirmation given where it asked first.
+    pub fn app_act(&self, app: &str, operation: &str, args: &Value) -> Value {
+        let (provider, id) = self.app_action(app, operation);
+        let answer = self.act_wait(&provider, &id, args);
+        if answer["err"]["code"].as_str() == Some("needs_confirmation") {
+            return self.act_confirming(&provider, &id, args);
+        }
+        answer
+    }
+
     /// Install Tasks in this device's store, as a device with the app installed has it: the app this
     /// run built, with the tracker's surface its package ships.
     pub fn install_tasks(&self) {
@@ -2098,6 +2149,35 @@ fn chat_install() -> &'static (PathBuf, String) {
 fn files_install() -> &'static (PathBuf, String) {
     static INSTALL: std::sync::OnceLock<(PathBuf, String)> = std::sync::OnceLock::new();
     INSTALL.get_or_init(|| stage("file-explorer", &[]))
+}
+
+/// The payload Passwords is installed from here ([`stage`]), with the digest of its signed root.
+fn passwords_install() -> &'static (PathBuf, String) {
+    static INSTALL: std::sync::OnceLock<(PathBuf, String)> = std::sync::OnceLock::new();
+    INSTALL.get_or_init(|| {
+        stage(
+            "passwords",
+            &[(
+                tilo_test_env::sibling_binary("passwords", "passwords"),
+                "passwords",
+            )],
+        )
+    })
+}
+
+/// The payload Model Providers is installed from here ([`stage`]), with the digest of its signed
+/// root.
+fn model_providers_install() -> &'static (PathBuf, String) {
+    static INSTALL: std::sync::OnceLock<(PathBuf, String)> = std::sync::OnceLock::new();
+    INSTALL.get_or_init(|| {
+        stage(
+            "model-providers",
+            &[(
+                tilo_test_env::sibling_binary("model-providers", "model-providers"),
+                "model-providers",
+            )],
+        )
+    })
 }
 
 /// The payload Tasks is installed from here ([`stage`]), with the digest of its signed root.

@@ -158,6 +158,24 @@ command = [
     "tasks:tasks", "launcher:tilo-launcher",
 ]
 
+# A branched device's vault and provider keys are read through the apps that keep them:
+# Passwords and Model Providers, as a desktop starts them.
+[scripts.setup.vault-siblings]
+command = [
+    "bash", "tools/build-sibling-binaries.sh",
+    "passwords:passwords", "model-providers:model-providers", "launcher:tilo-launcher",
+]
+
+[[profile.default.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-session) and binary(device_branch)"
+setup = "vault-siblings"
+
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-session) and binary(device_branch)"
+setup = "vault-siblings"
+
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-session) and binary(it) and test(closed_tasks::)"

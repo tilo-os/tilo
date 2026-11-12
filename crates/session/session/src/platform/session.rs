@@ -1507,6 +1507,14 @@ impl Session {
         // it opens in, as the person there: the workspace's governance gives
         // it before the process is planned, so the app starts able to keep
         // what they do in it.
+        // An app of a workspace this device waits for its host to admit it to is not started:
+        // whoever asked hears why at once (`Apps::spawn`).
+        if let (Some(launch), Some(engine)) = (&shared.launch, &shared.engine) {
+            let (engine, handle) = (std::sync::Arc::clone(engine), shared.handle.clone());
+            launch.lend_admission(Rc::new(move |workspace: &str| {
+                crate::agent_door::awaited_reason(&engine, &handle, workspace)
+            }));
+        }
         if let Some(launch) = &shared.launch {
             let handle = shared.handle.clone();
             let engine = shared.engine.clone();

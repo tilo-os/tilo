@@ -85,6 +85,7 @@ desk-not-opened-old-unreadable-detail = { $path } is your desk from the version 
 desk-window-not-installed = { $app } is not installed on this machine
 desk-window-would-not-start = { $app } could not be started: { $why }
 desk-window-did-not-open = { $app } started but did not open a window
+desk-window-waits-for-host = { $app } is waiting for { $host } to take this device in
 
 ## A window the person's record kept whose saved state this version cannot
 ## read: its tab says why the window is not here instead of the place being

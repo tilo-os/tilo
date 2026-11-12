@@ -87,6 +87,7 @@ desk-not-opened-old-unreadable-detail = { $path } ist der Schreibtisch, den Tilo
 desk-window-not-installed = { $app } ist auf diesem Rechner nicht installiert
 desk-window-would-not-start = { $app } konnte nicht gestartet werden: { $why }
 desk-window-did-not-open = { $app } wurde gestartet, hat aber kein Fenster geöffnet
+desk-window-waits-for-host = { $app } wartet darauf, dass { $host } dieses Gerät aufnimmt
 
 ## Ein Fenster, das die Aufzeichnung der Person aufbewahrt hat und dessen
 ## gespeicherter Zustand sich in dieser Version nicht lesen lässt: sein Tab

@@ -164,7 +164,14 @@ pub(crate) struct Personal {
     /// The workspaces whose host has not taken this device in yet that the person was told of:
     /// once each, not on every ask that times out.
     told_awaiting: BTreeSet<WorkspaceId>,
+    /// When a workspace whose host did not take this device in is asked again: a host that was
+    /// away comes back, and nothing else would ask it again ([`Self::asked`] holds one ask per
+    /// hint).
+    ask_again: BTreeMap<WorkspaceId, std::time::Instant>,
 }
+
+/// How long after a host did not take this device in it is asked again.
+const ASK_AGAIN_AFTER: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// The parts of a desk [`Personal::publish_local`] reads.
 #[derive(PartialEq, Eq)]
@@ -258,6 +265,28 @@ fn shows_on(entry: &WorkspaceMeta, device: &[u8; 32]) -> bool {
 }
 
 impl Personal {
+    /// Ask `workspace` 's host again after [`ASK_AGAIN_AFTER`]: it did not take this device in.
+    fn ask_again_later(&mut self, workspace: WorkspaceId) {
+        if let Some(at) = std::time::Instant::now().checked_add(ASK_AGAIN_AFTER) {
+            self.ask_again.insert(workspace, at);
+        }
+    }
+
+    /// Forget the asks whose wait is over, so the pass asks those hosts again.
+    fn ask_again_due(&mut self) {
+        let now = std::time::Instant::now();
+        let due: Vec<WorkspaceId> = self
+            .ask_again
+            .iter()
+            .filter(|(_, at)| **at <= now)
+            .map(|(workspace, _)| *workspace)
+            .collect();
+        for workspace in due {
+            self.ask_again.remove(&workspace);
+            self.asked.remove(&workspace);
+        }
+    }
+
     /// The person's list as this device holds it, kept beside the desk under `state` ; in memory
     /// only when there is no state directory.
     /// A file this build cannot read starts empty: the first pass lists this device's workspaces
@@ -284,6 +313,7 @@ impl Personal {
             kept_on_hosts: false,
             fleet: None,
             told_awaiting: BTreeSet::new(),
+            ask_again: BTreeMap::new(),
         };
         let read = personal
             .store
@@ -1228,6 +1258,9 @@ impl crate::Shared {
                         "the person's workspace did not take this copied machine in as its own device"
                     );
                     self.tell_awaited(enrolled.workspace_id, &listed);
+                    if let Some(personal) = &self.personal {
+                        personal.borrow_mut().ask_again_later(enrolled.workspace_id);
+                    }
                 }
                 Err(error) => {
                     tracing::info!(
@@ -1338,6 +1371,7 @@ impl crate::Shared {
                 personal.asked.clear();
                 behind = true;
             }
+            personal.ask_again_due();
             // A workspace whose governance holds no certificate of this device's is held as the
             // device this machine was copied from.
             let device = personal.device;

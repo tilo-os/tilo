@@ -208,10 +208,21 @@ fn a_copy_started_while_the_host_is_away_refuses_its_apps_actions_saying_why() {
     copy.start();
     copy.wait_holding(&site.workspace);
     show(&copy, &site);
-    copy.open(CHAT);
-    copy.wait_for_window(CHAT);
 
-    // What the copy's desk offers of Chat is refused at once, with the reason.
+    // The window the laptop left open waits for the host, and says so where it stands.
+    tilo_test_env::wait_until(format!("{} holding Chat for its host", copy.label), || {
+        copy.state().to_string().contains("to take this device in")
+    });
+    // Opening an app meanwhile is refused at once, saying why.
+    let asked = std::time::Instant::now();
+    let opened = copy.act("applications", CHAT, &serde_json::json!({}));
+    assert!(
+        opened.to_string().contains("hasn't been admitted to"),
+        "an open while the host is away is refused with the reason: {opened}"
+    );
+    assert!(asked.elapsed() < std::time::Duration::from_secs(10));
+    // What the copy's desk offers of Chat, whose window the laptop left open, is refused at once,
+    // with the reason.
     let (provider, id) = chat_row(&copy);
     let started = std::time::Instant::now();
     let refused = copy.act(&provider, &id, &serde_json::json!({"public_key": me}));
@@ -263,4 +274,174 @@ fn chat_row(device: &crate::common::people::Device) -> (String, String) {
         found.is_some()
     });
     found.expect("a row of Chat's")
+}
+
+/// Passwords, as the person's devices install it.
+const PASSWORDS: &str = "so.tilo.passwords";
+/// Model Providers, as the person's devices install it.
+const MODEL_PROVIDERS: &str = "so.tilo.model-providers";
+/// The login Ada saves before her laptop is copied.
+const LOGIN: &str = "Branch mail";
+
+/// The logins Passwords on `device` lists, by name, as its own `list-logins` answers.
+fn logins(device: &common::people::Device) -> Vec<String> {
+    let answer = device.app_act(PASSWORDS, "list-logins", &serde_json::json!({}));
+    let update = &answer["answer"]["receipt"]["update"];
+    assert_eq!(
+        update["state"], "succeeded",
+        "{} Passwords' list-logins: {answer}",
+        device.label
+    );
+    update["output"]["value"]["logins"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|login| login["name"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// What a person keeps in their vault on one device is theirs on a machine copied from it: Ada
+/// saves a login through Passwords' own action with the host up, her laptop is copied and the copy
+/// re-keyed, and the copy, started with the host up as a branch is, lists that login and runs
+/// Model Providers' actions (`e2e-branch` S07).
+#[test]
+fn a_copy_lists_the_logins_its_source_saved_and_runs_its_providers_actions() {
+    let ada = Person::new("Ada");
+    let site = Site::start(&ada, "Studio");
+    site.author_apps(&[
+        tilo_desktop_model::ownership::DESKTOP_APP,
+        PASSWORDS,
+        MODEL_PROVIDERS,
+    ]);
+    let mut laptop = ada.device("Ada's laptop");
+    laptop.install_passwords();
+    laptop.install_model_providers();
+    let hers = site.invite(ada.public, WorkspaceRole::Editor);
+    laptop.join(&hers);
+    laptop.wait_holding(&site.workspace);
+    show(&laptop, &site);
+    laptop.open(PASSWORDS);
+    laptop.wait_for_window(PASSWORDS);
+    let saved = laptop.app_act(
+        PASSWORDS,
+        "save-login",
+        &serde_json::json!({
+            "name": LOGIN,
+            "origin": "https://branch.example",
+            "username": "ada@branch.example",
+            "password": "kept-on-the-laptop",
+        }),
+    );
+    assert_eq!(
+        saved["answer"]["receipt"]["update"]["state"], "succeeded",
+        "save-login: {saved}"
+    );
+    assert!(logins(&laptop).contains(&LOGIN.to_owned()));
+    laptop.open(MODEL_PROVIDERS);
+    laptop.wait_for_window(MODEL_PROVIDERS);
+    let presets = laptop.app_act(MODEL_PROVIDERS, "list-presets", &serde_json::json!({}));
+    assert!(
+        presets["answer"]["receipt"]["update"]["state"].is_string(),
+        "the laptop's Model Providers ran its action: {presets}"
+    );
+
+    laptop.stop();
+    let (mut copy, _) = ada.branch(&laptop);
+    start(&mut copy, &site);
+    // Opened once the host took the copy in: Passwords joins the workspace as the copy's own.
+    wait_admitted(&copy, &site);
+    copy.open(PASSWORDS);
+    copy.wait_for_window(PASSWORDS);
+    let listed = logins(&copy);
+    assert!(
+        listed.contains(&LOGIN.to_owned()),
+        "the copy's Passwords lists {listed:?}, not the login its source saved\n{}",
+        copy.warnings()
+    );
+    copy.open(MODEL_PROVIDERS);
+    copy.wait_for_window(MODEL_PROVIDERS);
+    let presets = copy.app_act(MODEL_PROVIDERS, "list-presets", &serde_json::json!({}));
+    assert!(
+        presets["answer"]["receipt"]["update"]["state"].is_string(),
+        "the copy's Model Providers ran its action: {presets}\n{}",
+        copy.warnings()
+    );
+}
+
+/// Wait until `site` took `device` in as a device of its person's own: the workspace's record names
+/// this device, and its apps join there as it.
+fn wait_admitted(device: &common::people::Device, site: &Site) {
+    let admitted = format!(
+        "the host admitted this device and the workspace is held here workspace={}",
+        site.workspace
+    );
+    let until = tilo_test_env::hang_deadline();
+    loop {
+        let log = device.log();
+        if log
+            .lines()
+            .any(|line| line.contains(&admitted) && line.contains("member=true"))
+        {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < until,
+            "{} was not admitted to {}; what it said of joining:\n{}",
+            device.label,
+            site.workspace,
+            log.lines()
+                .filter(|line| line.contains("join_flow") || line.contains("join:"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+}
+
+/// A copy whose windows come back before its host took it in holds them, and starts each once the
+/// host admitted the copy: its app joins the workspace as the copy's own. Ada leaves Passwords open
+/// on her laptop; the copy boots beside the site, as a branch boots beside its host, and restores
+/// it; Passwords lists the login the laptop saved. Started at once, before the host took the copy
+/// in, an app was refused the workspace for good and published nothing (`e2e-branch` S07-a,
+/// S07-b). Model Providers opened once admitted is
+/// [`a_copy_lists_the_logins_its_source_saved_and_runs_its_providers_actions`]'s.
+#[test]
+fn a_copy_opens_the_windows_its_source_left_once_its_host_admits_it() {
+    let ada = Person::new("Ada");
+    let site = Site::start(&ada, "Studio");
+    site.author_apps(&[tilo_desktop_model::ownership::DESKTOP_APP, PASSWORDS]);
+    let mut laptop = ada.device("Ada's laptop");
+    laptop.install_passwords();
+    let hers = site.invite(ada.public, WorkspaceRole::Editor);
+    laptop.join(&hers);
+    laptop.wait_holding(&site.workspace);
+    show(&laptop, &site);
+    laptop.open(PASSWORDS);
+    laptop.wait_for_window(PASSWORDS);
+    let saved = laptop.app_act(
+        PASSWORDS,
+        "save-login",
+        &serde_json::json!({
+            "name": LOGIN,
+            "origin": "https://branch.example",
+            "username": "ada@branch.example",
+            "password": "kept-on-the-laptop",
+        }),
+    );
+    assert_eq!(
+        saved["answer"]["receipt"]["update"]["state"], "succeeded",
+        "save-login: {saved}"
+    );
+
+    laptop.stop();
+    let (mut copy, _) = ada.branch(&laptop);
+    copy.start();
+    wait_admitted(&copy, &site);
+    copy.wait_for_window(PASSWORDS);
+    let listed = logins(&copy);
+    assert!(
+        listed.contains(&LOGIN.to_owned()),
+        "the copy's Passwords lists {listed:?}, not the login its source saved\n{}",
+        copy.warnings()
+    );
 }
