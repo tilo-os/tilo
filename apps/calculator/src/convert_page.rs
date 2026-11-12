@@ -646,7 +646,7 @@ impl crate::app::CalculatorApp {
             .map(|dimension| {
                 let target = ConvertAction::Quantity(dimension);
                 let mut node = AccessNode::new(Role::RadioButton)
-                    .with_name(&dimension.label())
+                    .with_name(dimension.label())
                     .with_action_target(ConvertPage::semantic_target(&target))
                     .with_state(
                         AccessState::new()
