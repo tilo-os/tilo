@@ -15,9 +15,16 @@ own, and reads every claim back off the session rather than off the clients:
   3. acting    each admitted client is served as itself: its own tools answer,
                and what the desk offers a person's own socket is not what it is
                offered.
-  4. stopping  the person presses Stop on one agent's card, which its face on
-               the bar opens; that connection alone ends: the other agent
-               still answers, and the stopped one does not.
+  4. faces     each agent's face on the bar opens its own card: pressed where
+               the bar publishes it, and pressed by the name a reader is told.
+  5. stopping  the person presses Stop on one agent's card by name, as a screen
+               reader activates it: that connection alone ends, and the other
+               agent still answers.
+  6. taking    Take over on the other agent's card ends its work here: the
+               person is left with nobody seated, and the agent's connection is
+               over.
+  7. revoking  Revoke on a door-admitted agent's card ends its work here, and
+               the next client of that program has to be answered for.
 
 Usage:
   ./agent-seats-proof.py
@@ -62,6 +69,22 @@ def until(check, timeout: float = 40.0):
             return True
         time.sleep(0.2)
     return False
+
+
+def open_card(desk: "Desk", name: str) -> None:
+    """Open an agent's card from its face on the bar, as the person's own press does."""
+    face = desk.targets().get(f"{name}, agent")
+    if face is not None:
+        x, y, width, height = face
+        desk.call({"op": "click_at", "x": x + width / 2, "y": y + height / 2})
+    until(lambda: f"{name}’s profile" in desk.targets(), 10)
+
+
+def close_card(desk: "Desk") -> None:
+    """Leave the card standing: the roster's place takes it back."""
+    if any(card.endswith("’s profile") for card in desk.targets()):
+        desk.call({"op": "key", "key": "Escape"})
+        until(lambda: not any(card.endswith("’s profile") for card in desk.targets()), 10)
 
 
 def runtime_directory(state: pathlib.Path) -> pathlib.Path:
@@ -121,7 +144,16 @@ class Desk:
         self.control.unlink(missing_ok=True)
         self.door.unlink(missing_ok=True)
         self.session = subprocess.Popen(
-            [str(SHELL), "--backend", "headless", "--seed-apps"],
+            [
+                str(SHELL),
+                "--backend",
+                "headless",
+                "--seed-apps",
+                # A session's own state, as a login's has: what the person says ahead of time
+                # about a program is kept there, which is what Revoke takes back.
+                "--state",
+                str(self.state),
+            ],
             env=self.env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
@@ -287,26 +319,39 @@ def main() -> int:
               (json.loads(reply or b"{}").get("err") or {}).get("code") == "not_allowed",
               reply.decode()[:140])
 
-        print("\n[4] the person stops one agent from its card")
-        # The person's own press: the agent's face on the bar opens its card,
-        # and its Stop ends the connection they let in.
+        print("\n[4] each agent's face on the bar opens its own card")
         seats = {seat.get("name"): seat.get("key") for seat in desk.agents()}
-        face = desk.targets().get(f"{next(iter(seats), '')}, agent")
-        opened = None
-        if face is not None:
-            x, y, width, height = face
-            desk.call({"op": "click_at", "x": x + width / 2, "y": y + height / 2})
-            until(lambda: any(desk.targets().get(f"{name}’s profile") for name in seats), 10)
-            opened = next((name for name in seats if f"{name}’s profile" in desk.targets()), None)
-        check("the agent's face opens its card", opened is not None, ", ".join(seats))
-        if opened is not None:
-            stop_at = desk.targets().get("profile-agent-stop")
-            check("its card offers Stop", stop_at is not None)
-            if stop_at is not None:
-                x, y, width, height = stop_at
+        for name in seats:
+            face = desk.targets().get(f"{name}, agent")
+            opened = None
+            if face is not None:
+                x, y, width, height = face
                 desk.call({"op": "click_at", "x": x + width / 2, "y": y + height / 2})
+                until(lambda: f"{name}’s profile" in desk.targets(), 10)
+                opened = [card.removesuffix("’s profile")
+                          for card in desk.targets() if card.endswith("’s profile")]
+            check(f"{name}'s face opens its own card", opened == [name],
+                  f"opened {opened} at {face}")
+            close_card(desk)
+        # A reader is told the same face, and presses it where a person does: the name it
+        # publishes is the face, not the bar behind it.
+        for name in seats:
+            desk.call({"op": "click_named", "name": f"{name}, agent"})
+            until(lambda: f"{name}’s profile" in desk.targets(), 10)
+            opened = [card.removesuffix("’s profile")
+                      for card in desk.targets() if card.endswith("’s profile")]
+            check(f"a reader's {name} opens the same card", opened == [name], f"opened {opened}")
+            close_card(desk)
+
+        print("\n[5] the person stops one agent from its card, by name")
+        stopped_name = next(iter(seats))
+        open_card(desk, stopped_name)
+        check("its card offers Stop", "profile-agent-stop" in desk.targets())
+        # The name a reader activates it by, as a person's pointer press reaches the same button.
+        pressed = desk.call({"op": "click_named", "name": "Stop"})
+        check("Stop is a control a reader can name", "ok" in pressed, json.dumps(pressed)[:120])
         keys = [key for _, key in CLIENTS]
-        gone = keys.index(seats.get(opened)) if seats.get(opened) in keys else 1
+        gone = keys.index(seats[stopped_name])
         stopped, other = agents[gone], agents[1 - gone]
         until(lambda: len(desk.agents()) < 2, 10)
         text, failed = stopped.call("tilo_ls", {})
@@ -318,6 +363,55 @@ def main() -> int:
         left = [agent.get("key") for agent in desk.agents()]
         check("the desk keeps the other agent's seat alone", left == [keys[1 - gone]],
               ", ".join(map(str, left)))
+
+        print("\n[6] the person takes over the other agent's work")
+        # It works in this desk alone: nothing of it is left seated, and its
+        # connection is over once the person takes its work on.
+        open_card(desk, next(iter([name for name in seats if name != stopped_name])))
+        taken_at = desk.targets().get("profile-agent-take-over")
+        check("its card offers Take over", taken_at is not None)
+        pressed = desk.call({"op": "click_named", "name": "Take over"})
+        check("Take over is a control a reader can name", "ok" in pressed, json.dumps(pressed)[:120])
+        until(lambda: not desk.agents(), 10)
+        check("the desk seats nobody after taking the work on", not desk.agents(),
+              json.dumps(desk.agents())[:160])
+        text, failed = other.call("tilo_ls", {})
+        check("the agent it was taken from stopped working", failed,
+              text.splitlines()[0][:100] if text else "")
+
+        print("\n[7] the person revokes what let an agent in")
+        # A client of the same program, admitted as its own connection: Revoke takes back its
+        # work here, and the next client of that program is asked about, as the first was.
+        again = Agent(desk.door, "Claude Code")
+        agents.append(again)
+        desk.answer(choice=1)
+        check("a client of the program is admitted",
+              until(lambda: again.hears(), 30) and again.answered(),
+              json.dumps(again.served)[:120])
+        again.notify("notifications/initialized")
+        seated = [agent.get("key") for agent in desk.agents()]
+        check("the desk seats the agent it let in", len(seated) == 1, ", ".join(seated))
+        open_card(desk, desk.agents()[0]["name"])
+        check("its card offers Revoke", "profile-agent-revoke" in desk.targets())
+        pressed = desk.call({"op": "click_named", "name": "profile-agent-revoke"})
+        check("Revoke is a control a reader can press", "ok" in pressed, json.dumps(pressed)[:120])
+        until(lambda: not desk.agents(), 10)
+        text, failed = again.call("tilo_ls", {})
+        check("the revoked agent's connection is over", failed,
+              text.splitlines()[0][:100] if text else "")
+        check("the desk seats nobody after the revoke", not desk.agents(),
+              json.dumps(desk.agents())[:160])
+        # What let it in is not the previous answer: the next client of that program is asked
+        # about, and served once the person answers.
+        next_client = Agent(desk.door, "Claude Code")
+        agents.append(next_client)
+        check("the next client of the program waits for the person",
+              not next_client.hears(1.0))
+        desk.answer(choice=1)
+        check("the person's answer admits it",
+              until(lambda: next_client.hears(), 30) and next_client.answered(),
+              json.dumps(next_client.served)[:120])
+        next_client.notify("notifications/initialized")
     finally:
         for agent in agents:
             agent.close()
