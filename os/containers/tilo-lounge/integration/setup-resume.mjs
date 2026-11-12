@@ -60,7 +60,14 @@ const check = (ok, what, detail = '') => {
   }
   report.cases.push({ok: Boolean(ok), what, ...(detail ? {detail} : {})});
   console.log(`${ok ? 'ok' : 'FAIL'} ${what}${!ok && detail ? `: ${detail}` : ''}${ok ? '' : ` (the machine: ${machine().text})`}`);
-  if (!ok) failures.push(what);
+  if (!ok) {
+    failures.push(what);
+    // A failed check keeps no outputs: what the tab in front said last is
+    // said here, where the run's log keeps it.
+    let said = [];
+    try { said = (tab?.log ?? []).slice(-25); } catch { /* no tab yet */ }
+    if (said.length) console.log(`--- the tab said, last:\n${said.join('\n').slice(0, 6000)}`);
+  }
   return Boolean(ok);
 };
 
