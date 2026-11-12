@@ -52,7 +52,7 @@ pub mod tilolang_hosts;
 pub mod workspace;
 
 pub use authority::Authority;
-pub use doors::{Connects, Doors, HeldDoor, HostedWindow, Routed, StartAlone};
+pub use doors::{Connects, Doors, HeldDoor, HostedWindow, Opens, Routed, StartAlone};
 pub use env::SessionEnvironment;
 pub use instance::{Answer, Instance, Shown, Windows, package_identities};
 pub use launch::{Launch, Open};

@@ -66,6 +66,31 @@ pub struct HostedWindow {
     pub patch: OwnedFd,
     /// The instance's collaboration connection, attested as the window.
     pub collaboration: OwnedFd,
+    /// What the window was asked to show, which its instance opens on.
+    pub opens: Opens,
+}
+
+/// What a window is asked to show: the record a launch named, and the item the window opens on.
+/// A window that holds its app's data opens the record itself, from its launch's command line,
+/// and the item from its window request; a hosted window's instance is handed both.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Opens {
+    /// The record the launch named, by its id.
+    pub record: Option<String>,
+    /// The item the window opens on, by its anchor: a search hit's, an agent's `open`, the
+    /// conversation a send landed in.
+    pub reveal: Option<String>,
+}
+
+impl Opens {
+    /// A window asked to open on the item `reveal`, when it names one.
+    #[must_use]
+    pub fn revealing(reveal: Option<&str>) -> Self {
+        Self {
+            record: None,
+            reveal: reveal.map(str::to_owned),
+        }
+    }
 }
 
 /// What the session does with a hosted window's instance.
@@ -110,8 +135,8 @@ pub type StartAlone = Box<dyn FnOnce()>;
 struct Queued {
     app: String,
     workspace: String,
-    /// The item the shell opened the window on, when it named one.
-    reveal: Option<String>,
+    /// What the shell asked the window to show.
+    opens: Opens,
     /// The window's instance: the tab the shell held for it, or one the door
     /// names when the shell named none.
     instance: Option<u64>,
@@ -227,7 +252,7 @@ impl Doors {
         &self,
         app: &str,
         workspace: &str,
-        reveal: Option<&str>,
+        opens: &Opens,
         alone: &dyn Fn() -> StartAlone,
         instance: Option<u64>,
     ) -> Routed {
@@ -248,13 +273,13 @@ impl Doors {
                 door.queued.push(Queued {
                     app: app.to_owned(),
                     workspace: workspace.to_owned(),
-                    reveal: reveal.map(str::to_owned),
+                    opens: opens.clone(),
                     instance,
                     alone: alone(),
                 });
                 Routed::Opened
             }
-            Serves::Yes => match send_window(self, door, app, workspace, reveal, instance) {
+            Serves::Yes => match send_window(self, door, app, workspace, opens, instance) {
                 Ok(()) => Routed::Opened,
                 Err(error) => {
                     // The process is gone; the next launch starts another.
@@ -278,7 +303,7 @@ impl Doors {
                     door,
                     &queued.app,
                     &queued.workspace,
-                    queued.reveal.as_deref(),
+                    &queued.opens,
                     queued.instance,
                 )
                 .is_err()
@@ -320,7 +345,7 @@ impl Doors {
                             door,
                             &queued.app,
                             &queued.workspace,
-                            queued.reveal.as_deref(),
+                            &queued.opens,
                             queued.instance,
                         )
                         .is_err()
@@ -372,20 +397,20 @@ impl Doors {
         app: &str,
         workspace: &str,
         routable: bool,
-        reveal: Option<&str>,
+        opens: &Opens,
         alone: &dyn Fn() -> StartAlone,
         instance: Option<u64>,
     ) -> Result<Option<Reservation>, Routed> {
         if !routable {
             return Ok(None);
         }
-        if self.open_in_running(app, workspace, reveal, alone, instance) == Routed::Opened {
+        if self.open_in_running(app, workspace, opens, alone, instance) == Routed::Opened {
             return Err(Routed::Opened);
         }
         let reserved = self.reserve(app, workspace);
         // Another launch reserved it in between: its process opens this one.
         if reserved.is_none()
-            && self.open_in_running(app, workspace, reveal, alone, instance) == Routed::Opened
+            && self.open_in_running(app, workspace, opens, alone, instance) == Routed::Opened
         {
             return Err(Routed::Opened);
         }
@@ -418,13 +443,14 @@ impl Doors {
         app: &str,
         workspace: &str,
         instance: u64,
+        opens: &Opens,
     ) -> std::io::Result<()> {
         let hosted = self
             .doors()
             .get(&key(app, workspace))
             .filter(|door| door.hosted)
             .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotConnected))
-            .and_then(|door| hosted_window(self, door, app, workspace, instance))?;
+            .and_then(|door| hosted_window(self, door, app, workspace, instance, opens))?;
         self.hand_over(hosted);
         Ok(())
     }
@@ -527,13 +553,15 @@ fn start_alone(queued: Vec<Queued>) {
 
 /// The window `instance` of the hosted app `app` in `workspace`, whose
 /// process is behind `entry`: its patch connection is sent on the door, before
-/// the window is asked for, and the host's end goes with the instance.
+/// the window is asked for, and the host's end goes with the instance, with
+/// what the window `opens`.
 fn hosted_window(
     door: &Doors,
     entry: &Door,
     app: &str,
     workspace: &str,
     instance: u64,
+    opens: &Opens,
 ) -> std::io::Result<HostedWindow> {
     let launcher_pid = entry.launcher_pid.ok_or(std::io::ErrorKind::NotConnected)?;
     let collaboration = door
@@ -549,6 +577,7 @@ fn hosted_window(
         launcher_pid,
         patch: host,
         collaboration,
+        opens: opens.clone(),
     })
 }
 
@@ -558,7 +587,7 @@ fn send_window(
     entry: &Door,
     app: &str,
     workspace: &str,
-    reveal: Option<&str>,
+    opens: &Opens,
     instance: Option<u64>,
 ) -> std::io::Result<()> {
     // The shell names the tab a window takes, which is the window's instance;
@@ -568,7 +597,7 @@ fn send_window(
     // connection, and the instance the window's collaboration connection.
     let hosted = entry
         .hosted
-        .then(|| hosted_window(door, entry, app, workspace, instance))
+        .then(|| hosted_window(door, entry, app, workspace, instance, opens))
         .transpose()?;
     let collaboration = if hosted.is_some() {
         None
@@ -581,7 +610,7 @@ fn send_window(
         instance,
         collaboration: collaboration.is_some(),
         shell_ui: shell_ui.is_some(),
-        reveal: reveal.map(str::to_owned),
+        reveal: opens.reveal.clone(),
     };
     ui::window_door::send(
         &entry.ours,
@@ -752,7 +781,7 @@ mod tests {
         const ELSEWHERE: &str = "7a110d00-0000-4000-8000-000000000005";
         let (doors, _) = doors();
         assert_eq!(
-            doors.open_in_running(APP, WORKSPACE, None, &never_alone, None),
+            doors.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
             Routed::NotRunning
         );
         doors.reserve_for_test(APP, WORKSPACE);
@@ -761,7 +790,7 @@ mod tests {
         runtime_portal::windows::send_serves(&launcher_end).unwrap();
 
         assert_eq!(
-            doors.open_in_running(APP, WORKSPACE, None, &never_alone, None),
+            doors.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
             Routed::Opened
         );
         let opening = ui::window_door::receive(&launcher_end)
@@ -770,7 +799,7 @@ mod tests {
         let first = opening.request.instance;
         assert!(opening.request.collaboration, "the window's own connection");
         assert_eq!(
-            doors.open_in_running(APP, WORKSPACE, None, &never_alone, None),
+            doors.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
             Routed::Opened
         );
         let plain = ui::window_door::receive(&launcher_end)
@@ -790,7 +819,7 @@ mod tests {
             doors.open_in_running(
                 APP,
                 WORKSPACE,
-                Some("chat/channels/c_ada"),
+                &Opens::revealing(Some("chat/channels/c_ada")),
                 &never_alone,
                 None,
             ),
@@ -809,13 +838,13 @@ mod tests {
         assert_ne!(plain.instance, told.instance);
 
         assert_eq!(
-            doors.open_in_running(APP, ELSEWHERE, None, &never_alone, None),
+            doors.open_in_running(APP, ELSEWHERE, &Opens::default(), &never_alone, None),
             Routed::NotRunning
         );
         drop(launcher_end);
         drop(held);
         assert_eq!(
-            doors.open_in_running(APP, WORKSPACE, None, &never_alone, None),
+            doors.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
             Routed::NotRunning,
             "the process is gone"
         );
@@ -834,7 +863,7 @@ mod tests {
         runtime_portal::windows::send_serves(&launcher_end).unwrap();
 
         assert_eq!(
-            doors.open_in_running(APP, WORKSPACE, None, &never_alone, Some(77)),
+            doors.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, Some(77)),
             Routed::Opened
         );
         let request = ui::window_door::receive(&launcher_end)
@@ -865,7 +894,7 @@ mod tests {
         let alone = alone_into(started);
 
         assert_eq!(
-            doors.open_in_running(APP, WORKSPACE, None, &alone, None),
+            doors.open_in_running(APP, WORKSPACE, &Opens::default(), &alone, None),
             Routed::Opened,
             "waits for the app to answer"
         );
@@ -877,7 +906,7 @@ mod tests {
             doors.open_in_running(
                 APP,
                 WORKSPACE,
-                None,
+                &Opens::default(),
                 &alone_into(std::sync::mpsc::channel().0),
                 None
             ),
@@ -897,7 +926,7 @@ mod tests {
         let mut held = doors.hold(APP, WORKSPACE).expect("held");
         let launcher_end = held.serve(std::process::id()).expect("the launcher's end");
         assert_eq!(
-            doors.open_in_running(APP, WORKSPACE, None, &never_alone, None),
+            doors.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
             Routed::Opened
         );
         runtime_portal::windows::send_serves(&launcher_end).unwrap();
@@ -916,11 +945,11 @@ mod tests {
     fn a_launch_that_names_what_it_opens_reserves_a_door_and_starts() {
         let (doors, _) = doors();
         let reserved = doors
-            .route_or_reserve(APP, WORKSPACE, false, None, &never_alone, None)
+            .route_or_reserve(APP, WORKSPACE, false, &Opens::default(), &never_alone, None)
             .expect("not routed");
         assert!(reserved.is_none(), "a process of its own, without a door");
         let reserved = doors
-            .route_or_reserve(APP, WORKSPACE, true, None, &never_alone, None)
+            .route_or_reserve(APP, WORKSPACE, true, &Opens::default(), &never_alone, None)
             .expect("reserved");
         assert!(reserved.is_some(), "the first window reserves the door");
         drop(reserved);
@@ -949,7 +978,13 @@ mod tests {
         let launcher_end = held.serve(4_100_008).expect("the launcher's end");
         runtime_portal::windows::send_serves(&launcher_end).unwrap();
 
-        doors.first_hosted_window(APP, WORKSPACE, 5).unwrap();
+        let first_opens = Opens {
+            record: Some("uuid:7a110d00-0000-4000-8000-000000000009".to_owned()),
+            reveal: None,
+        };
+        doors
+            .first_hosted_window(APP, WORKSPACE, 5, &first_opens)
+            .unwrap();
         let Some(runtime_portal::windows::Message::Patch(first, first_patch)) =
             runtime_portal::windows::receive_message(&launcher_end).unwrap()
         else {
@@ -958,7 +993,13 @@ mod tests {
         assert_eq!(first, 5);
 
         assert_eq!(
-            doors.open_in_running(APP, WORKSPACE, None, &never_alone, Some(6)),
+            doors.open_in_running(
+                APP,
+                WORKSPACE,
+                &Opens::revealing(Some("tl.notes.Note:7")),
+                &never_alone,
+                Some(6)
+            ),
             Routed::Opened
         );
         let Some(runtime_portal::windows::Message::Patch(patched, _)) =
@@ -985,6 +1026,20 @@ mod tests {
             .map(|hosted| (hosted.instance, hosted.launcher_pid))
             .collect();
         assert_eq!(instances, [(5, 4_100_008), (6, 4_100_008)]);
+        assert_eq!(
+            handed[0].opens, first_opens,
+            "the first window's instance opens the record its launch named"
+        );
+        assert_eq!(
+            handed[1].opens.reveal.as_deref(),
+            Some("tl.notes.Note:7"),
+            "a later window's instance opens on the item it was asked for"
+        );
+        assert_eq!(
+            opening.request.reveal.as_deref(),
+            Some("tl.notes.Note:7"),
+            "the window is told as any window is"
+        );
         // The host's end and the window's are one connection.
         let mut host = std::os::unix::net::UnixStream::from(handed[0].patch.try_clone().unwrap());
         host.write_all(b"patch").unwrap();

@@ -116,6 +116,15 @@ pub struct InstanceRequest {
     /// before and after) and its window shows. A host without them answers a 24-hour clock.
     #[serde(default)]
     pub formats: RegionFormats,
+    /// The record the window was asked to open, by its id, when its launch named one: the
+    /// instance opens only the record its route names (the workspace's, or the person's own), so
+    /// a window asked for another is refused rather than shown that one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record: Option<String>,
+    /// The item the window opens on, by its anchor (a search hit's, an agent's `open`, the
+    /// conversation a send landed in): the instance shows it as its `open` would.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reveal: Option<String>,
 }
 
 /// An action to run against a record at its origin, as the broker admitted it.
@@ -715,6 +724,8 @@ mod tests {
                 time: tilo_formats::TimeStyle::H12,
                 ..RegionFormats::default()
             },
+            record: Some("uuid:7a110d00-0000-4000-8000-000000000009".into()),
+            reveal: Some("tl.so.tilo.lang.notes.Note:7".into()),
         };
         let fds = InstanceFds {
             broker: connection(),

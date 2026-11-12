@@ -694,6 +694,14 @@ impl Hosted {
         }
     }
 
+    /// Show `anchor` in the window, as a search hit or an agent's `open` of it does.
+    pub fn reveal(&mut self, anchor: String) {
+        self.instance
+            .open_requests()
+            .borrow_mut()
+            .push(OpenEffect::Open { anchor });
+    }
+
     /// What the broker was last handed of the instance's actions.
     #[must_use]
     pub fn published(&self) -> &[ActionDescriptor] {
