@@ -391,10 +391,14 @@ pub struct TopBarChrome {
     /// order drawn: a wide bar's are the first few in roster order, a phone's is the one who did
     /// something last.
     shown_faces: Vec<usize>,
-    /// What each person here was last seen doing, and since when: the roster id, a digest of what
-    /// their presence says (where they are, what they say they are doing, their call), and the
-    /// moment that last changed or they arrived.
-    seen_doing: HashMap<String, (u64, Instant)>,
+    /// What each person here was last seen doing, and since which sync: the roster id, a digest of
+    /// what their presence says (where they are, what they say they are doing, their call), and
+    /// the [`Self::syncs`] count of the sync that saw it change or saw them arrive.
+    seen_doing: HashMap<String, (u64, u64)>,
+    /// How many times this bar has read the workspace's presence. Two changes that arrive in one
+    /// instant still order: the sync that sees a change stamps it with the count it holds, so a
+    /// later sync's change is later, and never ties with an earlier one.
+    syncs: u64,
     /// The roster index of the person here, other than the one this view follows, whose presence
     /// changed last: who a phone-wide bar, with room for one face, stands that face for.
     latest_active: Option<usize>,
@@ -545,6 +549,7 @@ impl TopBarChrome {
             face_rects: Vec::new(),
             shown_faces: Vec::new(),
             seen_doing: HashMap::new(),
+            syncs: 0,
             latest_active: None,
             people_count_rect: Rect::ZERO,
             call_since: None,
@@ -1054,32 +1059,7 @@ impl TopBarChrome {
         let (stand, counted) = ui::presence::FaceStack::BAR.split(peer_count);
         self.faces_shown = stand;
         self.collaborator_overflow = counted;
-        // Who did something last: someone arriving, or anything their presence says changing
-        // (where they are, what they say they are doing, their call), makes them the latest. A
-        // phone-wide bar has room for one face, and it is theirs.
-        let seen_at = ui::time::now();
-        self.seen_doing
-            .retain(|id, _| here.iter().any(|c| &c.id == id));
-        self.latest_active = None;
-        let mut latest_at = None;
-        for (index, c) in here.iter().enumerate() {
-            let doing = presence_digest(c);
-            let since = match self.seen_doing.get(&c.id) {
-                Some((digest, since)) if *digest == doing => *since,
-                _ => {
-                    self.seen_doing.insert(c.id.clone(), (doing, seen_at));
-                    seen_at
-                }
-            };
-            // The face of the one this view follows already stands in the banner.
-            if c.following {
-                continue;
-            }
-            if latest_at.is_none_or(|at| since > at) {
-                latest_at = Some(since);
-                self.latest_active = Some(index);
-            }
-        }
+        self.order_activity(&here);
         for c in here {
             let Some(ch) = c.name.chars().next() else {
                 continue;
@@ -1120,6 +1100,41 @@ impl TopBarChrome {
             );
         }
         self.sync_strips(tree);
+    }
+
+    /// Who among `here` did something last: someone arriving, or anything their presence says
+    /// changing (where they are, what they say they are doing, their call), makes them the latest,
+    /// and a phone-wide bar has room for one face, which is theirs.
+    ///
+    /// Changes are ordered by the sync that saw them, never by a clock reading: two of them landing
+    /// in the same millisecond are still two events, and the next sync's change is still the later
+    /// one. People whose presence changed while the bar read one workspace state have no order
+    /// between them, and the roster's is the one the bar keeps.
+    fn order_activity(&mut self, here: &[&tilo_desktop_model::Collaborator]) {
+        self.syncs = self.syncs.saturating_add(1);
+        let sync = self.syncs;
+        self.seen_doing
+            .retain(|id, _| here.iter().any(|c| &c.id == id));
+        self.latest_active = None;
+        let mut latest_at = None;
+        for (index, c) in here.iter().enumerate() {
+            let doing = presence_digest(c);
+            let since = match self.seen_doing.get(&c.id) {
+                Some((digest, since)) if *digest == doing => *since,
+                _ => {
+                    self.seen_doing.insert(c.id.clone(), (doing, sync));
+                    sync
+                }
+            };
+            // The face of the one this view follows already stands in the banner.
+            if c.following {
+                continue;
+            }
+            if latest_at.is_none_or(|at| since > at) {
+                latest_at = Some(since);
+                self.latest_active = Some(index);
+            }
+        }
     }
 
     /// Synthetic control ids are deliberately stable: unlike a child index,
