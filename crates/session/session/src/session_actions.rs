@@ -117,10 +117,10 @@ impl HostStepServices for SessionActions {
             done,
         );
         Ok(asked.map(|ran| {
-            ran.map_err(|reason| {
+            ran.map_err(|error| {
                 Box::new(ActionFailure {
-                    code: "session_step_refused".into(),
-                    message: reason,
+                    code: error.code().to_owned(),
+                    message: error.to_string(),
                     details: None,
                     retryable: false,
                 })

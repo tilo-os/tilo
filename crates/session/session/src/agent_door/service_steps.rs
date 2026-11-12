@@ -8,14 +8,16 @@ use tilo_actions::remote::ActionHostError;
 /// names no argument of a session action, which all take their arguments by name.
 pub(super) fn arguments_of(
     slot: Option<&str>,
-) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+) -> Result<serde_json::Map<String, serde_json::Value>, ActionHostError> {
     let Some(slot) = slot else {
         return Ok(serde_json::Map::new());
     };
+    let invalid = |reason: String| ActionHostError::InvalidRequest { reason };
     let json = slot
         .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
-        .ok_or("a session action takes its arguments by name")?;
-    serde_json::from_str(json).map_err(|error| format!("the step's arguments do not read: {error}"))
+        .ok_or_else(|| invalid("a session action takes its arguments by name".into()))?;
+    serde_json::from_str(json)
+        .map_err(|error| invalid(format!("the step's arguments do not read: {error}")))
 }
 
 /// Run `address` as `actor` through the session's services, which publish the actions its own
@@ -29,7 +31,7 @@ pub(crate) fn invoke_service_step(
     run: Option<&tilo_actions::WorkGroup>,
     address: &tilo_actions::ActionAddress,
     arguments: &serde_json::Map<String, serde_json::Value>,
-) -> Result<Option<tilo_actions::ActionOutput>, String> {
+) -> Result<Option<tilo_actions::ActionOutput>, ActionHostError> {
     use tilo_service::Started;
     let invoker = tilo_actions::ActionInvoker::actor(actor);
     let invoker = if actor.starts_with("agent:") {
@@ -46,7 +48,7 @@ pub(crate) fn invoke_service_step(
     ) {
         Ok(Started::Done(output)) => Ok(Some(output)),
         Ok(Started::Accepted) => Ok(None),
-        Err(error) => Err(error.to_string()),
+        Err(error) => Err(crate::surfaces::refusal(&error)),
     }
 }
 

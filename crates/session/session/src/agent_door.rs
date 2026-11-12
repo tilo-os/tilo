@@ -1310,7 +1310,9 @@ enum DoorAsk {
         slot: Option<String>,
         /// The run the step is one of, as its invocation names it.
         run: Option<tilo_actions::WorkGroup>,
-        done: tilo_actions::remote::Completer<Result<Option<tilo_actions::ActionOutput>, String>>,
+        done: tilo_actions::remote::Completer<
+            Result<Option<tilo_actions::ActionOutput>, ActionHostError>,
+        >,
     },
     /// The record of the package the session runs itself, by its app (`so.tilo.shell`): its
     /// document and the packages a program reading it loads, or `None` for one no service keeps a
@@ -1390,7 +1392,9 @@ impl crate::platform::steps::SessionSteps for SessionDoors {
         address: tilo_actions::ActionAddress,
         slot: Option<String>,
         run: Option<tilo_actions::WorkGroup>,
-        done: tilo_actions::remote::Completer<Result<Option<tilo_actions::ActionOutput>, String>>,
+        done: tilo_actions::remote::Completer<
+            Result<Option<tilo_actions::ActionOutput>, ActionHostError>,
+        >,
     ) {
         self.ask(DoorAsk::Step {
             actor,
@@ -1626,7 +1630,7 @@ impl SessionDoors {
                                             None
                                         }
                                     })
-                                    .map_err(|error| error.to_string())
+                                    .map_err(|error| crate::surfaces::refusal(&error))
                             }
                         }
                         Err(why) => Err(why),
@@ -1980,9 +1984,7 @@ impl Host {
             let status = match ran {
                 Ok(Some(output)) => ReceiptStatus::Completed { output },
                 Ok(None) => ReceiptStatus::Accepted,
-                Err(reason) => ReceiptStatus::Rejected {
-                    error: ActionHostError::Refused { reason },
-                },
+                Err(error) => ReceiptStatus::Rejected { error },
             };
             // The connection reads its own step back by its invocation id, as it reads any
             // other action it took.

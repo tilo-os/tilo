@@ -433,4 +433,20 @@ fn the_door_runs_an_advertised_desktop_shortcut() {
         "an advertised shortcut is not answered as an unknown action: {invoked}"
     );
     assert!(invoked.get("err").is_none(), "the desk runs it: {invoked}");
+
+    // A step the desk does not publish is told apart from one it would not run: a caller reads
+    // that no such action exists, rather than that its own authority was refused.
+    let missing = ask(
+        &mut session,
+        &owner,
+        &json!({
+            "op": "actions_invoke",
+            "provider": provider,
+            "id": "desktop:chrome\u{1f}not-a-shortcut",
+        }),
+    );
+    assert_eq!(
+        missing["err"]["code"], "unknown_action",
+        "an address the desk publishes nothing at says so: {missing}"
+    );
 }
