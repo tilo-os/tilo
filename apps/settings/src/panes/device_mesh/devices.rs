@@ -6,9 +6,10 @@ use tilo_relay_protocol::{DeviceRole, ReplicationIntent};
 use ui::widget::{Button, ButtonRole, DisclosureRow, Dropdown, EditableLabel, Widget};
 
 use super::{
-    DeviceMeshEffect, Page, PairingTarget, RelayRuntimeStatus, home_server_row, last_seen_label,
-    mesh_status_shown, peer_health_badge, peer_key, personal_device_key, replication_description,
-    replication_shown, role_shown, runtime_status_tone, shows_advanced_services,
+    DeviceMeshEffect, HomePeerHealth, Page, PairingTarget, RelayRuntimeStatus, home_server_row,
+    last_seen_label, mesh_status_shown, peer_health_badge, peer_health_detail, peer_key,
+    personal_device_key, replication_description, replication_shown, role_shown,
+    runtime_status_tone, shows_advanced_services,
 };
 use crate::effects::effect;
 use crate::i18n::{t, t_args};
@@ -217,17 +218,17 @@ impl Page<'_> {
         })
     }
 
+    /// A home server's line under its name: how it is doing, and when it
+    /// was last seen if it is not answering.
     fn peer_health(&self, peer: &tilo_relay_protocol::HomePeerRegistration) -> String {
         let device = &peer.device_node_id;
-        self.home_peer_health
-            .get(device)
-            .cloned()
-            .or_else(|| {
-                self.home_peer_last_seen
-                    .get(device)
-                    .map(|last_seen| last_seen_label(*last_seen))
-            })
-            .unwrap_or_else(|| t("mesh-checking"))
+        let health = self.home_peer_health.get(device).copied();
+        match self.home_peer_last_seen.get(device) {
+            Some(last_seen) if matches!(health, None | Some(HomePeerHealth::Unreachable)) => {
+                last_seen_label(*last_seen)
+            }
+            _ => health.map_or_else(|| t("mesh-checking"), peer_health_badge),
+        }
     }
 
     /// The selected device's settings, in one place under its row.
@@ -388,23 +389,20 @@ impl Page<'_> {
             effect(DeviceMeshEffect::RENAME_HOME_SERVER)
                 .map(move |name: String| (device.clone(), name.trim().to_owned())),
         );
-        let health = self.peer_health(peer);
-        let badge = peer_health_badge(&health);
+        let health = self.home_peer_health.get(&peer.device_node_id).copied();
+        let badge = health.map_or_else(|| t("mesh-badge-checking"), peer_health_badge);
+        let detail = health.map_or_else(|| t("mesh-checking"), peer_health_detail);
+        let tone = match health {
+            Some(HomePeerHealth::Online { .. }) => StatusTone::Success,
+            Some(HomePeerHealth::Connecting) | None => StatusTone::Warning,
+            Some(HomePeerHealth::Removed | HomePeerHealth::Unreachable) => StatusTone::Neutral,
+        };
         vec![
             provider_settings_ui::widgets::setting_row(&t("mesh-name"), Box::new(name)),
             setting_row_described(
                 &t("mesh-availability"),
-                &health,
-                semantic_status_pill(
-                    &badge,
-                    if health.starts_with("Online") {
-                        StatusTone::Success
-                    } else if health.contains("Syncing") || health == t("mesh-checking") {
-                        StatusTone::Warning
-                    } else {
-                        StatusTone::Neutral
-                    },
-                ),
+                &detail,
+                semantic_status_pill(&badge, tone),
             ),
         ]
     }
