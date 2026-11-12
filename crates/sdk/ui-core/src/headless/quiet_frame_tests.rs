@@ -454,13 +454,16 @@ fn code_ends(line: &str) -> bool {
 
 /// The braces `line` opens, less the ones it closes, counting no comment, string or char literal.
 fn brace_depth(line: &str) -> i64 {
+    let chars: Vec<char> = line.chars().collect();
     let mut depth = 0;
+    let mut index = 0;
     let mut literal: Option<char> = None;
-    let mut chars = line.chars().peekable();
-    while let Some(character) = chars.next() {
+    while index < chars.len() {
+        let character = chars[index];
+        index += 1;
         if let Some(quote) = literal {
             if character == '\\' {
-                chars.next();
+                index += 1;
             } else if character == quote {
                 literal = None;
             }
@@ -470,13 +473,14 @@ fn brace_depth(line: &str) -> i64 {
             '"' => literal = Some('"'),
             '\'' => {
                 // A lifetime (`'a`) quotes nothing; a char literal (`'{'`) does.
-                let mut ahead = chars.clone();
-                if ahead.next().is_some_and(|next| next != '\\') && ahead.next() != Some('\'') {
+                let escaped = chars.get(index) == Some(&'\\');
+                let closes = chars.get(index + 1) == Some(&'\'');
+                if !escaped && !closes {
                     continue;
                 }
                 literal = Some('\'');
             }
-            '/' if chars.peek() == Some(&'/') => break,
+            '/' if chars.get(index) == Some(&'/') => break,
             '{' => depth += 1,
             '}' => depth -= 1,
             _ => {}
