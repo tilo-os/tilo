@@ -94,7 +94,11 @@ impl Entering {
             Err(_) => Err("the relay did not admit this member in time".into()),
         };
         if let Err(reason) = &entered {
-            tracing::debug!(%workspace, %reason, "a workspace is not entered on this member");
+            // A member that cannot enter the workspaces its relay places here
+            // can do none of their work: every run for one is refused until
+            // it can, so the reason belongs in the host's log and not behind
+            // a debug flag.
+            tracing::warn!(%workspace, %reason, "a workspace is not entered on this member");
             self.refused.remember(workspace, reason.clone());
         }
         entered

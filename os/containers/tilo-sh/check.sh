@@ -413,6 +413,16 @@ if [[ $hosted == 1 ]]; then
         'ls -la --time-style=full-iso /var/lib/tilo-hosted/member/root/device-private /var/lib/tilo-hosted/member/root/device /var/lib/tilo-hosted/member/root/user-identity' >&2 2>/dev/null || true
       echo '--- the member, from its start:' >&2
       sudo -n podman logs tilo-sh-vm-host-0 2>&1 | grep -v 'net_report' | head -60 >&2 || true
+=======
+      echo '--- the relay said:' >&2
+      bash "$here/stack.sh" logs relay 2>/dev/null | tail -40 >&2 || true
+      # What the host's container was given to trust, and what it mounted: a
+      # member that cannot reach the relay says one of these.
+      echo '--- what the VM host trusts and mounts:' >&2
+      sudo -n podman inspect --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{"\n"}}{{end}}' \
+        tilo-sh-vm-host-0 >&2 2>/dev/null || true
+      sudo -n podman exec tilo-sh-vm-host-0 sh -c \
+        'grep -c "BEGIN CERTIFICATE" /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem 2>&1 || true' >&2 2>/dev/null || true
       fail "Browser did not open in the workspace's VM (see $work/hosted-open.log)"
     fi
     hosted_workspace=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workspace"])' "$hosted_report")
