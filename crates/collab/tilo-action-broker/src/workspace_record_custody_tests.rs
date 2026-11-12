@@ -123,6 +123,60 @@ mod workspace_record_custody {
             .await;
     }
 
+    /// Another app's record a launch joined to read (its surface declares the
+    /// read) is read under the launch's own custody and the person's standing
+    /// on that record, whether or not the workspace already holds it: the
+    /// same route joined as the launch's own is refused, as is one of another
+    /// workspace, and the read ends with the launch.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_launch_reads_another_apps_record_it_joined_to_read() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let workspace = signed_worker::OriginalWorkspace::new(
+                    tilo_user_identity::DeviceCapabilities::primary(),
+                    None,
+                    None,
+                );
+                let (identity, _connection) = admitted(&workspace).await;
+                let (socket, _peer) = tokio::net::UnixStream::pair().unwrap();
+                let cluster = workspace.route.cluster_id.clone();
+                let read = |route: &CrdtRoute| {
+                    let mut channel = launched_channel(&workspace, &identity, route, &socket);
+                    channel.route_access = RouteAccess::ReadOnly;
+                    channel
+                };
+                let tasks = CrdtRoute::record("so.tilo.lang.tasks", &cluster, "");
+                let channel = read(&tasks);
+                let context = channel
+                    .document_read_context()
+                    .expect("a launch reads the record it joined to read");
+                let refused = launched_channel(&workspace, &identity, &tasks, &socket)
+                    .document_read_context()
+                    .err();
+                assert!(refused.is_some(), "the launch keeps no record of Tasks");
+                let elsewhere = CrdtRoute::record(
+                    "so.tilo.lang.tasks",
+                    tilo_desktop_model::WorkspaceId::new().to_string(),
+                    "",
+                );
+                assert!(
+                    read(&elsewhere).document_read_context().is_err(),
+                    "nor of another workspace"
+                );
+                channel
+                    .lease
+                    .as_ref()
+                    .and_then(|lease| lease.local_media.as_ref())
+                    .unwrap()
+                    .stop();
+                assert!(
+                    context.revalidate().is_err(),
+                    "the read ends with the launch"
+                );
+            })
+            .await;
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn the_owners_grants_decide_a_change_to_a_workspace_record_from_another_app() {
         tokio::task::LocalSet::new()
