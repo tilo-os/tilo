@@ -20,10 +20,7 @@ const dom = params.get('render') !== 'gpu';
 // `&sync=0` draws an input's frame in the task after it instead of in the
 // input's own task, to compare the two.
 if (params.get('sync') === '0') globalThis.__tiloDomInputSync = false;
-// `&sync=0` draws an input's frame in the task after it instead of in the
-// input's own task, to compare the two.
-if (params.get('sync') === '0') globalThis.__tiloDomInputSync = false;
-const marks = window.renderMarks = {navigationStart: 0, presented: []};
+const marks = window.renderMarks = {navigationStart: 0, presented: [], reports: []};
 const {mountDesktop} = await import('./host.mjs');
 window.mount = await mountDesktop(document.getElementById('app'), {
   app: params.get('app') ?? 'so.tilo.notes',
@@ -36,6 +33,9 @@ window.mount = await mountDesktop(document.getElementById('app'), {
   onStatus: state => {
     if (state.presentation === true || state.observedPresentedAtMs) marks.presented.push(performance.now());
     if (state.phase && marks.firstPhase === undefined) marks.firstPhase = performance.now();
+    // What the runtime answered a control pressed by name, for the check that
+    // presses them (`check-activation.mjs`).
+    if (state.semanticAction) marks.reports.push(state);
   },
   onDomFrame: stats => {
     marks.presented.push(performance.now());
