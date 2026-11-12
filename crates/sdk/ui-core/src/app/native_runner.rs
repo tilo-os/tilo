@@ -69,6 +69,9 @@ struct AppHandler {
     /// When the next "just typed" highlight steps down its fade
     /// (`PresenceCtx::typing_next_step`).
     typing_step_at: Option<crate::time::Instant>,
+    /// When the next presence step is due: a phase's dwell beginning, or a step
+    /// of the fade of the text it wrote (`PresenceCtx::interaction_next_wake_deadline`).
+    interaction_step_at: Option<crate::time::Instant>,
     /// A frame held for a local read ([`crate::arriving`]): drawn when the
     /// read answers, or at this instant when its frame budget runs out.
     held_frame: Option<crate::time::Instant>,
@@ -4167,6 +4170,22 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         self.typing_step_at = app.presence_ctx.typing_next_step(typing_now);
         let typing_active = typing_step_due;
 
+        // What an action shows steps the same way: the frame a phase's dwell
+        // begins on, and each step of the fade of the text it wrote, is a frame
+        // in its own right. A deadline pass alone presents no presence-only
+        // change, so without this the mark waited for an unrelated expiry two
+        // seconds later and then showed whole.
+        let interaction_now = crate::time::now();
+        if self
+            .interaction_step_at
+            .is_some_and(|due| due <= interaction_now)
+        {
+            request_primary_redraw();
+        }
+        self.interaction_step_at = app
+            .presence_ctx
+            .interaction_next_wake_deadline(interaction_now);
+
         let idle_model = app.service_native_idle_model();
         if idle_model.changed {
             request_primary_redraw();
@@ -5228,6 +5247,7 @@ impl App {
             native_input_route_isolation: false,
             animation_schedule: animation_schedule::AnimationSchedule::default(),
             typing_step_at: None,
+            interaction_step_at: None,
             held_frame: None,
             still_animation: animation_schedule::StillAnimation::default(),
             dev_window_state: std::collections::HashMap::new(),
