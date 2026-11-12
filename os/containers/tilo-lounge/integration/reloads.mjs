@@ -8,7 +8,7 @@
 // opens, waits for the desk to arrive and draw, then reloads TIMES times
 // (default 20, or TILO_RELOADS). For each reload it prints one line:
 //
-//   RELOAD n=3 result=ok hide=12 handlers=4 unload=0 fetch=310 commit=420 arrived=5200 frame=6100
+//   TIMING reload n=3 result=ok hide=12 handlers=4 unload=0 fetch=310 commit=420 arrived=5200 frame=6100
 //
 // all in ms: `hide` from the reload asked to the old page's first pagehide
 // listener; `handlers` the time the old page's pagehide listeners took, from
@@ -134,7 +134,7 @@ for (let n = 1; n <= times; n += 1) {
   };
   lines.push(line);
   counts[{ok: 'ok', crashed: 'crashed', 'never-arrived': 'neverArrived', stopped: 'stopped'}[result]] += 1;
-  console.log(`RELOAD ${Object.entries(line).map(([k, v]) => `${k}=${v ?? '-'}`).join(' ')}`);
+  console.log(`TIMING reload ${Object.entries(line).map(([k, v]) => `${k}=${v ?? '-'}`).join(' ')}`);
   if (result !== 'ok') {
     console.log(`  the page said: ${tab.log.slice(-12).join(' | ').slice(0, 2000)}`);
     console.log(`  the machine: ${machine().text}`);
