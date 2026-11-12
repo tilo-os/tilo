@@ -913,7 +913,7 @@ fn lines_of(content: &BannerContent<'_>, width: f64) -> (Rect, Vec<f64>) {
 fn a_banner_names_what_sent_it_above_the_title() {
     let bare = BannerContent::new(BannerKind::Error, "Build failed")
         .with_message(Some("The link check found 4 broken links."));
-    let sent = bare.with_source(Some("Forgejo"));
+    let sent = bare.clone().with_source(Some("Forgejo"));
     let (bare_box, lines) = lines_of(&bare, 600.0);
     let (sent_box, with_sender) = lines_of(&sent, 600.0);
     assert_eq!(lines.len(), 2, "the title and its message: {lines:?}");
