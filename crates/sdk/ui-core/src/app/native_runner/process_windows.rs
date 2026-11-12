@@ -15,7 +15,7 @@
 use super::{App, AppHandler, UserEvent};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::window::WindowId;
 
 /// Builds the window the shell asked for, or says why it cannot.
@@ -211,12 +211,30 @@ impl ApplicationHandler<UserEvent> for ProcessWindows<'_, '_> {
         self.close_finished(event_loop);
     }
 
+    /// Each window sets the loop's wait for itself; the loop waits for the soonest of them.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let mut soonest = ControlFlow::Wait;
         for (handler, bar) in self.windows.iter_mut().zip(&self.bars) {
             let _bar = crate::window_toolbar::enter(Some(bar));
+            event_loop.set_control_flow(ControlFlow::Wait);
             handler.about_to_wait(event_loop);
+            soonest = sooner(soonest, event_loop.control_flow());
         }
+        event_loop.set_control_flow(soonest);
         self.close_finished(event_loop);
+    }
+}
+
+/// The wait that ends first.
+fn sooner(one: ControlFlow, other: ControlFlow) -> ControlFlow {
+    match (one, other) {
+        (ControlFlow::Poll, _) | (_, ControlFlow::Poll) => ControlFlow::Poll,
+        (ControlFlow::WaitUntil(one), ControlFlow::WaitUntil(other)) => {
+            ControlFlow::WaitUntil(one.min(other))
+        }
+        (ControlFlow::WaitUntil(at), ControlFlow::Wait)
+        | (ControlFlow::Wait, ControlFlow::WaitUntil(at)) => ControlFlow::WaitUntil(at),
+        (ControlFlow::Wait, ControlFlow::Wait) => ControlFlow::Wait,
     }
 }
 
