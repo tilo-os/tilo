@@ -190,8 +190,8 @@ pub struct EngineRequest {
 impl EngineRequest {
     /// Ask `base` instead of the engine, with the same query pairs and form
     /// fields: what a fixture search does to stand a server on this machine
-    /// in for an engine.
-    #[cfg(feature = "fixture-servers")]
+    /// in for an engine. Compiled in every build, because the routing that
+    /// can pass a base is [`crate::search`]'s own; only a test ever does.
     pub(crate) fn point_at(&mut self, base: &str) {
         let Ok(mut url) = Url::parse(base) else {
             return;
