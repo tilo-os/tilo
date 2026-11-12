@@ -184,17 +184,20 @@ def stop(child: subprocess.Popen | None) -> None:
         child.wait(timeout=5)
 
 
-def prepare_fonts(payload: pathlib.Path, profile: pathlib.Path) -> None:
-    """Lay the faces the app sets its text in beside its executable, as an installed app carries
+def prepare_fonts(payload: pathlib.Path, profile: pathlib.Path) -> pathlib.Path:
+    """Lay the faces text is set in beside the payload's executable, as an installed app carries
     them: this build's pinned catalog, prepared by the tree's own tooling from the artifact cache.
-    A payload without one draws nothing — text layout has no font to measure."""
+    A run without one draws nothing — text layout has no font to measure — so the session is told
+    where it is too (`TILO_FONT_CATALOG`). Answers the catalog's root."""
+    root = payload / "bin/fonts"
     cache = os.environ.get("TILO_FONT_ASSET_CACHE") or str(profile / "cache/font-artifacts")
     subprocess.run(
         [sys.executable, "-I", str(REPO / "tools/font-catalog.py"), "prepare",
-         str(REPO / "crates/sdk/ui-core/assets/fonts"), str(payload / "bin/fonts"),
+         str(REPO / "crates/sdk/ui-core/assets/fonts"), str(root),
          "--scope", "fixtures", "--cache", cache],
         check=True, stdout=subprocess.DEVNULL,
     )
+    return root
 
 
 def windows(sock: pathlib.Path) -> list[dict]:
@@ -304,7 +307,7 @@ def main() -> None:
     payload = out / "payload"
     (payload / "bin").mkdir(parents=True)
     shutil.copy2(paths["probe"], payload / "bin/probe")
-    prepare_fonts(payload, profile)
+    env["TILO_FONT_CATALOG"] = str(prepare_fonts(payload, profile))
     seed_dir = (payload / "startup-mesa-seed" if args.mesa_seed_source == "package"
                 else runtime / "tilo/pipeline-seed")
     try:
