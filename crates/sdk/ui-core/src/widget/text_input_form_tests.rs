@@ -726,3 +726,62 @@ fn an_entry_reports_its_emptied_state_after_it_submits() {
         "the emptied field is reported after the submit, so the bound draft is emptied too"
     );
 }
+
+/// A submit is answered with the words it caught, never with what the field shows when the answer
+/// runs: the shell collects a press and answers it a step later, and an entry has let go of its
+/// words by then. Reading the field back at the answer would send an empty message — the words
+/// the person typed are lost between the press and the door.
+///
+/// Marked by `insert_at_cursor`, whose rows before the fix never reached the change verb and the
+/// submit's answer read an emptied field: this test fails on both counts without the fix.
+#[test]
+fn a_submit_is_answered_with_the_words_it_caught_even_after_an_entry_emptied_itself() {
+    let _settled = crate::motion::testing::settled();
+    let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let answered = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let (change_sink, answer_sink) = (changes.clone(), answered.clone());
+    let mut ti = TextInput::local()
+        .with_id("composer")
+        .with_entry(true)
+        .on_change_view(move |value| change_sink.borrow_mut().push(value.to_owned()))
+        .on_submit_view(move |text| answer_sink.borrow_mut().push(text.to_owned()));
+    // What the person types, as a host splices a chosen key's text: reported once, as a
+    // keystroke's edit is.
+    ti.insert_at_cursor("ship it");
+    assert_eq!(
+        crate::testing::answer_controls(&mut ti),
+        1,
+        "the typed words reach the change verb"
+    );
+    assert_eq!(
+        changes.borrow().as_slice(),
+        ["ship it"],
+        "the typed words are reported as they land"
+    );
+    ti.set_focus(true);
+    let mut doc = AutoCommit::new();
+    assert!(drive(
+        &mut ti,
+        &mut doc,
+        &named_key(NamedKey::Enter),
+        mods(false, false)
+    ));
+    // The press has not been answered yet, and the entry has already let go of its words.
+    assert_eq!(ti.value(), "");
+    assert_eq!(
+        answered.borrow().as_slice(),
+        [] as [String; 0],
+        "a press is answered when the host collects it, not at the press"
+    );
+    // The host answers what it collected: the submit still carries the words.
+    assert_eq!(
+        crate::testing::answer_controls(&mut ti),
+        2,
+        "the submit and the clearing are both answered"
+    );
+    assert_eq!(
+        answered.borrow().as_slice(),
+        ["ship it"],
+        "the submit is answered with the words it caught, not the emptied field"
+    );
+}
