@@ -58,15 +58,19 @@ impl Planner {
 /// What to say when a run's steps could not be chosen: why no single action
 /// answered the request, and — when no model planned it — the step that
 /// would let one.
+///
+/// A run that asked for a model and has none says exactly that, once: the
+/// words of the request were not matched to any action, and listing the
+/// actions they came nearest says nothing a person can act on. What they can
+/// act on is the one thing that makes the request playable.
 pub(super) fn unmatched(plan: &Planner, why: &str) -> String {
     match plan {
         Planner::Model { .. } => why.to_owned(),
         Planner::Words {
             reason: Words::NoModel,
-        } => format!(
-            "{why} No model is set up to plan one, so choose a model in Settings, under Agent \
-             models, or name the app to work in."
-        ),
+        } => "I can't work on this yet — no model is set up. Choose one in Settings › \
+              Agent models."
+            .to_owned(),
         Planner::Words {
             reason: Words::Asked,
         } => format!("{why} Name the app to work in, or say what to do in it."),
@@ -120,7 +124,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_without_a_model_says_so_and_names_the_door() {
+    fn a_run_without_a_model_says_so_once_and_names_the_door() {
         let plan = Planner::Words {
             reason: Words::NoModel,
         };
@@ -128,9 +132,17 @@ mod tests {
         assert!(plan.announcing().contains("Agent models"));
         let unmatched = unmatched(
             &plan,
-            "No published action carries the words of the request.",
+            "That could mean reveal message or copy link. Which one?",
         );
-        assert!(unmatched.contains("No model is set up"));
+        assert!(
+            unmatched.contains("no model is set up"),
+            "the missing model is said plainly: {unmatched}"
+        );
+        assert!(unmatched.contains("Agent models"));
+        assert!(
+            !unmatched.contains("That could mean"),
+            "the reply does not list actions the words came nearest: {unmatched}"
+        );
         assert!(
             !unmatched.contains("permission"),
             "a missing model never reads as a missing permission: {unmatched}"

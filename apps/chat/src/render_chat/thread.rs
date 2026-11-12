@@ -378,7 +378,7 @@ impl ChatApp {
         }
         if let Some(work) = &message.work {
             let open = self.expanded_agent.contains(&message.id);
-            height += measure_agent_work(tr, theme, work, open, width);
+            height += measure_agent_work(tr, theme, work, open, width, !message.text.is_empty());
         }
         for file in message.files() {
             height += self.attachment_flow_height(file, f64::from(width), tr, theme);
@@ -463,9 +463,15 @@ impl ChatApp {
         }
         if let Some(work) = &m.work {
             let open = self.expanded_agent.contains(&m.id);
-            let height = measure_agent_work(tr, theme, work, open, tw);
+            let height = measure_agent_work(tr, theme, work, open, tw, !m.text.is_empty());
             let area = Rect::new(tx, yy, tx + f64::from(tw), yy + height);
-            if draw_agent_work(&mut PaintCtx::new(scene, tf, tr, theme), work, open, area) {
+            if draw_agent_work(
+                &mut PaintCtx::new(scene, tf, tr, theme),
+                work,
+                open,
+                area,
+                !m.text.is_empty(),
+            ) {
                 Self::push_hit(hits, area, Hit::AgentWork(m.id.clone()));
             }
             yy += height;

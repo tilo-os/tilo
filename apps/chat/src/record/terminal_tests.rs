@@ -60,7 +60,7 @@ fn provider_terminal_state_and_accessibility_report_output_not_applied_actions()
         assert!(work.finished());
         assert!(work.trace.is_empty());
         assert_eq!(
-            crate::render_chat::agent_work_accessible_description(&work),
+            crate::render_chat::agent_work_accessible_description(&work, true),
             description
         );
         assert_eq!(

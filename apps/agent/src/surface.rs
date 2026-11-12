@@ -467,30 +467,40 @@ pub fn quoted_literal(rest: &str) -> Option<String> {
     }
 }
 
-/// How well an offer answers `words`: how many of them the app's own labels
-/// carry. Zero means it does not answer at all.
-fn score(offer: &Offer, words: &[String]) -> usize {
+/// How well an offer answers `words`: how many of them landed on the
+/// operation, and how many named the thing it acts on.
+///
+/// The first is what makes an offer a candidate at all. The second only
+/// tells candidates apart: a request that says where it wants something done
+/// ("what is on my task list?") names the thing — the conversation, the
+/// document, the file — and every operation offered on that thing would
+/// otherwise score the same and be listed as an answer. Words naming where
+/// are not words naming what to do.
+fn score(offer: &Offer, words: &[String]) -> (usize, usize) {
     let action = offer.descriptor.action_label.to_lowercase();
     let resource = offer.descriptor.resource_label.to_lowercase();
     let kind = offer.descriptor.resource_kind.to_lowercase();
-    words
-        .iter()
-        .filter(|w| {
-            // The verb has to land on the operation. Matching only the
-            // thing being acted on says which file, never what to do to it.
-            // A word naming one of its choices (an alignment) lands on it
-            // too.
-            action.contains(w.as_str())
-                || resource.contains(w.as_str())
-                || kind.contains(w.as_str())
-                || offer.descriptor.params.iter().any(|param| {
-                    param
-                        .choices
-                        .iter()
-                        .any(|choice| choice.to_lowercase() == spelled(w))
-                })
-        })
-        .count()
+    let mut acted = 0usize;
+    let mut placed = 0usize;
+    for w in words {
+        // A word naming one of its choices (an alignment) lands on the
+        // operation too.
+        let on_action = action.contains(w.as_str())
+            || kind.contains(w.as_str())
+            || offer.descriptor.params.iter().any(|param| {
+                param
+                    .choices
+                    .iter()
+                    .any(|choice| choice.to_lowercase() == spelled(w))
+            });
+        if on_action {
+            acted += 1;
+        }
+        if resource.contains(w.as_str()) {
+            placed += 1;
+        }
+    }
+    (acted, placed)
 }
 
 /// What the deterministic floor decided, when it could not decide.
@@ -518,18 +528,22 @@ impl NoMatch {
     #[must_use]
     pub fn explanation(&self) -> String {
         match self {
-            Self::Nothing => "No published action carries the words of the request.".to_owned(),
+            Self::Nothing => "I don't know how to do that here.".to_owned(),
             Self::Ambiguous(labels) if labels.is_empty() => {
-                "More than one published action answers it.".to_owned()
+                "That could mean more than one thing. Which one?".to_owned()
             }
             Self::Ambiguous(labels) => {
                 format!(
-                    "More than one published action answers it: {}.",
-                    labels.join(", ")
+                    "That could mean {}. Which one?",
+                    labels
+                        .iter()
+                        .map(|label| label.to_lowercase())
+                        .collect::<Vec<_>>()
+                        .join(" or ")
                 )
             }
             Self::NeedsText(label) => {
-                format!("“{label}” needs the text to work with, and the request quotes none.")
+                format!("“{label}” needs the words to use, in quotes.")
             }
         }
     }
@@ -673,7 +687,7 @@ pub fn from_verbs<'a>(
 fn best_scored<'a>(offers: &'a [Offer], words: &[String]) -> Vec<&'a Offer> {
     let places = place_rows(offers);
     let mut best: Vec<&Offer> = Vec::new();
-    let mut best_score = 0usize;
+    let mut best_score = (0usize, 0usize);
     for offer in offers {
         // A paragraph published as a place answers by what it does, never
         // by what it says: its words name where, not what to do.
@@ -683,7 +697,7 @@ fn best_scored<'a>(offers: &'a [Offer], words: &[String]) -> Vec<&'a Offer> {
             continue;
         }
         let s = score(offer, words);
-        if s == 0 {
+        if s.0 == 0 {
             continue;
         }
         if s > best_score {
@@ -1105,5 +1119,59 @@ mod tests {
                 view: None,
             },
         }
+    }
+
+    /// Offers published on `resource`, labelled `label`, all carrying the
+    /// resource label `where`: what a workspace makes of operations offered
+    /// on a message, a paragraph or a file.
+    fn offers_on(resource: &str, where_: &str, labels: &[(&str, &str)]) -> Vec<Offer> {
+        labels
+            .iter()
+            .map(|(action, label)| {
+                let mut offer = offer(
+                    "chat",
+                    resource,
+                    action,
+                    label,
+                    tilo_actions::InputSpec::None,
+                );
+                offer.descriptor.resource_label = where_.to_string();
+                offer
+            })
+            .collect()
+    }
+
+    #[test]
+    fn words_naming_where_the_person_is_are_not_answers_to_what_to_do() {
+        // A question written in a conversation whose name carries its words:
+        // the message's label is the question itself, so every operation
+        // offered on it used to score the same and be listed as a candidate.
+        let offers = offers_on(
+            "chat.workspace/channels/task-list/messages/asked",
+            "what is on my task list?",
+            &[
+                ("reveal-message", "Reveal message"),
+                ("copy-link", "Copy link"),
+                ("post-file", "Post a file"),
+                ("stop-sharing", "Stop sharing"),
+            ],
+        );
+        assert!(
+            matches!(
+                from_verbs("what is on my task list?", &offers),
+                Err(NoMatch::Nothing)
+            ),
+            "naming the conversation is not naming an operation"
+        );
+
+        // The same words still tell two operations on different things
+        // apart when they are the only difference between them.
+        let mut notes = offers_on("files.entry:notes", "notes.txt", &[("delete", "Delete")]);
+        let mut plan = offers_on("files.entry:plan", "plan.txt", &[("delete", "Delete")]);
+        let mut offers = Vec::new();
+        offers.append(&mut notes);
+        offers.append(&mut plan);
+        let (chosen, _) = from_verbs("delete plan.txt", &offers).expect("one file is named");
+        assert_eq!(chosen.address().resource, "files.entry:plan");
     }
 }

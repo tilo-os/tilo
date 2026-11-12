@@ -623,6 +623,27 @@ impl ChatApp {
         }
     }
 
+    /// The height the agent's work takes under the reply `m`.
+    fn measure_row_work(
+        &self,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        m: &Message,
+        text_w: f32,
+    ) -> f64 {
+        m.work.as_ref().map_or(0.0, |work| {
+            let words = !m.text.is_empty();
+            measure_agent_work(
+                tr,
+                theme,
+                work,
+                self.expanded_agent.contains(&m.id),
+                text_w,
+                words,
+            )
+        })
+    }
+
     /// One day divider, in the toolkit's face: the same band, rules and
     /// centring Messages draws, so a day reads the same in both apps.
     fn draw_day_divider(&self, mut paint: PaintCtx<'_>, area: Rect, label: &str, y: f64) -> f64 {
@@ -674,9 +695,7 @@ impl ChatApp {
         let work_h = if editing {
             0.0
         } else {
-            m.work.as_ref().map_or(0.0, |work| {
-                measure_agent_work(tr, theme, work, self.expanded_agent.contains(&m.id), text_w)
-            })
+            self.measure_row_work(tr, theme, m, text_w)
         };
         // The header, reaction and thread bands are measured through the same
         // helpers the draw pass uses, so the reserved height is the painted
@@ -918,7 +937,7 @@ impl ChatApp {
         );
         *y += rm.work_h;
         let open = self.expanded_agent.contains(&m.id);
-        draw_agent_work(&mut paint, work, open, area).then_some(area)
+        draw_agent_work(&mut paint, work, open, area, !m.text.is_empty()).then_some(area)
     }
 
     /// Keep where a shown message drew its texts, cut to the timeline's
