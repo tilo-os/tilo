@@ -2329,10 +2329,11 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   bool credential_generation_exhausted_=false;
   std::string credential_committed_origin_;
   bool main_navigation_finished_=false;
+  // The host has refused the load it created this tab with (kTabStart).
+  bool tab_start_refused_=false;
   // bootstrap_settled_: the load the browser began with is over. A popup
   // begins with the page its opener gave it; a tab the host opened, with the
-  // load the host refuses (kTabStart).
-  bool tab_start_refused_=false;
+  // load the host refuses.
   bool bootstrap_settled_=false,navigation_busy_=true,navigation_dispatched_=false,navigation_started_=false,navigation_aborting_=false;
   std::string navigation_target_;
   std::optional<int> navigation_owner_;
