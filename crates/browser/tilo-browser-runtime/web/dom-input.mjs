@@ -62,8 +62,18 @@ export function createDomInput({layer, canvas, scrollerAt, native = () => false,
     on(layer, type, event => {
       if (native() || field(event)) return;
       // Crossing from one of the layer's elements to another is no entry or
-      // exit of the surface.
-      if ((type === 'pointerover' || type === 'pointerout') && event.relatedTarget && layer.contains(event.relatedTarget)) return;
+      // exit of the surface. Nor is a pointerout whose target the frame
+      // replaced under a still pointer (its relatedTarget is null): the
+      // pointer never left the surface, and the runtime would take it as a
+      // leave that ends the press in hand.
+      if (type === 'pointerover' && event.relatedTarget && layer.contains(event.relatedTarget)) return;
+      if (type === 'pointerout') {
+        if (event.relatedTarget && layer.contains(event.relatedTarget)) return;
+        const rect = layer.getBoundingClientRect();
+        const inside = event.clientX >= rect.left && event.clientX < rect.right
+          && event.clientY >= rect.top && event.clientY < rect.bottom;
+        if (inside) return;
+      }
       if (event.pointerType === 'touch') {
         if (type === 'pointerdown' && scrollerAt(event.clientX, event.clientY, 0)) panning.add(event.pointerId);
         if (type === 'pointermove' && panning.has(event.pointerId)) return;
