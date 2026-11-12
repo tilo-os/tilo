@@ -892,7 +892,7 @@ impl Core {
             return self.invoke_foreign(aref);
         }
         // A verb the resource's app publishes without a package loading here (a channel's
-        // `post`) is that app's too: the same door, the same attribution.
+        // `send`) is that app's too: the same door, the same attribution.
         if let Some(invocation) = self.published_invocation(aref) {
             return self.invoke_published(&invocation?);
         }
@@ -959,8 +959,8 @@ impl Core {
     /// publishes it on that resource ([`crate::published`]).
     ///
     /// A published verb is the resource's own, as a declared action is its package's: Chat's
-    /// channel publishes `post`, and the app that publishes it runs it. This is one path for
-    /// both languages — a Rust view naming `post` on the channel it shows, and a tilolang view
+    /// channel publishes `send`, and the app that publishes it runs it. This is one path for
+    /// both languages — a Rust view naming `send` on the channel it shows, and a tilolang view
     /// naming it, make the same invocation with the same arguments by name.
     fn published_invocation(
         &self,
@@ -981,7 +981,7 @@ impl Core {
         let published = self.published.borrow();
         let verb = published.get(&id, &aref.action)?;
         // The verb's parameters as its app declares them, after the resource the address names
-        // (`post(channel: Text, text: Text)`); the resource is the subject, never an argument.
+        // (`send(to: List, attached: List, text: Text)`); the resource is the subject, never an argument.
         let args: Vec<(String, Value)> = verb
             .params
             .iter()

@@ -1,9 +1,8 @@
 //! Immutable per-window browsing policy.
 
-/// Why a window opened without the person's account custody refuses their
-/// website accounts.
-pub(crate) const NO_ACCOUNT_CUSTODY: &str = "This window browses without your sign-ins. Open \
-     the page in a Browser window of your own to use your accounts there";
+/// The catalogue message saying why a window opened without the person's
+/// account custody refuses their website accounts.
+pub(crate) const NO_ACCOUNT_CUSTODY: &str = "browser-no-account-custody";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BrowsingMode {

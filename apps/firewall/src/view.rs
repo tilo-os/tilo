@@ -209,7 +209,8 @@ pub(crate) fn zone_list(config: &FirewallConfig, selected: ZoneKind, intents: &I
         .iter()
         .filter_map(|kind| config.zone(*kind))
         .map(|zone: &Zone| {
-            let item = NavItem::new(zone_id(zone.kind), zone.kind.title()).without_actions();
+            let item = NavItem::new(zone_id(zone.kind), CATALOG.t(zone.kind.title_message()))
+                .without_actions();
             if zone.kind == config.default_zone {
                 item.status_label("Active", Tone::Success)
             } else {
@@ -434,13 +435,13 @@ fn banners(config: &FirewallConfig) -> Vec<Element> {
     let mut out: Vec<Element> = Vec::new();
     if config.panic_mode {
         out.push(Box::new(
-            Banner::error("Panic mode is on")
+            Banner::error(CATALOG.t("firewall-panic-banner"))
                 .with_message(CATALOG.t("firewall-panic-mode-message")),
         ));
     }
     if !config.enabled {
         out.push(Box::new(
-            Banner::warning("The firewall is stopped")
+            Banner::warning(CATALOG.t("firewall-stopped-banner"))
                 .with_message(CATALOG.t("firewall-stopped-message")),
         ));
     }
@@ -521,7 +522,7 @@ fn details(zone: &Zone) -> Section {
             interfaces,
             Property::new(
                 CATALOG.t("firewall-unmatched-traffic"),
-                zone.target.outcome(),
+                CATALOG.t(zone.target.outcome_message()),
             ),
             Property::new(CATALOG.t("firewall-masquerading"), masquerading),
         ]))],
@@ -592,7 +593,7 @@ fn rule_table(
                     Action::Allow => Tone::Success,
                     Action::Deny => Tone::Danger,
                 };
-                (row.action.title().to_string(), tone)
+                (CATALOG.t(row.action.title_message()), tone)
             }),
         ColumnDef::new("rule", "Rule", ColumnWidth::Flex(1.0))
             .min_width(160.0)
@@ -830,12 +831,18 @@ fn add_rule_dialog(zone: ZoneKind, draft: &Draft, intents: &Intents) -> ModalDia
     let title = if editing {
         CATALOG.t_args(
             "firewall-edit-rule-in-zone",
-            &[("zone", ui::i18n::ArgValue::Text(zone.title().to_owned()))],
+            &[(
+                "zone",
+                ui::i18n::ArgValue::Text(CATALOG.t(zone.title_message())),
+            )],
         )
     } else {
         CATALOG.t_args(
             "firewall-add-rule-to-zone",
-            &[("zone", ui::i18n::ArgValue::Text(zone.title().to_owned()))],
+            &[(
+                "zone",
+                ui::i18n::ArgValue::Text(CATALOG.t(zone.title_message())),
+            )],
         )
     };
     let primary = if editing { "Save rule" } else { "Add rule" };

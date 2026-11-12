@@ -95,3 +95,35 @@ remote-actual-size = Actual size
 remote-fit-to-window = Fit to window
 remote-full-screen = Full screen
 remote-disconnect = Disconnect
+
+## Actions
+
+remote-effect-show-connections = Show connections
+remote-effect-edit-connection = Connection settings
+remote-effect-send-text = Send text
+remote-effect-put-file = Send file
+remote-effect-fetch-file = Fetch file
+remote-effect-trust-host-key = Trust host key
+remote-effect-forget-host-key = Forget host key
+remote-connection-list = Remote connections
+remote-connection-list-add-connection = Add connection
+remote-connection-list-mark-used = Record use
+
+## What a connection is called
+remote-kind-ssh = SSH
+remote-kind-vnc = VNC
+remote-kind-rdp = RDP
+remote-kind-tilo = Tilo device
+remote-auth-password = Password
+remote-auth-public-key = Public key
+remote-auth-device-identity = Device identity
+remote-readiness-ready = Ready
+remote-readiness-elsewhere = Not available here
+remote-readiness-no-rdp = RDP isn't supported
+remote-readiness-editing = Needs editing
+remote-issue-ssh-auth = SSH profiles support password or public-key authentication.
+remote-issue-vnc-auth = VNC profiles support password authentication only.
+remote-issue-rdp-auth = RDP profiles support password authentication only.
+remote-issue-tilo-auth = Tilo device profiles must use Tilo device identity.
+remote-issue-tilo-endpoint = Tilo device node must be the device's exact endpoint id.
+remote-rdp-unsupported-title = Remote can't open RDP connections

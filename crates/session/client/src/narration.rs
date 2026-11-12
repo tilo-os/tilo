@@ -152,7 +152,7 @@ pub mod lines {
     /// the app, a shell command as the command line itself.
     #[must_use]
     pub fn doing(app: &str, action: &str, args: Option<&Value>) -> String {
-        let line = match verb(action) {
+        let line = match tilo_actions::wording::verb_of(action).unwrap_or("Working in") {
             "Running" => {
                 let command = ["command", "command_line", "cmd"]
                     .iter()
@@ -176,26 +176,14 @@ pub mod lines {
         clip(&format!("{line} (failed)"))
     }
 
-    /// The verb the action `action` is taken with, as the person reads it.
-    fn verb(action: &str) -> &'static str {
-        let action = action.to_lowercase();
-        let any = |words: &[&str]| words.iter().any(|word| action.contains(word));
-        if any(&["run", "exec", "shell", "command"]) {
-            "Running"
-        } else if any(&["delete", "remove", "clear"]) {
-            "Deleting"
-        } else if any(&["new", "add", "create"]) {
-            "Adding"
-        } else if any(&[
-            "edit", "insert", "append", "replace", "set", "update", "write", "type", "format",
-            "rename", "move", "toggle",
-        ]) {
-            "Editing"
-        } else if any(&["open", "start", "launch"]) {
-            "Opening"
-        } else {
-            "Working in"
-        }
+    /// Taking `action` — the catalogue's own name for it — on the record it
+    /// acts in ("Editing Trip plan"), and in the action's own words where no
+    /// record is named ("Creating note from Markdown"). The one line every
+    /// surface says of a step ([`tilo_actions::wording`]), so the words beside
+    /// a run's face and the card in its window never disagree.
+    #[must_use]
+    pub fn acting(action: &str, record: Option<&str>) -> String {
+        clip(&tilo_actions::wording::step_line(action, record))
     }
 
     /// `<verb> <what>` as one line, the what left out when there is none.
@@ -250,6 +238,24 @@ pub mod lines {
                 "Running a command in Terminal"
             );
             assert_eq!(failed("Adding Sheets"), "Adding Sheets (failed)");
+        }
+
+        /// What a run is at on the record it acts in is said in the catalogue's own words for
+        /// the action, on the record: "Editing Trip plan", never the app's name as if the app
+        /// were being added, and the action's own words where no record is named.
+        #[test]
+        fn a_step_is_said_on_the_record_it_acts_in() {
+            assert_eq!(
+                acting("Replace text at a place", Some("Trip plan")),
+                "Editing Trip plan"
+            );
+            assert_eq!(acting("New note", Some("Trip plan")), "Adding Trip plan");
+            assert_eq!(
+                acting("Create note from Markdown", None),
+                "Creating note from Markdown"
+            );
+            let long = acting("Replace text at a place", Some(&"x".repeat(200)));
+            assert!(long.ends_with('…') && long.chars().count() <= SHOWN_CHARS);
         }
 
         /// A long line is cut where a person stops reading.

@@ -17,11 +17,7 @@
     reason = "test fixtures: a failed step is the assertion, and a device lives until its session ends"
 )]
 
-mod common;
-
-tilo_automerge_isolate::test_worker!();
-
-use common::people::{Device, Person, Site};
+use crate::common::people::{Device, Person, Site};
 use serde_json::{Value, json};
 use tilo_actions::remote::identity_admin;
 use tilo_identity_host::device_fleet::DeviceFleetStore;

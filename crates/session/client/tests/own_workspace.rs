@@ -13,10 +13,6 @@
     reason = "in a test these are the assertion, not a hazard; the test is one entry, in order; the host lives until it ends"
 )]
 
-mod support;
-
-tilo_automerge_isolate::test_worker!();
-
 use std::cell::Cell;
 use std::sync::Arc;
 
@@ -29,7 +25,7 @@ use tilo_session_client::PeerConfig;
 use tilo_session_client::device::{Device, HostRefusal};
 use tilo_user_identity::{AgentScope, DeviceCapabilities, UserIdentity};
 
-use support::{door, enrol, enter as enter_as, start_workspace_host};
+use crate::support::{door, enrol, enter as enter_as, start_workspace_host};
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))

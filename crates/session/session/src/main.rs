@@ -866,6 +866,10 @@ fn run(
     };
     tilo_startup_metrics::mark("display-bound");
     println!("WAYLAND_DISPLAY={socket}");
+    // The workspace in front, for a command started here that no launcher tells one: a program run
+    // from a terminal, or `tilo-app dev`. Published beside the display, for as long as the session
+    // runs, when this session is the one the login's programs reach.
+    session.publish_workspace(&socket);
     // A session added to this machine's own login serves the installed folder importer: whether
     // identity setup is over, on the socket named for this session's display, and the review the
     // person left to be opened after it.

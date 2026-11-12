@@ -1,12 +1,8 @@
 //! What a resource was made from, and what links to it: `created(r)?.from` and `linked(r)`.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::rich::RichValue;
     use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Value};
 

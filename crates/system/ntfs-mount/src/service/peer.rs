@@ -82,7 +82,7 @@ mod tests {
             fs::write(&seat, format!("IS_SEAT0=1\nACTIVE=c2\nACTIVE_UID={uid}\n")).unwrap();
         }
         PeerPolicy {
-            trusted_ui: PathBuf::from("/usr/bin/shell"),
+            trusted_ui: PathBuf::from("/usr/bin/tilo-session"),
             seat,
             users: dir.join("users"),
         }
@@ -91,7 +91,7 @@ mod tests {
     fn shell(uid: u32) -> PeerFacts {
         PeerFacts {
             uid,
-            exe: Some(PathBuf::from("/usr/bin/shell")),
+            exe: Some(PathBuf::from("/usr/bin/tilo-session")),
             host_namespaces: true,
         }
     }

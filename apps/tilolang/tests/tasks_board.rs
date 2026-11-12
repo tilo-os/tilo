@@ -15,18 +15,6 @@
     reason = "test assertions"
 )]
 
-#[allow(
-    dead_code,
-    reason = "each test binary reads what it needs of the change marks"
-)]
-mod change_marks;
-#[allow(
-    dead_code,
-    reason = "each test binary reads what it needs of a window's history"
-)]
-mod history_window;
-mod support;
-
 use tilolang_app::app::TlApp;
 use ui::a11y::Role;
 use ui::framework::testing::TestApp;
@@ -38,7 +26,7 @@ const PHONE: (u32, u32) = (420, 860);
 /// The project board scenario staged, and the project's bar switched to its board: a lane of no
 /// section and two sections with tasks.
 fn staged(viewport: (u32, u32)) -> TestApp<TlApp> {
-    support::installed("tasks");
+    crate::support::installed("tasks");
     let mut app = TestApp::<TlApp>::capture_at(Some("a project board"), viewport)
         .expect("the scenario stages");
     settle(&mut app);
@@ -313,12 +301,12 @@ fn a_card_dragged_within_its_lane_and_into_another_lands_where_it_was_dropped() 
 /// written, light and dark.
 #[test]
 fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
-    use change_marks::{RUN, action_id, chroma_in, marks, published_with, run, settle};
+    use crate::change_marks::{RUN, action_id, chroma_in, marks, published_with, run, settle};
     let mut app =
-        ui::framework::testing::HostedApp::open(support::installed("tasks"), "ada").unwrap();
+        ui::framework::testing::HostedApp::open(crate::support::installed("tasks"), "ada").unwrap();
     settle(&mut app);
     // What a person adds in the list's entry waits in the inbox, and the window shows it there.
-    change_marks::choose(&mut app, "Inbox");
+    crate::change_marks::choose(&mut app, "Inbox");
     let root = app
         .read(|doc| tilolang_tilo::action::resource_ids(doc, "so.tilo.lang.tasks"))
         .remove(0);
@@ -364,7 +352,7 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
     let mut which = serde_json::Map::new();
     which.insert(
         "t".to_owned(),
-        change_marks::reference("so.tilo.lang.tasks", &mut app, "Book the dentist"),
+        crate::change_marks::reference("so.tilo.lang.tasks", &mut app, "Book the dentist"),
     );
     app.invoke(Some(agent), Some(&ambient), &tasks, &remove, &which, false)
         .unwrap();
@@ -373,13 +361,13 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
     // Every row the run touched that the inbox still holds is marked: the one it removed
     // stays as a struck row, all at the row's own height, with the agent's face leading the
     // line it says under the title. The one it checked off left the inbox for Done.
-    let listed = change_marks::rows(&mut app);
+    let listed = crate::change_marks::rows(&mut app);
     assert!(
         listed.len() == 2 && listed.iter().all(|(_, _, marked)| *marked),
         "{listed:?}"
     );
     assert_eq!(
-        change_marks::removed_rows(&mut app).len(),
+        crate::change_marks::removed_rows(&mut app).len(),
         1,
         "the removed task stands as a struck row"
     );
@@ -404,15 +392,15 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
     // The header counts them, once.
     assert_eq!(marks(&mut app).len(), 1);
     // What the run checked off is read where it went, marked there too.
-    change_marks::choose(&mut app, "Done");
-    let done = change_marks::rows(&mut app);
+    crate::change_marks::choose(&mut app, "Done");
+    let done = crate::change_marks::rows(&mut app);
     let (_, _, marked) = done
         .iter()
         .find(|(name, _, _)| name == "Water the plants")
         .unwrap_or_else(|| panic!("Done lists the task the run checked off: {done:?}"));
     assert!(marked, "the row it checked off is marked in Done: {done:?}");
-    change_marks::choose(&mut app, "Inbox");
-    if let Some(dir) = change_marks::shots_dir() {
+    crate::change_marks::choose(&mut app, "Inbox");
+    if let Some(dir) = crate::change_marks::shots_dir() {
         for (shade, theme) in [("light", ui::Theme::light()), ("dark", ui::Theme::dark())] {
             app.harness().set_theme(theme);
             settle(&mut app);
@@ -429,11 +417,11 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
 /// open.
 #[test]
 fn a_tasks_history_shows_its_due_day_before_and_after_and_who_set_it() {
-    use change_marks::{action_id, choose, named, published_with, run, settle};
-    use history_window::{after, shoot, times};
+    use crate::change_marks::{action_id, choose, named, published_with, run, settle};
+    use crate::history_window::{after, shoot, times};
     let _settled = ui::motion::testing::settled();
     let mut app =
-        ui::framework::testing::HostedApp::open(support::installed("tasks"), "ada").unwrap();
+        ui::framework::testing::HostedApp::open(crate::support::installed("tasks"), "ada").unwrap();
     settle(&mut app);
     // The task a person adds waits in the inbox, which the window shows it in.
     choose(&mut app, "Inbox");
@@ -581,7 +569,7 @@ fn the_home_list_shows_the_inbox_tasks_of_a_busy_week() {
     // A day into the week the scenario stages: what is due before it is overdue and waits in
     // Today, what is due after it in Upcoming.
     ui::time::testing::with_wall(local(7, 1, (9, 0, 0)), || {
-        support::installed("tasks");
+        crate::support::installed("tasks");
         let mut app = TestApp::<TlApp>::capture_at(Some("a busy week"), DESKTOP)
             .expect("the scenario stages");
         settle(&mut app);
@@ -682,7 +670,7 @@ fn open_menu(app: &mut TestApp<TlApp>) -> Option<[f64; 4]> {
 #[test]
 fn a_row_menu_opened_from_the_keyboard_stands_under_that_row() {
     let _settled = ui::motion::testing::settled();
-    support::installed("tasks");
+    crate::support::installed("tasks");
     let mut app =
         TestApp::<TlApp>::capture_at(Some("a busy week"), DESKTOP).expect("the scenario stages");
     settle(&mut app);
@@ -727,7 +715,7 @@ fn the_today_list_takes_in_tomorrows_task_when_the_persons_midnight_passes() {
     let after = local(7, 1, (0, 0, 30));
     // 23:59 on the scenario's day: "Reply to Mia" is due tomorrow, so Today leaves it out.
     let mut app = with_wall(before, || {
-        support::installed("tasks");
+        crate::support::installed("tasks");
         let mut app = TestApp::<TlApp>::capture_at(Some("a busy week"), DESKTOP)
             .expect("the scenario stages");
         settle(&mut app);
@@ -851,7 +839,7 @@ fn agent_acting(
             descriptor.address.resource == resource && descriptor.address.action == action
         })
         .unwrap_or_else(|| panic!("the window publishes {action} of {resource}"));
-    let (agent, _) = change_marks::run();
+    let (agent, _) = crate::change_marks::run();
     ui::tilo_actions::SemanticInteraction {
         version: ui::tilo_actions::INTERACTION_VERSION,
         invocation: ui::tilo_actions::InvocationId::new(),
@@ -882,7 +870,7 @@ fn show_acting(
     app: &mut ui::framework::testing::HostedApp,
     event: ui::tilo_actions::SemanticInteraction,
 ) {
-    let (agent, _) = change_marks::run();
+    let (agent, _) = crate::change_marks::run();
     let shown = app.harness().update_presence(|presence| {
         presence.names.insert(
             ui::permissions::UserId(agent.actor.clone()),
@@ -919,11 +907,11 @@ fn title_field() -> String {
 
 /// The window's tasks, opened: Ada's own task in her inbox, and the published tasks list.
 fn a_task_of_adas(title: &str) -> (ui::framework::testing::HostedApp, String) {
-    use change_marks::{action_id, settle};
+    use crate::change_marks::{action_id, settle};
     let mut app =
-        ui::framework::testing::HostedApp::open(support::installed("tasks"), "ada").unwrap();
+        ui::framework::testing::HostedApp::open(crate::support::installed("tasks"), "ada").unwrap();
     settle(&mut app);
-    change_marks::choose(&mut app, "Inbox");
+    crate::change_marks::choose(&mut app, "Inbox");
     let root = app
         .read(|doc| tilolang_tilo::action::resource_ids(doc, "so.tilo.lang.tasks"))
         .remove(0);
@@ -933,7 +921,7 @@ fn a_task_of_adas(title: &str) -> (ui::framework::testing::HostedApp, String) {
     args.insert("title".to_owned(), title.into());
     app.invoke(None, None, &tasks, &add, &args, false).unwrap();
     settle(&mut app);
-    let task = change_marks::published_with(&mut app, &tasks, "Complete");
+    let task = crate::change_marks::published_with(&mut app, &tasks, "Complete");
     (app, task)
 }
 
@@ -942,10 +930,10 @@ fn a_task_of_adas(title: &str) -> (ui::framework::testing::HostedApp, String) {
 #[test]
 fn an_agent_completing_a_task_is_seen_at_its_check_box() {
     let (mut app, task) = a_task_of_adas("Buy oat milk");
-    let complete = change_marks::action_id(&mut app, &task, "Complete");
+    let complete = crate::change_marks::action_id(&mut app, &task, "Complete");
     let event = agent_acting(&mut app, &task, &complete);
     show_acting(&mut app, event);
-    let (_, row, _) = change_marks::rows(&mut app)
+    let (_, row, _) = crate::change_marks::rows(&mut app)
         .into_iter()
         .find(|(name, _, _)| name.starts_with("Buy oat milk"))
         .expect("the inbox lists the task");
@@ -978,19 +966,19 @@ fn an_agent_completing_a_task_is_seen_at_its_check_box() {
             || locus.contains(check.center()),
         "the agent's pointer rests on the task's check box: {pointer:?}, {check:?}"
     );
-    if let Some(dir) = change_marks::shots_dir() {
+    if let Some(dir) = crate::change_marks::shots_dir() {
         app.harness()
             .render_png(&dir.join("tasks-agent-completes.png"));
     }
     // The person's press of the box runs the same action, through the same door.
     app.harness().click_at(check.center().x, check.center().y);
-    change_marks::settle(&mut app);
+    crate::change_marks::settle(&mut app);
     assert!(
-        !change_marks::rows(&mut app)
+        !crate::change_marks::rows(&mut app)
             .iter()
             .any(|(name, _, _)| name.starts_with("Buy oat milk")),
         "pressing the box completes the task: {:?}",
-        change_marks::rows(&mut app)
+        crate::change_marks::rows(&mut app)
     );
 }
 
@@ -998,9 +986,9 @@ fn an_agent_completing_a_task_is_seen_at_its_check_box() {
 /// what it wrote stands in its colour and its caret, named with what it is doing, ends it.
 #[test]
 fn an_agent_editing_a_title_is_seen_writing_in_it() {
-    use change_marks::{action_id, chroma_in, settle, text_field};
+    use crate::change_marks::{action_id, chroma_in, settle, text_field};
     let (mut app, task) = a_task_of_adas("Buy oat milk");
-    let (_, row, _) = change_marks::rows(&mut app)
+    let (_, row, _) = crate::change_marks::rows(&mut app)
         .into_iter()
         .find(|(name, _, _)| name.starts_with("Buy oat milk"))
         .expect("the inbox lists the task");
@@ -1008,7 +996,7 @@ fn an_agent_editing_a_title_is_seen_writing_in_it() {
         .click_at(row[0] + row[2] / 2.0, row[1] + row[3] / 2.0);
     settle(&mut app);
     let edit = action_id(&mut app, &task, "Edit a text field");
-    let (agent, ambient) = change_marks::run();
+    let (agent, ambient) = crate::change_marks::run();
     let mut args = serde_json::Map::new();
     args.insert("field".to_owned(), title_field().into());
     args.insert("value".to_owned(), "Buy oat milk and bread".into());
@@ -1024,7 +1012,7 @@ fn an_agent_editing_a_title_is_seen_writing_in_it() {
     .unwrap();
     settle(&mut app);
     show_acting(&mut app, event);
-    if let Some(dir) = change_marks::shots_dir() {
+    if let Some(dir) = crate::change_marks::shots_dir() {
         app.harness()
             .render_png(&dir.join("tasks-agent-writes.png"));
     }
@@ -1069,9 +1057,9 @@ fn an_agent_editing_a_title_is_seen_writing_in_it() {
 /// place in the words their own window says they are.
 #[test]
 fn a_person_writing_in_a_title_is_seen_there() {
-    use change_marks::{settle, text_field};
+    use crate::change_marks::{settle, text_field};
     let (mut app, task) = a_task_of_adas("Buy oat milk");
-    let (_, row, _) = change_marks::rows(&mut app)
+    let (_, row, _) = crate::change_marks::rows(&mut app)
         .into_iter()
         .find(|(name, _, _)| name.starts_with("Buy oat milk"))
         .expect("the inbox lists the task");
@@ -1108,7 +1096,7 @@ fn a_person_writing_in_a_title_is_seen_there() {
         "Bo's caret stands in the title's words: {:?} in {field:?}",
         caret.rect
     );
-    if let Some(dir) = change_marks::shots_dir() {
+    if let Some(dir) = crate::change_marks::shots_dir() {
         app.harness()
             .render_png(&dir.join("tasks-person-writes.png"));
     }

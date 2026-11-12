@@ -26,6 +26,14 @@
 //! read what it changed: a pass it landed during proves nothing, and the
 //! next frame runs the component again.
 //!
+//! Work reports back to its component one way: the channel it answers on is
+//! opened in the component's own context ([`crate::wake::waking_channel`],
+//! [`crate::wake::waking_sync_channel`]) or is its typed local state
+//! ([`crate::LocalState::writer`]), so every message wakes the component
+//! before it can be received. A wake captured for a running component that
+//! reaches no scope can never report back to it, and a debug build fails
+//! where that wire is made ([`crate::wake::FeedsComponent`]).
+//!
 //! Nothing is promised by the app. A read the framework cannot follow yet
 //! says so ([`untracked`]), and the component then syncs on every frame, as
 //! every component did before.
@@ -66,12 +74,29 @@ struct Reading {
 
 /// One thing a pass read outside its component: what names it, what it
 /// was when read, and how to read it again. Every kind of read (local state
-/// of another scope or of none, another record, a settings document) is one
-/// of these, so comparing, joining and carrying them is one loop.
+/// of another scope or of none, shared state, another record, a settings
+/// document) is one of these, so comparing, joining and carrying them is one
+/// loop.
 struct Probe {
-    key: (usize, u64),
+    key: Key,
     read: Option<u64>,
     now: Box<dyn Fn() -> Option<u64>>,
+}
+
+/// What names the outside thing a pass read, so that two passes reading the
+/// same thing compare it with itself and nothing else.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Key {
+    /// Typed local state that belongs to no scope.
+    Detached,
+    /// Typed local state of the scope this names.
+    Scope(usize),
+    /// A record of the store and id this names.
+    Record(usize, u64),
+    /// The settings document this names.
+    Versioned(u64),
+    /// State several views share that belongs to no scope ([`Shared`]).
+    Shared(usize),
 }
 
 thread_local! {
@@ -84,6 +109,10 @@ thread_local! {
 /// Run `pass` as the pass of the component `owner` names, gathering what it
 /// reads outside the component.
 pub(crate) fn reading<R>(owner: &WakeHandle, pass: impl FnOnce() -> R) -> (R, Reads) {
+    // What the pass starts off the frame reports back to the component whose
+    // pass it is; a wake that would reach no component is caught as it is
+    // captured ([`crate::wake::FeedsComponent`]).
+    let _feeding = crate::wake::FeedsComponent::begin();
     let pass_reading = PassReading::begin(owner);
     let result = pass();
     (result, pass_reading.end())
@@ -96,6 +125,10 @@ struct PassReading {
     outer: Option<Reading>,
     /// The owner's moves from other threads when the pass began.
     crossed: Option<u64>,
+    /// The language the pass began in: a pass that loads other words (a
+    /// page's first build does) reads what it shows in two languages, and
+    /// proves nothing, as a pass work landed in does.
+    locale: u64,
 }
 
 impl PassReading {
@@ -112,6 +145,7 @@ impl PassReading {
         Self {
             outer,
             crossed: owner.crossed(),
+            locale: crate::i18n::I18nManager::revision(),
         }
     }
 
@@ -124,6 +158,7 @@ impl PassReading {
         let crossed = read
             .as_ref()
             .is_some_and(|read| read.owner.crossed() != self.crossed);
+        let locale = self.locale;
         drop(self);
         match read {
             Some(read) => Reads {
@@ -131,10 +166,12 @@ impl PassReading {
                 untracked: read
                     .untracked
                     .or(crossed.then_some("ui.component.loud.woken_during_pass")),
+                locale: Some(locale),
             },
             None => Reads {
                 probes: Vec::new(),
                 untracked: Some("component_inputs.lost"),
+                locale: None,
             },
         }
     }
@@ -149,7 +186,10 @@ impl Drop for PassReading {
 
 /// The pass running read what `key` names: `make` answers what it read and
 /// how to read it again. Read again in the same pass, the first read stands.
-fn probe(key: (usize, u64), make: impl FnOnce() -> (Option<u64>, Box<dyn Fn() -> Option<u64>>)) {
+fn probe(
+    make_key: impl FnOnce() -> Key,
+    make: impl FnOnce() -> (Option<u64>, Box<dyn Fn() -> Option<u64>>),
+) {
     READING.with(|reading| {
         let Ok(mut reading) = reading.try_borrow_mut() else {
             return;
@@ -157,6 +197,7 @@ fn probe(key: (usize, u64), make: impl FnOnce() -> (Option<u64>, Box<dyn Fn() ->
         let Some(reading) = reading.as_mut() else {
             return;
         };
+        let key = make_key();
         if reading.probes.iter().any(|probe| probe.key == key) {
             return;
         }
@@ -172,10 +213,13 @@ fn probe(key: (usize, u64), make: impl FnOnce() -> (Option<u64>, Box<dyn Fn() ->
 #[inline(never)]
 pub(crate) fn read_owned_by(owner: &WakeHandle) {
     let Some(scope) = owner.scope_key() else {
-        probe((0, 0), || {
-            let now = || Some(DETACHED.load(Ordering::Acquire));
-            (now(), Box::new(now))
-        });
+        probe(
+            || Key::Detached,
+            || {
+                let now = || Some(DETACHED.load(Ordering::Acquire));
+                (now(), Box::new(now))
+            },
+        );
         return;
     };
     let own = READING.with(|reading| {
@@ -187,10 +231,13 @@ pub(crate) fn read_owned_by(owner: &WakeHandle) {
         })
     });
     if own == Some(false) {
-        probe((scope, 0), || {
-            let owner = owner.clone();
-            (owner.revision(), Box::new(move || owner.revision()))
-        });
+        probe(
+            || Key::Scope(scope),
+            || {
+                let owner = owner.clone();
+                (owner.revision(), Box::new(move || owner.revision()))
+            },
+        );
     }
 }
 
@@ -202,13 +249,17 @@ pub(crate) fn read_record(
     id: &crate::record::RecordId,
     document: &automerge::AutoCommit,
 ) {
-    probe((store.key(), fold(0, id.as_str().as_bytes())), || {
-        let (store, id) = (store.clone(), id.clone());
-        (
-            Some(frontier(document)),
-            Box::new(move || store.read(&id, frontier)),
-        )
-    });
+    let key = Key::Record(store.key(), fold(0, id.as_str().as_bytes()));
+    probe(
+        || key,
+        || {
+            let (store, id) = (store.clone(), id.clone());
+            (
+                Some(frontier(document)),
+                Box::new(move || store.read(&id, frontier)),
+            )
+        },
+    );
 }
 
 /// A record's frontier as one number: its committed heads and what is
@@ -243,9 +294,7 @@ pub(crate) fn read_versioned(
             fold(1, root.as_os_str().as_encoded_bytes())
         }
     };
-    // No allocation has this address: a settings document's key is apart
-    // from every scope's and record store's.
-    probe((usize::MAX, named), || (version(), version));
+    probe(|| Key::Versioned(named), || (version(), version));
 }
 
 /// Local state `owner` is told of was written. Written by the pass of the
@@ -266,6 +315,51 @@ pub(crate) fn written_by(owner: &WakeHandle) {
                 .get_or_insert("ui.component.loud.wrote_what_it_read");
         }
     });
+}
+
+/// State several views share that belongs to no component scope and no
+/// record: the live resource a surface follows, what a workspace published.
+/// A pass that reads it follows it, and runs again once it moves, rather
+/// than resting on what it no longer shows.
+///
+/// It is kept apart from every scope's local state and every record, so a
+/// move reaches exactly the passes that read this state: the framework moves
+/// it in its own pass, before the components that read it sync.
+#[derive(Clone)]
+pub struct Shared {
+    key: usize,
+    generation: std::rc::Rc<std::cell::Cell<u64>>,
+}
+
+impl Shared {
+    /// Shared state that has moved `moves` times so far.
+    #[must_use]
+    pub fn new(moves: u64) -> Self {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+        Self {
+            key: NEXT.fetch_add(1, Ordering::Relaxed),
+            generation: std::rc::Rc::new(std::cell::Cell::new(moves)),
+        }
+    }
+
+    /// The reading of the state now, which the pass running follows.
+    pub fn read(&self) -> u64 {
+        let generation = std::rc::Rc::clone(&self.generation);
+        probe(
+            || Key::Shared(self.key),
+            || {
+                let now = move || Some(generation.get());
+                let first = now();
+                (first, Box::new(now))
+            },
+        );
+        self.generation.get()
+    }
+
+    /// The state moved: every pass that read it runs again.
+    pub fn moved(&self) {
+        self.generation.set(self.generation.get().wrapping_add(1));
+    }
 }
 
 /// The pass running read something the framework cannot follow (`what`
@@ -319,6 +413,10 @@ pub(crate) fn forced() -> bool {
 pub(crate) struct Reads {
     probes: Vec<Probe>,
     untracked: Option<&'static str>,
+    /// The language its earliest pass began in: a language that moved while
+    /// the pass ran (another window's words loading, a device's formats
+    /// changing) is read again by the next pass, which shows what it holds.
+    pub(crate) locale: Option<u64>,
 }
 
 impl Reads {
@@ -326,8 +424,17 @@ impl Reads {
     /// read.
     pub(crate) fn join(mut self, other: Self) -> Self {
         self.untracked = self.untracked.or(other.untracked);
+        self.locale = self.earliest(other.locale);
         self.take(other.probes, false);
         self
+    }
+
+    /// Where `self` read the locale earlier than `other` did.
+    fn earliest(&self, other: Option<u64>) -> Option<u64> {
+        match (self.locale, other) {
+            (Some(mine), Some(theirs)) => Some(mine.min(theirs)),
+            (mine, theirs) => mine.or(theirs),
+        }
     }
 
     /// What `self`, a later pass, read, and what the earlier passes read
@@ -335,6 +442,7 @@ impl Reads {
     /// pass read, while its own checks skip reading it again. What is
     /// carried is taken as it stands now, after the later pass ran with it.
     pub(crate) fn carry(mut self, earlier: Self) -> Self {
+        self.locale = self.earliest(earlier.locale);
         self.take(earlier.probes, true);
         self
     }
@@ -407,4 +515,26 @@ pub(crate) struct Now {
     pub(crate) revision: Option<u64>,
     pub(crate) document: Option<(Vec<automerge::ChangeHash>, usize)>,
     pub(crate) standing: Standing,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pass that read shared state proves nothing once that state moves,
+    /// and one shared state's move says nothing about another's.
+    #[test]
+    fn a_pass_follows_the_shared_state_it_read() {
+        let scope = crate::wake::WakeScope::new();
+        let handle = scope.handle();
+        let (live, other) = (Shared::new(0), Shared::new(0));
+        let ((), reads) = reading(&handle, || {
+            live.read();
+        });
+        assert!(reads.stand().is_ok(), "nothing moved");
+        other.moved();
+        assert!(reads.stand().is_ok(), "the state it did not read moved");
+        live.moved();
+        assert_eq!(reads.stand(), Err("ui.component.loud.reads"));
+    }
 }

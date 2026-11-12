@@ -656,6 +656,7 @@ impl FakeHost {
                         feed.send(Event::Context(ContextUpdate::Snapshot {
                             collaborators: seed.collaborators,
                             permissions: seed.permissions,
+                            apps: Vec::new(),
                         }));
                     }
                     if terminate {
@@ -5303,6 +5304,7 @@ fn sdk_streams_translate_to_ui_events() {
                 CollabEvent::Context {
                     collaborators,
                     permissions,
+                    ..
                 } => Some((collaborators.clone(), permissions.clone())),
                 _ => None,
             })

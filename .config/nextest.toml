@@ -84,12 +84,12 @@ command = [
 
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session) and binary(lounge_e2e)"
+filter = "package(tilo-session) and binary(it) and test(lounge_e2e::)"
 setup = "lounge-siblings"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session) and binary(lounge_e2e)"
+filter = "package(tilo-session) and binary(it) and test(lounge_e2e::)"
 setup = "lounge-siblings"
 
 # The browser peer's Lounge test starts the same room service the deployment
@@ -97,12 +97,12 @@ setup = "lounge-siblings"
 # feature `agents` that gives it the `room` subcommand.
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session-client) and binary(lounge_fresh_page)"
+filter = "package(tilo-session-client) and binary(it) and test(lounge_fresh_page::)"
 setup = "lounge-siblings"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session-client) and binary(lounge_fresh_page)"
+filter = "package(tilo-session-client) and binary(it) and test(lounge_fresh_page::)"
 setup = "lounge-siblings"
 
 # The browser peer's page tests drive the page's own modules in headless
@@ -116,12 +116,12 @@ command = ["bash", "tools/build-page-bundle.sh"]
 
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session-client) and (binary(passkey_root) or binary(node_workspace))"
+filter = "package(tilo-session-client) and binary(it) and (test(passkey_root::) or test(node_workspace::))"
 setup = "page-bundle"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session-client) and (binary(passkey_root) or binary(node_workspace))"
+filter = "package(tilo-session-client) and binary(it) and (test(passkey_root::) or test(node_workspace::))"
 setup = "page-bundle"
 
 # Chat's acceptance, and a branched device running it with its host away, drive
@@ -136,7 +136,7 @@ command = [
 
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session) and (binary(chat_2x2) or binary(device_branch))"
+filter = "package(tilo-session) and binary(it) and (test(chat_2x2::) or test(device_branch::))"
 setup = "chat-siblings"
 
 [[profile.ci.scripts]]
@@ -146,7 +146,7 @@ setup = ["test-runtime", "headless-audio"]
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session) and (binary(chat_2x2) or binary(device_branch))"
+filter = "package(tilo-session) and binary(it) and (test(chat_2x2::) or test(device_branch::))"
 setup = "chat-siblings"
 
 # Tasks' own package, which the closed-app test starts without a window, and the launcher the
@@ -158,14 +158,32 @@ command = [
     "tasks:tasks", "launcher:tilo-launcher",
 ]
 
+# A branched device's vault and provider keys are read through the apps that keep them:
+# Passwords and Model Providers, as a desktop starts them.
+[scripts.setup.vault-siblings]
+command = [
+    "bash", "tools/build-sibling-binaries.sh",
+    "passwords:passwords", "model-providers:model-providers", "launcher:tilo-launcher",
+]
+
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session) and binary(closed_tasks)"
+filter = "package(tilo-session) and binary(it) and test(device_branch::)"
+setup = "vault-siblings"
+
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-session) and binary(it) and test(device_branch::)"
+setup = "vault-siblings"
+
+[[profile.default.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-session) and binary(it) and test(closed_tasks::)"
 setup = "tasks-siblings"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session) and binary(closed_tasks)"
+filter = "package(tilo-session) and binary(it) and test(closed_tasks::)"
 setup = "tasks-siblings"
 
 [[profile.ci.scripts]]
@@ -187,11 +205,8 @@ setup = "as-root"
 # Nextest starts tests in order and a test that needs every thread waits for
 # all running tests to finish, idling the rest of the pool. Tests that take the
 # whole pool therefore have the highest priority: they run back to back while
-# the pool is still empty. The four-wide compositor group and the longest tests
-# follow, so a run ends on short tests.
+# the pool is still empty. The longest tests follow, so a run ends on short ones.
 [test-groups]
-compositor = { max-threads = 4 }
-desktop-smoke = { max-threads = 1 }
 gpu-golden = { max-threads = 1 }
 agent-collaboration = { max-threads = 1 }
 imager-durable-disk = { max-threads = 2 }
@@ -213,28 +228,9 @@ test-group = "gpu-golden"
 # hang bound is eight minutes: a slow run reports the table rather than a
 # termination.
 [[profile.default.overrides]]
-filter = 'package(tilolang-app) and binary(hosted) and test(=cost::what_the_interactions_a_person_feels_cost)'
+filter = 'package(tilolang-app) and binary(it) and test(=hosted::cost::what_the_interactions_a_person_feels_cost)'
 success-output = "final"
 slow-timeout = { period = "60s", terminate-after = 8 }
-
-[[profile.default.overrides]]
-filter = 'binary(it) and (test(clipboard_e2e::) or test(interaction_test::) or test(wayland_test::))'
-test-group = "compositor"
-priority = 90
-
-# The desktop smoke gate: one at a time, so the load variant's busy threads
-# never starve the quiet one, and a hang bound of two minutes, since a healthy
-# run takes well under one. A frozen compositor is reported by the test itself
-# within half a second; this only bounds a test that cannot even do that.
-# Its idle reading (CPU by thread, and what woke the compositor's loop) is
-# printed on a pass too, so a drift toward the bound shows in every CI log
-# before a run crosses it.
-[[profile.default.overrides]]
-filter = 'binary(it) and test(desktop_smoke::)'
-test-group = "desktop-smoke"
-priority = 95
-slow-timeout = { period = "60s", terminate-after = 2 }
-success-output = "final"
 
 # Not started with the pool-wide and longest tests: each suite's first route
 # join runs under the SDK's 4.5 s primary-route deadline, which the opening
@@ -291,11 +287,11 @@ slow-timeout = { period = "30s", terminate-after = 40 }
 # Megabytes of fsynced commits: these take the runner's disk and CPUs, so
 # they run alone rather than slowing every test beside them.
 [[profile.default.overrides]]
-filter = 'package(tilo-session-client) and binary(compaction)'
+filter = 'package(tilo-session-client) and binary(it) and test(compaction::)'
 threads-required = "num-cpus"
 
 [[profile.default.overrides]]
-filter = '(package(tilo-fs) and (test(/^fs::checked_restore::tests::/) or binary(collab_release_matrix))) or (package(tilo-action-broker) and test(=history_outlives_the_memory_window_and_a_restart)) or (package(tilo-media) and test(/^real::/)) or (package(imager) and test(/^setup::staging::fake::tests::/)) or (package(scratchpad) and binary(native_proof)) or (package(tilo-rollback) and binary(mechanism)) or (package(tilo-automerge) and binary(patch_log_memory)) or (package(tilo-relay) and (binary(held_memory) or test(/^daemon::tests::/) or test(=store::replay::tests::bounded_snapshot_pins_orders_counts_and_hydrates_only_its_batch) or test(=store::shell_selection::tests::projected_checkpoint_prefix_exposes_the_route_count_cutoff) or test(=peer::private_transport_tests::thirty_four_route_prefix_uses_one_all_original_selection_then_converges))) or (package(tilo-ui) and (binary(held-memory) or test(/^incremental_render_regressions::/) or test(/^app::large_document_tests::/) or test(/^app::semantic_tree_app_tests::/) or test(/^presence::render::tests::/))) or (package(video-editor) and (test(/^export::tests::/) or test(/^shot::tests::/))) or (package(tilo-app-state) and test(/^fs_store::tests::/))'
+filter = '(package(tilo-fs) and (test(/^fs::checked_restore::tests::/) or (binary(it) and test(collab_release_matrix::)))) or (package(tilo-action-broker) and test(=history_outlives_the_memory_window_and_a_restart)) or (package(tilo-media) and test(/^real::/)) or (package(imager) and test(/^setup::staging::fake::tests::/)) or (package(scratchpad) and binary(native_proof)) or (package(tilo-rollback) and binary(mechanism)) or (package(tilo-automerge) and binary(it) and test(patch_log_memory::)) or (package(tilo-relay) and (binary(held_memory) or test(/^daemon::tests::/) or test(=store::replay::tests::bounded_snapshot_pins_orders_counts_and_hydrates_only_its_batch) or test(=store::shell_selection::tests::projected_checkpoint_prefix_exposes_the_route_count_cutoff) or test(=peer::private_transport_tests::thirty_four_route_prefix_uses_one_all_original_selection_then_converges))) or (package(tilo-ui) and (binary(held-memory) or test(/^incremental_render_regressions::/) or test(/^app::large_document_tests::/) or test(/^app::semantic_tree_app_tests::/) or test(/^presence::render::tests::/))) or (package(video-editor) and (test(/^export::tests::/) or test(/^shot::tests::/))) or (package(tilo-app-state) and test(/^fs_store::tests::/))'
 priority = 50
 
 # A lock starts the lock screen app, which draws under llvmpipe: beside the

@@ -85,21 +85,27 @@ pub fn outline_resource_id(ctx: &PdfResourceCtx, index: usize) -> Option<String>
 pub enum PdfEffect {
     /// Previous page
     #[effect(view)]
+    #[effect(label = "pdf-bar-previous-page")]
     PreviousPage,
     /// Next page
     #[effect(view)]
+    #[effect(label = "pdf-bar-next-page")]
     NextPage,
     /// Zoom in
     #[effect(view)]
+    #[effect(label = "pdf-bar-zoom-in")]
     ZoomIn,
     /// Zoom out
     #[effect(view)]
+    #[effect(label = "pdf-bar-zoom-out")]
     ZoomOut,
     /// Fit page
     #[effect(view, idempotent)]
+    #[effect(label = "pdf-bar-fit-page")]
     FitPage,
     /// Fit width
     #[effect(view, idempotent)]
+    #[effect(label = "pdf-bar-fit-width")]
     FitWidth,
     /// Toggle sidebar
     #[effect(view)]
@@ -125,15 +131,18 @@ pub enum PdfEffect {
     ///
     /// The colour the next mark takes; a selected mark takes it too.
     #[effect(view, idempotent)]
+    #[effect(label = "pdf-bar-marker-colour")]
     SetMarkerColour {
         #[param("yellow, green, pink, blue or purple")]
         colour: HighlightColor,
     },
     /// Mark text as highlight
     #[effect(view, idempotent)]
+    #[effect(label = "pdf-tool-highlight")]
     MarkHighlight,
     /// Mark text as underline
     #[effect(view, idempotent)]
+    #[effect(label = "pdf-annotation-underline")]
     MarkUnderline,
     /// Mark text as strike-through
     #[effect(view, idempotent)]
@@ -236,6 +245,7 @@ pub enum PdfEffect {
     ///
     /// Opens a PDF on its own markup record, in this window.
     #[effect(job, cancellable, destructive)]
+    #[effect(label = "pdf-empty-open")]
     OpenPdf {
         #[param("Absolute path; omit to use the system picker")]
         path: Option<tilo_resource::AbsolutePath>,
@@ -259,6 +269,7 @@ pub enum PdfEffect {
     },
     /// Save annotated PDF
     #[effect(job, cancellable, destructive)]
+    #[effect(label = "pdf-bar-save")]
     SaveAs {
         #[param("Absolute path; omit to use the system picker")]
         path: Option<tilo_resource::AbsolutePath>,

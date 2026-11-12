@@ -11,21 +11,15 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-// A host admits its members' records through an Automerge worker: this binary is that worker, as it
-// is the session's own.
-tilo_automerge_isolate::test_worker!();
-
-mod common;
-
-use common::people::{Person, shared_invitation};
+use crate::common::people::{Person, shared_invitation};
 use serde_json::json;
 
 /// The invitation the desk hands out admits the person it was made for: their device joins the
 /// workspace the desk shows and holds it, and the site records them as a member.
 #[test]
 fn the_desks_invitation_admits_the_person_it_names() {
-    let (site, _ada, bob, ada_laptop) = common::people::a_site_with_files_for_one_laptop();
-    let invitation = common::people::shared_invitation(&ada_laptop, "editor", bob.public);
+    let (site, _ada, bob, ada_laptop) = crate::common::people::a_site_with_files_for_one_laptop();
+    let invitation = crate::common::people::shared_invitation(&ada_laptop, "editor", bob.public);
     let mut bob_laptop = bob.device("Bob's laptop");
     bob_laptop.install_files();
     bob_laptop.join(&invitation);
@@ -38,7 +32,7 @@ fn the_desks_invitation_admits_the_person_it_names() {
 /// person through it.
 #[test]
 fn a_member_whose_part_does_not_let_them_invite_is_refused() {
-    let (site, _ada, bob, _ada_laptop) = common::people::a_site_with_files_for_one_laptop();
+    let (site, _ada, bob, _ada_laptop) = crate::common::people::a_site_with_files_for_one_laptop();
     let mut bob_laptop = bob.device("Bob's laptop");
     bob_laptop.install_files();
     let invitation = site.invite(
@@ -49,7 +43,7 @@ fn a_member_whose_part_does_not_let_them_invite_is_refused() {
     bob_laptop.wait_holding(&site.workspace);
     site.wait_for_member(bob.public);
 
-    let answer = common::people::desk_answer(&bob_laptop, &json!({"role": "editor"}));
+    let answer = crate::common::people::desk_answer(&bob_laptop, &json!({"role": "editor"}));
     assert_eq!(
         answer["err"]["code"],
         json!("refused"),

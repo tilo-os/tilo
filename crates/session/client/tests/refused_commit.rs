@@ -14,10 +14,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-mod support;
-
-tilo_automerge_isolate::test_worker!();
-
 use collab_types::{DocumentMutation, document_channel_id};
 use tilo_app::prelude::*;
 use tilo_relay::member_limits::MemberLimitsConfig;
@@ -25,7 +21,9 @@ use tilo_relay_protocol::refusal::{PLAIN_TOO_FAST, plain_reason};
 use tilo_session_client::{Cmd, Event, Link, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{WORKSPACE, door, enrol, enter, route, start_host_limiting, wait_for, workspace};
+use crate::support::{
+    WORKSPACE, door, enrol, enter, route, start_host_limiting, wait_for, workspace,
+};
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Board {

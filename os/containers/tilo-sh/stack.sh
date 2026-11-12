@@ -465,6 +465,7 @@ vm_host() {
     "TILO_SH_RELAY_ROOT=$state/secrets/room-root-lounge" \
     "TILO_SH_RELAY_STATE=$state/relay/lounge/relay" \
     "TILO_SH_RELAY_IROH=127.0.0.1:$iroh_port" \
+    "TILO_SH_TRUST_BUNDLE=$state/trust-bundle.pem" \
     "TILO_SH_BROWSER_FREE_ACTIONS=${TILO_SH_BROWSER_FREE_ACTIONS:-}" \
     "TILO_SH_HOSTED_VM_SIZE=${TILO_SH_HOSTED_VM_SIZE:-}" \
     bash "$here/vm-host.sh" "$@"
@@ -680,9 +681,13 @@ lay_out_lounge() {
   [[ -x $lounge/bin/tilo-relay ]] || die "TILO_SH_LOUNGE names $lounge, which holds no bin/tilo-relay"
   [[ -f $lounge/entrypoint.sh ]] || die "TILO_SH_LOUNGE names $lounge, which holds no entrypoint.sh"
   # The image installs the catalog at /usr/share/fonts/tilo; outside it a Tilo
-  # program finds it in fonts/ beside itself.
+  # program looks beside itself, and TILO_FONT_CATALOG names where the catalog
+  # is instead. The variable is the one the programs read, so a context this
+  # stack was handed — a check's, laid out and published by t — stays read-only
+  # to it; the link is for anything that only looks beside the program.
   [[ -d $lounge/fonts ]] || die "TILO_SH_LOUNGE names $lounge, which holds no fonts"
-  [[ -e $lounge/bin/fonts ]] || ln -sfn ../fonts "$lounge/bin/fonts"
+  font_catalog=$lounge/fonts
+  if [[ -w $lounge/bin ]]; then ln -sfn ../fonts "$lounge/bin/fonts"; fi
 }
 
 # The desktop bundle the web entry serves (build.sh --bundle desktop, the
@@ -827,8 +832,10 @@ start_native_relay() {
   { private_env relay "$lounge/bin"
     image_env_here "$repo/os/containers/tilo-lounge/Containerfile" \
       "TILO_ROOMS_STATE=$state/relay" "TILO_SECRETS_DIR=$state/relay/secrets"
-    # Where the image keeps the app surfaces the relay publishes at start.
+    # Where the image keeps the app surfaces the relay publishes at start,
+    # and the product font catalog its components lay text out from.
     printf '%s\n' "TILO_SURFACES=$lounge/surfaces"
+    printf '%s\n' "TILO_FONT_CATALOG=${font_catalog:-$lounge/fonts}"
     relay_env
   } > "$runs/relay.env"
   run_native relay "$state/relay" sh "$lounge/entrypoint.sh"
@@ -956,8 +963,15 @@ up_native() {
   echo native > "$state/mode"
   use_mode native
   make_secrets
-  # The VM host runs from its images as root, so it starts before the relay:
-  # the relay reads where to place a workspace once, when it starts.
+  # The stack's own TLS first: the VM host's member device joins the workspace
+  # at the relay, whose home relay is that TLS origin, so the host is given the
+  # authority that signed it — which this makes. The host starts before the
+  # relay, which reads where to place a workspace once, when it starts.
+  [[ -z $discord ]] || start_native_discord
+  start_native_tls
+  trust_bundle
+  say "tls up ($((SECONDS - phase))s)"
+  phase=$SECONDS
   local vm_skipped
   vm_skipped=$(vm_host_blocker)
   if [[ -z $vm_skipped ]]; then
@@ -971,11 +985,6 @@ up_native() {
     say "vm-host up ($((SECONDS - phase))s)"
     phase=$SECONDS
   fi
-  [[ -z $discord ]] || start_native_discord
-  start_native_tls
-  trust_bundle
-  say "tls up ($((SECONDS - phase))s)"
-  phase=$SECONDS
   start_native_relay
   wait_relay
   local room

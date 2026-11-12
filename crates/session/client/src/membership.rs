@@ -292,8 +292,9 @@ fn author_on_desk(workspace: &mut Workspace, app: &str, now: u64) -> Result<bool
 
 /// Write the people `policy` — the workspace's governance — names into `workspace` : the part each
 /// of them takes there, when each was admitted, the owner aside, whom the desk's policy names on
-/// its own, the agents it admits, each with the grants governance gave it, the apps it lets
-/// author their own records there, and the windows its devices share with it
+/// its own, the agents it admits, each with the grants governance gave it, the grants it gives
+/// apps (authorship of their own records there, and the use of another app's action a person
+/// allowed), and the windows its devices share with it
 /// ([`tilo_desktop_model::window_share`]): a share is the workspace's, so the desk of every device
 /// that holds the workspace reads it there, the sharer's own included. The grants a person gives
 /// to a person on a node below the workspace, and the ones a consent or an invite makes for this
@@ -310,17 +311,17 @@ pub fn project(workspace: &mut Workspace, policy: &WorkspacePolicy) -> bool {
     let agents = picked_grants(&policy.grants, |grant| {
         matches!(grant.subject, Subject::Agent(_))
     });
-    let authored = picked_grants(&policy.grants, is_authorship);
+    let apps = picked_grants(&policy.grants, is_app);
     let held = picked_grants(&workspace.policy.grants, |grant| {
         matches!(grant.subject, Subject::Agent(_))
     });
-    let held_authored = picked_grants(&workspace.policy.grants, is_authorship);
+    let held_apps = picked_grants(&workspace.policy.grants, is_app);
     let shared = picked_grants(&policy.grants, is_window_share);
     let held_shared = picked_grants(&workspace.policy.grants, is_window_share);
     if workspace.policy.members == members
         && workspace.policy.joined == joined
         && held == agents
-        && held_authored == authored
+        && held_apps == apps
         && held_shared == shared
     {
         return false;
@@ -334,12 +335,9 @@ pub fn project(workspace: &mut Workspace, policy: &WorkspacePolicy) -> bool {
             .retain(|grant| !matches!(grant.subject, Subject::Agent(_)));
         workspace.policy.grants.extend(agents);
     }
-    if held_authored != authored {
-        workspace
-            .policy
-            .grants
-            .retain(|grant| !is_authorship(grant));
-        workspace.policy.grants.extend(authored);
+    if held_apps != apps {
+        workspace.policy.grants.retain(|grant| !is_app(grant));
+        workspace.policy.grants.extend(apps);
     }
     if held_shared != shared {
         workspace
@@ -366,12 +364,11 @@ fn picked_grants<'a>(
     grants
 }
 
-/// Whether `grant` makes an application an author of its own records in the
-/// workspace, as [`tilo_action_policy::roles::app_authorship`] gives it: the
-/// workspace's governance gives these, unlike the session's own app grants,
-/// and the desk takes them from the governance alone.
-fn is_authorship(grant: &Grant) -> bool {
-    grant.id.as_str().starts_with("app-author:") && matches!(grant.subject, Subject::App(_))
+/// Whether `grant` is one a person gave an app: the workspace's governance gives these, and the
+/// desk takes them from the governance alone. The session's own app grants are the desk's make-up
+/// ([`tilo_action_policy::roles::is_make_up`]) and stay.
+fn is_app(grant: &Grant) -> bool {
+    matches!(grant.subject, Subject::App(_)) && !tilo_action_policy::roles::is_make_up(grant)
 }
 
 /// Whether `grant` is one of a window's share with the workspace, or of the share of what that
@@ -384,9 +381,10 @@ fn is_window_share(grant: &Grant) -> bool {
         .is_some()
 }
 
-/// Whether `grant` is the one making `app` an author of its own records in the workspace.
+/// Whether `grant` is the one making `app` an author of its own records in the workspace, as
+/// [`tilo_action_policy::roles::app_authorship`] gives it.
 fn is_authorship_of(grant: &Grant, app: &str) -> bool {
-    is_authorship(grant) && grant.id.as_str() == format!("app-author:{app}")
+    is_app(grant) && grant.id.as_str() == format!("app-author:{app}")
 }
 
 /// Write `edit` into the workspace `id` names on the desk, asking nothing of a desk that does not

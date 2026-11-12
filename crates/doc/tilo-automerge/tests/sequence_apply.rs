@@ -28,8 +28,9 @@ use automerge::{
 };
 use tilo_automerge::ApplyIncoming;
 
-mod upstream;
-use upstream::{History, Replica, Rng, agrees_with_upstream, refuses_only_what_upstream_corrupts};
+use crate::upstream::{
+    History, Replica, Rng, agrees_with_upstream, refuses_only_what_upstream_corrupts,
+};
 
 const SNIPPETS: &[&str] = &["x", "yz", "é", "😀", "\n", "e\u{301}", "abc"];
 const MARKS: &[&str] = &["bold", "link"];

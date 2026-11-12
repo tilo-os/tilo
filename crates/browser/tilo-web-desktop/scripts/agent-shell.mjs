@@ -1235,7 +1235,10 @@ async function pressBesideSearch(tab, {height}) {
 async function openNote(tab) {
   // A window of Notes with a note in it is what following needs: it is the
   // window the person's view goes to, and where the agent's writing lands.
-  const withNote = async () => (await semantics(tab)).some(node => /^saved$/i.test(node.name));
+  // A note stands open when its editor's title does: Notes says "Saved" in its bar with no note
+  // open as well, beside its empty "Start your first note".
+  const noteOpen = nodes => nodes.some(node => /^note title$/i.test(node.name));
+  const withNote = async () => noteOpen(await semantics(tab));
   // A Notes window, not the launcher's entry for the app: the window publishes itself as the
   // group of what it shows, and its title bar is the only place "New note" stands.
   const windowed = async () => (await semantics(tab)).some(node => node.role === 'Group' && /^notes$/i.test(node.name));
@@ -1271,7 +1274,7 @@ async function openNote(tab) {
   // once while the app still loads.
   const offered = await until(async () => {
     const nodes = await semantics(tab);
-    return nodes.some(node => /^saved$/i.test(node.name)) || matching(nodes, /^new note$/i) ? true : undefined;
+    return noteOpen(nodes) || matching(nodes, /^new note$/i) ? true : undefined;
   }, 30000, 400);
   if (!offered) return `Notes offers no note to make 30 s after it opened: ${names(await semantics(tab))}`;
   if (!await withNote() && !await press(tab, /^new note$/i, {what: 'a new note'})) {
@@ -1927,8 +1930,19 @@ try {
             } else if (!face) {
               log(`the bar shows no face of the agent to open its card from: ${names(await semantics(tab))}`);
             }
-            await untilDrawn(tab, async () => ((await presentedFrames(tab)) ?? 0) > (before ?? 0)
-              && matching(await semantics(tab), /^open card$/i), 3000, 200);
+            // What the press opened, frame by frame: a card in the roster's place, the roster, or
+            // nothing, so a press that opens nothing says what stood under it.
+            const seen = [];
+            const opened = await untilDrawn(tab, async () => {
+              const nodes = await semantics(tab);
+              const now = [personCardOf(nodes) ? 'card' : null, rosterOf(nodes) ? 'roster' : null,
+                matching(nodes, /^open card$/i) ? 'open card' : null].filter(Boolean).join('+') || 'nothing';
+              if (seen.at(-1) !== now) seen.push(now);
+              return ((await presentedFrames(tab)) ?? 0) > (before ?? 0) && matching(nodes, /^open card$/i);
+            }, 3000, 200);
+            const bar = (await semantics(tab)).filter(node => node.rect && node.rect.y1 <= 40)
+              .map(node => `${node.role} "${node.name}" ${Math.round(node.rect.x0)}-${Math.round(node.rect.x1)}`);
+            log(`after the agent's face: ${seen.join(' -> ')}${opened ? '' : `; the bar holds ${bar.join(', ')}`}`);
           }
           if (!await press(tab, /^open card$/i, {what: "the agent's card"})) {
             log(`the agent's card offers no Open card: ${names(await semantics(tab))}`);
@@ -1949,9 +1963,19 @@ try {
             : `no card; the windows are ${(await semantics(tab)).filter(node => node.role === 'Tab').map(node => `"${node.name}"`).join(', ')}`);
         await shot(tab, combo, 'agent-card');
 
-        // 6. Who is here, kept on screen, with the agent in it.
-        const pinProblem = await pinOverlay(tab);
-        check(`${combo}: who is here is kept on screen`, !pinProblem, pinProblem ?? '');
+        // 6. Who is here with the agent in it: kept on screen on a laptop; on a phone a sheet at the
+        //    desk's foot, never kept, which a press above it puts away.
+        const phone = width <= 600;
+        if (phone) {
+          const sheetProblem = await openPeople(tab);
+          check(`${combo}: who is here opens as a sheet`, !sheetProblem, sheetProblem ?? '');
+          check(`${combo}: a phone's who is here is never kept on screen`,
+            !(await semantics(tab)).some(node => speaks(node, /^(keep on screen|keep who is here on screen)$/i)),
+            names(await semantics(tab)));
+        } else {
+          const pinProblem = await pinOverlay(tab);
+          check(`${combo}: who is here is kept on screen`, !pinProblem, pinProblem ?? '');
+        }
         await shot(tab, combo, 'presence-with-agent', {expect: [/^everyone here$/i, /claude code/i]});
         // The line beside the agent's name is what a person reads of its work: the record it is
         // in and the app. The field a write landed in is the tool's own name for a part of that
@@ -1962,34 +1986,54 @@ try {
         check(`${combo}: who is here names the record and its app, never the field written in`,
           Boolean(status) && !/\bBody of\b|=|#|\//i.test(status.description),
           status ? status.description : names(await semantics(tab)));
-        // Kept on screen, it stays while the person works elsewhere: a press on the desk is the
-        // desk's, and the list is still there after it. The desk's bottom edge, which is the desk
-        // at every width — the panel is a bottom sheet on a phone, and a press on its invite
-        // button is not a press elsewhere.
-        await clickAt(tab, Math.round(width / 2), Math.round(height - 12));
-        await afterFrames(tab, 2);
-        check(`${combo}: who is here stays while the desk is pressed`, Boolean(rosterOf(await semantics(tab))),
-          names(await semantics(tab)));
+        if (phone) {
+          // The sheet is transient: a press above it, on the window, puts it away.
+          await clickAt(tab, Math.round(width / 2), 140);
+          const away = await untilDrawn(tab, async () => !rosterOf(await semantics(tab)), 4000, 150);
+          check(`${combo}: a press above the sheet puts who is here away`, Boolean(away), names(await semantics(tab)));
+        } else {
+          // Kept on screen, it stays while the person works elsewhere: a press on the desk is the
+          // desk's, and the list is still there after it. The desk's bottom edge, away from it.
+          await clickAt(tab, Math.round(width / 2), Math.round(height - 12));
+          await afterFrames(tab, 2);
+          check(`${combo}: who is here stays while the desk is pressed`, Boolean(rosterOf(await semantics(tab))),
+            names(await semantics(tab)));
+        }
         // A window filling the desk: the bar's own controls and the reading it shows stand apart at
         // every width, the phone's included.
-        if (await press(tab, /^maximize$/i, {what: 'maximizing the window'})) {
+        // The window maximized is one the person sees: on a phone the strip's other windows stand
+        // off the screen, their controls published where they are drawn, beyond its edge. The
+        // windows are published in the order they are drawn, so the last one on screen is in front.
+        const onScreen = node => node.rect && node.rect.x0 >= 0 && node.rect.x1 <= width
+          && node.rect.y0 >= 0 && node.rect.y1 <= height;
+        const maximize = (await semantics(tab)).filter(node => speaks(node, /^maximize$/i) && onScreen(node)).at(-1);
+        if (maximize) {
+          const {x0, y0, x1, y1} = maximize.rect;
+          const at = [Math.round((x0 + x1) / 2), Math.round((y0 + y1) / 2)];
+          await clickAt(tab, ...at);
+          log(`pressed maximizing the window: Maximize at ${at.join(',')}`);
           // The window's control is Restore once it fills the desk.
-          await untilDrawn(tab, async () => matching(await semantics(tab), /^restore$/i), 900);
+          const filled = await untilDrawn(tab, async () => matching(await semantics(tab), /^restore$/i), 900);
+          check(`${combo}: the window's Maximize fills the desk`, Boolean(filled),
+            filled ? 'its control reads Restore' : `no Restore after the press: ${names(await semantics(tab))}`);
           await shot(tab, combo, 'maximized');
-          await press(tab, /^(restore|maximize)$/i, {what: 'restoring the window'});
+          await clickAt(tab, ...at);
+          log(`pressed restoring the window at ${at.join(',')}`);
           await untilDrawn(tab, async () => matching(await semantics(tab), /^maximize$/i), 600);
         }
-        const overlay = await semantics(tab);
-        note(`${combo}: the overlay lists the agent`, overlay.some(node => /claude code/i.test(node.name)), names(overlay));
-        // Back in the bar: offered, the control puts the list back; an overlay
-        // that offers none is said as it is, with the controls it does offer.
-        const back = await unpinned(tab);
-        if (back === undefined) {
-          note(`${combo}: who is here goes back in the bar`, false,
-            `the pinned overlay offers no "Put back in the bar" control: ${names(await semantics(tab))}`);
-        } else {
-          check(`${combo}: who is here goes back in the bar`, Boolean(back),
-            back ? 'pressed, and the list closed' : names(await semantics(tab)));
+        if (!phone) {
+          const overlay = await semantics(tab);
+          note(`${combo}: the overlay lists the agent`, overlay.some(node => /claude code/i.test(node.name)), names(overlay));
+          // Back in the bar: offered, the control puts the list back; an overlay
+          // that offers none is said as it is, with the controls it does offer.
+          const back = await unpinned(tab);
+          if (back === undefined) {
+            note(`${combo}: who is here goes back in the bar`, false,
+              `the pinned overlay offers no "Put back in the bar" control: ${names(await semantics(tab))}`);
+          } else {
+            check(`${combo}: who is here goes back in the bar`, Boolean(back),
+              back ? 'pressed, and the list closed' : names(await semantics(tab)));
+          }
         }
         // 7. Once the agent leaves, the person is told what came of it ("Claude Code finished:
         //    3 changes in Workspace"): it is finished once it stayed away longer than a reconnect.
@@ -2110,7 +2154,7 @@ try {
         log(`${combo}: memory`,
           `wasm peak ${megabyte(used.peak)} MB, ${used.presented[1] - used.presented[0]} frames, canvases ${used.canvases.join(', ')}`);
 
-        writeFileSync(join(browserDir, `${combo}-semantics.json`), JSON.stringify(overlay, null, 1));
+        writeFileSync(join(browserDir, `${combo}-semantics.json`), JSON.stringify(await semantics(tab), null, 1));
         writeFileSync(join(browserDir, `${combo}-state.json`),
           JSON.stringify(await tab.evaluate('globalThis.tiloMount?.state?.() ?? null').catch(() => null), null, 1));
         writeFileSync(join(browserDir, `${combo}-console.log`), tab.log.join('\n'));

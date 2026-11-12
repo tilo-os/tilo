@@ -1411,7 +1411,11 @@ impl CalendarApp {
             t,
             text,
             &on_panel,
-            &ButtonFace::new(clear, "Clear due date").hovered(clear.contains(self.last_mouse)),
+            &ButtonFace::new(
+                clear,
+                &crate::resource::CATALOG.t("calendar-a11y-clear-due"),
+            )
+            .hovered(clear.contains(self.last_mouse)),
         );
         self.hits.push((clear, Action::SetTaskDue(None)));
     }

@@ -16,18 +16,9 @@
               driven on the test's own thread (the agent's apps are not Send)"
 )]
 
-mod common;
-
-tilo_agent_participant::app_worker!();
-tilo_automerge_isolate::test_worker!();
-#[path = "../../../session/client/tests/support/participant.rs"]
-mod participant;
-#[path = "../../../session/client/tests/support/mod.rs"]
-mod support;
-
 use std::sync::{Arc, Mutex};
 
-use common::{KeywordModel, catalogue};
+use crate::common::{KeywordModel, catalogue};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueQuery,
     Confirmation, ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending,
@@ -40,7 +31,7 @@ use tilo_relay_protocol::agents::{AgentStatus, TaskState};
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
-use support::{WORKSPACE, enrol, start_host, wait_for};
+use crate::support::{WORKSPACE, enrol, start_host, wait_for};
 
 const EBOOK: &str = "so.tilo.ebook";
 
@@ -151,7 +142,7 @@ fn until_done(agent: &mut AgentParticipant, control: &AgentControl) {
 async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
     let (root, _) = UserIdentity::generate("Ada", 1);
     let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let host = start_host(
         &root,
         &host_device,
@@ -159,7 +150,7 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&host.relay, &root).await;
     let agent_device = enrol(
         &root,
         "Agent: Careful",

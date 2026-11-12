@@ -93,8 +93,8 @@ impl Shared {
         follow.follow(followed);
         let people = sync.people(
             &self.handle.read(Clone::clone),
-            &self.notes.records(),
-            &|_: &str| None,
+            &self.notes,
+            &|app: &str| Some(crate::app_names::app_name(app)),
         );
         let places: Vec<Place<'_>> = people
             .iter()
@@ -245,9 +245,14 @@ impl Shared {
     /// The windows this device left open: ask for the next one once the one before it came, each
     /// into the tab it was in.
     pub(crate) fn follow_restore(&self) {
+        let engine = self.engine.clone();
+        let awaited = move |workspace: &str| {
+            let engine = engine.as_ref()?;
+            engine.awaited_host(tilo_desktop_model::WorkspaceId::parse(workspace)?)
+        };
         self.restore
             .borrow_mut()
-            .follow(&self.desktop, self.launch.as_deref());
+            .follow(&self.desktop, self.launch.as_deref(), &awaited);
     }
 
     /// Carry out what the person chose in the sheets.

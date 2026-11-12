@@ -1,12 +1,8 @@
 //! Two replicas of the reference store converge after `sync_with`.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::{AmStore, Patch, Value};
 
     fn pair(

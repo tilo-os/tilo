@@ -738,8 +738,12 @@ impl OfflinePanel {
                     transform,
                     text,
                     &ink,
-                    &ButtonFace::icon_only(trash, Icon::Trash2, "Remove downloaded area")
-                        .hovered(trash.contains(frame.pointer)),
+                    &ButtonFace::icon_only(
+                        trash,
+                        Icon::Trash2,
+                        &crate::CATALOG.t("maps-offline-delete-area"),
+                    )
+                    .hovered(trash.contains(frame.pointer)),
                 );
                 self.targets
                     .push((trash, OfflineAction::DeleteRegion(region.id.clone())));

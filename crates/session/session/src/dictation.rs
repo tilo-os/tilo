@@ -483,7 +483,7 @@ fn mount_sheet(
     ) {
         Ok(sheet) => {
             let seat = sheet.seat().clone();
-            let sheet = Rc::new(RefCell::new(sheet.typing_through()));
+            let sheet = sheet.typing_through().layer();
             compositor.add_host(sheet.clone());
             doors.add(sheet);
             Some(seat)

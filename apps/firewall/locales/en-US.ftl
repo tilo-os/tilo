@@ -105,3 +105,42 @@ firewall-bar-apply = Apply the rules to the system
 firewall-add-rule = Add rule
 firewall-panic-mode = Panic mode
 firewall-views = View
+
+## Actions
+
+firewall-effect-apply-config = Apply changes
+firewall-effect-retry = Try again
+firewall-effect-read-blocked = Show dropped traffic
+firewall-config = Firewall
+firewall-config-start = Start firewall
+firewall-config-stop = Stop firewall
+firewall-config-enter-panic-mode = Enter panic mode
+firewall-config-exit-panic-mode = Exit panic mode
+firewall-config-delete-rule = Delete rule
+firewall-config-import = Import configuration
+firewall-applied = Applied configuration
+firewall-applied-applied = Store applied configuration
+
+## What the window names
+firewall-zone-drop-title = Drop
+firewall-zone-block-title = Block
+firewall-zone-public-title = Public
+firewall-zone-external-title = External
+firewall-zone-dmz-title = DMZ
+firewall-zone-work-title = Work
+firewall-zone-home-title = Home
+firewall-zone-internal-title = Internal
+firewall-zone-trusted-title = Trusted
+firewall-action-allow-title = Allow
+firewall-action-deny-title = Deny
+firewall-target-accepted = Accepted
+firewall-target-rejected = Rejected
+firewall-target-dropped = Dropped
+firewall-rule-port-title = Port { $port }
+firewall-blocked-action-drop = Drop
+firewall-blocked-action-reject = Reject
+firewall-blocked-title-port = { $action } { $proto } port { $port }
+firewall-blocked-title-traffic = { $action } { $proto } traffic
+firewall-blocked-title-plain = { $action }
+firewall-panic-banner = Panic mode is on
+firewall-stopped-banner = The firewall is stopped

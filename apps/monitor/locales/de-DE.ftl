@@ -59,3 +59,15 @@ monitor-kernel-threads = Kernel-Threads
 monitor-cadence-paused = Pausiert
 monitor-cadence-second = Jede Sekunde
 monitor-cadence-seconds = Alle { $seconds } Sekunden
+
+## Actions
+
+monitor-effect-show-tab = Register anzeigen
+monitor-effect-filter = Prozesse filtern
+monitor-effect-inspect = Prozessdetails anzeigen
+monitor-effect-copy-pid = PID kopieren
+monitor-effect-end-process = Prozess beenden
+monitor-effect-kill = Erzwungen beenden
+monitor-effect-end-app = App beenden
+monitor-processes = Prozesse
+monitor-effect-refresh = Prozesse aktualisieren

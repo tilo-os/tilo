@@ -96,6 +96,11 @@ pub struct Spec {
     /// The tilolang apps installed here, by id, each with the id its records are kept under: a
     /// package the app uses that is one of them is another app, read from its own record.
     pub installed: BTreeMap<String, String>,
+    /// The person's language (`de-DE`), the one their windows read in, as the session resolved it
+    /// (`InstanceRequest::language`): the window speaks it where the package ships it, and the
+    /// package's source language otherwise. Empty for a session that names none, whose host reads
+    /// its own process's language.
+    pub language: String,
 }
 
 impl Spec {
@@ -114,8 +119,30 @@ impl Spec {
             instance,
             person: person.into(),
             installed: BTreeMap::new(),
+            language: String::new(),
         }
     }
+
+    /// [`Self::new`] for the window `person` reads at, in the language `language` names.
+    #[must_use]
+    pub fn in_language(mut self, language: impl Into<String>) -> Self {
+        self.language = language.into();
+        self
+    }
+}
+
+/// The words the window of `spec` reads in: the language the session named for the person, or,
+/// where it named none, the one this host's process runs in, against the languages `bundle`'s
+/// package ships (`tilo_history::window_language`). Every word the window paints — its app's own
+/// and the frames' — comes from a catalogue in that language.
+fn window_phrases(base: &Phrases, spec: &Spec, bundle: &Bundle) -> Phrases {
+    let catalogues = bundle.catalogues();
+    let shipped: Vec<&str> = catalogues
+        .iter()
+        .map(|(locale, _)| locale.as_str())
+        .collect();
+    let language = (!spec.language.is_empty()).then_some(spec.language.as_str());
+    base.for_window(language, &shipped)
 }
 
 /// What a [`Surface`]'s resources are built from: the published records' revision, the
@@ -343,8 +370,9 @@ struct HostPlatform {
     /// The apps installed here ([`Spec::installed`]): a package the app uses that is one of them
     /// is loaded as another app's.
     installed: BTreeMap<String, String>,
-    /// The words of the window's frames, in the language its package speaks: what its dates and
-    /// clocks read in, as the toolkit's own say them in a window.
+    /// The words of this window: its app's own and its frames', in the language the window speaks
+    /// (the person's where the package ships it), so what its dates and clocks read in is the same
+    /// language the toolkit's own say them in.
     phrases: Rc<Phrases>,
     /// The person's formats, which their clock and dates read by.
     formats: Formats,
@@ -747,14 +775,13 @@ impl Hosted {
             package_resource_id(&bundle.meta.app),
             bundle.meta.package_kind(),
         );
-        // The window speaks the language its package ships, the person's when it ships it: the
-        // frames' words and the history's sentences follow the app's own copy.
-        let catalogues = bundle.catalogues();
-        let shipped: Vec<&str> = catalogues
-            .iter()
-            .map(|(locale, _)| locale.as_str())
-            .collect();
-        let phrases = Rc::new(phrases.for_window(&shipped));
+        // The window speaks the person's language where its package ships it, and the package's
+        // source language otherwise: the frames' words, the app's own words and the history's
+        // sentences all follow that language, never the one this host's process runs in.
+        let phrases = Rc::new(window_phrases(phrases, &spec, &bundle));
+        // The names the session sends for the apps installed here read in the language this
+        // window speaks, whatever language the workspace's people are named in.
+        collaboration::history_source::authors::set_names_language(phrases.locale());
         let mut record = record.speaking(phrases.locale());
         let used = used_apps(&spec, &bundle, &mut record);
         let platform = HostPlatform {
@@ -1361,13 +1388,23 @@ impl Hosted {
     /// Run what the broker delivered on the instance's connection. Every event that waits on an
     /// answer from the instance is answered: an invocation with its outcome, a handoff step with
     /// what the host does of it. The rest says something the instance does not keep (presence,
-    /// cursors, the workspace's context, results of requests it never makes).
+    /// cursors, results of requests it never makes), but for what it names: what each app
+    /// installed here is called rides with the context, and is what this window's history reads
+    /// another app's change as.
     fn delivered(&mut self, event: CollabEvent) -> bool {
         for used in &mut self.used {
             if let Some(moved) = used.record.take(&event, self.record.manager_mut()) {
                 used.moved |= moved;
                 return false;
             }
+        }
+        if let CollabEvent::Context { apps, .. } = &event {
+            // Apps installed or removed since the last frame: what the views show of who made a
+            // change is published again.
+            if collaboration::history_source::authors::set_installed_apps(apps.clone()) {
+                self.instance.names_changed();
+            }
+            return true;
         }
         let (id, invocation, resource, action, argument, actor, context) = match event {
             CollabEvent::Invocation {
@@ -1590,6 +1627,7 @@ impl Hosted {
             .ok_or_else(|| Refused::new("action_unavailable", "the app has not started yet"))?;
         let shown = self.shown();
         let resources = surface.with_addressed(surface.resources(Some(&shown)), &address.resource);
+        let by_person = invoker.kind == ActorKind::Person;
         let caller = caller_of(&invoker);
         CALLER.with(|slot| *slot.borrow_mut() = Some(caller.clone()));
         let encoded = encode(&resources, address, argument);
@@ -1670,6 +1708,11 @@ impl Hosted {
             let open = <OpenEffect as tilo_resource::Effect>::from_payload(&encoded.payload)
                 .map_err(|error| Refused::new("action_invalid_arguments", error.to_string()))?;
             self.instance.open_requests().borrow_mut().push(open);
+            // A person who chose it comes to see it: the window showing it comes forward. An
+            // agent's `open` leaves the person where they are.
+            if by_person {
+                self.instance.activate_window();
+            }
             return Ok(tilo_actions::ActionOutput::default());
         }
         Err(Refused::new(
@@ -2098,32 +2141,15 @@ fn door_ask(
 ) -> Option<(String, String, String, tilo_actions::remote::InvokeArgument)> {
     use tilolang_tilo::runtime::Value;
     use tilolang_tilo::runtime::delegate::Invocation;
-    let json = |value: &Value| match value {
-        Value::Text(text) => serde_json::Value::String(text.clone()),
-        Value::Ref(r) => serde_json::Value::String(r.target.id_string()),
-        other => tilolang_tilo::runtime::value::to_json(other).unwrap_or_default(),
-    };
     match invocation {
         Invocation::Action {
             app,
             action,
-            args,
             subject: Some(subject),
             from,
             ..
         } => {
-            let subject_id = subject.id_string();
-            let mut arguments: serde_json::Map<String, serde_json::Value> = args
-                .iter()
-                .filter(|(_, value)| {
-                    !matches!(value, Value::Ref(r) if r.target.id_string() == subject_id)
-                        && !matches!(value, Value::Opt(None))
-                })
-                .map(|(name, value)| match value {
-                    Value::Opt(Some(inner)) => (name.clone(), json(inner)),
-                    value => (name.clone(), json(value)),
-                })
-                .collect();
+            let mut arguments = invocation.door_arguments();
             if let Some(from) = from {
                 arguments.insert(
                     tilo_actions::params::FROM_ARGUMENT.to_owned(),
@@ -2136,7 +2162,7 @@ fn door_ask(
             }
             Some((
                 app.clone(),
-                subject_id,
+                subject.id_string(),
                 action.clone(),
                 tilo_actions::remote::InvokeArgument::Json(arguments),
             ))
@@ -2153,12 +2179,11 @@ fn door_ask(
                 Value::Bool(_) => tilolang_tilo::action::EDIT_FLAG_ACTION,
                 _ => tilolang_tilo::action::EDIT_TEXT_ACTION,
             };
-            let mut arguments = serde_json::Map::new();
-            arguments.insert(
-                "field".to_owned(),
-                serde_json::Value::String(field_id.clone()),
-            );
-            arguments.insert("value".to_owned(), json(value));
+            let value = tilolang_tilo::runtime::value::to_argument(value).unwrap_or_default();
+            let arguments = serde_json::Map::from_iter([
+                ("field".to_owned(), field_id.clone().into()),
+                ("value".to_owned(), value),
+            ]);
             Some((
                 app.clone(),
                 target.id_string(),
@@ -2307,6 +2332,9 @@ impl Applier {
         host.set_clock(tilolang_tilo::host::system_time);
         host.load_bundle(bundle)
             .map_err(|error| error.to_string())?;
+        // A change made to the app's record at its origin reads in the language the app's window
+        // would read in: the person's, not this host process's.
+        let phrases = window_phrases(phrases, &spec, bundle);
         let activate = tilo_actions::remote::activate_spec(
             phrases.say("app-activate-window", &[]),
             phrases.say("app-activate-window-description", &[]),

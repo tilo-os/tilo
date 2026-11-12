@@ -46,13 +46,13 @@ impl TransportReadiness {
         matches!(self, Self::Ready)
     }
 
-    /// Short state that fits the meta column of a list row.
-    pub fn label(self) -> &'static str {
+    /// The message naming this state in the meta column of a list row.
+    pub fn label_message(self) -> &'static str {
         match self {
-            Self::Ready => "Ready",
-            Self::NeedsLiveSessionCapability => "Not available here",
-            Self::BackendUnavailable => "RDP isn't supported",
-            Self::InvalidProfile => "Needs editing",
+            Self::Ready => "remote-readiness-ready",
+            Self::NeedsLiveSessionCapability => "remote-readiness-elsewhere",
+            Self::BackendUnavailable => "remote-readiness-no-rdp",
+            Self::InvalidProfile => "remote-readiness-editing",
         }
     }
 

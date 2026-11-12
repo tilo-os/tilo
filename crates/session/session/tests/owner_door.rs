@@ -12,8 +12,6 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
-mod common;
-
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -56,7 +54,7 @@ const DEV_ONLY: [&str; 17] = [
 
 /// Run frames until `done` holds; `false` when it never did.
 fn reached(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) -> bool {
-    common::reached(session, |session| done(session))
+    crate::common::reached(session, |session| done(session))
 }
 
 /// Send `request` on the socket at `socket` as `tilo-control` does, running the session until it
@@ -78,7 +76,7 @@ fn ask(session: &mut Session, socket: &Path, request: &Value) -> Value {
             .send(serde_json::from_str::<Value>(&line).expect("a JSON answer"))
             .unwrap();
     });
-    common::wait_for(session, "the control socket's answer", |_| {
+    crate::common::wait_for(session, "the control socket's answer", |_| {
         answered.try_recv().ok()
     })
 }
@@ -156,7 +154,7 @@ fn session(root: &Path) -> Session {
 #[test]
 fn the_owner_door_serves_the_action_model_and_the_state_it_shows() {
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let owner = root.path().join("admin-control.sock");
     let dev = root.path().join("test-control.sock");
     let mut session = session(root.path());
@@ -263,7 +261,7 @@ fn the_owner_door_serves_the_action_model_and_the_state_it_shows() {
 fn a_locked_session_invokes_nothing_through_the_owner_door() {
     let _settled = ui::motion::testing::settled();
     let _lock = lock_environment();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let owner = root.path().join("admin-control.sock");
     let dev = root.path().join("test-control.sock");
     let mut session = session(root.path());
@@ -391,7 +389,7 @@ fn unlock_through_the_development_socket(
 #[test]
 fn the_door_runs_an_advertised_desktop_shortcut() {
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let owner = root.path().join("admin-control.sock");
     let mut session = session(root.path());
     session.compositor().unlock().expect("the screen unlocks");

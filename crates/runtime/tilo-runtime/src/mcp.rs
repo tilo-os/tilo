@@ -725,6 +725,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         self.devices = devices;
         self
     }
+    /// The agent this connection is goes by `name` , as the person's desk calls it: what its
+    /// changes are shown by wherever they are read.
+    #[must_use]
+    pub fn agent_named(mut self, name: &str) -> Self {
+        self.caller = self.caller.clone().named(name);
+        self
+    }
+
     /// Offer the tools `surface` names.
     #[must_use]
     pub fn with_surface(mut self, surface: Surface) -> Self {

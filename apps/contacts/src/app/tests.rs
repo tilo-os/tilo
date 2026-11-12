@@ -4862,7 +4862,10 @@ fn the_list_beside_the_first_contacts_form_says_the_book_is_empty() {
     );
     let state = exported_node(&mut viewer, "No contacts yet")
         .expect("an empty book is named to someone who may only view it");
-    assert_eq!(state.description(), Some(VIEW_ONLY_MESSAGE));
+    assert_eq!(
+        state.description(),
+        Some(crate::account_editor::CATALOG.t(VIEW_ONLY_MESSAGE).as_str())
+    );
     assert!(
         state.children().is_empty(),
         "the empty state offers no New contact to someone who may only view"
@@ -4871,7 +4874,10 @@ fn the_list_beside_the_first_contacts_form_says_the_book_is_empty() {
     viewer.settle();
     let state = exported_node(&mut viewer, "No contacts yet")
         .expect("the list beside a viewer's form names the empty book");
-    assert_eq!(state.description(), Some(VIEW_ONLY_MESSAGE));
+    assert_eq!(
+        state.description(),
+        Some(crate::account_editor::CATALOG.t(VIEW_ONLY_MESSAGE).as_str())
+    );
 }
 
 #[test]

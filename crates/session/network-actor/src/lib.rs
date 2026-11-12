@@ -26,7 +26,6 @@ pub mod native_ingress;
 pub mod services;
 #[cfg(any(test, feature = "test-support"))]
 pub mod siblings;
-pub mod workspace_control;
 pub mod workspace_sync;
 
 /// Compatibility/control topic used only when a message has no workspace identity.
@@ -60,8 +59,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use futures_util::StreamExt;
-use futures_util::stream::FuturesUnordered;
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, EndpointAddr, EndpointId};
@@ -69,14 +66,10 @@ use tilo_relay_session::{Inbound as HostInbound, RelayClient, RelayCoeditSession
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
-use neighbour_wire::{NeighbourMsg, SurfaceId};
+use neighbour_wire::NeighbourMsg;
 use neighbour_wire::{Retention, retention};
 use tilo_endpoint_reachability::{Need, Reachability};
 use tilo_lock::MutexRecover as _;
-
-#[cfg(test)]
-static DEDICATED_SURFACE_FRAMES_RECEIVED: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
 
 /// How often the actor retries what is missing (a session with one of the
 /// person's devices, a workspace host). Armed only while something is
@@ -92,120 +85,12 @@ const PEER_TIMEOUT: Duration = Duration::from_secs(15);
 /// ([`ActorState::run_host_checkpoint_tick`]); armed only while there is a
 /// host session to ask.
 const HOST_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(600);
+/// Largest message the direct control route reads: a window's control
+/// messages and a record's content piece are far smaller.
 const MAX_SURFACE_FRAME_BYTES: usize = 64 * 1024 * 1024;
-type SurfaceFanoutTasks = HashMap<(WorkspaceId, SurfaceId), (u64, tokio::task::JoinHandle<()>)>;
-
-fn finish_surface_fanout(
-    tasks: &mut SurfaceFanoutTasks,
-    key: (WorkspaceId, SurfaceId),
-    generation: u64,
-) -> bool {
-    if tasks
-        .get(&key)
-        .is_none_or(|(active, _)| *active != generation)
-    {
-        return false;
-    }
-    tasks.remove(&key);
-    true
-}
-
-/// Encoded delta frames reference earlier units: only raw captures may be
-/// coalesced. Keep their order within the existing one-frame byte budget.
-/// A stream's start travels in the same queue, ahead of its frames, and
-/// is never superseded by them.
-struct SurfaceFrameBacklog {
-    frames: VecDeque<NeighbourMsg>,
-    bytes: usize,
-    codec: Option<media::StreamCodec>,
-    awaiting_keyframe: bool,
-}
-
-impl Default for SurfaceFrameBacklog {
-    fn default() -> Self {
-        Self {
-            frames: VecDeque::new(),
-            bytes: 0,
-            codec: Some(media::StreamCodec::H264),
-            awaiting_keyframe: false,
-        }
-    }
-}
-
-impl SurfaceFrameBacklog {
-    fn frame_bytes(msg: &NeighbourMsg) -> usize {
-        let payload = match msg {
-            NeighbourMsg::SurfaceFrame { encoded_h264, .. } => encoded_h264.capacity(),
-            _ => 0,
-        };
-        // Pop shrinks whenever retained deque capacity exceeds four slots
-        // per remaining unit. Charge that storage as well as Vec capacity.
-        payload.saturating_add(std::mem::size_of::<NeighbourMsg>().saturating_mul(4))
-    }
-
-    /// Drop the queued frames (they reference what is lost) and wait for
-    /// the next keyframe. The stream's start stays queued.
-    fn lose_references(&mut self) {
-        self.frames
-            .retain(|msg| !matches!(msg, NeighbourMsg::SurfaceFrame { .. }));
-        if self.frames.is_empty() {
-            self.frames = VecDeque::new();
-        }
-        self.bytes = self
-            .frames
-            .iter()
-            .fold(0, |bytes, msg| bytes.saturating_add(Self::frame_bytes(msg)));
-        self.awaiting_keyframe = self.codec.is_some();
-    }
-
-    fn admit(&mut self, msg: &NeighbourMsg) -> bool {
-        let keyframe = match msg {
-            NeighbourMsg::SurfaceFrame { encoded_h264, .. } => self
-                .codec
-                .is_none_or(|codec| media::realtime::is_keyframe(codec, encoded_h264)),
-            // The stream's start references nothing and is always kept.
-            _ => return true,
-        };
-        if self.awaiting_keyframe && !keyframe {
-            return false;
-        }
-        if keyframe {
-            self.awaiting_keyframe = false;
-        }
-        true
-    }
-
-    fn push(&mut self, msg: NeighbourMsg) {
-        let independent = match &msg {
-            NeighbourMsg::SurfaceFrame { encoded_h264, .. } => self
-                .codec
-                .is_none_or(|codec| media::realtime::is_keyframe(codec, encoded_h264)),
-            _ => false,
-        };
-        // A fresh keyframe supersedes the entire older pending chain. This
-        // keeps a slow route from accumulating multiple GOPs of stale video.
-        if independent {
-            self.lose_references();
-        }
-        let bytes = Self::frame_bytes(&msg);
-        if self.bytes.saturating_add(bytes) > MAX_SURFACE_FRAME_BYTES {
-            self.lose_references();
-        }
-        if bytes <= MAX_SURFACE_FRAME_BYTES && self.admit(&msg) {
-            self.bytes = self.bytes.saturating_add(bytes);
-            self.frames.push_back(msg);
-        }
-    }
-
-    fn pop(&mut self) -> Option<NeighbourMsg> {
-        let msg = self.frames.pop_front()?;
-        self.bytes = self.bytes.saturating_sub(Self::frame_bytes(&msg));
-        if self.frames.len().saturating_mul(4) < self.frames.capacity() {
-            self.frames.shrink_to_fit();
-        }
-        Some(msg)
-    }
-}
+/// How long a device whose direct route could not be opened is reached
+/// through the workspace's host before a dial is tried again.
+const DIRECT_ROUTE_RETRY: Duration = Duration::from_secs(30);
 const SURFACE_STREAM_ALPN: &[u8] = b"tilo-surface-stream/1";
 /// Largest byte chunk one personal-fabric transfer frame carries.
 pub const PERSONAL_TRANSFER_CHUNK_BYTES: usize = 256 * 1024;
@@ -373,23 +258,15 @@ pub enum NetCmd {
         ws: WorkspaceId,
         msg: NeighbourMsg,
     },
-    /// Send one shared window's stream (its start, frames, end and control
-    /// grants) to exactly the viewers named by their peer handles, over the
-    /// authenticated direct media route. No other participant of the
-    /// workspace or its workspace host receives any of it.
-    PublishSurfaceTo {
-        ws: WorkspaceId,
-        msg: NeighbourMsg,
-        viewers: Vec<neighbour_wire::PeerId>,
-    },
-    /// Publish live workspace-control traffic over the route selected by the
-    /// canonical device mesh. Direct input uses the authenticated exact-target
-    /// QUIC surface/control plane. Workspace-wide relay publication is refused
-    /// because input must never be fanned out to other workspace participants.
+    /// Say one shared window's control message (a viewer's ask, input or
+    /// keyframe request, a page's announcement) to `target` alone: over the
+    /// authenticated direct route while one is up, and otherwise through the
+    /// workspace's host to that device's connection only. It is never fanned
+    /// out to the workspace's other members.
     PublishWorkspaceControl {
         ws: WorkspaceId,
         msg: NeighbourMsg,
-        route: WorkspaceControlRoute,
+        target: EndpointId,
     },
     /// Send one piece of a record's content to the device that asked for it.
     PublishRecordContent(RecordContentDelivery),
@@ -454,13 +331,6 @@ pub struct NearbyTransferCheckpoint {
     /// BLAKE3 of the first `resume_offset` bytes, as the receiver holds them.
     pub prefix_hash: [u8; 32],
     pub content_hash: [u8; 32],
-}
-
-/// Concrete data-plane route for one workspace-control session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkspaceControlRoute {
-    Direct { target: EndpointId },
-    Relayed { via: EndpointId },
 }
 
 #[derive(Debug, Clone)]
@@ -700,23 +570,10 @@ enum InternalEvent {
         connection_incarnation: u64,
         connection: Option<iroh::endpoint::Connection>,
     },
-    SurfaceFanoutComplete {
-        ws: WorkspaceId,
-        generation: u64,
-        msg: NeighbourMsg,
-        outcomes: Vec<SurfaceFanoutOutcome>,
-    },
-    /// The window-stream route to `peer` came up, or could not be opened
-    /// (`None`).
+    /// The direct route to `peer` came up, or could not be opened (`None`).
     SurfaceRouteOpened {
         peer: EndpointId,
         connection: Option<iroh::endpoint::Connection>,
-    },
-    /// A unit held for a viewer while its route opened was written, or not.
-    HeldSurfaceUnitWritten {
-        key: (WorkspaceId, SurfaceId, EndpointId),
-        generation: u64,
-        delivered: bool,
     },
     PersonalFabric {
         peer: EndpointId,
@@ -747,43 +604,6 @@ enum InternalEvent {
         ws: WorkspaceId,
         outcome: Box<workspace_lane::DirectOutcome>,
     },
-}
-
-/// Write one unit of a window's stream on `peer`'s open route. Routes are
-/// opened apart from this ([`ActorState::open_surface_route`]); what is
-/// for a viewer whose route is still opening waits for it there.
-async fn deliver_surface_frame(
-    peer: EndpointId,
-    connection: iroh::endpoint::Connection,
-    bytes: Vec<u8>,
-) -> SurfaceFanoutOutcome {
-    let send_frame = async {
-        let mut stream = connection.open_uni().await.map_err(|_| ())?;
-        stream.write_all(&bytes).await.map_err(|_| ())?;
-        stream.finish().map_err(|_| ())?;
-        Ok::<(), ()>(())
-    };
-    let delivered = matches!(
-        tokio::time::timeout(Duration::from_millis(40), send_frame).await,
-        Ok(Ok(()))
-    );
-    SurfaceFanoutOutcome { peer, delivered }
-}
-
-struct SurfaceFanoutOutcome {
-    peer: EndpointId,
-    delivered: bool,
-}
-
-/// A window's units for one viewer whose route is being opened, or whose
-/// route came up and is being given them in order. While this exists the
-/// viewer's further units join it rather than overtake it.
-struct HeldSurfaceUnits {
-    backlog: SurfaceFrameBacklog,
-    /// One of the units is being written now.
-    writing: bool,
-    /// Tells a write's completion from one for a stream since restarted.
-    generation: u64,
 }
 
 enum HostEvent {
@@ -891,8 +711,7 @@ impl ProtocolHandler for SurfaceStreamProtocol {
                 };
                 if !matches!(
                     frame.message,
-                    NeighbourMsg::SurfaceFrame { .. }
-                        | NeighbourMsg::SurfaceStreamStart { .. }
+                    NeighbourMsg::SurfaceStreamStart { .. }
                         | NeighbourMsg::SurfaceStreamEnd { .. }
                         | NeighbourMsg::PermissionGrant { .. }
                         | NeighbourMsg::RemoteInput { .. }
@@ -904,11 +723,6 @@ impl ProtocolHandler for SurfaceStreamProtocol {
                 ) {
                     tracing::warn!(peer = %peer, "invalid message on direct surface/control ALPN");
                     continue;
-                }
-                #[cfg(test)]
-                if matches!(&frame.message, NeighbourMsg::SurfaceFrame { .. }) {
-                    DEDICATED_SURFACE_FRAMES_RECEIVED
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
                 let Ok(message_bytes) = postcard::to_allocvec(&frame.message) else {
                     continue;
@@ -1036,7 +850,6 @@ fn remote_party_command(command: &NetCmd) -> Option<&'static str> {
         NetCmd::PublishPersonalFabricTarget { .. } | NetCmd::PublishNearbyTransfer { .. } => {
             "sending to one of the person's devices"
         }
-        NetCmd::PublishSurfaceTo { .. } => "streaming a window to a peer",
         _ => return None,
     })
 }
@@ -1197,25 +1010,16 @@ struct ActorState {
     /// session (see [`ActorState::hold_for_host`]).
     host_backlog: HashMap<WorkspaceId, HostBacklog>,
 
-    /// Long-lived direct media connections. One unidirectional QUIC stream
-    /// per frame avoids head-of-line blocking between viewers and frames.
+    /// Long-lived direct control connections. One unidirectional QUIC stream
+    /// per message avoids head-of-line blocking between messages.
     surface_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
-    /// At most one direct fanout per shared window may be dialing or
-    /// writing. Pending encoded units retain their reference order within
-    /// the existing frame byte budget, without stalling the actor. On loss,
-    /// wait for the encoder's periodic keyframe before resuming delivery.
-    /// Windows are independent, so their units never displace each other.
-    surface_fanout_tasks: SurfaceFanoutTasks,
-    next_surface_fanout_generation: u64,
-    pending_surface_frames: HashMap<(WorkspaceId, SurfaceId), SurfaceFrameBacklog>,
-    /// Windows streamed to named viewers only: their frames go to exactly
-    /// these devices and no other member of the workspace.
-    surface_fanout_viewers: HashMap<(WorkspaceId, SurfaceId), Vec<EndpointId>>,
-    /// Window-stream routes being opened. A dial runs until it connects or
-    /// fails; nothing waits on it but the units held for that viewer.
+    /// Direct routes being opened. A dial runs until it connects or fails;
+    /// nothing waits on it: what goes to that device meanwhile goes through
+    /// the workspace's host.
     surface_routes_opening: HashMap<EndpointId, tokio::task::JoinHandle<()>>,
-    /// Units for viewers whose route is not up yet, per window and viewer.
-    held_surface_units: HashMap<(WorkspaceId, SurfaceId, EndpointId), HeldSurfaceUnits>,
+    /// When a direct route to a device last failed to open: it is reached
+    /// through the workspace's host until [`DIRECT_ROUTE_RETRY`] has passed.
+    surface_routes_failed: HashMap<EndpointId, Instant>,
     active_personal_transfers: HashMap<(EndpointId, [u8; 16]), ActivePersonalTransfer>,
     next_personal_transfer_generation: u64,
     /// Every application message peers delivered here (see [`WireTally`]).
@@ -1314,16 +1118,6 @@ impl ActorState {
         }
     }
 
-    /// Every device a window of `ws` streams to ([`Self::is_surface_member`]).
-    fn surface_members(&self, ws: WorkspaceId) -> Vec<EndpointId> {
-        if self.workspace_members.has_roster(ws) {
-            return self
-                .workspace_members
-                .members(ws, tilo_clock::unix_now_ns());
-        }
-        self.siblings.keys().copied().collect()
-    }
-
     /// Take workspace `ws`'s admitted roster as `devices` (none, and not `keep`,
     /// once this device left it): the connections bound to a membership that
     /// ended close, and so does this device's own to a device no workspace holds
@@ -1357,8 +1151,7 @@ impl ActorState {
             if let Some(dial) = self.surface_routes_opening.remove(&device) {
                 dial.abort();
             }
-            self.held_surface_units
-                .retain(|(_, _, peer), _| *peer != device);
+            self.surface_routes_failed.remove(&device);
         }
     }
 
@@ -1398,18 +1191,6 @@ impl ActorState {
                 self.native_links.remove(&ws);
                 self.subscribers.remove(&ws);
                 self.set_workspace_roster(ws, Vec::new(), false);
-                self.pending_surface_frames
-                    .retain(|(frame_ws, _), _| *frame_ws != ws);
-                self.held_surface_units
-                    .retain(|(held_ws, _, _), _| *held_ws != ws);
-                self.surface_fanout_viewers
-                    .retain(|(frame_ws, _), _| *frame_ws != ws);
-                self.surface_fanout_tasks.retain(|(task_ws, _), task| {
-                    if *task_ws == ws {
-                        task.1.abort();
-                    }
-                    *task_ws != ws
-                });
                 self.lanes.close(ws);
                 let leaving: Vec<_> = self
                     .host_sessions
@@ -1471,7 +1252,6 @@ impl ActorState {
                 }
             }
             Some(NetCmd::Publish { ws, msg }) => {
-                self.observe_surface_stream(ws, &msg);
                 remember_governance(&mut self.governance, ws, &msg);
                 self.carry_own(&msg);
                 if self.native_routes.contains(ws) {
@@ -1488,23 +1268,11 @@ impl ActorState {
                         None => {}
                     }
                 }
-                if matches!(msg, NeighbourMsg::SurfaceFrame { .. }) {
-                    self.surface_fanout_viewers
-                        .remove(&(ws, fanout_surface(&msg)));
-                    // The host plane is already connected and independently
-                    // useful. Enqueue it before any direct-peer dial timeout.
-                    publish(&self.host_sessions, ws, &msg);
-                    let _ = self.start_surface_fanout(ws, msg);
-                } else {
-                    self.hold_for_host(ws, &msg);
-                    publish(&self.host_sessions, ws, &msg);
-                }
+                self.hold_for_host(ws, &msg);
+                publish(&self.host_sessions, ws, &msg);
             }
-            Some(NetCmd::PublishWorkspaceControl { ws, msg, route }) => {
-                self.publish_workspace_control(ws, msg, route);
-            }
-            Some(NetCmd::PublishSurfaceTo { ws, msg, viewers }) => {
-                self.publish_surface_to(ws, msg, &viewers);
+            Some(NetCmd::PublishWorkspaceControl { ws, msg, target }) => {
+                self.publish_workspace_control(ws, msg, target);
             }
             Some(NetCmd::PublishRecordContent(delivery)) => {
                 self.publish_record_content(delivery);
@@ -1604,156 +1372,17 @@ impl ActorState {
         }
     }
 
-    /// Send an encoded surface frame (or a targeted stream's start) over the
-    /// media ALPN to every participant of this workspace it is for. A viewer
-    /// whose route is not up yet gets it held until the route is, in order
-    /// with the rest of its units. Returns false when the unit
-    /// cannot go on the media ALPN at all. The workspace host is still
-    /// published to separately.
-    fn start_surface_fanout(&mut self, ws: WorkspaceId, msg: NeighbourMsg) -> bool {
-        let key = (ws, fanout_surface(&msg));
-        if self.surface_fanout_tasks.contains_key(&key) {
-            self.pending_surface_frames
-                .entry(key)
-                .or_default()
-                .push(msg);
-            return true;
-        }
-        if !self
-            .pending_surface_frames
-            .entry(key)
-            .or_default()
-            .admit(&msg)
-        {
-            return true;
-        }
-        let wire = SurfaceWireFrame {
-            workspace: ws,
-            message: msg.clone(),
-        };
-        let Ok(bytes) = postcard::to_allocvec(&wire) else {
-            return false;
-        };
-        if bytes.len() > MAX_SURFACE_FRAME_BYTES {
-            self.pending_surface_frames
-                .entry(key)
-                .or_default()
-                .lose_references();
-            tracing::warn!(ws, bytes = bytes.len(), "surface frame exceeds wire limit");
-            return false;
-        }
-        let only = self.surface_fanout_viewers.get(&key).cloned();
-        let peers: Vec<_> = self
-            .surface_members(ws)
-            .into_iter()
-            .filter(|peer| only.as_ref().is_none_or(|viewers| viewers.contains(peer)))
-            .collect();
-        // Units held for a device this window no longer streams to go.
-        self.held_surface_units
-            .retain(|(held_ws, surface, peer), _| {
-                (*held_ws, *surface) != key || peers.contains(peer)
-            });
-        let targets = self.surface_fanout_targets(ws, key.1, peers, &msg);
-        if targets.is_empty() {
-            return true;
-        }
-        let internal_tx = self.internal_tx.clone();
-        let Some(generation) = self.next_surface_fanout_generation.checked_add(1) else {
-            tracing::warn!(ws, "surface fanout generation exhausted");
-            return false;
-        };
-        self.next_surface_fanout_generation = generation;
-        let task = tokio::spawn(async move {
-            let mut pending = FuturesUnordered::new();
-            for (peer, connection) in targets {
-                pending.push(deliver_surface_frame(peer, connection, bytes.clone()));
-            }
-            let mut outcomes = Vec::new();
-            while let Some(outcome) = pending.next().await {
-                outcomes.push(outcome);
-            }
-            let _ = internal_tx
-                .send(InternalEvent::SurfaceFanoutComplete {
-                    ws,
-                    generation,
-                    msg,
-                    outcomes,
-                })
-                .await;
-        });
-        self.surface_fanout_tasks.insert(key, (generation, task));
-        true
-    }
-
-    /// The peers whose route is open and takes `msg` now; it is held for
-    /// the others until theirs is.
-    fn surface_fanout_targets(
-        &mut self,
-        ws: WorkspaceId,
-        surface: SurfaceId,
-        peers: Vec<EndpointId>,
-        msg: &NeighbourMsg,
-    ) -> Vec<(EndpointId, iroh::endpoint::Connection)> {
-        // Each viewer is an independent QUIC route: write on the open ones
-        // concurrently, so one viewer whose route is still opening (or will
-        // not open) never holds up the healthy ones. Its units wait for its
-        // route instead, in their order.
-        let mut targets = Vec::new();
-        for peer in peers {
-            let held = (ws, surface, peer);
-            match self.live_surface_route(peer) {
-                Some(connection) if !self.held_surface_units.contains_key(&held) => {
-                    targets.push((peer, connection));
-                }
-                _ => self.hold_surface_unit(held, msg),
-            }
-        }
-        targets
-    }
-
-    /// The open window-stream route to `peer`, if there is one.
-    fn live_surface_route(&mut self, peer: EndpointId) -> Option<iroh::endpoint::Connection> {
-        let connection = self.surface_connections.get(&peer)?;
-        if connection.close_reason().is_some() {
-            self.surface_connections.remove(&peer);
-            return None;
-        }
-        Some(connection.clone())
-    }
-
-    /// Hold `msg` for the viewer of `key` until its route is up, and open
-    /// that route if it is neither up nor being opened.
-    fn hold_surface_unit(&mut self, key: (WorkspaceId, SurfaceId, EndpointId), msg: &NeighbourMsg) {
-        let codec = self
-            .pending_surface_frames
-            .get(&(key.0, key.1))
-            .map_or(Some(media::StreamCodec::H264), |backlog| backlog.codec);
-        let generation = self.next_surface_fanout_generation.saturating_add(1);
-        self.next_surface_fanout_generation = generation;
-        self.held_surface_units
-            .entry(key)
-            .or_insert_with(|| HeldSurfaceUnits {
-                backlog: SurfaceFrameBacklog {
-                    codec,
-                    ..SurfaceFrameBacklog::default()
-                },
-                writing: false,
-                generation,
-            })
-            .backlog
-            .push(msg.clone());
-        if self.live_surface_route(key.2).is_some() {
-            self.write_held_surface_unit(key);
-        } else {
-            self.open_surface_route(key.2);
-        }
-    }
-
-    /// Open the window-stream route to `peer` unless it is being opened.
-    /// The dial runs as long as connecting takes; its outcome comes back as
+    /// Open the direct route to `peer` unless it is up, being opened, or
+    /// failed to open within [`DIRECT_ROUTE_RETRY`]. The dial runs as long as
+    /// connecting takes; its outcome comes back as
     /// [`InternalEvent::SurfaceRouteOpened`].
     fn open_surface_route(&mut self, peer: EndpointId) {
-        if self.surface_routes_opening.contains_key(&peer) {
+        if self.surface_routes_opening.contains_key(&peer)
+            || self
+                .surface_routes_failed
+                .get(&peer)
+                .is_some_and(|failed| failed.elapsed() < DIRECT_ROUTE_RETRY)
+        {
             return;
         }
         let addr = self
@@ -1768,7 +1397,7 @@ impl ActorState {
                 .connect(addr, SURFACE_STREAM_ALPN)
                 .await
                 .inspect_err(|error| {
-                    tracing::debug!(peer = %peer, %error, "window-stream route failed to open");
+                    tracing::debug!(peer = %peer, %error, "a direct route failed to open");
                 })
                 .ok();
             let _ = internal_tx
@@ -1778,123 +1407,36 @@ impl ActorState {
         self.surface_routes_opening.insert(peer, task);
     }
 
-    /// [`InternalEvent::SurfaceRouteOpened`] — give the viewer what was held
-    /// for it, in order; or, when its route could not be opened, keep only
-    /// what does not reference lost units, until its next unit opens it
-    /// again.
+    /// [`InternalEvent::SurfaceRouteOpened`]: what goes to `peer` from now on
+    /// takes the route that came up, or the workspace's host for a while when
+    /// none could.
     fn surface_route_opened(
         &mut self,
         peer: EndpointId,
         connection: Option<iroh::endpoint::Connection>,
     ) {
         self.surface_routes_opening.remove(&peer);
-        let mut keys: Vec<_> = self
-            .held_surface_units
-            .keys()
-            .filter(|(_, _, held_peer)| *held_peer == peer)
-            .copied()
-            .collect();
-        keys.retain(|key| {
-            let member = self.is_surface_member(key.0, peer);
-            if !member {
-                self.held_surface_units.remove(key);
+        match connection {
+            Some(connection) => {
+                self.surface_routes_failed.remove(&peer);
+                self.surface_connections.insert(peer, connection);
             }
-            member
-        });
-        let Some(connection) = connection else {
-            for key in keys {
-                self.surface_route_lost(key);
+            None => {
+                self.surface_routes_failed.insert(peer, Instant::now());
             }
-            return;
-        };
-        if keys.is_empty() && !self.surface_connections.contains_key(&peer) {
-            // Nothing is streamed to the device any more.
-            connection.close(0_u32.into(), b"no window streamed");
-            return;
-        }
-        self.surface_connections.insert(peer, connection);
-        for key in keys {
-            self.write_held_surface_unit(key);
         }
     }
 
-    /// `key`'s viewer could not be reached on its route: the frames held
-    /// for it, which reference what is lost, go. The stream's start stays
-    /// held, and the viewer's next unit opens a route again.
-    fn surface_route_lost(&mut self, key: (WorkspaceId, SurfaceId, EndpointId)) {
-        if let Some(held) = self.held_surface_units.get_mut(&key) {
-            held.backlog.lose_references();
-        }
-    }
-
-    /// Write the next unit held for `key`'s viewer on its open route, one at
-    /// a time; once none is left, the viewer takes the window's fanout.
-    fn write_held_surface_unit(&mut self, key: (WorkspaceId, SurfaceId, EndpointId)) {
-        let Some(connection) = self.live_surface_route(key.2) else {
-            return;
+    /// Whether a direct route to `peer` is up.
+    fn live_surface_route(&mut self, peer: EndpointId) -> bool {
+        let Some(connection) = self.surface_connections.get(&peer) else {
+            return false;
         };
-        let (bytes, held) = loop {
-            let Some(held) = self.held_surface_units.get_mut(&key) else {
-                return;
-            };
-            if held.writing {
-                return;
-            }
-            let Some(message) = held.backlog.pop() else {
-                self.held_surface_units.remove(&key);
-                return;
-            };
-            let wire = SurfaceWireFrame {
-                workspace: key.0,
-                message,
-            };
-            match postcard::to_allocvec(&wire) {
-                Ok(bytes) if bytes.len() <= MAX_SURFACE_FRAME_BYTES => break (bytes, held),
-                _ => held.backlog.lose_references(),
-            }
-        };
-        held.writing = true;
-        let generation = held.generation;
-        let internal_tx = self.internal_tx.clone();
-        tokio::spawn(async move {
-            let outcome = deliver_surface_frame(key.2, connection, bytes).await;
-            let _ = internal_tx
-                .send(InternalEvent::HeldSurfaceUnitWritten {
-                    key,
-                    generation,
-                    delivered: outcome.delivered,
-                })
-                .await;
-        });
-    }
-
-    /// [`InternalEvent::HeldSurfaceUnitWritten`].
-    fn held_surface_unit_written(
-        &mut self,
-        key: (WorkspaceId, SurfaceId, EndpointId),
-        generation: u64,
-        delivered: bool,
-    ) {
-        let Some(held) = self.held_surface_units.get_mut(&key) else {
-            return;
-        };
-        if held.generation != generation {
-            return;
+        if connection.close_reason().is_some() {
+            self.surface_connections.remove(&peer);
+            return false;
         }
-        held.writing = false;
-        if !delivered {
-            self.surface_connections.remove(&key.2);
-            self.surface_route_lost(key);
-            return;
-        }
-        self.write_held_surface_unit(key);
-    }
-
-    /// Forget what is held for `surface`'s viewers: its stream restarted or
-    /// ended.
-    fn drop_held_surface_units(&mut self, ws: WorkspaceId, surface: SurfaceId) {
-        self.held_surface_units
-            .retain(|(held_ws, held_surface, _), _| (*held_ws, *held_surface) != (ws, surface));
+        true
     }
 
     /// Send `payload` to each of the person's devices that proved a
@@ -2088,94 +1630,41 @@ impl ActorState {
         });
     }
 
-    /// Send consented input to one exact authenticated device, never through
-    /// a host, which would disclose keyboard and pointer events to every
-    /// participant in the workspace.
+    /// Say one window's control message to `target` alone: on the direct
+    /// route while it is up, and through the workspace's host to that device's
+    /// connection otherwise, while a direct route is opened for what follows.
+    /// A device that takes no connection of its own (a machine behind a NAT,
+    /// a hosted environment) is reached that way, and nothing of it is fanned
+    /// out to the workspace's other members.
     fn publish_workspace_control(
         &mut self,
         ws: WorkspaceId,
         msg: NeighbourMsg,
-        route: WorkspaceControlRoute,
+        target: EndpointId,
     ) {
         if !matches!(
             msg,
             NeighbourMsg::RemoteInput { .. }
                 | NeighbourMsg::SurfaceKeyframeRequest { .. }
                 | NeighbourMsg::SurfaceViewRequest { .. }
+                | NeighbourMsg::SurfaceStreamStart { .. }
+                | NeighbourMsg::SurfaceStreamEnd { .. }
         ) {
-            tracing::warn!(ws, "refused non-input workspace-control publication");
+            tracing::warn!(ws, "refused a non-control message on the control route");
             return;
         }
-        match route {
-            WorkspaceControlRoute::Direct { target } => {
-                // Input lands within its frame budget or not at all: a
-                // backed-up workspace has nothing better to do with it.
-                let _ = self.publish_direct(ws, target, msg);
-            }
-            WorkspaceControlRoute::Relayed { via } => {
-                tracing::warn!(
-                    ws,
-                    relay = %via,
-                    "refused workspace-control input on a workspace-wide relay"
-                );
-            }
+        if self.live_surface_route(target) {
+            // Input lands within its frame budget or not at all: what fails
+            // goes through the host ([`Self::direct_sent`]).
+            let _ = self.publish_direct(ws, target, msg);
+            return;
         }
-    }
-
-    fn observe_surface_stream(&mut self, ws: WorkspaceId, msg: &NeighbourMsg) {
-        match msg {
-            NeighbourMsg::SurfaceStreamStart { surface, codec, .. } => {
-                if let Some((_, task)) = self.surface_fanout_tasks.remove(&(ws, *surface)) {
-                    task.abort();
-                }
-                let backlog = self
-                    .pending_surface_frames
-                    .entry((ws, *surface))
-                    .or_default();
-                *backlog = SurfaceFrameBacklog {
-                    codec: media::StreamCodec::from_wire_label(codec),
-                    ..SurfaceFrameBacklog::default()
-                };
-                backlog.lose_references();
-                self.drop_held_surface_units(ws, *surface);
-            }
-            NeighbourMsg::SurfaceStreamEnd { surface, .. } => {
-                self.pending_surface_frames.remove(&(ws, *surface));
-                self.drop_held_surface_units(ws, *surface);
-                if let Some((_, task)) = self.surface_fanout_tasks.remove(&(ws, *surface)) {
-                    task.abort();
-                }
-            }
-            _ => {}
+        if self.is_surface_member(ws, target) {
+            self.open_surface_route(target);
         }
-    }
-
-    /// [`NetCmd::PublishSurfaceTo`] — one window's stream to exactly its
-    /// viewers. Its start and frames take the per-window media fanout
-    /// restricted to them, in order, held for a viewer until its route is
-    /// up; the stream's end and control grants go to each directly.
-    fn publish_surface_to(&mut self, ws: WorkspaceId, msg: NeighbourMsg, viewers: &[u64]) {
-        self.observe_surface_stream(ws, &msg);
-        let targets = self
-            .surface_members(ws)
-            .into_iter()
-            .filter(|peer| viewers.contains(&crate::behaviour::peer_liveness_handle(peer)))
-            .collect::<Vec<_>>();
-        match msg {
-            NeighbourMsg::SurfaceFrame { .. } | NeighbourMsg::SurfaceStreamStart { .. } => {
-                let key = (ws, fanout_surface(&msg));
-                self.surface_fanout_viewers.insert(key, targets);
-                let _ = self.start_surface_fanout(ws, msg);
-            }
-            NeighbourMsg::SurfaceStreamEnd { .. } | NeighbourMsg::PermissionGrant { .. } => {
-                if let NeighbourMsg::SurfaceStreamEnd { surface, .. } = &msg {
-                    self.surface_fanout_viewers.remove(&(ws, *surface));
-                }
-                for target in targets {
-                    let _ = self.publish_direct(ws, target, msg.clone());
-                }
-            }
-            _ => tracing::warn!(ws, "refused a non-stream message on the viewer route"),
+        if !self.relay_to_device(ws, Some(target), &msg) {
+            // No host carries the workspace: the direct route is the only one.
+            let _ = self.publish_direct(ws, target, msg);
         }
     }
 
@@ -2230,20 +1719,23 @@ impl ActorState {
             }
             _ => msg,
         };
-        self.relay_record_content(ws, target, &msg);
+        if !self.relay_to_device(ws, target, &msg) {
+            tracing::debug!(ws, "record content has no route to the device that asked");
+        }
     }
 
-    /// Record content that could not go to `target` directly: through the
-    /// workspace hosts to that device alone.
-    fn relay_record_content(
+    /// Send `msg` through the workspace hosts to `target` alone: a record's
+    /// content, or a window's control message, that cannot go directly.
+    /// Whether a host took it.
+    fn relay_to_device(
         &self,
         ws: WorkspaceId,
         target: Option<EndpointId>,
         msg: &NeighbourMsg,
-    ) {
+    ) -> bool {
         // The workspace hosts route it to that device alone when it is
         // connected to them.
-        let relayed = target.is_some_and(|target| {
+        target.is_some_and(|target| {
             postcard::to_allocvec(msg).is_ok_and(|frame| {
                 self.host_sessions
                     .iter()
@@ -2255,10 +1747,7 @@ impl ActorState {
                             .is_ok()
                     })
             })
-        });
-        if !relayed {
-            tracing::debug!(ws, "record content has no route to the device that asked");
-        }
+        })
     }
 
     /// Queue one message for exactly `target` on the authenticated direct
@@ -2331,8 +1820,14 @@ impl ActorState {
             return;
         }
         match msg {
-            NeighbourMsg::RecordContentPiece { .. } | NeighbourMsg::RecordContentLacks { .. } => {
-                self.relay_record_content(ws, Some(target), &msg);
+            NeighbourMsg::RecordContentPiece { .. }
+            | NeighbourMsg::RecordContentLacks { .. }
+            | NeighbourMsg::RemoteInput { .. }
+            | NeighbourMsg::SurfaceKeyframeRequest { .. }
+            | NeighbourMsg::SurfaceViewRequest { .. }
+            | NeighbourMsg::SurfaceStreamStart { .. }
+            | NeighbourMsg::SurfaceStreamEnd { .. } => {
+                let _ = self.relay_to_device(ws, Some(target), &msg);
             }
             _ => {}
         }
@@ -2463,23 +1958,8 @@ impl ActorState {
                 self.workspace_members
                     .connection(peer, connection_incarnation, connection);
             }
-            Some(InternalEvent::SurfaceFanoutComplete {
-                ws,
-                generation,
-                msg,
-                outcomes,
-            }) => {
-                self.handle_surface_fanout_complete(ws, generation, &msg, outcomes);
-            }
             Some(InternalEvent::SurfaceRouteOpened { peer, connection }) => {
                 self.surface_route_opened(peer, connection);
-            }
-            Some(InternalEvent::HeldSurfaceUnitWritten {
-                key,
-                generation,
-                delivered,
-            }) => {
-                self.held_surface_unit_written(key, generation, delivered);
             }
             Some(InternalEvent::PersonalFabric {
                 peer,
@@ -2588,49 +2068,6 @@ impl ActorState {
                     msg,
                 })
                 .await;
-        }
-    }
-
-    /// [`InternalEvent::SurfaceFanoutComplete`] arm of [`Self::handle_internal`], split
-    /// out to keep that dispatcher short.
-    fn handle_surface_fanout_complete(
-        &mut self,
-        ws: WorkspaceId,
-        generation: u64,
-        msg: &NeighbourMsg,
-        outcomes: Vec<SurfaceFanoutOutcome>,
-    ) {
-        let key = (ws, fanout_surface(msg));
-        if !finish_surface_fanout(&mut self.surface_fanout_tasks, key, generation) {
-            return;
-        }
-        if !self.subscribers.contains_key(&ws) {
-            self.pending_surface_frames.remove(&key);
-            return;
-        }
-        // A unit that failed on an open route broke the reference chain the
-        // window's queued units continue. One held for a viewer whose route
-        // is opening did not: it reaches that viewer once the route is up.
-        let mut lost = false;
-        for outcome in outcomes {
-            if !outcome.delivered || !self.is_surface_member(ws, outcome.peer) {
-                lost |= !outcome.delivered;
-                self.surface_connections.remove(&outcome.peer);
-            }
-        }
-        // A frame that missed a viewer is superseded by the next keyframe.
-        if lost {
-            self.pending_surface_frames
-                .entry(key)
-                .or_default()
-                .lose_references();
-        }
-        if let Some(next) = self
-            .pending_surface_frames
-            .get_mut(&key)
-            .and_then(SurfaceFrameBacklog::pop)
-        {
-            let _ = self.start_surface_fanout(ws, next);
         }
     }
 
@@ -2963,11 +2400,7 @@ impl ActorState {
             "a workspace hosted elsewhere"
         } else if !self.active_personal_transfers.is_empty() {
             "one of the person's devices"
-        } else if !self.surface_connections.is_empty()
-            || !self.surface_fanout_viewers.is_empty()
-            || !self.surface_routes_opening.is_empty()
-            || !self.held_surface_units.is_empty()
-        {
+        } else if !self.surface_connections.is_empty() || !self.surface_routes_opening.is_empty() {
             "a window streamed with a peer"
         } else {
             return None;
@@ -3455,12 +2888,8 @@ async fn run(
         host_backlog: HashMap::new(),
 
         surface_connections: HashMap::new(),
-        surface_fanout_tasks: HashMap::new(),
-        next_surface_fanout_generation: 0,
-        surface_fanout_viewers: HashMap::new(),
-        pending_surface_frames: HashMap::new(),
         surface_routes_opening: HashMap::new(),
-        held_surface_units: HashMap::new(),
+        surface_routes_failed: HashMap::new(),
         active_personal_transfers: HashMap::new(),
         next_personal_transfer_generation: 0,
         tally: Arc::default(),
@@ -3523,8 +2952,8 @@ async fn run(
     for host in state.host_sessions.values() {
         host.pump.abort();
     }
-    for (_, task) in state.surface_fanout_tasks.values() {
-        task.abort();
+    for dial in state.surface_routes_opening.values() {
+        dial.abort();
     }
     drop(state);
     reporting_addrs.abort();
@@ -3645,17 +3074,6 @@ pub fn transport_config() -> iroh::endpoint::QuicTransportConfig {
     iroh::endpoint::QuicTransportConfig::builder()
         .max_idle_timeout(Some(iroh::endpoint::VarInt::from_u32(millis).into()))
         .build()
-}
-
-/// The window a direct fanout carries: each shared window is fanned out on
-/// its own, so its frames are coalesced only with its own.
-fn fanout_surface(msg: &NeighbourMsg) -> SurfaceId {
-    match msg {
-        NeighbourMsg::SurfaceFrame { surface, .. }
-        | NeighbourMsg::SurfaceStreamStart { surface, .. }
-        | NeighbourMsg::SurfaceStreamEnd { surface, .. } => *surface,
-        _ => 0,
-    }
 }
 
 /// Publish `msg` on every session of `ws` with its workspace hosts. Each
@@ -4336,16 +3754,28 @@ fn spawn_direct_pump(
 
 /// A piece of a record's content, or word that a device keeps none, a
 /// workspace host handed this device from `from`; `None` for anything else.
+/// What another device sent this one alone through the host: a piece of a
+/// record's content, or a window's control message from a device that has no
+/// direct route here.
 fn record_content_event(from: &[u8; 32], frame: &[u8]) -> Option<HostEvent> {
     let author = EndpointId::from_bytes(from).ok()?;
     let msg = postcard::from_bytes(frame).ok()?;
-    matches!(
-        msg,
-        NeighbourMsg::RecordContentPiece { .. } | NeighbourMsg::RecordContentLacks { .. }
-    )
-    .then(|| HostEvent::Message {
+    let fingerprint = match msg {
+        NeighbourMsg::RecordContentPiece { .. } | NeighbourMsg::RecordContentLacks { .. } => {
+            message_fingerprint(frame)
+        }
+        // A viewer's input repeats itself (the same key pressed twice): it is
+        // never deduplicated, as a remote action is not.
+        NeighbourMsg::RemoteInput { .. }
+        | NeighbourMsg::SurfaceKeyframeRequest { .. }
+        | NeighbourMsg::SurfaceViewRequest { .. }
+        | NeighbourMsg::SurfaceStreamStart { .. }
+        | NeighbourMsg::SurfaceStreamEnd { .. } => [0; 32],
+        _ => return None,
+    };
+    Some(HostEvent::Message {
         author,
-        fingerprint: message_fingerprint(frame),
+        fingerprint,
         replayed: false,
         msg,
     })

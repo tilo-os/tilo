@@ -74,3 +74,16 @@ totp-a11y-accounts = Authenticator accounts
 totp-a11y-none = No accounts
 totp-a11y-accounts-hint = { $total } accounts. Arrow keys change the selected account.
 totp-empty-message = Scan a QR code or paste a setup link to see its one-time codes here.
+
+## A shared account whose key is not on this device
+totp-a11y-unkeyed = Not set up on this device
+
+## Actions
+
+totp-effect-open-account = Open account
+totp-effect-copy-code = Copy code
+totp-effect-retry-save = Save again
+totp-vault = Authenticator
+totp-vault-move-up = Move up
+totp-vault-move-down = Move down
+totp-vault-delete = Delete

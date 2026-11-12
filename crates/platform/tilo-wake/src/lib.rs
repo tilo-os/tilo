@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, Sender, SyncSender, channel};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
 use tilo_lock::MutexRecover as _;
 
@@ -81,6 +81,31 @@ impl Route {
 
 thread_local! {
     static CURRENT: RefCell<Option<Weak<Route>>> = const { RefCell::new(None) };
+    /// How deep the passes running here are those of a component that work
+    /// off the frame must report back to ([`FeedsComponent`]).
+    static FEEDS_COMPONENT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Marks that the component whose code runs here wires work off the frame: a
+/// wake captured while this lives and that reaches no component could never
+/// report back to it, so a debug build fails where the wire is made
+/// ([`WakeHandle::new`]), rather than at the frame that later skipped what it
+/// changed.
+#[doc(hidden)]
+#[must_use]
+pub struct FeedsComponent(());
+
+impl FeedsComponent {
+    pub fn begin() -> Self {
+        FEEDS_COMPONENT.with(|feeds| feeds.set(feeds.get().saturating_add(1)));
+        Self(())
+    }
+}
+
+impl Drop for FeedsComponent {
+    fn drop(&mut self) {
+        FEEDS_COMPONENT.with(|feeds| feeds.set(feeds.get().saturating_sub(1)));
+    }
 }
 
 /// The non-clone owner of one mount incarnation. Drop closes it.
@@ -339,10 +364,19 @@ impl WakeHandle {
         })
     }
 
+    /// The wake of the scope that runs here: a component's own during its
+    /// construction, its passes and its callbacks. Work it starts off the
+    /// frame holds this and wakes it when there is something to take up.
     pub fn new() -> Self {
-        Self {
+        let handle = Self {
             route: CURRENT.with(|current| current.borrow().clone()),
-        }
+        };
+        debug_assert!(
+            !(handle.is_detached() && FEEDS_COMPONENT.with(std::cell::Cell::get) > 0),
+            "work a component starts captured a wake that reaches no component: take the wake \
+             from the component that runs now, not from a construction that already ended"
+        );
+        handle
     }
 
     pub const fn detached() -> Self {
@@ -657,19 +691,59 @@ impl<T> Reply<T> {
     }
 }
 
+/// The report-back side of a [`waking_channel`]: the component that opened it
+/// is woken for every message, before the message can be received and again
+/// once it can.
+///
+/// Both wakes matter: a frame that finds a message has a wake to answer for
+/// it, and a message that lands between a component's drain and the end of
+/// its pass ([`WakeHandle::crossed`]) is already announced, so a component
+/// that then rests never skipped what the message changed.
+struct Reporting {
+    wake: WakeHandle,
+}
+
+impl Reporting {
+    fn new() -> Self {
+        Self {
+            wake: WakeHandle::new(),
+        }
+    }
+
+    fn announce<T>(
+        &self,
+        queue: impl FnOnce() -> Result<(), std::sync::mpsc::SendError<T>>,
+    ) -> Result<(), std::sync::mpsc::SendError<T>> {
+        self.wake.wake();
+        let queued = queue();
+        if queued.is_ok() {
+            self.wake.wake();
+        }
+        queued
+    }
+}
+
+impl Clone for Reporting {
+    fn clone(&self) -> Self {
+        Self {
+            wake: self.wake.clone(),
+        }
+    }
+}
+
 /// The worker's end of a [`waking_channel`]: every message it sends wakes
 /// the scope that opened the channel, so the app drains it on its next sync
 /// instead of pumping frames to poll for it.
 pub struct WakingSender<T> {
     sender: Sender<T>,
-    wake: WakeHandle,
+    reporting: Reporting,
 }
 
 impl<T> Clone for WakingSender<T> {
     fn clone(&self) -> Self {
         Self {
             sender: self.sender.clone(),
-            wake: self.wake.clone(),
+            reporting: self.reporting.clone(),
         }
     }
 }
@@ -678,9 +752,8 @@ impl<T> WakingSender<T> {
     /// Queue `message` and wake the owner to take it. A gone receiver (the
     /// window closed) is an error.
     pub fn send(&self, message: T) -> Result<(), std::sync::mpsc::SendError<T>> {
-        self.sender.send(message)?;
-        self.wake.wake();
-        Ok(())
+        let sender = &self.sender;
+        self.reporting.announce(|| sender.send(message))
     }
 }
 
@@ -689,7 +762,43 @@ impl<T> Drop for WakingSender<T> {
     /// the owner too, so the owner sees the channel disconnected instead of
     /// waiting forever.
     fn drop(&mut self) {
-        self.wake.wake();
+        self.reporting.wake.wake();
+    }
+}
+
+/// The worker's end of a [`waking_sync_channel`]: as [`WakingSender`], for a
+/// worker that must not queue faster than its owner takes.
+pub struct WakingSyncSender<T> {
+    sender: SyncSender<T>,
+    reporting: Reporting,
+}
+
+impl<T> Clone for WakingSyncSender<T> {
+    fn clone(&self) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            reporting: self.reporting.clone(),
+        }
+    }
+}
+
+impl<T> WakingSyncSender<T> {
+    /// Queue `message`, waiting for room when the channel is full, and wake
+    /// the owner to take it.
+    ///
+    /// # Errors
+    ///
+    /// The message back, when the receiver (the window) is gone.
+    pub fn send(&self, message: T) -> Result<(), std::sync::mpsc::SendError<T>> {
+        let sender = &self.sender;
+        self.reporting.announce(|| sender.send(message))
+    }
+}
+
+impl<T> Drop for WakingSyncSender<T> {
+    /// As [`WakingSender`]: a worker that ends wakes the owner to see it end.
+    fn drop(&mut self) {
+        self.reporting.wake.wake();
     }
 }
 
@@ -704,7 +813,22 @@ pub fn waking_channel<T>() -> (WakingSender<T>, Receiver<T>) {
     (
         WakingSender {
             sender,
-            wake: WakeHandle::new(),
+            reporting: Reporting::new(),
+        },
+        receiver,
+    )
+}
+
+/// [`waking_channel`] with room for `bound` messages: a worker whose replies
+/// cost memory (a picture, an analysis) sends through it, so it waits for its
+/// owner to take them instead of piling up.
+#[must_use]
+pub fn waking_sync_channel<T>(bound: usize) -> (WakingSyncSender<T>, Receiver<T>) {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(bound);
+    (
+        WakingSyncSender {
+            sender,
+            reporting: Reporting::new(),
         },
         receiver,
     )
@@ -863,43 +987,103 @@ mod tests {
         (scope, rx)
     }
 
+    /// Every wake the owner was sent, drained: a message is announced
+    /// before it can be received and again once it can.
+    fn drain(rx: &Receiver<WakeEvent>) {
+        while rx.try_recv().is_ok() {}
+    }
+
     #[test]
     fn a_worker_reply_on_a_waking_channel_wakes_its_owner() {
         let (scope, rx) = bound_scope();
+        {
+            let (sender, replies) = {
+                let _entry = scope.enter();
+                waking_channel::<u32>()
+            };
+            std::thread::spawn(move || sender.send(7).unwrap())
+                .join()
+                .unwrap();
+            assert!(
+                rx.recv().unwrap().requires_sync(),
+                "the reply woke the owner"
+            );
+            assert_eq!(replies.try_recv().unwrap(), 7);
+            // The worker's end went away with its thread: one more wake.
+            assert!(rx.recv().is_ok());
+            drain(&rx);
+        }
+        {
+            let (sender, replies) = {
+                let _entry = scope.enter();
+                waking_channel::<u32>()
+            };
+            drop(replies);
+            assert!(sender.send(1).is_err(), "the message reaches nobody");
+            // Announced before it could be received, as every message is; a
+            // wake no owner takes up costs a closed window nothing.
+            assert!(rx.try_recv().is_ok(), "the attempt was announced");
+            assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+            drop(sender);
+            drain(&rx);
+        }
+        {
+            let (sender, replies) = {
+                let _entry = scope.enter();
+                waking_channel::<u32>()
+            };
+            std::thread::spawn(move || drop(sender)).join().unwrap();
+            assert!(
+                rx.recv().is_ok(),
+                "a worker that ends without a reply wakes too"
+            );
+            assert!(matches!(
+                replies.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Disconnected)
+            ));
+            drain(&rx);
+        }
+    }
+
+    #[test]
+    fn a_worker_reply_on_a_bounded_waking_channel_wakes_its_owner() {
+        let (scope, rx) = bound_scope();
         let (sender, replies) = {
             let _entry = scope.enter();
-            waking_channel::<u32>()
+            waking_sync_channel::<u32>(1)
         };
         std::thread::spawn(move || sender.send(7).unwrap())
             .join()
             .unwrap();
         assert!(
             rx.recv().unwrap().requires_sync(),
-            "the reply woke the owner"
+            "the reply woke its owner before it could be received"
         );
         assert_eq!(replies.try_recv().unwrap(), 7);
         // The worker's end went away with its thread: one more wake.
         assert!(rx.recv().is_ok());
-        let (sender, replies) = {
-            let _entry = scope.enter();
-            waking_channel::<u32>()
-        };
-        drop(replies);
-        assert!(sender.send(1).is_err(), "a gone receiver wakes nobody");
-        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
-        let (sender, replies) = {
-            let _entry = scope.enter();
-            waking_channel::<u32>()
-        };
-        std::thread::spawn(move || drop(sender)).join().unwrap();
-        assert!(
-            rx.recv().is_ok(),
-            "a worker that ends without a reply wakes too"
-        );
-        assert!(matches!(
-            replies.try_recv(),
-            Err(std::sync::mpsc::TryRecvError::Disconnected)
-        ));
+    }
+
+    /// A component's pass wiring work off the frame must capture the
+    /// component's wake: one that reaches no scope can never report back to
+    /// it, and is caught where the wire is made.
+    #[test]
+    #[should_panic(expected = "reaches no component")]
+    fn a_wake_wired_for_a_running_component_reaches_its_component() {
+        let _feeds = super::FeedsComponent::begin();
+        let _detached = WakeHandle::new();
+    }
+
+    #[test]
+    fn a_wake_wired_inside_a_scope_reaches_its_component() {
+        let (scope, rx) = bound_scope();
+        let feeds = super::FeedsComponent::begin();
+        let entry = scope.enter();
+        let handle = WakeHandle::new();
+        drop(entry);
+        drop(feeds);
+        handle.wake();
+        assert!(scope.accepts(&rx.try_recv().unwrap()));
     }
 
     #[test]

@@ -31,6 +31,7 @@ pub mod surface;
 mod wake;
 pub mod warmth;
 pub mod window;
+pub mod window_input;
 
 pub use page_view::{PageStream, PageView};
 #[cfg(all(not(target_arch = "wasm32"), feature = "peer-view"))]

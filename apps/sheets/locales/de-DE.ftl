@@ -117,3 +117,41 @@ sheets-bold = Fett
 sheets-autosum = AutoSumme
 sheets-show-formulas = Formeln anzeigen
 sheets-show-results = Berechnete Ergebnisse anzeigen
+
+## Die Farbmarke eines Registers
+sheets-tab-colour = Registerfarbe
+
+## Actions
+
+sheets-effect-import-csv = CSV importieren
+sheets-effect-import-xlsx = Excel-Arbeitsmappe importieren
+sheets-effect-import-ods = OpenDocument-Tabelle importieren
+sheets-effect-export-csv = CSV exportieren
+sheets-effect-export-xlsx = Excel-Arbeitsmappe exportieren
+sheets-effect-export-ods = OpenDocument-Tabelle exportieren
+sheets-effect-import-xlsx-content = Arbeitsmappeninhalt importieren
+sheets-effect-export-xlsx-content = Arbeitsmappeninhalt exportieren
+sheets-effect-commands = Befehlspalette öffnen
+sheets-effect-go-to-cell = Zu Zelle springen …
+sheets-effect-toggle-formula-view = Formelansicht umschalten
+sheets-effect-read-cells = Zellen lesen
+sheets-effect-open = Öffnen
+sheets-workbook = Arbeitsmappe
+sheets-workbook-set-title = Arbeitsmappe benennen
+sheets-workbook-set-records = Datensätze setzen
+sheets-workbook-upsert-item = Zeile einfügen oder aktualisieren
+sheets-workbook-duplicate-sheet = Blatt duplizieren
+sheets-workbook-delete-sheet = Blatt löschen
+sheets-workbook-set-cells = Zellen setzen
+sheets-workbook-write-cells = Zellen schreiben
+sheets-workbook-format-cells = Zellen formatieren
+sheets-workbook-sort-rows = Zeilen sortieren
+sheets-workbook-insert-rows = Zeilen einfügen
+sheets-workbook-delete-rows = Zeilen löschen
+sheets-workbook-insert-columns = Spalten einfügen
+sheets-workbook-delete-columns = Spalten löschen
+sheets-workbook-import-sheets = Blätter importieren
+sheets-workbook-add-chart = Diagramm hinzufügen
+sheets-workbook-edit-chart = Diagramm bearbeiten
+sheets-workbook-rename-sheet = Blatt umbenennen
+sheets-workbook-comment = Zellen kommentieren

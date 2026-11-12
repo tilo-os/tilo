@@ -4,15 +4,11 @@
 //! between the views a type declares, which the window remembers.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::{AmStore, Principal, ResourceRef, Runtime, UiNode, Value, ViewInstance};
 
-    const TASKS: &str = super::common::TASKS_SOURCE;
+    const TASKS: &str = crate::common::TASKS_SOURCE;
     const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
     const BOARD: &str = include_str!("../../../../apps/tl/board/app.tl");
 

@@ -41,6 +41,12 @@ env:
   # fingerprints and recompiles the dependency graph for the all-target pass.
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
+  # Test executables without their symbol table, as t's runs build them (t.toml): symbol names are
+  # about half of each one, so stripping makes a test binary 56-58% smaller to link, store, move
+  # and load. A panic's message still says file:line; the packages whose tests read the symbol table
+  # keep it ([profile.test.package.*] in Cargo.toml). A shard's store holds what its build writes,
+  # and the session's build is the tree's largest.
+  CARGO_PROFILE_TEST_STRIP: "symbols"
   CARGO_TERM_COLOR: never
   # Cache availability changes speed, never correctness or mergeability.
   # Deny warnings through per-target flags. Cargo joins these with the

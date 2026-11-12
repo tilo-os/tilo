@@ -71,3 +71,16 @@ totp-a11y-accounts = Authenticator-Konten
 totp-a11y-none = Keine Konten
 totp-a11y-accounts-hint = { $total } Konten. Die Pfeiltasten wechseln das ausgewählte Konto.
 totp-empty-message = Scanne einen QR-Code oder füge einen Einrichtungslink ein, um die Einmalcodes hier zu sehen.
+
+## Ein geteiltes Konto, dessen Schlüssel nicht auf diesem Gerät liegt
+totp-a11y-unkeyed = Auf diesem Gerät nicht eingerichtet
+
+## Actions
+
+totp-effect-open-account = Konto öffnen
+totp-effect-copy-code = Code kopieren
+totp-effect-retry-save = Erneut speichern
+totp-vault = Authenticator
+totp-vault-move-up = Nach oben
+totp-vault-move-down = Nach unten
+totp-vault-delete = Löschen

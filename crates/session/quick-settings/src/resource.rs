@@ -50,7 +50,7 @@ pub struct QuickSettings {
     pub editing: bool,
 }
 
-#[resource(kind = "quick-settings.panel", label = "Quick Settings", answer = answer)]
+#[resource(kind = "quick-settings.panel", label = "qs-title", answer = answer)]
 impl QuickSettings {
     /// Show the controls, with nothing open: how the panel opens.
     #[action(housekeeping)]
@@ -104,7 +104,7 @@ impl QuickSettings {
     }
 
     /// Start or finish arranging the panel's controls.
-    #[action(housekeeping)]
+    #[action(label = "qs-edit-short", housekeeping)]
     pub fn edit(&mut self, #[param("Whether the controls are being arranged")] editing: bool) {
         self.page = Page::Root;
         self.section = None;

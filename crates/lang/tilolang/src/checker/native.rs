@@ -1097,14 +1097,23 @@ impl Checker<'_> {
                 None if !applied => {
                     applied = true;
                     let act = self.expr(value, None);
-                    let p = &callee.present;
-                    self.prop(node.clone(), "label", Ex::str(&p.label), span);
-                    if let Some(icon) = &p.icon {
+                    // What the button is called is the action's own message, in the reader's
+                    // language: the label its declaration gives, as the catalogue's source text
+                    // for one that has no translation in the window's language.
+                    let message = crate::messages::key_of(&callee.id);
+                    let args = self.text_pairs(Vec::new());
+                    let label = Ex::host(
+                        Imp::Word,
+                        vec![Ex::str(&message), args, Ex::str(&callee.present.label)],
+                        Ty::Text,
+                    );
+                    self.prop(node.clone(), "label", label, span);
+                    if let Some(icon) = &callee.present.icon {
                         self.prop(node.clone(), "icon", Ex::str(icon), span);
                     }
                     // A button in content stands on its own: `secondary` unless the action says
                     // (an icon-only toolkit button is `plain`, as a header's are).
-                    let role = p.role.clone();
+                    let role = callee.present.role.clone();
                     let role = role.as_deref().unwrap_or("secondary");
                     self.prop(node.clone(), "role", Ex::str(role), span);
                     self.applied_presentation(callee, value, n);

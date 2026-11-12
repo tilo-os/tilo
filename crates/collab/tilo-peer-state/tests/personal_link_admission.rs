@@ -17,11 +17,8 @@
     clippy::panic,
     reason = "in a test these are the assertion, not a hazard"
 )]
-tilo_automerge_isolate::test_worker!();
 
-mod common;
-
-use common::{addr, device, localhost_endpoint};
+use crate::common::{addr, device, localhost_endpoint};
 
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
 use collab_types::CommitNamed as _;

@@ -32,7 +32,26 @@ pub struct WatchHistory {
 /// from the start.
 pub const RESUME_TOLERANCE_MS: u64 = 20_000;
 
-#[resource(kind = "tube.watch-history", label = "Watch history")]
+impl WatchHistory {
+    /// What the record holds: the videos the person watched, newest first, and where each was
+    /// left off.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<tilo_resource::__private::serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "tube.watch-history",
+    read_content = WatchHistory::read_document
+)]
 impl WatchHistory {
     /// The video was watched at `at_ms`: it moves to the front.
     #[action(housekeeping)]

@@ -157,6 +157,15 @@ fn rows_of(
                         Some((tab, tab_title_in(workspace, tab)?))
                     })
                     .flatten(),
+                working_app: is_agent
+                    .then(|| {
+                        participant.in_app.clone().or_else(|| {
+                            participant
+                                .active_tab
+                                .and_then(|tab| app_id_in(workspace, tab))
+                        })
+                    })
+                    .flatten(),
                 // What it is doing, read off its own device's word: an agent's row is where its
                 // live work shows, not only its name.
                 status: participant
@@ -279,7 +288,9 @@ pub fn roster_colors_with_local_user(
     if !local.is_empty() {
         ids.push(local);
     }
-    ui::presence::settle_colors(&ids, &chosen)
+    // The person at this device is honoured first: their own colour is not given to anyone on
+    // the roster.
+    ui::presence::settle_colors_around(&ids, &chosen, (!local.is_empty()).then_some(local))
 }
 
 fn roster_initial(name: &str) -> char {
@@ -291,6 +302,17 @@ fn roster_initial(name: &str) -> char {
 /// Where someone is when no window here shows it: "In Notes".
 pub fn in_app(app: &str) -> String {
     crate::i18n::t_args("people-panel-in-app", &[("app", app.to_owned().into())])
+}
+
+/// The app the window `tab_id` runs, by its id: what names it where its own presence kept no word
+/// of the app, and its tile does.
+fn app_id_in(workspace: Option<&tilo_desktop_model::Workspace>, tab_id: u64) -> Option<String> {
+    let tile = &workspace?.tabs().find(|tab| tab.id == tab_id)?.tile;
+    let tilo_desktop_model::TileContent::LocalApp { app_id, .. } = tile else {
+        return None;
+    };
+    let app_id = app_id.trim();
+    (!app_id.is_empty()).then(|| app_id.to_owned())
 }
 
 fn tab_title_in(workspace: Option<&tilo_desktop_model::Workspace>, tab_id: u64) -> Option<String> {

@@ -21,6 +21,10 @@ dir = ["dep:tilo-advisory-lock", "dep:tilo-clock", "dep:tilo-files", "dep:tilo-p
 tilo-content-types = { version = "0.1.0", path = "../content-types" }
 tilo-advisory-lock = { version = "0.1.0", path = "../advisory-lock", optional = true }
 blake3.workspace = true
+# A sealed reference's key, as the record keeps it.
+base64.workspace = true
+# Content a record references is sealed under a key its reference carries.
+tilo-seal = { version = "0.1.0", path = "../tilo-seal" }
 # `ContentState` travels on the collaboration wire.
 serde.workspace = true
 thiserror.workspace = true

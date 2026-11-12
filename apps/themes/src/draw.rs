@@ -12,6 +12,8 @@ use ui::tokens::PresenceHue;
 use ui::vello::kurbo::{Circle, RoundedRect, Shape, Stroke};
 use ui::vello::peniko::{Color, Fill};
 
+use crate::locales::CATALOG;
+
 /// Logical size the miniature is composed at, before it is scaled to fit.
 pub const CANVAS: (f64, f64) = (480.0, 300.0);
 
@@ -97,7 +99,7 @@ pub fn miniature_list(
     let tile = paint.desktop_with_window();
 
     paint.label(
-        "Inbox",
+        &CATALOG.t("themes-preview-inbox"),
         TextRole::Title,
         colors.text_primary,
         Point::new(tile.x0 + f64::from(space.s6), tile.y0 + gutter),
@@ -199,7 +201,7 @@ pub fn miniature_dialog(
         ui::chrome::panel_border(theme),
     );
     paint.label(
-        "Move to trash?",
+        &CATALOG.t("themes-preview-move-title"),
         TextRole::Title,
         colors.text_primary,
         Point::new(
@@ -208,7 +210,7 @@ pub fn miniature_dialog(
         ),
     );
     paint.label(
-        "The file stays recoverable for 30 days.",
+        &CATALOG.t("themes-preview-move-body"),
         TextRole::Body,
         colors.text_dim,
         Point::new(
@@ -224,7 +226,7 @@ pub fn miniature_dialog(
     );
     paint.fill(&rounded(row, radii.control), colors.surfaces.raised);
     paint.label(
-        "Keep the copy",
+        &CATALOG.t("themes-preview-keep-copy"),
         TextRole::Caption,
         colors.text_primary,
         Point::new(row.x0 + inset, row.y0 + 6.0),
@@ -237,7 +239,7 @@ pub fn miniature_dialog(
     );
     paint.fill(&rounded(cancel, radii.control), colors.surfaces.raised);
     paint.label(
-        "Cancel",
+        &CATALOG.t("themes-preview-cancel"),
         TextRole::Label,
         colors.text_primary,
         Point::new(cancel.x0 + 20.0, cancel.y0 + 7.0),
@@ -250,7 +252,7 @@ pub fn miniature_dialog(
     );
     paint.fill(&rounded(primary, radii.control), colors.intent.accent);
     paint.label(
-        "Move",
+        &CATALOG.t("themes-preview-move"),
         TextRole::Label,
         colors.intent.on_accent,
         Point::new(primary.x0 + 24.0, primary.y0 + 7.0),
@@ -331,21 +333,21 @@ pub fn miniature(scene: &mut Scene, transform: Affine, text: &mut TextRenderer, 
     let left = sidebar.x1 + f64::from(space.s6);
     let mut top = tile.y0 + gutter;
     paint.label(
-        "Quarterly review",
+        &CATALOG.t("themes-preview-document"),
         TextRole::Title,
         colors.text_primary,
         Point::new(left, top),
     );
     top += 30.0;
     paint.label(
-        "Shared with Ada and Bo",
+        &CATALOG.t("themes-preview-shared"),
         TextRole::Body,
         colors.text_dim,
         Point::new(left, top),
     );
     top += 20.0;
     paint.label(
-        "Edited 2 minutes ago",
+        &CATALOG.t("themes-preview-edited"),
         TextRole::Caption,
         colors.text_tertiary,
         Point::new(left, top),
@@ -359,7 +361,7 @@ pub fn miniature(scene: &mut Scene, transform: Affine, text: &mut TextRenderer, 
         colors.intent.you,
     );
     paint.label(
-        "Budget notes",
+        &CATALOG.t("themes-preview-field"),
         TextRole::Label,
         colors.text_primary,
         Point::new(field.x0 + inset, field.y0 + 6.0),
@@ -392,7 +394,7 @@ pub fn miniature(scene: &mut Scene, transform: Affine, text: &mut TextRenderer, 
     let primary = Rect::new(left, top, left + 96.0, top + 30.0);
     paint.fill(&rounded(primary, radii.control), colors.intent.accent);
     paint.label(
-        "Share",
+        &CATALOG.t("themes-preview-share"),
         TextRole::Label,
         colors.intent.on_accent,
         Point::new(primary.x0 + 28.0, primary.y0 + 7.0),
@@ -400,7 +402,7 @@ pub fn miniature(scene: &mut Scene, transform: Affine, text: &mut TextRenderer, 
     let secondary = Rect::new(primary.x1 + inset, top, primary.x1 + 96.0, top + 30.0);
     paint.fill(&rounded(secondary, radii.control), colors.surfaces.raised);
     paint.label(
-        "Cancel",
+        &CATALOG.t("themes-preview-cancel"),
         TextRole::Label,
         colors.text_primary,
         Point::new(secondary.x0 + 22.0, secondary.y0 + 7.0),

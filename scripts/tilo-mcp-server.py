@@ -73,9 +73,8 @@ class Compositor:
     def call(self, payload: dict) -> dict:
         if not os.path.exists(self.socket_path):
             raise ConnectionError(
-                f"no compositor control socket at {self.socket_path}. Start one with "
-                "`TILO_TEST_CONTROL=<path> cargo run --bin shell -- --backend headless`, "
-                "or pass --socket."
+                f"no session control socket at {self.socket_path}. Start one with "
+                "`scripts/headless-examples/spawn-headless.sh`, or pass --socket."
             )
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(self.timeout)

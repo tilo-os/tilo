@@ -97,6 +97,9 @@ pub struct RosterRow {
     /// called here. Software has no screen to mirror, so its row shows this instead, and pressing it
     /// brings that window forward.
     pub working_in: Option<(u64, String)>,
+    /// The app that window runs, by its id (what names the place software works in beside its
+    /// line, without naming the app it already sits in).
+    pub working_app: Option<String>,
     /// Short participant intention, marked by its [`LineSource`] so model-suggested words cannot be mistaken for a direct quote.
     pub status: Option<RosterStatus>,
     /// What they changed recently in this workspace, newest first: a row with none does not open.
@@ -130,6 +133,7 @@ impl RosterRow {
             invited: false,
             activity: None,
             working_in: None,
+            working_app: None,
             status: status.filter(|status| !status.text.trim().is_empty()),
             recent: Vec::new(),
             followable: false,
@@ -204,6 +208,43 @@ pub struct CollaboratorsModel<'a> {
     pub waved: &'a [String],
     /// When the wave stops showing: the row it went to is drawn again without one then.
     pub waved_until: Option<ui::time::Instant>,
+}
+
+/// How far above a phone's sheet the work under it fades out, so the sheet's top edge never cuts a
+/// line of text through its letters.
+const SHEET_FADE: f64 = 28.0;
+
+/// The band above a phone's sheet: the window ground fading in from clear to opaque at the sheet's
+/// edge, as wide as the sheet.
+fn paint_sheet_fade(scene: &mut Scene, transform: Affine, panel: Rect, theme: &Theme) {
+    use vello::peniko::{ColorStop, Extend, Fill, Gradient};
+    let ground = theme.tokens.colors.surfaces.content;
+    let band = Rect::new(panel.x0, panel.y0 - SHEET_FADE, panel.x1, panel.y0);
+    let gradient = Gradient::new_linear(Point::new(0.0, band.y0), Point::new(0.0, panel.y0))
+        .with_extend(Extend::Pad)
+        .with_stops(
+            &[
+                ColorStop {
+                    offset: 0.0,
+                    color: ground.with_alpha(0.0).into(),
+                },
+                ColorStop {
+                    offset: 1.0,
+                    color: ground.into(),
+                },
+            ][..],
+        );
+    scene.fill(Fill::NonZero, transform, &gradient, None, &band);
+}
+
+/// The widest desk the roster opens on as a phone's sheet: at the desk's foot, put away by a press
+/// above it, and never kept on screen, where it would stand over the one window there is.
+pub const SHEET_MAX_WIDTH: f64 = 600.0;
+
+/// Whether a desk `host` wide opens the roster as a phone's sheet ([`SHEET_MAX_WIDTH`]).
+#[must_use]
+pub fn is_sheet(host: Rect) -> bool {
+    host.width() > 0.0 && host.width() <= SHEET_MAX_WIDTH
 }
 
 /// Direction of a transient attachment relative to one roster row.
@@ -562,8 +603,13 @@ impl CollaboratorsOverlay {
         let heading_h = f64::from(metrics.row_single);
         let width = model.panel.map_or_else(
             || {
-                f64::from(metrics.panel_width_list)
-                    .min((model.host.width() - 2.0 * f64::from(spacing.s4)).max(240.0))
+                if is_sheet(model.host) {
+                    // A phone's sheet spans the desk between its gutters.
+                    (model.host.width() - 2.0 * f64::from(spacing.s3)).max(0.0)
+                } else {
+                    f64::from(metrics.panel_width_list)
+                        .min((model.host.width() - 2.0 * f64::from(spacing.s4)).max(240.0))
+                }
             },
             |panel| panel.width(),
         );
@@ -684,6 +730,13 @@ impl CollaboratorsOverlay {
         self.panel = model.panel.map_or_else(
             || {
                 let right = model.host.x1 - f64::from(spacing.s3);
+                if is_sheet(model.host) {
+                    // A phone's sheet stands at the desk's foot, centred between equal gutters:
+                    // the work above it stays readable, and a press above it puts it away.
+                    let bottom = model.host.y1 - f64::from(spacing.s3);
+                    let left = model.host.center().x - width / 2.0;
+                    return Rect::new(left, bottom - panel_h, left + width, bottom);
+                }
                 Rect::new(right - width, anchor_top, right, anchor_top + panel_h)
             },
             |panel| Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + panel_h),
@@ -1025,6 +1078,9 @@ impl CollaboratorsOverlay {
                 0.0
             })
             .body_empty(false);
+        if is_sheet(model.host) && model.panel.is_none() {
+            paint_sheet_fade(scene, transform, self.panel, theme);
+        }
         let (_, inner) = face.paint(scene, transform, self.panel, 1.0, theme);
         let theme = &inner;
         let colors = &theme.tokens.colors;

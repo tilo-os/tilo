@@ -3,14 +3,10 @@
 //! input's `@` drawer.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
     use std::rc::Rc;
 
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::members::Member;
     use tilolang_runtime::{AmStore, Principal, ResourceRef, Runtime, SimpleAuthority, Value};
 

@@ -596,7 +596,9 @@ view home(t: Tasks) {
                 }
                 if all_done {
                     ui.EmptyState(phrase("tilolang-all-done"), icon: .list_checks, inline: true)
-                } else if shown.is_empty() {
+                } else if shown.is_empty() and opened == .none {
+                    // A task open in the list stands in it after it leaves the place, so the
+                    // list stays while one is open.
                     ui.EmptyState("No tasks here", icon: .list_checks)
                 } else {
                     task_list(shown, by_day, done_place, folds, opened, project)

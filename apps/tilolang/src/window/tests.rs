@@ -865,14 +865,20 @@ fn empty_states(node: &UiNode, out: &mut Vec<UiNode>) {
 fn the_primary_action_is_the_header_and_empty_states_action_and_creates_through_the_door() {
     let mut workspace = Workspace::new("notes");
     assert_eq!(workspace.items_of("so.tilo.lang.notes", "notes"), 0);
-    // An empty notebook says one sentence in its sidebar, and its primary action stands once,
-    // in that sidebar's header: the empty state has no button of its own.
+    // An empty notebook says one sentence once, in place of both columns, and its primary action
+    // stands once, in the bar: the state has no button of its own.
+    let composed = workspace.composed();
     let mut empty = Vec::new();
-    for node in slot_of(&workspace.composed(), "sidebar") {
-        empty_states(node, &mut empty);
-    }
-    let empty = empty.first().expect("the empty notebook says so");
-    assert_eq!(empty.props.get("title"), Some(&Value::text("No notes yet")));
+    empty_states(&composed, &mut empty);
+    assert_eq!(empty.len(), 1, "one state, once: {empty:?}");
+    assert_eq!(
+        empty[0].props.get("title"),
+        Some(&Value::text("No notes yet"))
+    );
+    assert!(
+        slot_of(&composed, "sidebar").is_empty(),
+        "the places draw no second state"
+    );
     assert!(
         workspace.header_buttons("sidebar_actions").is_empty(),
         "the sidebar's header offers no second button"
@@ -1001,44 +1007,78 @@ fn what_an_agent_or_a_script_creates_through_the_door_moves_nobodys_view() {
     assert_eq!(workspace.opened_note(), opened);
 }
 
+/// The labels of the navigation items under `node`.
+fn places(node: &UiNode, out: &mut Vec<String>) {
+    if node.kind == "ui.NavItem" {
+        out.push(tilo_ui_host::reconcile::display(&node.props["label"]));
+    }
+    for child in &node.children {
+        places(child, out);
+    }
+}
+
+/// The sections of the navigation list under `node`: each heading and its places.
+fn sections(node: &UiNode, out: &mut Vec<(String, Vec<String>)>) {
+    if node.kind == "ui.NavSection" {
+        let mut held = Vec::new();
+        places(node, &mut held);
+        out.push((tilo_ui_host::reconcile::display(&node.props["title"]), held));
+        return;
+    }
+    for child in &node.children {
+        sections(child, out);
+    }
+}
+
+/// The composed shell's bar offers the action `label` once, and none of the empty states
+/// `states` draws a call to action beside it: one way to do it on the window at any width.
+fn one_offering(shell: &UiNode, states: &[UiNode], label: &str) {
+    assert_eq!(
+        header_labels(shell, "actions")
+            .iter()
+            .filter(|shown| *shown == label)
+            .count(),
+        1,
+        "the bar offers `{label}` once"
+    );
+    assert!(
+        states
+            .iter()
+            .all(|state| !state.props.contains_key("action")),
+        "no empty state draws a call to action beside the bar's"
+    );
+}
+
 #[test]
 fn a_new_channel_is_in_the_sidebar_before_anyone_writes_and_every_channel_under_its_category() {
-    /// The labels of the navigation items under `node`.
-    fn places(node: &UiNode, out: &mut Vec<String>) {
-        if node.kind == "ui.NavItem" {
-            out.push(tilo_ui_host::reconcile::display(&node.props["label"]));
-        }
-        for child in &node.children {
-            places(child, out);
-        }
-    }
-    /// The sections of the navigation list under `node`: each heading and its places.
-    fn sections(node: &UiNode, out: &mut Vec<(String, Vec<String>)>) {
-        if node.kind == "ui.NavSection" {
-            let mut held = Vec::new();
-            places(node, &mut held);
-            out.push((tilo_ui_host::reconcile::display(&node.props["title"]), held));
-            return;
-        }
-        for child in &node.children {
-            sections(child, out);
-        }
-    }
     let mut workspace = Workspace::new("chat");
-    assert!(
-        node_with(
-            &workspace.composed(),
-            "ui.EmptyState",
-            "title",
-            "No channels yet"
-        )
-        .is_some(),
-        "an empty workspace says so"
+    // A workspace with nothing at all to list says so once, where both columns stood: the places
+    // draw no second state beside it, and a narrow window opens on that one state.
+    let composed = workspace.composed();
+    assert_eq!(
+        composed.props.get("nothing_listed"),
+        Some(&Value::Bool(true)),
+        "the window says it lists nothing"
     );
-    // While there is no channel the empty state carries the only New channel button, so the
-    // header does not show the same one twice; its button comes back with the first channel.
-    let empty = workspace.key_of("ui.EmptyState", "title", "No channels yet");
-    workspace.fire(&empty, "act", None);
+    assert!(
+        slot_of(&composed, "sidebar").is_empty(),
+        "the places draw no second state"
+    );
+    let mut empty = Vec::new();
+    empty_states(&composed, &mut empty);
+    assert_eq!(empty.len(), 1, "one state, once: {empty:?}");
+    assert_eq!(
+        empty[0].props.get("title"),
+        Some(&Value::text("No channels yet")),
+        "the words the app declares for what it has none of"
+    );
+    assert!(
+        empty[0].props.contains_key("message"),
+        "with the line that says what a channel is for"
+    );
+    one_offering(&composed, &empty, "New channel");
+    let button = workspace.key_of("ui.Button", "label", "New channel");
+    workspace.fire(&button, "press", None);
     assert_eq!(workspace.items_of("so.tilo.lang.chat", "channels"), 1);
     let shell = workspace.composed();
     let item = node_with(&shell, "ui.NavItem", "label", "new-channel")

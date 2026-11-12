@@ -90,8 +90,10 @@ impl StatePeer {
             surfaces: process_default().0,
             app_surfaces: process_default().1,
             missed: held::Missed::default(),
+            gathering: super::compaction_set::Gathering::default(),
             workspace_host: false,
             brought_up: false,
+            durable_digests: super::durable::PartDigests::default(),
         })
     }
     /// Add a root-certified viewer to existing governed history, as a member

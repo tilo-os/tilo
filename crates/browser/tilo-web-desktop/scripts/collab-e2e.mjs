@@ -265,7 +265,7 @@ async function startNative(name) {
   }), {mode: 0o600});
   const daemon = detached(`${name}-daemon`, runtimeBin, ['--profile', profile, '--daemon'], {env: {
     TILO_COLLAB_HOST: host.irohAddr, TILO_RUNTIME_PROFILE: profile,
-    RUST_LOG: process.env.COLLAB_E2E_DAEMON_LOG ?? 'info,iroh=warn,shell::shell::network=debug',
+    RUST_LOG: process.env.COLLAB_E2E_DAEMON_LOG ?? 'info,iroh=warn',
   }});
   if (!await until(async () => /collaboration broker: bound/.test(read(daemon.stderr)), 300000, 250)) {
     throw new Error(`the runtime daemon did not start: ${read(daemon.stderr).slice(-600)}`);

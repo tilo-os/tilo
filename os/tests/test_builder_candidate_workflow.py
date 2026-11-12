@@ -26,6 +26,19 @@ def canary_arm(mode):
     return textwrap.dedent(match.group(1))
 
 
+def nextest_invocations(script):
+    """The (package, test target, filterset) of each cargo nextest run in `script`."""
+    calls = re.findall(r'-p (\S+) --test (\S+)\s*\\\n\s*-E \'([^\']*)\'', script)
+    if not calls:
+        raise AssertionError('the script runs no cargo nextest with a filterset')
+    return calls
+
+
+def filterset_terms(expression):
+    """The (kind, argument) of each clause of a nextest filterset."""
+    return set(re.findall(r'(\w+)\(([^()]*)\)', expression))
+
+
 class BuilderCandidates(unittest.TestCase):
     def test_browser_recipe_and_native_acceptance(self):
         builder = (ROOT / 'os/Containerfile.builder').read_text()
@@ -84,16 +97,34 @@ class BuilderCandidates(unittest.TestCase):
     def test_browser_regressions_gate_publication(self):
         script = canary_arm('browser-tests')
         self.assertNotIn('|| true', script)
-        for binary in ('carriers', 'passkey_root', 'node_workspace', 'voice_browsers'):
-            self.assertIn(f'binary({binary})', script)
-            self.assertIn(f'--test {binary}', script)
-            self.assertTrue((ROOT / f'crates/session/client/tests/{binary}.rs').is_file())
-        participant = (ROOT / 'crates/agent/agent-participant/tests/host_agents.rs').read_text()
-        for test in ('the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart',
-                     'a_browser_sees_every_task_of_an_agent_live_and_after_a_reload',
-                     'the_creator_and_a_joined_page_both_see_every_task_live'):
-            self.assertIn(f'test(={test})', script)
-            self.assertIn(f'async fn {test}()', participant)
+        # A filter that selects nothing is a failure too: a regression that moved out of the
+        # filter's reach may not leave the gate green.
+        self.assertEqual(script.count('--no-tests=fail'), 2)
+        calls = nextest_invocations(script)
+        self.assertEqual(len(calls), 2, 'the canary runs the session client and the agent participant')
+        peer, participant = calls
+        # The session client's browser regressions are modules of its one test binary (`it`,
+        # whose `#[path]` keeps each in its own file), so the canary names the modules there.
+        # Whole modules, never single tests: a regression added to one runs without the canary
+        # knowing its name.
+        self.assertEqual(peer[:2], ('tilo-session-client', 'it'))
+        modules = ('carriers', 'passkey_root', 'node_workspace', 'voice_browsers')
+        self.assertEqual(filterset_terms(peer[2]), {('test', f'{module}::') for module in modules})
+        binary = (ROOT / 'crates/session/client/tests/it.rs').read_text()
+        for module in modules:
+            with self.subTest(module=module):
+                self.assertIn(f'#[path = "{module}.rs"]\nmod {module};', binary)
+                tests = (ROOT / f'crates/session/client/tests/{module}.rs').read_text()
+                self.assertRegex(tests, r'#\[tokio::test|#\[test\]')
+        # The agent participant's browser regressions are single tests, so those are named.
+        self.assertEqual(participant[:2], ('tilo-agent-participant', 'host_agents'))
+        names = ('the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart',
+                 'a_browser_sees_every_task_of_an_agent_live_and_after_a_reload',
+                 'the_creator_and_a_joined_page_both_see_every_task_live')
+        self.assertEqual(filterset_terms(participant[2]), {('test', f'={name}') for name in names})
+        source = (ROOT / 'crates/agent/agent-participant/tests/host_agents.rs').read_text()
+        for name in names:
+            self.assertIn(f'async fn {name}()', source)
         # Execute the canary's own shell, intercepting only the browser itself, node and the
         # expensive wrapper. Neither a peer failure nor a participant failure may pass.
         stubs = textwrap.dedent(f'''\

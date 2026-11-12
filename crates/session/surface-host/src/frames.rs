@@ -166,7 +166,6 @@ impl Target {
         if let Some(gpu) = node.and_then(|node| Gpu::new(size, node)) {
             return Some(Self::Gpu(Box::new(gpu)));
         }
-        tracing::info!("surface apps' frames are drawn on the CPU: no GPU to draw them on");
         Self::cpu(size)
     }
 
@@ -203,6 +202,9 @@ impl Target {
             // device that stays lost ends here again on the next pass, then
             // with no frame finished and gives way to the CPU.
             ui::gpu::Recovery::SameAdapter => Self::new(size),
+            // The surface draws on the CPU from here on, which the error above
+            // already said: nothing more to report until a size or a device
+            // changes again.
             ui::gpu::Recovery::Software => Self::cpu(size),
         }
     }
@@ -728,12 +730,21 @@ fn covered(regions: &[Region]) -> Option<Region> {
 
 /// Whether hosted surfaces' frames are drawn on a GPU here: never on a
 /// machine whose adapter rasterizes on the CPU. The adapter question opens the
-/// toolkit's device, so it is asked once per process rather than per surface.
+/// toolkit's device, so it is asked once per process rather than per surface,
+/// and it is the machine's answer rather than any one surface's: said once,
+/// where a surface built on a machine without a GPU to draw on would otherwise
+/// repeat it for every surface and every resize.
 fn draws_on_gpu() -> bool {
     static DRAWS_ON_GPU: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *DRAWS_ON_GPU.get_or_init(|| {
-        ui::offscreen::shared_adapter_info()
-            .is_some_and(|adapter| !ui::gpu::rasterizes_on_cpu(&adapter))
+        let gpu = ui::offscreen::shared_adapter_info()
+            .is_some_and(|adapter| !ui::gpu::rasterizes_on_cpu(&adapter));
+        if !gpu {
+            tracing::info!(
+                "surface apps' frames are drawn on the CPU: this machine has no GPU to draw them on"
+            );
+        }
+        gpu
     })
 }
 

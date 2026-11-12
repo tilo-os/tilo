@@ -156,12 +156,29 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                      if rule["setup"] == "chat-siblings"]
             self.assertEqual(
                 [(rule["filter"], rule["platform"]) for rule in rules],
-                [("package(tilo-session) and (binary(chat_2x2) or binary(device_branch))",
+                [("package(tilo-session) and binary(it) and (test(chat_2x2::) or test(device_branch::))",
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds Chat and its launcher for the acceptance",
             )
+        # A branched device's vault and provider keys are read through the apps
+        # that keep them, so the run that drives it builds those two and the
+        # launcher a desktop starts them from first.
+        vault = scripts.pop("vault-siblings")
+        self.assertEqual(vault["command"], ["bash", "tools/build-sibling-binaries.sh",
+                                            "passwords:passwords", "model-providers:model-providers",
+                                            "launcher:tilo-launcher"])
+        for profile in ("default", "ci"):
+            rules = [rule for rule in config["profile"][profile]["scripts"]
+                     if rule["setup"] == "vault-siblings"]
+            self.assertEqual(
+                [(rule["filter"], rule["platform"]) for rule in rules],
+                [("package(tilo-session) and binary(it) and test(device_branch::)",
+                  {"host": 'cfg(target_os = "linux")'})],
+                f"the {profile} profile builds the vault apps the branched device's tests read",
+            )
         # A closed Tasks starts its app and the launcher the session starts it
         # through, so the run that drives it builds both first.
+
         tasks = scripts.pop("tasks-siblings")
         self.assertEqual(tasks["command"], ["bash", "tools/build-sibling-binaries.sh",
                                             "tasks:tasks", "launcher:tilo-launcher"])
@@ -170,7 +187,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                      if rule["setup"] == "tasks-siblings"]
             self.assertEqual(
                 [(rule["filter"], rule["platform"]) for rule in rules],
-                [("package(tilo-session) and binary(closed_tasks)",
+                [("package(tilo-session) and binary(it) and test(closed_tasks::)",
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds Tasks and its launcher for the closed app",
             )
@@ -185,9 +202,9 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                      if rule["setup"] == "lounge-siblings"]
             self.assertEqual(
                 [(rule["filter"], rule["platform"]) for rule in rules],
-                [("package(tilo-session) and binary(lounge_e2e)",
+                [("package(tilo-session) and binary(it) and test(lounge_e2e::)",
                   {"host": 'cfg(target_os = "linux")'}),
-                 ("package(tilo-session-client) and binary(lounge_fresh_page)",
+                 ("package(tilo-session-client) and binary(it) and test(lounge_fresh_page::)",
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds the relay for the lounge's tests",
             )
@@ -200,7 +217,8 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                      if rule["setup"] == "page-bundle"]
             self.assertEqual(
                 [(rule["filter"], rule["platform"]) for rule in rules],
-                [("package(tilo-session-client) and (binary(passkey_root) or binary(node_workspace))",
+                [("package(tilo-session-client) and binary(it) and (test(passkey_root::) or "
+                  "test(node_workspace::))",
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds the page bundle its page tests run against",
             )
@@ -212,14 +230,17 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         rules = {rule["filter"]: rule["setup"] for rule in config["profile"]["ci"]["scripts"]}
         # `ci` inherits `default`'s rules, so it names only what it adds.
         self.assertEqual(rules, {"all()": ["test-runtime", "headless-audio"],
-                                 "package(tilo-session) and (binary(chat_2x2) or "
-                                 "binary(device_branch))": "chat-siblings",
-                                 "package(tilo-session) and binary(closed_tasks)": "tasks-siblings",
-                                 "package(tilo-session) and binary(lounge_e2e)": "lounge-siblings",
-                                 "package(tilo-session-client) and binary(lounge_fresh_page)":
+                                 "package(tilo-session) and binary(it) and (test(chat_2x2::) or "
+                                 "test(device_branch::))": "chat-siblings",
+                                 "package(tilo-session) and binary(it) and test(closed_tasks::)": "tasks-siblings",
+                                 "package(tilo-session) and binary(it) and test(device_branch::)":
+                                     "vault-siblings",
+                                 "package(tilo-session) and binary(it) and test(lounge_e2e::)": "lounge-siblings",
+                                 "package(tilo-session-client) and binary(it) and "
+                                 "test(lounge_fresh_page::)":
                                      "lounge-siblings",
-                                 "package(tilo-session-client) and (binary(passkey_root) or "
-                                 "binary(node_workspace))": "page-bundle",
+                                 "package(tilo-session-client) and binary(it) and "
+                                 "(test(passkey_root::) or test(node_workspace::))": "page-bundle",
                                  "package(tilo-ntfs-helper)": "ntfs-fixtures",
                                  # Only the sandbox's tests that map host ids or
                                  # make cgroups run as root.
@@ -384,6 +405,29 @@ class DesktopIsolationHelperTests(unittest.TestCase):
             if "tilo_stage_script" in text and path != "tools/tests/test_test_environment.py":
                 self.assertIn("tilo_test_isolate", text,
                               f"{path} stages session code without tilo_test_isolate")
+
+
+class TestUserTests(unittest.TestCase):
+    """tools/as-test-user.sh gives the test user the build tree only in the image that has one."""
+
+    def run_helper(self, *arguments: str) -> subprocess.CompletedProcess[str]:
+        env = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": os.environ.get("HOME", "/"),
+        }
+        return subprocess.run(["bash", str(ROOT / "tools/as-test-user.sh"), *arguments], env=env,
+                              capture_output=True, text=True, check=False)
+
+    def test_a_developers_own_tree_is_left_to_them(self) -> None:
+        # A developer's account is the test user: handing the tree over must do nothing,
+        # and must not chown it to an empty owner.
+        with tempfile.TemporaryDirectory() as work:
+            tree = Path(work) / "target"
+            (tree / "debug").mkdir(parents=True)
+            owner = (tree.stat().st_uid, tree.stat().st_gid)
+            result = self.run_helper("--own-tree", str(tree))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((tree.stat().st_uid, tree.stat().st_gid), owner)
 
 
 if __name__ == "__main__":

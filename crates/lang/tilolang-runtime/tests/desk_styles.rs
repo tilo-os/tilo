@@ -6,12 +6,8 @@
 //! another package is found here.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::{AmStore, Meta, Runtime, SimpleAuthority, ViewInstance};
 
     /// The session's arrangement type, as the shell's package declares it: the origin is what

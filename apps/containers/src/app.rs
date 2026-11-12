@@ -2144,18 +2144,19 @@ impl ContainersApp {
 
 const RESOURCE_SNAPSHOT_LIMIT: usize = 200;
 
+/// The catalogue message saying why a container's engine action cannot run.
+const ENGINE_OFFLINE: &str = "containers-engine-offline-message";
+
 /// `effect`, as a row offers it: an engine effect only while the engine
-/// answers.
-fn offered(effect: &ContainersEffect, engine_live: bool, offline: &str) -> ActionSpec {
+/// answers; otherwise it says why it cannot run, in `message`'s words.
+fn offered(effect: &ContainersEffect, engine_live: bool, message: &str) -> ActionSpec {
     let spec = effect.bound();
     if engine_live || effect.engine_operation().is_none() {
         spec
     } else {
-        spec.unavailable("engine_offline", offline)
+        spec.unavailable("engine_offline", crate::resource::CATALOG.t(message))
     }
 }
-
-const ENGINE_OFFLINE: &str = "Container engine actions are unavailable in demo mode";
 
 pub(crate) fn container_row(container: &crate::model::Container, engine_live: bool) -> LiveRow {
     let id = || container.id.clone();
@@ -2252,7 +2253,7 @@ fn distrobox_row(distrobox: &crate::model::DistroBox, engine_live: bool) -> Live
             distrobox: distrobox.name.clone(),
         },
         engine_live,
-        &crate::resource::CATALOG.t("containers-demo-unavailable"),
+        "containers-demo-unavailable",
     ))
 }
 

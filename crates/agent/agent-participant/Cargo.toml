@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "tilo-agent-participant"
 version = "0.1.0"
 edition = "2024"
@@ -9,6 +11,13 @@ description = "An agent as a first-class session participant: its own certified 
 [lib]
 name = "tilo_agent_participant"
 path = "src/lib.rs"
+
+# The participant's integration tests: one binary, its files included as
+# modules by `tests/it.rs` (a file per binary linked the whole crate and
+# started its own app workers once each).
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [dependencies]
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }

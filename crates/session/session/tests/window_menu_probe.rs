@@ -16,8 +16,6 @@
               lives until the app it starts is done"
 )]
 
-mod common;
-
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -133,7 +131,7 @@ fn holds(session: &Session, tab: u64) -> bool {
 
 #[test]
 fn a_window_the_session_starts_reads_the_menu_and_chooses_a_row() {
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let socket = root.path().join("collab.sock");
     let report = root.path().join("report");
     let mut environment = ScopedEnv::new();

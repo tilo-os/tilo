@@ -23,8 +23,6 @@
     reason = "test fixtures: a failed step is the assertion, and a session outlives every call"
 )]
 
-mod common;
-
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -33,7 +31,7 @@ use serde_json::json;
 use tilo_service::Questions;
 use tilo_session::{ActionPlane, AppActions, Launches, Options, Session};
 
-use common::{PERSON, private_home};
+use crate::common::{PERSON, private_home};
 
 /// The `YouTube` client, as a package names it.
 const TUBE: &str = "so.tilo.lang.tube";
@@ -116,7 +114,7 @@ fn connector_launcher(home: &tilo_test_env::TestHome) -> tilo_test_env::StandIn 
         home.home().join("tilo-launcher"),
         &format!(
             "export {CHILD_ENV}=1\n\
-             exec '{exe}' --exact youtube_connector_child --nocapture\n",
+             exec '{exe}' --exact origin_connector::youtube_connector_child --nocapture\n",
             exe = std::env::current_exe()
                 .expect("this test's program")
                 .display(),
@@ -141,7 +139,7 @@ fn session(
         Some(launcher.path().to_owned()),
     ));
     let store = home.data().join("tilo-apps");
-    let seeded = common::seeded_apps_in(&store);
+    let seeded = crate::common::seeded_apps_in(&store);
     crate::common::headless(Options {
         person: PERSON.to_owned(),
         shell: true,
@@ -165,7 +163,7 @@ fn an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record() 
     // The apps a development session runs, installed in this test's own store: the YouTube client's
     // signed package is one of them, with the manifest that declares its origin.
     let store = home.data().join("tilo-apps");
-    common::install_apps_in(&store, &home.state().join("tilolang"));
+    crate::common::install_apps_in(&store, &home.state().join("tilolang"));
     home.env().set("TILO_APPS_DATA_DIR", &store);
     let launcher = connector_launcher(&home);
     let root = private_home();
@@ -173,7 +171,7 @@ fn an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record() 
 
     // The client's root is published by the seeded apps, and the video the scripted service answers
     // with is not in it: only the scenario's own are.
-    common::until(&mut session, "the client's root", |session| {
+    crate::common::until(&mut session, "the client's root", |session| {
         session
             .resources()
             .iter()
@@ -219,7 +217,7 @@ fn an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record() 
     // The answer lands in the client's record: the video the scripted service found and the channel
     // it names, each a resource of the client's the door reads, and the search settled
     // (`search_state` `done` , so the client's view stops saying it searches).
-    common::until(&mut session, "the answer in the record", |session| {
+    crate::common::until(&mut session, "the answer in the record", |session| {
         record_says(session, VIDEO) && record_says(session, NAME)
     });
     let videos = client_items(&session, "Video");

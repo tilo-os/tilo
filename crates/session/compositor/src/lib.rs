@@ -296,9 +296,11 @@ fn another_live_session_published(path: &Path, ours: &str) -> bool {
     if named == ours || !bare {
         return false;
     }
+    // Through the helper: the runtime directory is the login's, not ours, so its length is not
+    // ours to assume.
     path.parent()
         .and_then(Path::parent)
-        .is_some_and(|runtime| UnixStream::connect(runtime.join(named)).is_ok())
+        .is_some_and(|runtime| tilo_files::native::socket::connect(&runtime.join(named)).is_ok())
 }
 
 /// The instant a risky display change's wait for the person is measured from, and against: the
@@ -615,8 +617,15 @@ impl Compositor {
             if wait.is_zero() {
                 break;
             }
+            let asked = Instant::now();
             self.dispatch(wait)?;
             arrived(self);
+            // A clock held still never reaches the deadline, so a pass that asks again for a wait
+            // it has already spent would never draw the frame it owes. Once the wait it asked for
+            // has gone by on the machine, the frame is built rather than waited for again.
+            if asked.elapsed() >= wait {
+                break;
+            }
         }
         Ok(())
     }

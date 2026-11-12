@@ -955,10 +955,11 @@ fn bound_type(decl: &Declaration, values: &[(String, serde_json::Value)]) -> Arc
     let params = unbound_params(&decl.params, values);
     let all = decl.params.clone();
     let build = Arc::clone(&decl.build);
+    let label = decl.shown_label();
     let spec = ActionSpec::typed_on(
         decl.id,
-        decl.label.clone(),
-        decl.label.clone(),
+        label.clone(),
+        label,
         ExecutionLocus::ClientLocal,
         params,
         move |target, args| {
@@ -970,7 +971,9 @@ fn bound_type(decl: &Declaration, values: &[(String, serde_json::Value)]) -> Arc
                 }
             }
             let action = match ActionArgs::bind_json(&all, &arguments) {
-                Ok(args) => build(&args, crate::resource::origin_now_ms()),
+                Ok(args) => {
+                    crate::content::invoking(|| build(&args, crate::resource::origin_now_ms()))
+                }
                 Err(error) => Err(error.to_string()),
             };
             crate::resource::encode_built(action)

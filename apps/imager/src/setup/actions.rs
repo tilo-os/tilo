@@ -26,6 +26,7 @@ pub enum SetupEffect {
     ReadDesktopStatus,
     /// Install the exact reviewed Desktop release after a fresh host probe.
     #[effect(returns)]
+    #[effect(label = "imager-setup-action-install-desktop")]
     InstallDesktop,
     /// Retry unfinished guided session preparation after verified package installation.
     #[effect(returns)]
@@ -38,27 +39,35 @@ pub enum SetupEffect {
     RecheckDesktop,
     /// Continue setup.
     #[effect(returns, kind = "read")]
+    #[effect(label = "imager-setup-action-next")]
     ContinueSetup,
     /// Download Tilo.
     #[effect(returns)]
+    #[effect(label = "imager-setup-action-start-download")]
     StartInternalDownload,
     /// Pause download.
     #[effect(returns)]
+    #[effect(label = "imager-setup-action-pause-download")]
     PauseInternalDownload,
     /// Resume download.
     #[effect(returns)]
+    #[effect(label = "imager-setup-action-resume-download")]
     ResumeInternalDownload,
     /// Cancel download.
     #[effect(returns)]
+    #[effect(label = "imager-setup-action-cancel-download")]
     CancelInternalDownload,
     /// Discard unfinished download data.
     #[effect(returns)]
+    #[effect(label = "imager-setup-action-discard-download")]
     DiscardInternalDownload,
     /// Keep download for later.
     #[effect(returns)]
+    #[effect(label = "imager-setup-action-release-download")]
     ReleaseInternalDownload,
     /// Set Tilo size.
     #[effect(returns)]
+    #[effect(label = "imager-setup-action-internal-set-target-size")]
     SetInternalTargetSize {
         #[param("Tilo size in GiB")]
         gib: i64,
@@ -76,36 +85,44 @@ pub enum SetupEffect {
     ///
     /// Installs (or continues) exactly the reviewed plan with this digest.
     #[effect(returns)]
+    #[effect(label = "imager-setup-action-internal-install")]
     InstallInternal {
         #[param("Digest of the reviewed installation plan")]
         reviewed: String,
     },
     /// Restart into the Tilo installer.
     #[effect(returns)]
+    #[effect(label = "imager-setup-action-internal-restart")]
     RestartInternal,
     /// Restart later.
     #[effect(returns)]
+    #[effect(label = "imager-setup-action-internal-restart-later")]
     RestartInternalLater,
     /// Start the Tilo installer on the next restart.
     #[effect(returns)]
+    #[effect(label = "imager-setup-action-internal-retry")]
     RetryInternal {
         #[param("Id of the unfinished installer operation")]
         operation_id: String,
     },
     /// Remove the Tilo installer.
     #[effect(returns)]
+    #[effect(label = "imager-setup-action-internal-remove")]
     RemoveInternal {
         #[param("Id of the unfinished installer operation")]
         operation_id: String,
     },
     /// Restart to firmware settings.
     #[effect(returns)]
+    #[effect(label = "imager-setup-action-internal-firmware-settings")]
     InternalFirmwareSettings,
     /// Turn off Fast Startup.
     #[effect(returns)]
+    #[effect(label = "imager-setup-action-internal-disable-fast-startup")]
     InternalDisableFastStartup,
     /// Check this computer again.
     #[effect(returns, kind = "read")]
+    #[effect(label = "imager-setup-action-internal-recheck")]
     RecheckInternal,
 }
 

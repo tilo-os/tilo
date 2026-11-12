@@ -20,8 +20,6 @@
               lives until the app it serves is done"
 )]
 
-mod common;
-
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -39,10 +37,6 @@ use tilo_peer_state::owner::{self, testing};
 use tilo_session::apps::Apps;
 use tilo_session::{ActionPlane, AppActions, Launches, Options, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
-
-// A host admits its members' records through an Automerge worker: this binary is that worker, as it
-// is the session's own.
-tilo_automerge_isolate::test_worker!();
 
 /// The app whose capture this is.
 const TASKS: &str = "so.tilo.lang.tasks";
@@ -306,7 +300,7 @@ fn invoke(session: &mut Session, resource: &str, action: &str, arguments: serde_
 #[test]
 fn a_line_typed_into_the_palette_runs_an_app_s_capture_with_no_window_open() {
     let _settled = ui::motion::testing::settled();
-    let home = common::private_home();
+    let home = crate::common::private_home();
     let socket = home.path().join("collab.sock");
     let fixture = fixture();
     let (mut session, apps) = session(&socket, &fixture);
@@ -316,7 +310,7 @@ fn a_line_typed_into_the_palette_runs_an_app_s_capture_with_no_window_open() {
     });
     // Tasks is up and has published its capture: the session's action host lists what the app
     // offers, read from the broker the app published on.
-    common::wait_for(&mut session, "Tasks publishes its capture", |_| {
+    crate::common::wait_for(&mut session, "Tasks publishes its capture", |_| {
         apps.published(WORKSPACE)
             .iter()
             .any(|published| published.app == TASKS)
@@ -329,11 +323,12 @@ fn a_line_typed_into_the_palette_runs_an_app_s_capture_with_no_window_open() {
         "search",
         serde_json::json!({ "query": LINE }),
     );
-    let capture = common::wait_for(&mut session, "the capture answers the line", |session| {
-        rows(session)
-            .into_iter()
-            .find(|row| row.kind == SEARCH_ROW_KIND && row.label == "New task")
-    });
+    let capture =
+        crate::common::wait_for(&mut session, "the capture answers the line", |session| {
+            rows(session)
+                .into_iter()
+                .find(|row| row.kind == SEARCH_ROW_KIND && row.label == "New task")
+        });
     invoke(
         &mut session,
         capture.id.as_str(),
@@ -342,7 +337,7 @@ fn a_line_typed_into_the_palette_runs_an_app_s_capture_with_no_window_open() {
     );
 
     // The session hands the app exactly the line the person wrote.
-    let run = common::wait_for(&mut session, "the capture reaches Tasks", |_| {
+    let run = crate::common::wait_for(&mut session, "the capture reaches Tasks", |_| {
         delivered.try_recv().ok()
     });
     if let Err(panic) = app.join() {

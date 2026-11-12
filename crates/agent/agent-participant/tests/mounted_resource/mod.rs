@@ -1,6 +1,6 @@
 use super::{
-    Browser, CatalogueQuery, DeviceCapabilities, DocumentRoute, Duration, Path, Seed, common,
-    enrol, record_provider, start_browser,
+    Browser, CatalogueQuery, DeviceCapabilities, DocumentRoute, Duration, Path, Seed, enrol,
+    record_provider, start_browser,
 };
 use tilo_agent_participant::ReplicaActor;
 use tilo_session_client::{Cmd, Outbox};
@@ -148,7 +148,7 @@ pub async fn run() {
             .prepare_application(
                 &workspace.workspace,
                 &host.cert,
-                &common::catalogue(),
+                &crate::common::catalogue(),
                 "so.tilo.chat",
                 "",
             )
@@ -158,7 +158,7 @@ pub async fn run() {
             .author_application(
                 &workspace.workspace,
                 &host.cert,
-                &common::catalogue(),
+                &crate::common::catalogue(),
                 "so.tilo.chat",
                 "",
                 |doc| Ok(doc.clone()),
@@ -177,7 +177,7 @@ pub async fn run() {
     } else {
         "Fixture owner".to_string()
     };
-    let mut source = common::open_in(
+    let mut source = crate::common::open_in(
         &workspace.workspace,
         "so.tilo.chat",
         &source_author,
@@ -186,14 +186,14 @@ pub async fn run() {
     )
     .unwrap();
     let mut doc = source.read(Clone::clone).unwrap();
-    common::add_channel(&mut doc, &source_author, "general", None);
-    common::add_channel(
+    crate::common::add_channel(&mut doc, &source_author, "general", None);
+    crate::common::add_channel(
         &mut doc,
         &source_author,
         "Lounge",
         Some(chat::model::ChannelKind::Voice),
     );
-    let channel = common::channel(&doc, chat::model::ChannelKind::Text);
+    let channel = crate::common::channel(&doc, chat::model::ChannelKind::Text);
     source
         .apply(&collab_types::DocumentMutation::Snapshot(doc.save()))
         .unwrap();
@@ -236,7 +236,7 @@ pub async fn run() {
         Box::pin(workspaces.author_application(
             &workspace.workspace,
             &host.cert,
-            &common::catalogue(),
+            &crate::common::catalogue(),
             "so.tilo.chat",
             "",
             |doc| {
@@ -303,7 +303,7 @@ pub async fn run() {
         }
     })
     .await;
-    let voice_channel = common::channel(&doc, chat::model::ChannelKind::Voice);
+    let voice_channel = crate::common::channel(&doc, chat::model::ChannelKind::Voice);
     if voice_journey {
         use tilo_session_client::Event;
         use tilo_session_client::VoiceEvent;

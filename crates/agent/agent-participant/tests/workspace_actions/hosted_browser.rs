@@ -82,7 +82,7 @@ async fn an_agents_key_opens_browser_and_the_workspace_lists_it_like_any_app() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "tilo.sh", DeviceCapabilities::host());
     let computer = enrol(&root, "visa agent", DeviceCapabilities::member());
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     // The relay makes itself the person's stand-in from the root it keeps, as
     // a host that places browser sessions does at start.
     tilo_relay::hosted_browser::keep_stand_in(&state.path().join("relay"), &root)
@@ -103,18 +103,18 @@ async fn an_agents_key_opens_browser_and_the_workspace_lists_it_like_any_app() {
                 hex::encode(host.cert.device_public_key)
             ),
         );
-        harness::hosted::start(
+        crate::harness::hosted::start(
             &root,
             &host,
             state.path(),
             Options {
                 browsers: Some(Arc::clone(&browsers)),
-                ..Options::offering(common::catalogue, ModelChoice::Scripted)
+                ..Options::offering(crate::common::catalogue, ModelChoice::Scripted)
             },
         )
         .await
     };
-    let _laptop = participant::Participant::start(&hosted.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let mut agent = Browser::open(&hosted, &computer, &host).await;
     let _ =
         tilo_session_client::device::run_as_agent(&agent.peer, hosted_documents::RUN_LABEL).await;

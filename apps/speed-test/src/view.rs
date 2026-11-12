@@ -161,7 +161,7 @@ fn build(
             Container::new()
                 .with_inset(Rhythm::Group)
                 .with_child(Box::new(
-                    Banner::error("Test interrupted").with_message(error.clone()),
+                    Banner::error(CATALOG.t("speed-test-interrupted")).with_message(error.clone()),
                 )),
         ));
     }
@@ -208,7 +208,7 @@ fn idle_page(
                 .with_no_padding()
                 .readable()
                 .with_child(Box::new(
-                    Banner::error("Test interrupted").with_message(error.clone()),
+                    Banner::error(CATALOG.t("speed-test-interrupted")).with_message(error.clone()),
                 )),
         ));
     }

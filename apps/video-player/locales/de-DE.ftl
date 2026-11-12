@@ -56,3 +56,40 @@ video-title = Videoplayer
 
 ## What the window shows
 video-player-selected-video = Ausgewähltes Video
+
+## Actions
+
+video-player-effect-open-formats = Weitere Formate öffnen
+video-player-effect-play-queued = Vorgemerktes Video abspielen
+video-player-effect-show-library = Bibliothek anzeigen
+video-player-effect-hide-library = Bibliothek schließen
+video-player-effect-close = Video schließen
+video-player-effect-toggle-playback = Abspielen und anhalten
+video-player-effect-toggle-mute = Stumm oder laut schalten
+video-player-effect-reveal = Bedienelemente anzeigen
+video-player-effect-seek = Zu einer Zeit springen
+video-player-effect-seek-by = Um einen Schritt springen
+video-player-effect-restart = Neu starten
+video-player-effect-jump-to-end = Zum Ende springen
+video-player-effect-set-volume = Lautstärke einstellen
+video-player-effect-set-autoplay = Automatisches Abspielen einstellen
+video-player-effect-set-loop = Video wiederholen
+video-player-effect-set-playback-rate = Wiedergabegeschwindigkeit einstellen
+video-player-effect-select-audio-track = Diese Tonspur verwenden
+video-player-effect-select-subtitles = Untertitel anzeigen
+video-player-effect-subtitles-off = Untertitel ausschalten
+video-player-effect-jump-to-chapter = Zum Kapitel springen
+video-player-effect-jump-to-annotation = Zur Zeitmarke springen
+video-player-effect-picture-in-picture = Bild-im-Bild öffnen
+video-player-effect-toggle-fullscreen = Vollbild umschalten
+video-player-recent = Letzte Videos
+video-player-recent-keep = Ein letztes Video vermerken
+video-player-recent-stood = Wiedergabeposition vermerken
+video-player-library = Videoplayer
+video-player-library-create-playlist = Wiedergabeliste erstellen
+video-player-library-delete-playlist = Wiedergabeliste löschen
+video-player-library-add-to-playlist = Zur Wiedergabeliste hinzufügen
+video-player-library-add-to-watch-later = Zu Später ansehen hinzufügen
+video-player-library-add-annotation = Anmerkung hinzufügen
+video-player-library-delete-annotation = Anmerkung löschen
+video-player-library-set-transport = Wiedergabeposition festhalten

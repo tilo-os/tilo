@@ -607,6 +607,46 @@ fn items_to_json(items: &[Value]) -> Result<Json, String> {
         .map(Json::Array)
 }
 
+/// `v` as an action's argument, as any caller (a view, a program, an agent) hands it to an app's
+/// door: plain JSON (a list an array, a map an object, an option its value or `null`, a resource
+/// its id), never the runtime's own tagged encoding ([`to_json`]).
+///
+/// # Errors
+/// A value that is no argument (a view's node, a pending event).
+pub fn to_argument(v: &Value) -> Result<Json, String> {
+    Ok(match v {
+        Value::Opt(None) => Json::Null,
+        Value::Opt(Some(inner)) => to_argument(inner)?,
+        Value::List(items) | Value::Tuple(items) => Json::Array(
+            items
+                .iter()
+                .map(to_argument)
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        Value::Map(entries) => Json::Object(
+            entries
+                .iter()
+                .map(|(key, value)| {
+                    let key = match key {
+                        Value::Text(text) => text.clone(),
+                        other => to_argument(other)?.to_string(),
+                    };
+                    Ok((key, to_argument(value)?))
+                })
+                .collect::<Result<Map<_, _>, String>>()?,
+        ),
+        Value::Ref(r) => Json::String(r.target.id_string()),
+        Value::Principal(p) => match p.0.strip_prefix("agent:") {
+            Some(agent) => serde_json::json!({ "agent": agent }),
+            None => serde_json::json!({ "person": p.0 }),
+        },
+        Value::Rich(r) if crate::rich::RichValue::from_text(&r.written_text()) == *r => {
+            Json::String(r.written_text())
+        }
+        other => to_json(other)?,
+    })
+}
+
 /// Decode what [`to_json`] produced.
 pub fn from_json(j: &Json) -> Result<Value, String> {
     Ok(match j {
@@ -855,5 +895,18 @@ mod tests {
         assert_eq!(serde_json::from_value::<ResourceRef>(old).unwrap(), r);
         let json = serde_json::to_value(&r).unwrap();
         assert_eq!(serde_json::from_value::<ResourceRef>(json).unwrap(), r);
+    }
+
+    #[test]
+    fn an_argument_is_plain_json_however_deep_its_lists_and_maps() {
+        let to = Value::List(vec![Value::Map(vec![(
+            Value::text("id"),
+            Value::some(Value::Int(2)),
+        )])]);
+        let none = to_argument(&Value::none()).unwrap();
+        assert_eq!(
+            (to_argument(&to).unwrap(), none),
+            (serde_json::json!([{"id": 2}]), Json::Null)
+        );
     }
 }

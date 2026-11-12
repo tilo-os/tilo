@@ -36,6 +36,8 @@ mod paint;
 mod pill_layout;
 #[path = "tabs_press.rs"]
 mod press;
+#[path = "tabs_qualifier.rs"]
+mod qualifier;
 #[path = "tabs_rename.rs"]
 mod rename;
 #[path = "tabs_status_chips.rs"]
@@ -258,6 +260,9 @@ pub struct TabDescriptor {
     /// A person named the tab: the title is theirs, so the bar shows it even where its app's slots
     /// would leave a window's one tab as its icon alone.
     pub named: bool,
+    /// The name of the app the tab is a window of: said after the title, lighter, where another
+    /// tab of the bar reads the same and is another app's ([`TabBar::qualifier`]).
+    pub app_name: Option<String>,
 }
 
 impl TabDescriptor {
@@ -269,6 +274,7 @@ impl TabDescriptor {
             icon: None,
             attention: false,
             named: false,
+            app_name: None,
         }
     }
 }
@@ -1598,17 +1604,26 @@ impl TabBar {
             &style,
         );
         scene.pop_layer();
-        self.record_label(
-            "TabTitle",
-            label,
-            Rect::new(
-                title_x,
-                title_y,
-                title_x + f64::from(label_w),
-                title_y + f64::from(th),
-            )
-            .intersect(clip_r),
+        let label_rect = Rect::new(
+            title_x,
+            title_y,
+            title_x + f64::from(label_w),
+            title_y + f64::from(th),
         );
+        // A step quieter than the title it follows.
+        let quieter = if text_color == text_primary {
+            theme.text_dim
+        } else {
+            theme.text_tertiary
+        };
+        self.draw_pill_qualifier(
+            scene,
+            transform,
+            (tr, theme),
+            (i, quieter),
+            (label_rect, clip_r),
+        );
+        self.record_label("TabTitle", label, label_rect.intersect(clip_r));
     }
 
     /// A pinned pill's marker: an app icon, else its accent dot, else an empty bubble. Split out of
@@ -2573,7 +2588,11 @@ impl TabBar {
             None,
             &style.clone().with_weight(TextWeight::Semibold),
         );
-        let measured = f64::from(full_w);
+        // The app's name after a title another tab reads too asks for its own room.
+        let qualifier_w = self.qualifier(i).map_or(0.0, |app| {
+            tr.measure_style(app, None, &style).0 + qualifier_gap(theme)
+        });
+        let measured = f64::from(full_w + qualifier_w);
         let previous = self
             .title_advance
             .insert(id, (title.clone(), style.clone(), measured));
@@ -2589,6 +2608,14 @@ impl TabBar {
             reason = "title zone width is a small on-screen pixel span"
         )]
         let budget = (zx1 - zx0) as f32;
+        // The title gives up room to the app's name while it keeps a word of its own; narrower,
+        // the name goes and the title has the pill.
+        let keep = theme.tokens.spacing.s8 + theme.tokens.spacing.s2;
+        let budget = if qualifier_w > 0.0 && budget - qualifier_w >= keep {
+            budget - qualifier_w
+        } else {
+            budget
+        };
         if full_w <= budget {
             return Some(title);
         }
@@ -3818,6 +3845,8 @@ const APPROX_CHAR_W: f64 = 9.5;
 
 /// The style of a tab's title and of a window's title: Body, so a window's
 /// name reads at the size of the text in it rather than a size smaller.
+use qualifier::qualifier_gap;
+
 fn tab_title_style(theme: &Theme) -> TextStyle {
     theme.text(TextRole::Body)
 }
@@ -4432,7 +4461,10 @@ impl Widget for TabBar {
                 };
                 let node = drawn(&hits, AccessNode::new(Role::Tab))
                     .with_action_target(format!("tab:{}", t.id))
-                    .with_name(t.title.clone())
+                    .with_name(match self.qualifier(i) {
+                        Some(app) => format!("{} {app}", t.title),
+                        None => t.title.clone(),
+                    })
                     .with_state(AccessState {
                         selected: t.id == self.active_id,
                         ..Default::default()
@@ -5964,6 +5996,7 @@ mod tests {
                     icon: None,
                     attention: false,
                     named: false,
+                    app_name: None,
                 }],
                 1,
             );
@@ -6017,6 +6050,7 @@ mod tests {
                     icon: None,
                     attention: false,
                     named: false,
+                    app_name: None,
                 }],
                 1,
             );

@@ -148,7 +148,7 @@ impl HostedWorkspaces {
     pub(crate) fn record_devices(
         &self,
         engine: &Engine,
-    ) -> Pending<Vec<(tilo_user_identity::DeviceCert, bool)>> {
+    ) -> Pending<Vec<(tilo_user_identity::DeviceCert, bool, Option<String>)>> {
         let asks: Vec<_> = hosts_of(engine)
             .into_iter()
             .filter_map(|on| {
@@ -167,7 +167,8 @@ impl HostedWorkspaces {
         }
         let (answer, answered) = pending();
         self.0.runtime.spawn(async move {
-            let mut devices: Vec<(tilo_user_identity::DeviceCert, bool)> = Vec::new();
+            let mut devices: Vec<(tilo_user_identity::DeviceCert, bool, Option<String>)> =
+                Vec::new();
             for ask in asks {
                 let Some(Ok(receipt)) = ask.await else {
                     continue;
@@ -182,17 +183,19 @@ impl HostedWorkspaces {
                     continue;
                 };
                 for device in list.devices {
-                    match devices
-                        .iter_mut()
-                        .find(|(known, _)| known.device_public_key == device.cert.device_public_key)
-                    {
-                        Some((known, refused)) => {
+                    match devices.iter_mut().find(|(known, ..)| {
+                        known.device_public_key == device.cert.device_public_key
+                    }) {
+                        Some((known, refused, browser)) => {
                             *refused |= device.revoked;
+                            if browser.is_none() {
+                                *browser = device.browser;
+                            }
                             if known.issued_at_ns < device.cert.issued_at_ns {
                                 *known = device.cert;
                             }
                         }
-                        None => devices.push((device.cert, device.revoked)),
+                        None => devices.push((device.cert, device.revoked, device.browser)),
                     }
                 }
             }

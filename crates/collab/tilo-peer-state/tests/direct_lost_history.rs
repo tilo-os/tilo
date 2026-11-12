@@ -8,11 +8,8 @@
     clippy::panic,
     reason = "in a test these are the assertion, not a hazard"
 )]
-tilo_automerge_isolate::test_worker!();
 
-mod common;
-
-use common::{addr, device, localhost_endpoint};
+use crate::common::{addr, device, localhost_endpoint};
 
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
 use collab_types::CommitNamed as _;
@@ -134,7 +131,7 @@ fn record_change(a: &DirectSync, key: &SigningKey, value: &str) -> Vec<u8> {
 /// reaches holds it, unapplied, until it has asked for what the sender holds.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_workspace_change_sent_without_its_parent_is_applied() {
-    let linked = Linked::start().await;
+    let linked = Box::pin(Linked::start()).await;
     let (a, key) = (&linked.a, &linked.a_key);
     let now = SystemTime::now();
 
@@ -176,7 +173,7 @@ async fn a_workspace_change_sent_without_its_parent_is_applied() {
 /// the sender holds.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_record_write_sent_without_the_one_it_builds_on_is_applied() {
-    let linked = Linked::start().await;
+    let linked = Box::pin(Linked::start()).await;
     let (a, key) = (&linked.a, &linked.a_key);
 
     // The earlier write: made on `a`, never sent.

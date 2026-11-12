@@ -250,7 +250,7 @@ fn a_press_in_the_centre_hands_the_desk_its_notice_action() {
             Ask {
                 resource: DESK_RESOURCE.to_owned(),
                 action: "dismiss-notice".to_owned(),
-                arguments: BTreeMap::from([("notice".to_owned(), "1".to_owned())]),
+                arguments: BTreeMap::from([("notice".to_owned(), "1".into())]),
                 from: None,
             },
             Ask {
@@ -286,7 +286,7 @@ fn a_press_on_the_bar_hands_its_effect_to_the_session() {
     );
     assert_eq!(
         opening.map(|ask| ask.arguments.get("surface").cloned()),
-        Some(Some("centre".to_owned())),
+        Some(Some("centre".into())),
         "the bell opens the notification centre"
     );
 }
@@ -495,7 +495,7 @@ fn choosing_a_workspace_in_the_menu_asks_the_session_to_switch() {
         asked.map(|ask| (ask.action, ask.arguments)),
         Some((
             "switch-workspace".to_owned(),
-            BTreeMap::from([("workspace".to_owned(), "2".to_owned())])
+            BTreeMap::from([("workspace".to_owned(), "2".into())])
         )),
         "{:?} {:?}",
         part.work(),
@@ -570,7 +570,7 @@ fn a_press_on_a_dock_app_asks_the_session_to_open_it() {
         vec![Ask {
             resource: "desktop:chrome".to_owned(),
             action: "open-app".to_owned(),
-            arguments: BTreeMap::from([("app".to_owned(), "so.tilo.sheets".to_owned())]),
+            arguments: BTreeMap::from([("app".to_owned(), "so.tilo.sheets".into())]),
             from: None,
         }],
         "{:?}",
@@ -964,11 +964,18 @@ fn moving_a_window_to_another_strip_names_the_strip_by_its_id() {
         (asked.resource.as_str(), asked.action.as_str()),
         ("desktop:chrome", "move-tab")
     );
-    assert_eq!(asked.arguments.get("tab").map(String::as_str), Some(tab));
-    let to: tilo_desktop_surface::navigation::Destination = serde_json::from_str(
-        asked.arguments.get("to").expect("the destination"),
-    )
-    .unwrap_or_else(|why| panic!("the destination reads as the chrome's: {why}: {asked:?}"));
+    assert_eq!(
+        asked
+            .arguments
+            .get("tab")
+            .and_then(serde_json::Value::as_str),
+        Some(tab)
+    );
+    let to: tilo_desktop_surface::navigation::Destination =
+        serde_json::from_value(asked.arguments.get("to").cloned().expect("the destination"))
+            .unwrap_or_else(|why| {
+                panic!("the destination reads as the chrome's: {why}: {asked:?}")
+            });
     assert_eq!(
         to,
         tilo_desktop_surface::navigation::Destination {
@@ -1007,7 +1014,7 @@ fn a_workspace_named_in_the_workspaces_surface_is_made_with_its_name() {
             .map(|ask| (ask.action.clone(), ask.arguments.clone())),
         Some((
             "new-workspace".to_owned(),
-            BTreeMap::from([("name".to_owned(), "studio".to_owned())]),
+            BTreeMap::from([("name".to_owned(), "studio".into())]),
         )),
     );
 }
@@ -1052,7 +1059,7 @@ fn every_letter_typed_into_the_launcher_reaches_its_search() {
         Some(Ask {
             resource: "desktop:desk".to_owned(),
             action: "search".to_owned(),
-            arguments: BTreeMap::from([("query".to_owned(), "quarterly".to_owned())]),
+            arguments: BTreeMap::from([("query".to_owned(), "quarterly".into())]),
             from: None,
         }),
     );

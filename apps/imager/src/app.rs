@@ -62,7 +62,7 @@ use ui::widget::{
 use crate::export_dialog::ExportDialog;
 use crate::model::{
     Action, InstallProfile, JobPhase, Progress, Source, SourceKind, Step, TargetDrive,
-    TargetDriveIcon, TiloRelease, fmt_eta, fmt_rate, fmt_size,
+    TargetDriveIcon, TargetName, TiloRelease, fmt_eta, fmt_rate, fmt_size,
 };
 use crate::page::{self, Frame};
 use crate::resource::CATALOG;
@@ -743,6 +743,19 @@ fn stepper_labels() -> [String; 6] {
     Step::all().map(|step| crate::setup::strings::t(step_message(step)))
 }
 
+/// The machines `release` starts on, in the person's language.
+fn target_name(release: &TiloRelease) -> String {
+    match release.target_name() {
+        TargetName::Arm64 => CATALOG.t("imager-release-target-arm64"),
+        TargetName::X86_64 => CATALOG.t("imager-release-target-x86-64"),
+        TargetName::Media => CATALOG.t("imager-release-target-media"),
+        TargetName::Profile(profile) => CATALOG.t_args(
+            "imager-release-target-profile",
+            &[("profile", ui::i18n::ArgValue::Text(profile))],
+        ),
+    }
+}
+
 // =========================================================================
 // Composition
 // =========================================================================
@@ -1169,7 +1182,7 @@ impl ImagerApp {
             CATALOG.t_args(
                 "imager-release-channel-downloads-first",
                 &[
-                    ("target", ui::i18n::ArgValue::Text(release.target_label())),
+                    ("target", ui::i18n::ArgValue::Text(target_name(release))),
                     ("channel", ui::i18n::ArgValue::Text(release.channel.clone())),
                 ],
             )
@@ -1177,7 +1190,7 @@ impl ImagerApp {
             CATALOG.t_args(
                 "imager-release-channel",
                 &[
-                    ("target", ui::i18n::ArgValue::Text(release.target_label())),
+                    ("target", ui::i18n::ArgValue::Text(target_name(release))),
                     ("channel", ui::i18n::ArgValue::Text(release.channel.clone())),
                 ],
             )

@@ -242,6 +242,17 @@ nobody's undo step), `available` (state-dependent availability of verbs),
 `read_content`, `facts` (a compact summary to check the record against a
 request, published as the `facts` view), `views`.
 
+Every record declares its read. The framework publishes the `read` view on a
+resource whose declaration names `read_content` (or `read_content_in_doc`, for
+a read that looks at the document too), and that read is what a caller with no
+window open gets — an agent's `tilo_read <path>`, a script, the SDK's
+`Document.load()` — under the caller's ordinary read permission. A record whose
+fields are all it holds answers with `tilo_resource::read::fields(self, item)`,
+which is its own model's JSON; a record that reads more than its fields (a
+notebook's pages, a sheet's cells, a form's values) says so in a read of its
+own. Without one a caller is told the record offers no read at all, so
+`tools/policy/check_app_record_reads.py` fails on a record that names none.
+
 ### 2.3 How the kind is derived
 
 - A field edit and a verb that takes only `&mut self`, `ActionCx` and plain

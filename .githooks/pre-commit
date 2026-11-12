@@ -76,7 +76,9 @@ python3 "$root/tools/policy/check_app_text_contract.py" --staged
 python3 "$root/tools/policy/check_session_copy_contract.py"
 # A catalogue is judged against its siblings, not by its own text: half a
 # translation or a key defined twice reads as drift or breaks the file only
-# beside the others. It reads every catalogue in well under a second.
+# beside the others, and the registry `tilo-app` generates beside the source
+# catalog is stale the moment a message is added or dropped. It reads every
+# catalogue in well under a second.
 python3 "$root/tools/policy/check_catalogue_coverage.py"
 python3 "$root/tools/policy/check_app_copy_resolution.py"
 python3 "$root/tools/policy/check_ui_host_inputs_contract.py" --staged
@@ -450,6 +452,21 @@ if grep -qE '^\+\s*(assert|assert_eq|assert_ne|debug_assert|println|eprintln|wri
   fail=1
 fi
 
+# A reference cargo re-resolved onto another version the package also allows is
+# not a judgement call: the lock's canonical form points at the newest version it
+# holds that the package allows, so write that and stage it, as rustfmt and the
+# code map are. A lock with unstaged edits is left alone, like those files. This
+# runs first, so the admission below judges what a person would commit.
+if grep -qx 'Cargo.lock' <<< "$staged_names" && git diff --quiet -- Cargo.lock; then
+  normalized=$(python3 "$root/tools/ci/check_lock_update.py" --root "$root" --write 2>&1) || {
+    printf '%s\n' "$normalized" | sed 's/^/  /' >&2
+    fail=1
+  }
+  if [ -n "$normalized" ]; then
+    GIT_INDEX_FILE="$full_index" git add -- Cargo.lock
+    printf '%s\n' "$normalized" | sed 's/^/  Cargo.lock: /' >&2
+  fi
+fi
 # Require a manifest change alongside Cargo.lock changes; see AGENTS.md. The
 # lock-only changes admitted are a declared single-crate update,
 #   TILO_CARGO_UPDATE='-p <crate> --precise <version>' git commit

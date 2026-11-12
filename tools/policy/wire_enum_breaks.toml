@@ -207,3 +207,13 @@ reason = "a layout check's finding kinds are written only into the report of the
 file = "crates/hosting/tilo-relay-protocol/src/workspaces.rs"
 enum = "JoinReply"
 reason = "drops the challenge, waiting and declined answers of the HTTP join steps that redeeming an invitation no longer takes (it is an entry on the device's session now): what is left is the host's answer to `/invitation`, which a page reads from the host that served it, from the same build, and the host's own answer to a redemption in its process; no byte of it is kept"
+
+[[break]]
+file = "crates/session/client/src/way_in.rs"
+enum = "Way"
+reason = "the page and its runtime, one build, pass it as a kebab-case name within one call (wayIn/wayInAfter return it to the page that asked, which switches on it at once); it is never stored or sent: `busy` goes because a browser is one device of the person and nothing is busy any more"
+
+[[break]]
+file = "crates/session/client/src/way_in.rs"
+enum = "Failed"
+reason = "the page names the way that failed to its own runtime, one build, as a kebab-case string within one call (wayInAfter); it is never stored or sent: `member-busy` and `reconnect-busy` go because a tab waits for the person's one device key instead of failing on it"

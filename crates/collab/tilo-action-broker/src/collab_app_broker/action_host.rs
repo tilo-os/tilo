@@ -1891,52 +1891,33 @@ impl AppBrokerState {
         let earlier = self.earlier_ids();
         let resource = earlier.current_resource(&request.target.address.resource);
         let address = &current_address(resource.as_deref(), request);
-        let (workspace, app_id, record, offered) = if let Some((workspace, app_id)) =
-            super::windowless_instances::started_app(request)
-        {
-            // A workspace's `start` of its app offers nothing of the app: it
-            // runs the app, so the caller may launch it.
-            (workspace.to_owned(), app_id.to_owned(), None, None)
-        } else if let Some((workspace, app_id)) = application_provider(&request.target.provider) {
-            let current = earlier.current(app_id).to_owned();
-            let app_id = current.as_str();
-            let offered = self
-                .published_surfaces()
-                .into_iter()
-                .chain(self.launchable.surfaces())
-                .filter(|surface| surface.app_id == app_id && surface.route.cluster_id == workspace)
-                .find_map(|surface| {
-                    surface.actions.into_iter().find(|action| {
+        let (workspace, app_id, record, offered) =
+            if let Some((workspace, app_id)) = super::windowless_instances::started_app(request) {
+                // A workspace's `start` of its app offers nothing of the app: it
+                // runs the app, so the caller may launch it.
+                (workspace.to_owned(), app_id.to_owned(), None, None)
+            } else if let Some((workspace, app_id, offered)) = self.application_offer(request) {
+                let record = application_provider_record(&request.target.provider);
+                (workspace, app_id, record.map(str::to_owned), offered)
+            } else {
+                let retained = self
+                    .launchable
+                    .surface_for(&request.target.provider)
+                    .ok_or(ActionHostError::UnknownAction)?;
+                let offered = retained
+                    .actions
+                    .into_iter()
+                    .find(|action| {
                         action.resource == address.resource && action.action == address.action
                     })
-                })
-                .or_else(|| self.manifest_offer(app_id, address));
-            let record = application_provider_record(&request.target.provider);
-            (
-                workspace.to_owned(),
-                current.clone(),
-                record.map(str::to_owned),
-                offered,
-            )
-        } else {
-            let retained = self
-                .launchable
-                .surface_for(&request.target.provider)
-                .ok_or(ActionHostError::UnknownAction)?;
-            let offered = retained
-                .actions
-                .into_iter()
-                .find(|action| {
-                    action.resource == address.resource && action.action == address.action
-                })
-                .ok_or(ActionHostError::UnknownAction)?;
-            (
-                retained.route.cluster_id,
-                retained.app_id,
-                Some(retained.route.record_id),
-                Some(offered),
-            )
-        };
+                    .ok_or(ActionHostError::UnknownAction)?;
+                (
+                    retained.route.cluster_id,
+                    retained.app_id,
+                    Some(retained.route.record_id),
+                    Some(offered),
+                )
+            };
         // Only a caller on this machine launches apps on this desktop.
         if caller.workspace().is_none() {
             return Err(ActionHostError::UnknownAction);
@@ -2008,6 +1989,35 @@ impl AppBrokerState {
     /// The action the installed app `app_id`'s signed manifest offers at
     /// `address` while it is closed: what a launch is admitted against until
     /// the app publishes its own.
+    /// The workspace, app and offered action an application target of
+    /// `request` names (`application:<workspace>:<app>`): the app under the id
+    /// it has now, and the action as one of its instances publishes it, as it
+    /// is kept for launching, or as its manifest declares it. `None` for a
+    /// target that names no application; no action when the app offers none
+    /// at that address.
+    pub(super) fn application_offer(
+        &self,
+        request: &InvokeRequest,
+    ) -> Option<(String, String, Option<PublishedAction>)> {
+        let (workspace, app_id) = application_provider(&request.target.provider)?;
+        let earlier = self.earlier_ids();
+        let resource = earlier.current_resource(&request.target.address.resource);
+        let address = &current_address(resource.as_deref(), request);
+        let app_id = earlier.current(app_id).to_owned();
+        let offered = self
+            .published_surfaces()
+            .into_iter()
+            .chain(self.launchable.surfaces())
+            .filter(|surface| surface.app_id == app_id && surface.route.cluster_id == workspace)
+            .find_map(|surface| {
+                surface.actions.into_iter().find(|action| {
+                    action.resource == address.resource && action.action == address.action
+                })
+            })
+            .or_else(|| self.manifest_offer(&app_id, address));
+        Some((workspace.to_owned(), app_id, offered))
+    }
+
     fn manifest_offer(&self, app_id: &str, address: &ActionAddress) -> Option<PublishedAction> {
         let applications = self.services.launcher.as_ref()?.applications();
         let app = applications
@@ -2398,7 +2408,15 @@ impl AppBrokerState {
         if let Some(admitted) = admitted {
             let expected = admitted.broker_actor();
             let actual = BrokerActor::for_caller(caller);
-            if expected.id != actual.id || expected.is_agent != actual.is_agent {
+            // The connection's app may act under its own identity, by what
+            // the workspace grants it.
+            let own_app = match origin {
+                Some(super::published_invocation::InvocationCaller::Local { route, .. }) => {
+                    actual.is_agent && actual.id == BrokerActor::app(&route.app_id).id
+                }
+                _ => false,
+            };
+            if !own_app && (expected.id != actual.id || expected.is_agent != actual.is_agent) {
                 return Err(ActionHostError::NotPermitted);
             }
         }

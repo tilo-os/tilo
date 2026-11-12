@@ -10,7 +10,7 @@
 //! A person may be here from several devices at once (each browser tab is a device of its own).
 //! They are one person here: each device's certificate names its person, devices of one person
 //! show once, and this page's person's other devices are this page's person, never someone else.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tilo_sort::CompactSort as _;
 
 use collab_types::presence::Shown;
@@ -888,7 +888,8 @@ impl HereState {
     /// The colour someone claims for themselves is the one they wear: it is the colour they chose
     /// in their own card, or the one their identity derives, as their shell publishes it — the same
     /// colour their apps paint them in. Whoever else's identity names it steps to a free entry, so
-    /// two people who chose alike still read apart.
+    /// two people who chose alike still read apart; this page's own person is honoured first, so
+    /// nobody here is ever drawn in their colour.
     ///
     /// A person's device is in the live layer before its certificate pairs it with its person. Until they do it has no entry here, and takes no part in the
     /// settlement, so they are drawn neutral ([`ui::presence::UNSETTLED_RGB`]) rather than in a
@@ -917,17 +918,35 @@ impl HereState {
             .filter_map(|(_, key, claimed)| claimed.map(|rgb| ((*key).to_owned(), rgb)))
             .collect();
         let keys: Vec<&str> = present.iter().map(|(_, key, _)| *key).collect();
-        let settled = ui::presence::settle_colors(&keys, &chosen);
+        // This page's own person is settled first: their colour is theirs, and nobody here is
+        // drawn in it.
+        let own = self
+            .own_id()
+            .and_then(|own| present.iter().find(|(id, _, _)| *id == own))
+            .map(|(_, key, _)| *key);
+        let settled = ui::presence::settle_colors_around(&keys, &chosen, own);
         let mut colors: HashMap<String, (u8, u8, u8)> = present
             .into_iter()
             .filter_map(|(id, key, _)| settled.get(key).map(|rgb| (id.to_owned(), *rgb)))
             .collect();
+        let own_rgb = own.and_then(|own| settled.get(own)).copied();
         // An agent wears its client's hue, so Claude Code reads as Claude Code on every face and
-        // caret of it; one this build does not know keeps the hue it settled on.
-        for member in self.members.iter().flatten().filter(|m| m.kind == "agent") {
-            if let Some(hue) = ui::tokens::PresenceHue::of_agent_client(&member.label) {
-                colors.insert(member.publisher.clone(), ui::presence::identity_rgb(hue));
+        // caret of it; one this build does not know keeps the hue it settled on. A client hue the
+        // person themselves wears is not worn by the agent: they stay apart.
+        for agent in self
+            .members
+            .iter()
+            .flatten()
+            .filter(|member| member.kind == "agent")
+        {
+            let Some(hue) = ui::tokens::PresenceHue::of_agent_client(&agent.label) else {
+                continue;
+            };
+            let rgb = ui::presence::identity_rgb(hue);
+            if own_rgb == Some(rgb) {
+                continue;
             }
+            colors.insert(agent.publisher.clone(), rgb);
         }
         colors
     }
@@ -938,7 +957,7 @@ impl HereState {
     pub fn people(
         &self,
         tree: &DesktopTree,
-        records: &[(TabId, String)],
+        records: &[(TabId, String, String)],
         app_name: &dyn Fn(&str) -> Option<String>,
     ) -> Vec<Person> {
         let colors = self.colors();
@@ -979,7 +998,13 @@ impl HereState {
                 .and_then(|focus| window_of(tree, records, focus));
             let status = said_line(member);
             let place = match tab {
-                Some(tab) => worded_place(tree, tab, app_name, status.as_ref()),
+                Some(tab) => worded_place(
+                    tree,
+                    tab,
+                    member.focus.as_ref().map(|focus| focus.app.as_str()),
+                    app_name,
+                    status.as_ref(),
+                ),
                 None => focused_app(member, app_name, status.as_ref()),
             };
             people.push(Person {
@@ -1133,22 +1158,23 @@ pub fn guest_label() -> String {
 }
 
 /// The window showing `focus` : the record's window, else the first window of its app.
-fn window_of(tree: &DesktopTree, records: &[(TabId, String)], focus: &Focus) -> Option<TabId> {
-    let tabs: HashMap<TabId, &str> = tree
+fn window_of(
+    tree: &DesktopTree,
+    records: &[(TabId, String, String)],
+    focus: &Focus,
+) -> Option<TabId> {
+    let shown: HashSet<TabId> = tree
         .active_workspace()
         .into_iter()
         .flat_map(Workspace::tabs)
-        .filter_map(|tab| match &tab.tile {
-            TileContent::LocalApp { app_id, .. } => Some((tab.id, app_id.as_str())),
-            _ => None,
-        })
+        .map(|tab| tab.id)
         .collect();
     records
         .iter()
-        .find(|(tab, record)| {
-            *record == focus.record && tabs.get(tab).is_some_and(|app| *app == focus.app)
+        .find(|(tab, app, record)| {
+            *record == focus.record && *app == focus.app && shown.contains(tab)
         })
-        .map(|(tab, _)| *tab)
+        .map(|(tab, _, _)| *tab)
 }
 
 /// Where the window `tab` is, in words beside `status` : "Strip · App". The strip is named only
@@ -1158,6 +1184,7 @@ fn window_of(tree: &DesktopTree, records: &[(TabId, String)], focus: &Focus) -> 
 fn worded_place(
     tree: &DesktopTree,
     tab: TabId,
+    focus_app: Option<&str>,
     app_name: &dyn Fn(&str) -> Option<String>,
     status: Option<&Line>,
 ) -> Option<String> {
@@ -1169,10 +1196,13 @@ fn worded_place(
             .iter()
             .flat_map(|group| &group.tabs)
             .find(|t| t.id == tab)?;
+        // The app the window runs: from its tile where the desk's own model names it, else from
+        // the app its presence focuses (a window drawn by its app's own surface names none here).
         let app = match &tab.tile {
             TileContent::LocalApp { app_id, .. } => app_name(app_id),
             _ => None,
         }
+        .or_else(|| focus_app.and_then(app_name))
         .unwrap_or_else(|| tab.title.clone());
         let app = Some(app.trim())
             .filter(|app| !app.is_empty())
@@ -1740,7 +1770,8 @@ mod tests {
             text: text.into(),
             source: crate::collaborators::LineSource::Observed,
         };
-        let place = |tree: &DesktopTree, line: Option<&Line>| worded_place(tree, 7, &app, line);
+        let place =
+            |tree: &DesktopTree, line: Option<&Line>| worded_place(tree, 7, None, &app, line);
         assert_eq!(
             place(&tree, None),
             Some("Chat".into()),
@@ -1797,6 +1828,55 @@ mod tests {
         let tree = DesktopTree::default();
         let shown = first.people(&tree, &[], &|_| None);
         assert_eq!(shown[0].rgb, second.own_rgb().expect("own colour"));
+    }
+
+    /// An agent that announces the colour the person themselves wears does not wear it: the
+    /// person keeps their own colour, on their own ring and everywhere else, and the agent reads
+    /// apart from them.
+    #[test]
+    fn an_agent_never_wears_the_persons_own_colour() {
+        let mine = ui::presence::user_color("me-root");
+        let hex = format!("#{:02x}{:02x}{:02x}", mine.0, mine.1, mine.2);
+        let claiming = |member: &mut LiveMember| {
+            member.colour.clone_from(&hex);
+            member.clone()
+        };
+        let person = claiming(&mut LiveMember {
+            user: Some("me-root".into()),
+            ..member("me", "person", "Pat")
+        });
+        // The agent's face names no client this build knows, so it wears what it was given.
+        let agent = claiming(&mut member("helper", "agent", "Helper #1"));
+        let mut here = HereState::default();
+        here.set_members(Some(person), Some(vec![agent]));
+        assert_eq!(
+            here.own_rgb(),
+            Some(mine),
+            "the person wears their own colour"
+        );
+        assert_ne!(
+            here.colors().get("helper").copied(),
+            Some(mine),
+            "no member is drawn in the person's own colour"
+        );
+        // A client hue the person themselves wears is not worn by its agent either.
+        let orange = ui::presence::identity_rgb(ui::tokens::PresenceHue::Orange);
+        let orange_hex = format!("#{:02x}{:02x}{:02x}", orange.0, orange.1, orange.2);
+        let mut here = HereState::default();
+        here.set_members(
+            Some(LiveMember {
+                user: Some("me-root".into()),
+                colour: orange_hex,
+                ..member("me", "person", "Pat")
+            }),
+            Some(vec![member("claude", "agent", "Claude Code #1")]),
+        );
+        assert_ne!(
+            here.colors().get("claude").copied(),
+            Some(orange),
+            "the agent steps aside from the colour the person wears"
+        );
+        assert_eq!(here.own_rgb(), Some(orange));
     }
 
     /// The colour someone chose in their own card is the colour they wear here,
@@ -2229,7 +2309,7 @@ mod tests {
             }]),
         );
         let app = |id: &str| (id == "so.tilo.notes").then(|| "Notes".to_owned());
-        let held = [(7, digest.to_owned())];
+        let held = [(7, "so.tilo.notes".to_owned(), digest.to_owned())];
         let people = here.people(&tree, &held, &app);
         let ann = people
             .iter()

@@ -24,7 +24,6 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-mod common;
 #[path = "directory/community.rs"]
 mod community;
 #[path = "directory/sheet.rs"]
@@ -54,10 +53,6 @@ use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_sheets::Seat as _;
 use tilo_sheets::directory::{Listing, ListingAction, Status};
 
-// A host admits its members' records through an Automerge worker: this binary is that worker, as it
-// is the session's own.
-tilo_automerge_isolate::test_worker!();
-
 /// The app the lounge's workspace talks in, and the record its people wrote there before this
 /// computer joined: the chat's own workspace record.
 const CHAT: &str = "so.tilo.chat";
@@ -70,6 +65,10 @@ const HISTORY: i64 = 300;
 const TWELVE_HOURS_NS: u64 = 43_200_000_000_000;
 /// A day and a half, in nanoseconds: how long ago the certificate a session starts with was issued.
 const A_DAY_AND_A_HALF_NS: u64 = 129_600_000_000_000;
+
+/// How long the test keeps stepping a removed computer's desk after the lounge writes past the
+/// removal: an arrival the site fans out at once, so what has not arrived by then never would.
+const AFTER_THE_REMOVAL: Duration = Duration::from_secs(10);
 
 const COMMUNITY_WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 const CLUB_WORKSPACE: &str = "1b7c4e08-3a5d-42f6-8c9e-2d6f0a1b3c5e";
@@ -414,7 +413,7 @@ fn ask_to_join(session: &mut Session, key: &str) {
 fn wait_until(session: &mut Session, what: &str, done: impl Fn(&Session) -> bool) {
     // What this waits for is other runtimes' work (the site's answer, the record arriving), so the
     // bound is the suite's, not a second count.
-    common::until(session, what, |session| done(session));
+    crate::common::until(session, what, |session| done(session));
 }
 
 /// Wait until the directory is done with the person: it closes once the join's enrollment settles,
@@ -1070,7 +1069,7 @@ impl Lounge {
     fn start_with(person: [u8; 32], written: &str, door: LoungeDoor) -> Self {
         // The lounge's host and page run in this test's process: what they did with a join is only
         // said in its log.
-        common::people::install_log();
+        crate::common::people::install_log();
         let state = tempfile::tempdir().expect("a directory for the lounge's host");
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -1782,7 +1781,7 @@ fn wait_until_desk(
     want: &[(String, Vec<String>)],
     what: &str,
 ) {
-    let shown = common::wait_maybe(session, |session| {
+    let shown = crate::common::wait_maybe(session, |session| {
         (desk_layout(session, workspace) == want).then_some(())
     });
     assert!(
@@ -1976,7 +1975,7 @@ fn wait_until_their_pointer(
         .expect("the wait's bound fits in an Instant");
     loop {
         other_member_points_at(lounge, tab, at.0, at.1);
-        let drawn = common::steps_within(session, POINT_AGAIN, |session| {
+        let drawn = crate::common::steps_within(session, POINT_AGAIN, |session| {
             pointer_here(session, tab, at).then_some(())
         });
         if drawn.is_some() {
@@ -2021,17 +2020,18 @@ fn wait_until_the_lounge_is_here(session: &mut Session, lounge: &Lounge) {
     // patience and the suite's hang bound after it, so a host answering slowly is waited for rather
     // than called hung, and the session's note on a join that did not happen is what the test
     // reports when the wait runs out.
-    let here = common::wait_maybe_past(session, tilo_session::sync::JOIN_PATIENCE, |session| {
-        let held = session.held_workspaces();
-        let people = session.people(&lounge.workspace);
-        (held.iter().any(|workspace| workspace == &lounge.workspace)
-            && people.as_ref().is_ok_and(|people| {
-                people
-                    .iter()
-                    .any(|member| member.person == hex::encode(lounge.person))
-            }))
-        .then_some(())
-    });
+    let here =
+        crate::common::wait_maybe_past(session, tilo_session::sync::JOIN_PATIENCE, |session| {
+            let held = session.held_workspaces();
+            let people = session.people(&lounge.workspace);
+            (held.iter().any(|workspace| workspace == &lounge.workspace)
+                && people.as_ref().is_ok_and(|people| {
+                    people
+                        .iter()
+                        .any(|member| member.person == hex::encode(lounge.person))
+                }))
+            .then_some(())
+        });
     assert!(
         here.is_some(),
         "the lounge's workspace is held here: held {:?}, people {:?}, directory {:?}",
@@ -2040,6 +2040,71 @@ fn wait_until_the_lounge_is_here(session: &mut Session, lounge: &Lounge) {
         session
             .workspace_directory()
             .map(tilo_sheets::directory::DirectorySeat::directory)
+    );
+}
+
+/// Wait until the workspace's roster, as this computer reads it, admits `devices` devices: the
+/// roster is the workspace's governance arriving here, which is not ordered against its records —
+/// a line of the chat reading is no sign that the devices the workspace admits have all reached
+/// this computer.
+fn wait_until_the_roster_holds(
+    session: &mut Session,
+    workspace: &str,
+    devices: usize,
+    what: &str,
+) -> Vec<String> {
+    let mut roster = Vec::new();
+    crate::common::until(session, what, |session| {
+        roster = session
+            .roster(workspace)
+            .expect("the workspace's roster is known here");
+        roster.len() == devices
+    });
+    roster
+}
+
+/// The lounge's page writes after the person is removed: the workspace's content from then on is not
+/// this computer's, so the line never reads here. The removal reached this computer the way it
+/// reaches every device — the roster read here is the workspace's governance, and holds no device of
+/// the person's any more — so what the window rules out is the record arriving, not the removal
+/// still being on its way.
+fn the_lounge_writes_past_the_removal(session: &mut Session, lounge: &Lounge) {
+    let page = lounge.page.as_ref().expect("the site's page runs");
+    let route = DocumentRoute {
+        app_id: CHAT.to_owned(),
+        cluster_id: lounge.workspace.clone(),
+        record: CHAT_RECORD.to_owned(),
+    };
+    let mut after = automerge::AutoCommit::load(
+        &block_on_within(
+            &lounge.runtime,
+            "the lounge's chat",
+            lounge
+                .workspaces
+                .record_document(&lounge.workspace, CHAT, CHAT_RECORD),
+        )
+        .expect("the lounge's chat")
+        .expect("the lounge holds its chat"),
+    )
+    .expect("the chat's document");
+    let before = after.get_heads();
+    after
+        .put(automerge::ROOT, "text", "The door's shut")
+        .expect("a chat line after the removal");
+    after.commit();
+    page.write(
+        route,
+        &DocumentMutation::Incremental(after.save_after(&before)),
+    )
+    .expect("the site's page goes on talking without this computer");
+    let arrived = crate::common::steps_within(session, AFTER_THE_REMOVAL, |session| {
+        (chat_here(session, &lounge.workspace).as_deref() != Some("Pulled up a chair"))
+            .then_some(())
+    });
+    assert!(
+        arrived.is_none(),
+        "what the lounge wrote after the removal reads here: {:?}",
+        chat_here(session, &lounge.workspace)
     );
 }
 
@@ -2089,10 +2154,21 @@ fn a_workspace_joined_brings_the_chat_written_before_it() {
     let mut session = collaborative_session(state.path());
     session.step(Duration::from_millis(1)).unwrap();
     join_the_lounge(&mut session, &lounge);
-    wait_until(
+    // The record is sealed in the workspace's channel, and this computer reads it once the channel
+    // service's ask for its keys is answered: the wait spans the service's own longest wait between
+    // asks, so an ask a busy machine answered late is waited for rather than called a record that
+    // never came.
+    let read = crate::common::wait_maybe_past(
         &mut session,
-        "the lounge's chat, written before this computer joined, reads here",
-        |session| chat_here(session, &lounge.workspace).as_deref() == Some("Coffee's on"),
+        tilo_channels::asking_again_wait(),
+        |session| {
+            (chat_here(session, &lounge.workspace).as_deref() == Some("Coffee's on")).then_some(())
+        },
+    );
+    assert!(
+        read.is_some(),
+        "the lounge's chat, written before this computer joined, reads here: it reads {:?}",
+        chat_here(&session, &lounge.workspace)
     );
     let chat = chat_here(&session, &lounge.workspace).expect("the lounge's chat opened here");
     assert_eq!(
@@ -2111,11 +2187,14 @@ fn a_workspace_joined_brings_the_chat_written_before_it() {
     );
     // The workspace's window streams carry between the devices the workspace admits:
     // its host, the page that recorded there before this computer arrived,
-    // and this computer itself.
-    let roster = session
-        .roster(&lounge.workspace)
-        .expect("the workspace's roster is known here");
-    assert_eq!(roster.len(), 3, "the workspace's devices: {roster:?}");
+    // and this computer itself. The roster is the workspace's governance, which reaches this
+    // computer on its own, so it is waited for rather than read the moment the chat is here.
+    let roster = wait_until_the_roster_holds(
+        &mut session,
+        &lounge.workspace,
+        3,
+        "the workspace's devices are on its roster",
+    );
     for device in [host_publisher(&lounge), page_publisher(&lounge)] {
         assert!(
             roster.contains(&device),
@@ -2138,23 +2217,31 @@ fn a_member_the_lounge_removes_leaves_its_roster_and_reads_nothing_more() {
     let mut session = collaborative_session(state.path());
     session.step(Duration::from_millis(1)).unwrap();
     join_the_lounge(&mut session, &lounge);
-    wait_until(
+    // As above: the chat is sealed in the workspace's channel, and its keys arrive when the channel
+    // service's next ask is answered.
+    let read = crate::common::wait_maybe_past(
         &mut session,
-        "the lounge's chat reads here while this computer is a member",
-        |session| chat_here(session, &lounge.workspace).is_some(),
+        tilo_channels::asking_again_wait(),
+        |session| {
+            chat_here(session, &lounge.workspace)
+                .is_some()
+                .then_some(())
+        },
+    );
+    assert!(
+        read.is_some(),
+        "the lounge's chat reads here while this computer is a member"
     );
     let lounge_devices = [host_publisher(&lounge), page_publisher(&lounge)];
-    let roster = session
-        .roster(&lounge.workspace)
-        .expect("the workspace's roster is known here");
+    let roster = wait_until_the_roster_holds(
+        &mut session,
+        &lounge.workspace,
+        3,
+        "the lounge's devices and this computer are on the workspace's roster",
+    );
     assert!(
         roster.iter().any(|device| !lounge_devices.contains(device)),
         "this computer is on the roster beside the lounge's own devices: {roster:?}"
-    );
-    assert_eq!(
-        roster.len(),
-        3,
-        "the lounge's devices and this computer: {roster:?}"
     );
 
     // The lounge's owner removes this person, and every device of theirs.
@@ -2196,45 +2283,5 @@ fn a_member_the_lounge_removes_leaves_its_roster_and_reads_nothing_more() {
                 .is_some_and(|members| !members.contains(&removed))
         },
     );
-
-    // The lounge's page writes after the removal: the workspace's content from now on is not this
-    // computer's, so the line never reads here.
-    let route = DocumentRoute {
-        app_id: CHAT.to_owned(),
-        cluster_id: lounge.workspace.clone(),
-        record: CHAT_RECORD.to_owned(),
-    };
-    let mut after = automerge::AutoCommit::load(
-        &block_on_within(
-            &lounge.runtime,
-            "the lounge's chat",
-            lounge
-                .workspaces
-                .record_document(&lounge.workspace, CHAT, CHAT_RECORD),
-        )
-        .expect("the lounge's chat")
-        .expect("the lounge holds its chat"),
-    )
-    .expect("the chat's document");
-    let before = after.get_heads();
-    after
-        .put(automerge::ROOT, "text", "The door's shut")
-        .expect("a chat line after the removal");
-    after.commit();
-    page.write(
-        route,
-        &DocumentMutation::Incremental(after.save_after(&before)),
-    )
-    .expect("the site's page goes on talking without this computer");
-    let held = std::time::Instant::now()
-        .checked_add(Duration::from_secs(5))
-        .expect("a deadline");
-    while std::time::Instant::now() < held {
-        session.step(Duration::from_millis(1)).unwrap();
-        assert_eq!(
-            chat_here(&session, &lounge.workspace).as_deref(),
-            Some("Pulled up a chair"),
-            "what the lounge wrote after the removal never reads here"
-        );
-    }
+    the_lounge_writes_past_the_removal(&mut session, &lounge);
 }

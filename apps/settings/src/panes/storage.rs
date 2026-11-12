@@ -163,9 +163,11 @@ pub enum StorageEffect {
     FreeSyncedFiles,
     /// Open Disks.
     #[effect(job, returns)]
+    #[effect(label = "settings-storage-open-disks")]
     OpenDisks,
     /// Open Backups.
     #[effect(job, returns)]
+    #[effect(label = "settings-storage-open-backups")]
     OpenBackups,
     /// Fetch the workspace files you are likely to open next before you
     /// open them, or only when opened.

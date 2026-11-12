@@ -12,6 +12,17 @@ use std::time::{Duration, Instant};
 use legacy_vm::hosted::control::{self, Reply, Request};
 use legacy_vm::hosted::size::VmSize;
 use tilo_actions::remote::browser::{OpenBrowser, OpenedBrowser};
+use tilo_actions::remote::host_account::Refusal;
+use tilo_actions::remote::linux_apps::{OpenApp, UP_PROVIDER};
+
+/// Why a workspace's Linux app did not open.
+#[derive(Debug)]
+pub enum AppRefused {
+    /// The account's plan does not allow it: a Linux app is a Linux action.
+    Refused(Refusal),
+    /// Anything else, in words.
+    Error(String),
+}
 
 /// How long one answer is waited for: a wake and the session starting.
 const ANSWER_PATIENCE: Duration = Duration::from_secs(300);
@@ -73,6 +84,57 @@ impl BrowserHost {
                 Reply::Error(message) => return Err(message),
                 other => return Err(format!("the hosted-VM service answered {other:?}")),
             }
+        }
+    }
+
+    /// Start the Linux app `asked` names in its workspace's VM, starting the
+    /// workspace's apps session first when none runs, waiting while the host
+    /// has no room. An account the plans do not let run Linux is refused in
+    /// the plans' own words.
+    pub fn open_app(&self, asked: &OpenApp) -> Result<OpenedBrowser, AppRefused> {
+        let request = Request::OpenApp {
+            app: control::OpenApp {
+                workspace: asked.workspace.clone(),
+                account: asked.account.clone(),
+                size: self.size,
+                material: asked.material.clone(),
+                launch: asked.launch.clone(),
+            },
+        };
+        let started = Instant::now();
+        loop {
+            match self.ask(&request).map_err(AppRefused::Error)? {
+                Reply::Opened { opened_ms, .. } => {
+                    return Ok(OpenedBrowser {
+                        opened_ms,
+                        provider: UP_PROVIDER.to_owned(),
+                    });
+                }
+                Reply::Refused(refusal) => return Err(AppRefused::Refused(refusal)),
+                Reply::Busy(words) => {
+                    if started.elapsed() >= ROOM_PATIENCE {
+                        return Err(AppRefused::Error(words));
+                    }
+                    std::thread::sleep(ASK_AGAIN);
+                }
+                Reply::Error(message) => return Err(AppRefused::Error(message)),
+                other => {
+                    return Err(AppRefused::Error(format!(
+                        "the hosted-VM service answered {other:?}"
+                    )));
+                }
+            }
+        }
+    }
+
+    /// End the apps session in `workspace`'s VM now, and every app in it.
+    pub fn stop_apps(&self, workspace: &str) -> Result<(), String> {
+        match self.ask(&Request::StopApps {
+            workspace: workspace.to_owned(),
+        })? {
+            Reply::Done => Ok(()),
+            Reply::Error(message) => Err(message),
+            other => Err(format!("the hosted-VM service answered {other:?}")),
         }
     }
 

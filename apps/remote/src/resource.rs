@@ -27,7 +27,25 @@ pub fn connection_resource_id(id: ConnectionId) -> String {
     item_resource_id::<Remote>("connections", &Remote::item(id))
 }
 
-#[resource(kind = "remote.connection-list", label = "Remote connections")]
+impl Remote {
+    /// What the record holds: the saved connections.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "remote.connection-list",
+    read_content = Remote::read_document
+)]
 impl Remote {
     /// Save a new connection to another machine. It signs in the
     /// protocol's first way; its authentication and group are field edits.
@@ -69,7 +87,7 @@ impl Remote {
     /// device saved for it.
     // Undo brings the connection back but not the passwords every device
     // forgot, so people confirm it.
-    #[action(destructive, irreversible, item = connections)]
+    #[action(destructive, irreversible, item = connections, label = "remote-delete-connection-button")]
     pub fn delete_connection(&mut self, connection: &Id) -> Result<(), Refusal> {
         self.connections
             .remove(connection)

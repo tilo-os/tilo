@@ -13,8 +13,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -118,7 +116,7 @@ fn a_portal_file_chooser_request_is_the_sessions_question() {
     let resource = format!("question:portal:{REQUEST}");
     // The question wakes the loop: a turn that would wait a minute ends when it is asked.
     let asked = std::time::Instant::now();
-    let question = common::wait_for(
+    let question = crate::common::wait_for(
         &mut session,
         "the portal's question to wake the session",
         |session| {
@@ -164,7 +162,7 @@ fn control(node: &ui::a11y::AccessNode, name: &str) -> Option<String> {
 
 /// Steps `session` until `asked` answers, or the suite's hang bound runs out.
 fn until<T>(session: &mut Session, asked: impl FnMut(&mut Session) -> Option<T>) -> Option<T> {
-    common::wait_maybe(session, asked)
+    crate::common::wait_maybe(session, asked)
 }
 
 /// An app's notification with its own image is shown by the banners and kept in the centre; the

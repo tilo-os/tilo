@@ -15,9 +15,7 @@
               are said in the units a person reads"
 )]
 
-mod typing_desktop;
-
-use typing_desktop::DemoDesk;
+use crate::typing_desktop::DemoDesk;
 
 /// Keys typed before anything is counted: the first ones find the caches a
 /// typist's second key does, and a window's first frames are its arrival.
@@ -36,7 +34,7 @@ fn a_key_on_a_desk_of_six_builds_what_each_window_binds_once() {
     for _ in 0..WARMUP {
         desk.type_key("l");
     }
-    let costs: Vec<typing_desktop::KeyCost> = (0..KEYS)
+    let costs: Vec<crate::typing_desktop::KeyCost> = (0..KEYS)
         .map(|index| desk.measure_key(if index % 10 == 9 { " " } else { "l" }))
         .collect();
     assert_ne!(
@@ -44,7 +42,8 @@ fn a_key_on_a_desk_of_six_builds_what_each_window_binds_once() {
         before,
         "the keys went into the note: it holds what was typed"
     );
-    let total = |pick: fn(&typing_desktop::KeyCost) -> usize| costs.iter().map(pick).sum::<usize>();
+    let total =
+        |pick: fn(&crate::typing_desktop::KeyCost) -> usize| costs.iter().map(pick).sum::<usize>();
     let passes = total(|cost| cost.passes);
     let declarations = total(|cost| cost.declarations);
     let syncs = total(|cost| cost.syncs);

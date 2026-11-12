@@ -66,15 +66,7 @@ pub fn launched_content(launch: &str) -> Option<(&str, &str)> {
     launch
         .strip_prefix(CONTENT_LAUNCH)?
         .split_once(':')
-        .filter(|(app, hash)| !app.is_empty() && content_hash(hash))
-}
-
-/// Whether `hash` is a content address: 64 lowercase hex digits.
-fn content_hash(hash: &str) -> bool {
-    hash.len() == 64
-        && hash
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        .filter(|(app, hash)| !app.is_empty() && ui::content::valid_reference(hash))
 }
 
 /// An app a window asked to open, on one of its records, with content, or on its own, waiting for
@@ -321,7 +313,9 @@ impl DesktopSession {
         // (`ApplicationLaunch::argument`).
         match &request.argument {
             InvokeArgument::None => Ok((app, None, None)),
-            InvokeArgument::Text(hash) if content_hash(hash) => Ok((app, None, Some(hash))),
+            InvokeArgument::Text(hash) if ui::content::valid_reference(hash) => {
+                Ok((app, None, Some(hash)))
+            }
             _ => Err(ActionHostError::Refused {
                 reason: "That isn't something an app can open".into(),
             }),

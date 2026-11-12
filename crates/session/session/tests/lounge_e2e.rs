@@ -28,8 +28,6 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-mod common;
-
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::rc::Rc;
@@ -54,8 +52,6 @@ use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_sheets::directory::{ListingAction, Status};
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
-
-tilo_automerge_isolate::test_worker!();
 
 /// The origin the deployment's ingress publishes for the room: what its pages and its links name.
 /// On this machine it is the address the room is reached at, because the room publishes its live
@@ -653,7 +649,7 @@ fn ask_to_join(session: &mut Session, key: &str) {
 /// Run the session until `done` holds, or fail saying what never happened.
 #[track_caller]
 fn wait_until(session: &mut Session, what: &str, done: impl Fn(&Session) -> bool) {
-    common::until(session, what, |session| done(session));
+    crate::common::until(session, what, |session| done(session));
 }
 
 /// The workspaces this computer holds: the desk's id, the name shown and the workspace's id.
@@ -726,7 +722,7 @@ fn wait_until_their_pointer(
                 )],
             ))
             .expect("the member says where they are");
-        if common::steps_within(session, Duration::from_millis(200), |session| {
+        if crate::common::steps_within(session, Duration::from_millis(200), |session| {
             pointer_here(session, tab, at).then_some(())
         })
         .is_some()
@@ -887,10 +883,13 @@ fn a_computer_joins_the_lounge_through_its_room_services_own_door() {
         "the site lists the Lounge, and this computer does not hold it yet"
     );
     ask_to_join(&mut session, &room.workspace);
-    let refused =
-        common::wait_maybe_past(&mut session, tilo_session::sync::JOIN_PATIENCE, |session| {
+    let refused = crate::common::wait_maybe_past(
+        &mut session,
+        tilo_session::sync::JOIN_PATIENCE,
+        |session| {
             (listing_row(session, &room.workspace).action == ListingAction::TryAgain).then_some(())
-        });
+        },
+    );
     assert!(
         refused.is_some(),
         "the door refused the uninvited person: {:?}",
@@ -934,10 +933,13 @@ fn a_computer_joins_the_lounge_through_its_room_services_own_door() {
             .iter()
             .any(|(_, _, workspace)| workspace == &room.workspace)
     });
-    let shown =
-        common::wait_maybe_past(&mut session, tilo_session::sync::JOIN_PATIENCE, |session| {
+    let shown = crate::common::wait_maybe_past(
+        &mut session,
+        tilo_session::sync::JOIN_PATIENCE,
+        |session| {
             (desk_layout(session, &room.workspace) == recorded_layout(&desktop)).then_some(())
-        });
+        },
+    );
     assert!(
         shown.is_some(),
         "the desk shows what the member laid out: {:?}, the room holds {:?}; refusals: {:?}",
@@ -1027,7 +1029,7 @@ fn the_launchers_child() {
     let display = std::env::var_os("WAYLAND_DISPLAY").expect("the display the session handed");
     let socket = std::path::Path::new(&runtime).join(display);
     let title = app.clone();
-    let _window = common::window::Client::on(&socket, &app, &title);
+    let _window = crate::common::window::Client::on(&socket, &app, &title);
 }
 
 /// The launcher a session starts packages through: this test binary, in the launcher's place, which
@@ -1041,7 +1043,7 @@ fn the_launchers_place(
         &format!(
             "export {LAUNCH_WINDOWS}='{records}'\n\
              export TILO_LOUNGE_TEST_ARGS=\"$*\"\n\
-             exec '{exe}' --exact the_launchers_child --nocapture --test-threads=1\n",
+             exec '{exe}' --exact lounge_e2e::the_launchers_child --nocapture --test-threads=1\n",
             records = records.display(),
             exe = std::env::current_exe()
                 .expect("this test's program")
@@ -1126,9 +1128,10 @@ fn an_app_opened_in_a_joined_lounge_shows_its_window() {
         open: None,
     })
     .expect("Probe opens in the Lounge");
-    let started = common::wait_maybe_past(&mut session, tilo_session::sync::JOIN_PATIENCE, |_| {
-        records.exists().then_some(())
-    });
+    let started =
+        crate::common::wait_maybe_past(&mut session, tilo_session::sync::JOIN_PATIENCE, |_| {
+            records.exists().then_some(())
+        });
     assert!(
         started.is_some(),
         "the launcher the session starts packages through was asked to start {app}"

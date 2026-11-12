@@ -383,7 +383,7 @@ fn timeline_empty_button(
     else {
         panic!("the empty timeline offers {label}");
     };
-    assert_eq!(action.label(), label);
+    assert_eq!(crate::resource::CATALOG.t(action.label_message()), label);
     app.harness()
         .a11y_nodes()
         .into_iter()
@@ -498,7 +498,10 @@ fn the_empty_timeline_shows_the_media_it_asks_to_drag() {
     let (_, action) = compact
         .timeline_empty_action_rect(&r)
         .expect("the empty timeline offers an action");
-    assert_eq!(action.label(), "Show media");
+    assert_eq!(
+        crate::resource::CATALOG.t(action.label_message()),
+        "Show media"
+    );
     let route = [
         ui::a11y::hash_key(&super::timeline_empty::TIMELINE_EMPTY_KEY),
         ui::a11y::hash_key(&super::timeline_empty::TIMELINE_EMPTY_ACTION_KEY),

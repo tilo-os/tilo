@@ -1130,7 +1130,7 @@ impl Workspaces {
     /// hears it is in: a replay that began before that governance was written
     /// would tell it the workspace without it, and its channels would wait for
     /// the catch-up to learn it may read them.
-    async fn retained_for(&self, reply: &JoinReply) {
+    pub(super) async fn retained_for(&self, reply: &JoinReply) {
         if let JoinReply::Admitted { workspace_id, .. } = reply {
             self.inner.host.records.settled(*workspace_id).await;
         }

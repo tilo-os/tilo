@@ -1013,8 +1013,8 @@ const LAUNCH_LATER: u8 = 75;
 /// The installed `package`, held for the launch, at a build this system runs.
 ///
 /// A build made for older interface versions, or recorded at an older
-/// package format, is updated first, exactly as the shell does before it
-/// opens one (`shell::app_versions`), and the launch runs the new build. One
+/// package format, is updated first, exactly as the session does before it
+/// opens one (`tilo_session::app_versions`), and the launch runs the new build. One
 /// that needs a newer system starts the system's update. Either way the
 /// person is told what happens; a launch is never just refused for being
 /// behind (docs/architecture/compatibility.md).

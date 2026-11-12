@@ -511,15 +511,16 @@ impl Editor {
             self.new_file = Rect::ZERO;
             return;
         }
-        let face = ui::widget::ButtonFace::new(Rect::ZERO, "New empty file")
-            .role(ui::widget::ButtonRole::Plain);
+        let new_file = CATALOG.t("hex-editor-new-file");
+        let face =
+            ui::widget::ButtonFace::new(Rect::ZERO, &new_file).role(ui::widget::ButtonRole::Plain);
         let width = face.intrinsic_width(tr, theme);
         let height = ui::widget::ButtonFace::height(ui::widget::ControlSize::Regular, theme);
         let top = open.y1 + f64::from(theme.tokens.spacing.s2);
         let x0 = open.center().x - width / 2.0;
         let rect = Rect::new(x0, top, x0 + width, top + height);
         self.new_file = rect;
-        let face = ui::widget::ButtonFace::new(rect, "New empty file")
+        let face = ui::widget::ButtonFace::new(rect, &new_file)
             .role(ui::widget::ButtonRole::Plain)
             .hovered(rect.contains(self.last_mouse));
         ui::widget::Button::paint(scene, transform, tr, theme, &face);

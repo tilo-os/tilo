@@ -8,10 +8,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-mod common;
-
+use crate::common::catalogue;
 use collab_types::DocumentMutation;
-use common::catalogue;
 use tilo_agent_participant::{Replica, ReplicaActor, Seed};
 
 const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
@@ -20,7 +18,7 @@ const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 fn a_record_kept_at_an_older_storage_version_opens_and_is_brought_up() {
     use ui::tilo_resource::evolution::{VERSION_KEY, stored_version};
     let app = "so.tilo.chat";
-    let mut page = common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
+    let mut page = crate::common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
     let Some(DocumentMutation::Snapshot(snapshot)) = page.take_mutation().unwrap() else {
         panic!("a new record is published whole");
     };
@@ -37,7 +35,7 @@ fn a_record_kept_at_an_older_storage_version_opens_and_is_brought_up() {
 
     // A host, a bot or an agent opens what the workspace kept: it is brought up
     // to the app's version as a window brings it up.
-    let mut held = common::open(
+    let mut held = crate::common::open(
         app,
         "host",
         ReplicaActor::Owner,
@@ -67,7 +65,7 @@ fn a_record_kept_at_an_older_storage_version_opens_and_is_brought_up() {
 fn read_only_resource_views_filter_roles_and_never_join_the_document_door() {
     use ui::permissions::{PermissionContext, Role};
     let app = "so.tilo.chat";
-    let mut page = common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
+    let mut page = crate::common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
     let mut doc = page.read(Clone::clone).unwrap();
     chat::demo::apply_as(
         &mut doc,
@@ -138,13 +136,13 @@ fn bytes(mutation: DocumentMutation) -> Vec<u8> {
 #[test]
 fn an_agent_mount_and_a_person_mount_converge() {
     let app = "so.tilo.scratchpad";
-    let mut page = common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
+    let mut page = crate::common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
     let snapshot = page
         .take_mutation()
         .unwrap()
         .expect("a new record is published whole");
     assert!(matches!(snapshot, DocumentMutation::Snapshot(_)));
-    let mut agent = common::open(
+    let mut agent = crate::common::open(
         app,
         "writer",
         ReplicaActor::Agent,
@@ -158,7 +156,7 @@ fn an_agent_mount_and_a_person_mount_converge() {
     if let Some(opened) = agent.take_mutation().unwrap() {
         page.apply(&opened).unwrap();
     }
-    let (note, arguments) = common::scratchpad_body("Drafted by the agent");
+    let (note, arguments) = crate::common::scratchpad_body("Drafted by the agent");
     agent.invoke(&note, &arguments, false).unwrap();
     let edit = agent
         .take_mutation()
@@ -177,7 +175,7 @@ fn an_agent_mount_and_a_person_mount_converge() {
 
     // And back: the person's edit reaches the agent, and the agent never
     // republishes it as its own.
-    let (note, arguments) = common::scratchpad_body("Ada's revision");
+    let (note, arguments) = crate::common::scratchpad_body("Ada's revision");
     page.invoke(&note, &arguments, false).unwrap();
     agent
         .apply(&page.take_mutation().unwrap().unwrap())
@@ -260,7 +258,7 @@ fn only_the_creator_seeds_a_record() {
         .filter(|definition| !definition.keeps_workspace_record())
     {
         let app = definition.app_id();
-        let mut page = common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
+        let mut page = crate::common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
         let snapshot = page
             .take_mutation()
             .unwrap()
@@ -310,7 +308,7 @@ fn only_the_creator_seeds_a_record() {
 #[test]
 fn an_agents_presence_is_where_its_last_operation_left_it() {
     let app = "so.tilo.word-processor";
-    let mut agent = common::open(app, "writer", ReplicaActor::Agent, Seed::New).unwrap();
+    let mut agent = crate::common::open(app, "writer", ReplicaActor::Agent, Seed::New).unwrap();
     assert!(
         agent.presence().is_none(),
         "nothing done, nowhere in particular"
@@ -356,7 +354,7 @@ fn an_agents_presence_is_where_its_last_operation_left_it() {
 /// runs at once, so it can take back a clip it placed by mistake.
 #[test]
 fn an_agent_removes_a_clip_it_placed_without_being_asked() {
-    let mut agent = common::open(
+    let mut agent = crate::common::open(
         "so.tilo.video-editor",
         "editor",
         ReplicaActor::Agent,
@@ -405,9 +403,9 @@ fn bot_standing(kinds: ui::permissions::policy::KindSet) -> ui::permissions::pol
 /// `kinds` in the workspace.
 fn ada_and_her_bot(kinds: ui::permissions::policy::KindSet) -> (Replica, Replica) {
     let mut page =
-        common::open("so.tilo.scratchpad", "ada", ReplicaActor::Owner, Seed::New).unwrap();
+        crate::common::open("so.tilo.scratchpad", "ada", ReplicaActor::Owner, Seed::New).unwrap();
     let snapshot = page.take_mutation().unwrap().unwrap();
-    let bot = common::open(
+    let bot = crate::common::open(
         page.app_id(),
         "bot:b1",
         ReplicaActor::Bot {
@@ -430,7 +428,7 @@ fn a_bot_replica_edits_within_its_grant_for_its_installer() {
     if let Some(opened) = bot.take_mutation().unwrap() {
         page.apply(&opened).unwrap();
     }
-    let (note, arguments) = common::scratchpad_body("Mirrored by the bot");
+    let (note, arguments) = crate::common::scratchpad_body("Mirrored by the bot");
     let context =
         tilo_actions::ActionContext::default().with_caused_by(Some(tilo_actions::context::Cause {
             installation: "b1".into(),
@@ -483,7 +481,7 @@ fn a_bot_replica_edits_within_its_grant_for_its_installer() {
 #[test]
 fn a_bot_without_a_write_grant_is_offered_only_reads() {
     let (_page, mut bot) = ada_and_her_bot(ui::permissions::policy::KindSet::READ);
-    let (note, arguments) = common::scratchpad_body("Not allowed");
+    let (note, arguments) = crate::common::scratchpad_body("Not allowed");
     assert!(
         bot.survey().iter().all(|entry| entry.address != note),
         "an edit outside the bot's grant is not offered"
@@ -494,13 +492,14 @@ fn a_bot_without_a_write_grant_is_offered_only_reads() {
 
 #[test]
 fn a_bot_reads_a_post_made_after_it_opened_the_record_through_the_record_door() {
-    let mut page = common::open("so.tilo.chat", "ada", ReplicaActor::Owner, Seed::New).unwrap();
+    let mut page =
+        crate::common::open("so.tilo.chat", "ada", ReplicaActor::Owner, Seed::New).unwrap();
     let mut doc = page.read(Clone::clone).unwrap();
-    common::add_channel(&mut doc, "ada", "general", None);
+    crate::common::add_channel(&mut doc, "ada", "general", None);
     let projection = chat::projection::read(&doc);
     let channel = projection.channel_rows()[0].id.clone();
     page.apply(&DocumentMutation::Snapshot(doc.save())).unwrap();
-    let mut bot = common::open(
+    let mut bot = crate::common::open(
         page.app_id(),
         "bot:b1",
         ReplicaActor::Bot {
@@ -596,9 +595,10 @@ fn a_bot_reads_a_post_made_after_it_opened_the_record_through_the_record_door() 
 
 #[test]
 fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
-    let mut page = common::open("so.tilo.chat", "ada", ReplicaActor::Owner, Seed::New).unwrap();
+    let mut page =
+        crate::common::open("so.tilo.chat", "ada", ReplicaActor::Owner, Seed::New).unwrap();
     let mut doc = page.read(Clone::clone).unwrap();
-    common::add_channel(&mut doc, "ada", "general", None);
+    crate::common::add_channel(&mut doc, "ada", "general", None);
     let channel = chat::projection::read(&doc).channel_rows()[0].id.clone();
     page.apply(&DocumentMutation::Snapshot(doc.save())).unwrap();
     // What a program that posts derives: posting on the chat's messages.
@@ -623,7 +623,7 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
         );
         Standing::person(WorkspacePolicy::new(WORKSPACE, "ada"), "ada").bounded_by(bot, vec![post])
     };
-    let mut bot = common::open(
+    let mut bot = crate::common::open(
         page.app_id(),
         "bot:b1",
         ReplicaActor::Bot {
@@ -678,7 +678,8 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
 /// what it wrote as the agent is its own, as what it writes as the person is.
 #[test]
 fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
-    let mut made = common::open("so.tilo.notes", "ada", ReplicaActor::Owner, Seed::New).unwrap();
+    let mut made =
+        crate::common::open("so.tilo.notes", "ada", ReplicaActor::Owner, Seed::New).unwrap();
     let Some(DocumentMutation::Snapshot(genesis)) = made.take_mutation().unwrap() else {
         panic!("a new record is published whole");
     };
@@ -689,7 +690,7 @@ fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
     )
     .standing()
     .clone();
-    let mut agent = common::open(
+    let mut agent = crate::common::open(
         "so.tilo.notes",
         "ada",
         ReplicaActor::Member {
@@ -740,7 +741,8 @@ fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
 /// hold both, and whoever read it whole after would refuse it.
 #[test]
 fn two_replicas_of_one_agent_never_write_one_sequence_twice() {
-    let mut made = common::open("so.tilo.notes", "ada", ReplicaActor::Owner, Seed::New).unwrap();
+    let mut made =
+        crate::common::open("so.tilo.notes", "ada", ReplicaActor::Owner, Seed::New).unwrap();
     let Some(DocumentMutation::Snapshot(genesis)) = made.take_mutation().unwrap() else {
         panic!("a new record is published whole");
     };
@@ -753,7 +755,7 @@ fn two_replicas_of_one_agent_never_write_one_sequence_twice() {
     .clone();
     let mut wrote = Vec::new();
     for title in ["Launch plan", "Retro notes"] {
-        let mut agent = common::open(
+        let mut agent = crate::common::open(
             "so.tilo.notes",
             "ada",
             ReplicaActor::Member {

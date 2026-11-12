@@ -238,7 +238,7 @@ doc = false
 "crossbeam-utils-0_8_21" = { package = "crossbeam-utils", version = "^0.8.21", default-features = false, features = ["default", "std"] }
 "crunchy-0_2_4" = { package = "crunchy", version = "^0.2.4", default-features = false, features = ["default", "limit_128"] }
 "crypto-bigint-0_5_5" = { package = "crypto-bigint", version = "^0.5.5", default-features = false, features = ["generic-array", "rand_core", "zeroize"] }
-"crypto-bigint-0_7_6" = { package = "crypto-bigint", version = "^0.7.6", default-features = false, features = ["alloc", "default", "getrandom", "hybrid-array", "rand_core", "subtle", "zeroize"] }
+"crypto-bigint-0_7_11" = { package = "crypto-bigint", version = "^0.7.11", default-features = false, features = ["alloc", "default", "getrandom", "hybrid-array", "rand_core", "subtle", "zeroize"] }
 "crypto-common-0_1_7" = { package = "crypto-common", version = "^0.1.7", default-features = false, features = ["getrandom", "rand_core", "std"] }
 "crypto-common-0_2_2" = { package = "crypto-common", version = "^0.2.2", default-features = false, features = ["getrandom", "rand_core", "zeroize"] }
 "crypto-primes-0_7_2" = { package = "crypto-primes", version = "^0.7.2", default-features = false, features = [] }
@@ -246,7 +246,7 @@ doc = false
 "csv-core-0_1_13" = { package = "csv-core", version = "^0.1.13", default-features = false, features = ["default"] }
 "ctr-0_10_1" = { package = "ctr", version = "^0.10.1", default-features = false, features = ["zeroize"] }
 "ctr-0_9_2" = { package = "ctr", version = "^0.9.2", default-features = false, features = [] }
-"ctutils-0_4_5" = { package = "ctutils", version = "^0.4.5", default-features = false, features = ["subtle"] }
+"ctutils-0_4_8" = { package = "ctutils", version = "^0.4.8", default-features = false, features = ["subtle"] }
 "cursor-icon-1_2_0" = { package = "cursor-icon", version = "^1.2.0", default-features = false, features = ["alloc", "default", "std"] }
 "curve25519-dalek-4_1_3" = { package = "curve25519-dalek", version = "^4.1.3", default-features = false, features = ["alloc", "default", "digest", "precomputed-tables", "rand_core", "zeroize"] }
 "curve25519-dalek-5_0_0" = { package = "curve25519-dalek", version = "^5.0.0", default-features = false, features = ["alloc", "default", "digest", "precomputed-tables", "rand_core", "serde", "zeroize"] }
@@ -379,7 +379,6 @@ doc = false
 "futures-channel-0_3_32" = { package = "futures-channel", version = "^0.3.32", default-features = false, features = ["alloc", "default", "futures-sink", "sink", "std"] }
 "futures-core-0_3_32" = { package = "futures-core", version = "^0.3.32", default-features = false, features = ["alloc", "default", "std", "unstable"] }
 "futures-executor-0_3_32" = { package = "futures-executor", version = "^0.3.32", default-features = false, features = ["default", "std"] }
-"futures-intrusive-0_5_0" = { package = "futures-intrusive", version = "^0.5.0", default-features = false, features = ["alloc", "default", "parking_lot", "std"] }
 "futures-io-0_3_32" = { package = "futures-io", version = "^0.3.32", default-features = false, features = ["default", "std"] }
 "futures-lite-2_6_1" = { package = "futures-lite", version = "^2.6.1", default-features = false, features = ["alloc", "default", "fastrand", "futures-io", "parking", "race", "std"] }
 "futures-sink-0_3_32" = { package = "futures-sink", version = "^0.3.32", default-features = false, features = ["alloc", "default", "std"] }
@@ -393,7 +392,7 @@ doc = false
 "genawaiter-0_99_1" = { package = "genawaiter", version = "^0.99.1", default-features = false, features = ["default", "futures-core", "futures03", "genawaiter-proc-macro", "proc-macro-hack", "proc_macro"] }
 "genawaiter-macro-0_99_1" = { package = "genawaiter-macro", version = "^0.99.1", default-features = false, features = ["proc_macro"] }
 "generic-array-0_14_7" = { package = "generic-array", version = "^0.14.7", default-features = false, features = ["more_lengths", "zeroize"] }
-"generic-array-1_4_5" = { package = "generic-array", version = "^1.4.5", default-features = false, features = ["compat-0_14"] }
+"generic-array-1_4_5" = { package = "generic-array", version = "^1.4.5", default-features = false, features = [] }
 "gethostname-1_1_0" = { package = "gethostname", version = "^1.1.0", default-features = false, features = [] }
 "getopts-0_2_24" = { package = "getopts", version = "^0.2.24", default-features = false, features = ["default", "unicode"] }
 "getrandom-0_2_17" = { package = "getrandom", version = "^0.2.17", default-features = false, features = ["std"] }
@@ -461,9 +460,9 @@ doc = false
 "hex-literal-1_1_0" = { package = "hex-literal", version = "^1.1.0", default-features = false, features = [] }
 "hexane-1_0_0-alpha_5" = { package = "hexane", version = "^1.0.0-alpha.5", default-features = false, features = [] }
 "hexf-parse-0_2_1" = { package = "hexf-parse", version = "^0.2.1", default-features = false, features = [] }
-"hickory-net-0_26_1" = { package = "hickory-net", version = "^0.26.1", default-features = false, features = ["__https", "__tls", "https-ring", "tls-ring", "tokio"] }
-"hickory-proto-0_26_2" = { package = "hickory-proto", version = "^0.26.2", default-features = false, features = ["access-control", "std"] }
-"hickory-resolver-0_26_1" = { package = "hickory-resolver", version = "^0.26.1", default-features = false, features = ["__https", "__tls", "default", "https-ring", "system-config", "tokio"] }
+"hickory-net-0_26_3" = { package = "hickory-net", version = "^0.26.3", default-features = false, features = ["__https", "__tls", "https-ring", "tls-ring", "tokio"] }
+"hickory-proto-0_26_3" = { package = "hickory-proto", version = "^0.26.3", default-features = false, features = ["access-control", "std"] }
+"hickory-resolver-0_26_3" = { package = "hickory-resolver", version = "^0.26.3", default-features = false, features = ["__https", "__tls", "default", "https-ring", "system-config", "tokio"] }
 "hkdf-0_12_4" = { package = "hkdf", version = "^0.12.4", default-features = false, features = [] }
 "hkdf-0_13_0" = { package = "hkdf", version = "^0.13.0", default-features = false, features = [] }
 "hmac-0_12_1" = { package = "hmac", version = "^0.12.1", default-features = false, features = ["reset"] }
@@ -543,11 +542,11 @@ doc = false
 "iri-string-0_7_10" = { package = "iri-string", version = "^0.7.10", default-features = false, features = ["alloc", "default", "std"] }
 "iroh-1_0_3" = { package = "iroh", path = "../../../vendor/iroh", default-features = false, features = ["default", "fast-apple-datapath", "metrics", "portmapper", "tls-ring"] }
 "iroh-base-1_0_3" = { package = "iroh-base", version = "^1.0.3", default-features = false, features = ["default", "key", "relay"] }
-"iroh-blobs-0_103_0" = { package = "iroh-blobs", version = "^0.103.0", default-features = false, features = ["fs-store", "hide-proto-docs"] }
+"iroh-blobs-0_103_1" = { package = "iroh-blobs", version = "^0.103.1", default-features = false, features = ["fs-store", "hide-proto-docs"] }
 "iroh-dns-1_0_3" = { package = "iroh-dns", version = "^1.0.3", default-features = false, features = ["default", "tls-ring"] }
 "iroh-io-0_6_2" = { package = "iroh-io", version = "^0.6.2", default-features = false, features = ["default", "smallvec", "tokio", "tokio-io"] }
 "iroh-metrics-1_0_1" = { package = "iroh-metrics", version = "^1.0.1", default-features = false, features = ["default", "metrics", "service"] }
-"iroh-relay-1_0_3" = { package = "iroh-relay", path = "../../../vendor/iroh-relay", default-features = false, features = ["default", "metrics", "server", "tls-ring"] }
+"iroh-relay-1_0_3" = { package = "iroh-relay", path = "../../../vendor/iroh-relay", default-features = false, features = ["default", "metrics", "server", "test-utils", "tls-ring"] }
 "iroh-tickets-1_0_0" = { package = "iroh-tickets", version = "^1.0.0", default-features = false, features = [] }
 "iroh-util-0_6_0" = { package = "iroh-util", version = "^0.6.0", default-features = false, features = [] }
 "ironcalc_base-0_9_1" = { package = "ironcalc_base", version = "^0.9.1", default-features = false, features = [] }
@@ -911,7 +910,7 @@ doc = false
 "runtime-portal" = { path = "../../../crates/runtime/runtime-portal", default-features = false, features = [] }
 "runtime-update" = { path = "../../../crates/packaging/runtime-update", default-features = false, features = [] }
 "rusqlite-0_41_1" = { package = "rusqlite", version = "^0.41.1", default-features = false, features = ["bundled", "hooks", "modern_sqlite", "wal"] }
-"russh-0_63_3" = { package = "russh", version = "^0.63.3", default-features = false, features = ["flate2", "ring"] }
+"russh-0_65_1" = { package = "russh", version = "^0.65.1", default-features = false, features = ["flate2", "ring"] }
 "russh-cryptovec-0_62_0" = { package = "russh-cryptovec", version = "^0.62.0", default-features = false, features = ["ssh-encoding"] }
 "russh-util-0_52_0" = { package = "russh-util", version = "^0.52.0", default-features = false, features = [] }
 "rust_decimal-1_42_1" = { package = "rust_decimal", version = "^1.42.1", default-features = false, features = ["maths"] }
@@ -1747,12 +1746,12 @@ doc = false
 "crossbeam-utils-0_8_21" = { package = "crossbeam-utils", version = "^0.8.21", default-features = false, features = ["default", "std"] }
 "crunchy-0_2_4" = { package = "crunchy", version = "^0.2.4", default-features = false, features = ["default", "limit_128"] }
 "crypto-bigint-0_5_5" = { package = "crypto-bigint", version = "^0.5.5", default-features = false, features = ["generic-array", "rand_core", "zeroize"] }
-"crypto-bigint-0_7_6" = { package = "crypto-bigint", version = "^0.7.6", default-features = false, features = ["alloc", "default", "getrandom", "hybrid-array", "rand_core", "subtle", "zeroize"] }
+"crypto-bigint-0_7_11" = { package = "crypto-bigint", version = "^0.7.11", default-features = false, features = ["alloc", "default", "getrandom", "hybrid-array", "rand_core", "subtle", "zeroize"] }
 "crypto-common-0_1_7" = { package = "crypto-common", version = "^0.1.7", default-features = false, features = ["getrandom", "rand_core", "std"] }
 "crypto-common-0_2_2" = { package = "crypto-common", version = "^0.2.2", default-features = false, features = ["getrandom", "rand_core", "zeroize"] }
 "ctr-0_10_1" = { package = "ctr", version = "^0.10.1", default-features = false, features = ["zeroize"] }
 "ctr-0_9_2" = { package = "ctr", version = "^0.9.2", default-features = false, features = [] }
-"ctutils-0_4_5" = { package = "ctutils", version = "^0.4.5", default-features = false, features = ["subtle"] }
+"ctutils-0_4_8" = { package = "ctutils", version = "^0.4.8", default-features = false, features = ["subtle"] }
 "cursor-icon-1_2_0" = { package = "cursor-icon", version = "^1.2.0", default-features = false, features = ["alloc", "default", "std"] }
 "curve25519-dalek-4_1_3" = { package = "curve25519-dalek", version = "^4.1.3", default-features = false, features = ["alloc", "default", "digest", "precomputed-tables", "rand_core", "zeroize"] }
 "curve25519-dalek-5_0_0" = { package = "curve25519-dalek", version = "^5.0.0", default-features = false, features = ["alloc", "default", "digest", "precomputed-tables", "rand_core", "serde", "zeroize"] }
@@ -1864,7 +1863,6 @@ doc = false
 "futures-channel-0_3_32" = { package = "futures-channel", version = "^0.3.32", default-features = false, features = ["alloc", "default", "futures-sink", "sink", "std"] }
 "futures-core-0_3_32" = { package = "futures-core", version = "^0.3.32", default-features = false, features = ["alloc", "default", "std", "unstable"] }
 "futures-executor-0_3_32" = { package = "futures-executor", version = "^0.3.32", default-features = false, features = ["default", "std"] }
-"futures-intrusive-0_5_0" = { package = "futures-intrusive", version = "^0.5.0", default-features = false, features = ["alloc", "default", "parking_lot", "std"] }
 "futures-io-0_3_32" = { package = "futures-io", version = "^0.3.32", default-features = false, features = ["default", "std"] }
 "futures-lite-2_6_1" = { package = "futures-lite", version = "^2.6.1", default-features = false, features = ["alloc", "default", "fastrand", "futures-io", "parking", "race", "std"] }
 "futures-macro-0_3_32" = { package = "futures-macro", version = "^0.3.32", default-features = false, features = [] }
@@ -1876,7 +1874,7 @@ doc = false
 "g2poly-1_2_2" = { package = "g2poly", version = "^1.2.2", default-features = false, features = [] }
 "genawaiter-proc-macro-0_99_1" = { package = "genawaiter-proc-macro", path = "../../../vendor/genawaiter-proc-macro", default-features = false, features = [] }
 "generic-array-0_14_7" = { package = "generic-array", version = "^0.14.7", default-features = false, features = ["more_lengths", "zeroize"] }
-"generic-array-1_4_5" = { package = "generic-array", version = "^1.4.5", default-features = false, features = ["compat-0_14"] }
+"generic-array-1_4_5" = { package = "generic-array", version = "^1.4.5", default-features = false, features = [] }
 "gethostname-1_1_0" = { package = "gethostname", version = "^1.1.0", default-features = false, features = [] }
 "getrandom-0_2_17" = { package = "getrandom", version = "^0.2.17", default-features = false, features = ["std"] }
 "getrandom-0_3_4" = { package = "getrandom", version = "^0.3.4", default-features = false, features = ["std"] }
@@ -1921,9 +1919,9 @@ doc = false
 "hex-literal-1_1_0" = { package = "hex-literal", version = "^1.1.0", default-features = false, features = [] }
 "hexane-1_0_0-alpha_5" = { package = "hexane", version = "^1.0.0-alpha.5", default-features = false, features = [] }
 "hexf-parse-0_2_1" = { package = "hexf-parse", version = "^0.2.1", default-features = false, features = [] }
-"hickory-net-0_26_1" = { package = "hickory-net", version = "^0.26.1", default-features = false, features = ["__https", "__tls", "https-ring", "tls-ring", "tokio"] }
-"hickory-proto-0_26_2" = { package = "hickory-proto", version = "^0.26.2", default-features = false, features = ["access-control", "std"] }
-"hickory-resolver-0_26_1" = { package = "hickory-resolver", version = "^0.26.1", default-features = false, features = ["__https", "__tls", "default", "https-ring", "system-config", "tokio"] }
+"hickory-net-0_26_3" = { package = "hickory-net", version = "^0.26.3", default-features = false, features = ["__https", "__tls", "https-ring", "tls-ring", "tokio"] }
+"hickory-proto-0_26_3" = { package = "hickory-proto", version = "^0.26.3", default-features = false, features = ["access-control", "std"] }
+"hickory-resolver-0_26_3" = { package = "hickory-resolver", version = "^0.26.3", default-features = false, features = ["__https", "__tls", "default", "https-ring", "system-config", "tokio"] }
 "hkdf-0_12_4" = { package = "hkdf", version = "^0.12.4", default-features = false, features = [] }
 "hkdf-0_13_0" = { package = "hkdf", version = "^0.13.0", default-features = false, features = [] }
 "hmac-0_12_1" = { package = "hmac", version = "^0.12.1", default-features = false, features = ["reset"] }
@@ -2229,7 +2227,7 @@ doc = false
 "runtime-identity" = { path = "../../../crates/runtime/runtime-identity", default-features = false, features = [] }
 "runtime-portal" = { path = "../../../crates/runtime/runtime-portal", default-features = false, features = [] }
 "rusqlite-0_41_1" = { package = "rusqlite", version = "^0.41.1", default-features = false, features = ["bundled", "hooks", "modern_sqlite", "wal"] }
-"russh-0_63_3" = { package = "russh", version = "^0.63.3", default-features = false, features = ["flate2", "ring"] }
+"russh-0_65_1" = { package = "russh", version = "^0.65.1", default-features = false, features = ["flate2", "ring"] }
 "russh-cryptovec-0_62_0" = { package = "russh-cryptovec", version = "^0.62.0", default-features = false, features = ["ssh-encoding"] }
 "russh-util-0_52_0" = { package = "russh-util", version = "^0.52.0", default-features = false, features = [] }
 "rustc-hash-1_1_0" = { package = "rustc-hash", version = "^1.1.0", default-features = false, features = [] }
@@ -2854,7 +2852,7 @@ doc = false
 "crossbeam-utils-0_8_21" = { package = "crossbeam-utils", version = "^0.8.21", default-features = false, features = ["default", "std"] }
 "crunchy-0_2_4" = { package = "crunchy", version = "^0.2.4", default-features = false, features = ["default", "limit_128"] }
 "crypto-bigint-0_5_5" = { package = "crypto-bigint", version = "^0.5.5", default-features = false, features = ["generic-array", "rand_core", "zeroize"] }
-"crypto-bigint-0_7_6" = { package = "crypto-bigint", version = "^0.7.6", default-features = false, features = ["alloc", "default", "getrandom", "hybrid-array", "rand_core", "subtle", "zeroize"] }
+"crypto-bigint-0_7_11" = { package = "crypto-bigint", version = "^0.7.11", default-features = false, features = ["alloc", "default", "getrandom", "hybrid-array", "rand_core", "subtle", "zeroize"] }
 "crypto-common-0_1_7" = { package = "crypto-common", version = "^0.1.7", default-features = false, features = ["getrandom", "rand_core", "std"] }
 "crypto-common-0_2_2" = { package = "crypto-common", version = "^0.2.2", default-features = false, features = ["getrandom", "rand_core", "zeroize"] }
 "crypto-primes-0_7_2" = { package = "crypto-primes", version = "^0.7.2", default-features = false, features = [] }
@@ -2862,7 +2860,7 @@ doc = false
 "csv-core-0_1_13" = { package = "csv-core", version = "^0.1.13", default-features = false, features = ["default"] }
 "ctr-0_10_1" = { package = "ctr", version = "^0.10.1", default-features = false, features = ["zeroize"] }
 "ctr-0_9_2" = { package = "ctr", version = "^0.9.2", default-features = false, features = [] }
-"ctutils-0_4_5" = { package = "ctutils", version = "^0.4.5", default-features = false, features = ["subtle"] }
+"ctutils-0_4_8" = { package = "ctutils", version = "^0.4.8", default-features = false, features = ["subtle"] }
 "cursor-icon-1_2_0" = { package = "cursor-icon", version = "^1.2.0", default-features = false, features = ["alloc", "default", "std"] }
 "curve25519-dalek-4_1_3" = { package = "curve25519-dalek", version = "^4.1.3", default-features = false, features = ["alloc", "default", "digest", "precomputed-tables", "rand_core", "zeroize"] }
 "curve25519-dalek-5_0_0" = { package = "curve25519-dalek", version = "^5.0.0", default-features = false, features = ["alloc", "default", "digest", "precomputed-tables", "rand_core", "serde", "zeroize"] }
@@ -2995,7 +2993,6 @@ doc = false
 "futures-channel-0_3_32" = { package = "futures-channel", version = "^0.3.32", default-features = false, features = ["alloc", "default", "futures-sink", "sink", "std"] }
 "futures-core-0_3_32" = { package = "futures-core", version = "^0.3.32", default-features = false, features = ["alloc", "default", "std", "unstable"] }
 "futures-executor-0_3_32" = { package = "futures-executor", version = "^0.3.32", default-features = false, features = ["default", "std"] }
-"futures-intrusive-0_5_0" = { package = "futures-intrusive", version = "^0.5.0", default-features = false, features = ["alloc", "default", "parking_lot", "std"] }
 "futures-io-0_3_32" = { package = "futures-io", version = "^0.3.32", default-features = false, features = ["default", "std"] }
 "futures-lite-2_6_1" = { package = "futures-lite", version = "^2.6.1", default-features = false, features = ["alloc", "default", "fastrand", "futures-io", "parking", "race", "std"] }
 "futures-sink-0_3_32" = { package = "futures-sink", version = "^0.3.32", default-features = false, features = ["alloc", "default", "std"] }
@@ -3077,9 +3074,9 @@ doc = false
 "hex-literal-1_1_0" = { package = "hex-literal", version = "^1.1.0", default-features = false, features = [] }
 "hexane-1_0_0-alpha_5" = { package = "hexane", version = "^1.0.0-alpha.5", default-features = false, features = [] }
 "hexf-parse-0_2_1" = { package = "hexf-parse", version = "^0.2.1", default-features = false, features = [] }
-"hickory-net-0_26_1" = { package = "hickory-net", version = "^0.26.1", default-features = false, features = ["__https", "__tls", "https-ring", "tls-ring", "tokio"] }
-"hickory-proto-0_26_2" = { package = "hickory-proto", version = "^0.26.2", default-features = false, features = ["access-control", "std"] }
-"hickory-resolver-0_26_1" = { package = "hickory-resolver", version = "^0.26.1", default-features = false, features = ["__https", "__tls", "default", "https-ring", "system-config", "tokio"] }
+"hickory-net-0_26_3" = { package = "hickory-net", version = "^0.26.3", default-features = false, features = ["__https", "__tls", "https-ring", "tls-ring", "tokio"] }
+"hickory-proto-0_26_3" = { package = "hickory-proto", version = "^0.26.3", default-features = false, features = ["access-control", "std"] }
+"hickory-resolver-0_26_3" = { package = "hickory-resolver", version = "^0.26.3", default-features = false, features = ["__https", "__tls", "default", "https-ring", "system-config", "tokio"] }
 "hkdf-0_12_4" = { package = "hkdf", version = "^0.12.4", default-features = false, features = [] }
 "hkdf-0_13_0" = { package = "hkdf", version = "^0.13.0", default-features = false, features = [] }
 "hmac-0_12_1" = { package = "hmac", version = "^0.12.1", default-features = false, features = ["reset"] }
@@ -3159,7 +3156,7 @@ doc = false
 "iri-string-0_7_10" = { package = "iri-string", version = "^0.7.10", default-features = false, features = ["alloc", "default", "std"] }
 "iroh-1_0_3" = { package = "iroh", path = "../../../vendor/iroh", default-features = false, features = ["default", "fast-apple-datapath", "metrics", "portmapper", "tls-ring"] }
 "iroh-base-1_0_3" = { package = "iroh-base", version = "^1.0.3", default-features = false, features = ["default", "key", "relay"] }
-"iroh-blobs-0_103_0" = { package = "iroh-blobs", version = "^0.103.0", default-features = false, features = ["fs-store", "hide-proto-docs"] }
+"iroh-blobs-0_103_1" = { package = "iroh-blobs", version = "^0.103.1", default-features = false, features = ["fs-store", "hide-proto-docs"] }
 "iroh-dns-1_0_3" = { package = "iroh-dns", version = "^1.0.3", default-features = false, features = ["default", "tls-ring"] }
 "iroh-io-0_6_2" = { package = "iroh-io", version = "^0.6.2", default-features = false, features = ["default", "smallvec", "tokio", "tokio-io"] }
 "iroh-metrics-1_0_1" = { package = "iroh-metrics", version = "^1.0.1", default-features = false, features = ["default", "metrics", "service"] }
@@ -3527,7 +3524,7 @@ doc = false
 "runtime-portal" = { path = "../../../crates/runtime/runtime-portal", default-features = false, features = [] }
 "runtime-update" = { path = "../../../crates/packaging/runtime-update", default-features = false, features = [] }
 "rusqlite-0_41_1" = { package = "rusqlite", version = "^0.41.1", default-features = false, features = ["bundled", "hooks", "modern_sqlite", "wal"] }
-"russh-0_63_3" = { package = "russh", version = "^0.63.3", default-features = false, features = ["flate2", "ring"] }
+"russh-0_65_1" = { package = "russh", version = "^0.65.1", default-features = false, features = ["flate2", "ring"] }
 "russh-cryptovec-0_62_0" = { package = "russh-cryptovec", version = "^0.62.0", default-features = false, features = ["ssh-encoding"] }
 "russh-util-0_52_0" = { package = "russh-util", version = "^0.52.0", default-features = false, features = [] }
 "rust_decimal-1_42_1" = { package = "rust_decimal", version = "^1.42.1", default-features = false, features = ["maths"] }
@@ -4363,12 +4360,12 @@ doc = false
 "crossbeam-utils-0_8_21" = { package = "crossbeam-utils", version = "^0.8.21", default-features = false, features = ["default", "std"] }
 "crunchy-0_2_4" = { package = "crunchy", version = "^0.2.4", default-features = false, features = ["default", "limit_128"] }
 "crypto-bigint-0_5_5" = { package = "crypto-bigint", version = "^0.5.5", default-features = false, features = ["generic-array", "rand_core", "zeroize"] }
-"crypto-bigint-0_7_6" = { package = "crypto-bigint", version = "^0.7.6", default-features = false, features = ["alloc", "default", "getrandom", "hybrid-array", "rand_core", "subtle", "zeroize"] }
+"crypto-bigint-0_7_11" = { package = "crypto-bigint", version = "^0.7.11", default-features = false, features = ["alloc", "default", "getrandom", "hybrid-array", "rand_core", "subtle", "zeroize"] }
 "crypto-common-0_1_7" = { package = "crypto-common", version = "^0.1.7", default-features = false, features = ["getrandom", "rand_core", "std"] }
 "crypto-common-0_2_2" = { package = "crypto-common", version = "^0.2.2", default-features = false, features = ["getrandom", "rand_core", "zeroize"] }
 "ctr-0_10_1" = { package = "ctr", version = "^0.10.1", default-features = false, features = ["zeroize"] }
 "ctr-0_9_2" = { package = "ctr", version = "^0.9.2", default-features = false, features = [] }
-"ctutils-0_4_5" = { package = "ctutils", version = "^0.4.5", default-features = false, features = ["subtle"] }
+"ctutils-0_4_8" = { package = "ctutils", version = "^0.4.8", default-features = false, features = ["subtle"] }
 "cursor-icon-1_2_0" = { package = "cursor-icon", version = "^1.2.0", default-features = false, features = ["alloc", "default", "std"] }
 "curve25519-dalek-4_1_3" = { package = "curve25519-dalek", version = "^4.1.3", default-features = false, features = ["alloc", "default", "digest", "precomputed-tables", "rand_core", "zeroize"] }
 "curve25519-dalek-5_0_0" = { package = "curve25519-dalek", version = "^5.0.0", default-features = false, features = ["alloc", "default", "digest", "precomputed-tables", "rand_core", "serde", "zeroize"] }
@@ -4479,7 +4476,6 @@ doc = false
 "futures-channel-0_3_32" = { package = "futures-channel", version = "^0.3.32", default-features = false, features = ["alloc", "default", "futures-sink", "sink", "std"] }
 "futures-core-0_3_32" = { package = "futures-core", version = "^0.3.32", default-features = false, features = ["alloc", "default", "std", "unstable"] }
 "futures-executor-0_3_32" = { package = "futures-executor", version = "^0.3.32", default-features = false, features = ["default", "std"] }
-"futures-intrusive-0_5_0" = { package = "futures-intrusive", version = "^0.5.0", default-features = false, features = ["alloc", "default", "parking_lot", "std"] }
 "futures-io-0_3_32" = { package = "futures-io", version = "^0.3.32", default-features = false, features = ["default", "std"] }
 "futures-lite-2_6_1" = { package = "futures-lite", version = "^2.6.1", default-features = false, features = ["alloc", "default", "fastrand", "futures-io", "parking", "race", "std"] }
 "futures-macro-0_3_32" = { package = "futures-macro", version = "^0.3.32", default-features = false, features = [] }
@@ -4536,9 +4532,9 @@ doc = false
 "hex-literal-1_1_0" = { package = "hex-literal", version = "^1.1.0", default-features = false, features = [] }
 "hexane-1_0_0-alpha_5" = { package = "hexane", version = "^1.0.0-alpha.5", default-features = false, features = [] }
 "hexf-parse-0_2_1" = { package = "hexf-parse", version = "^0.2.1", default-features = false, features = [] }
-"hickory-net-0_26_1" = { package = "hickory-net", version = "^0.26.1", default-features = false, features = ["__https", "__tls", "https-ring", "tls-ring", "tokio"] }
-"hickory-proto-0_26_2" = { package = "hickory-proto", version = "^0.26.2", default-features = false, features = ["access-control", "std"] }
-"hickory-resolver-0_26_1" = { package = "hickory-resolver", version = "^0.26.1", default-features = false, features = ["__https", "__tls", "default", "https-ring", "system-config", "tokio"] }
+"hickory-net-0_26_3" = { package = "hickory-net", version = "^0.26.3", default-features = false, features = ["__https", "__tls", "https-ring", "tls-ring", "tokio"] }
+"hickory-proto-0_26_3" = { package = "hickory-proto", version = "^0.26.3", default-features = false, features = ["access-control", "std"] }
+"hickory-resolver-0_26_3" = { package = "hickory-resolver", version = "^0.26.3", default-features = false, features = ["__https", "__tls", "default", "https-ring", "system-config", "tokio"] }
 "hkdf-0_12_4" = { package = "hkdf", version = "^0.12.4", default-features = false, features = [] }
 "hkdf-0_13_0" = { package = "hkdf", version = "^0.13.0", default-features = false, features = [] }
 "hmac-0_12_1" = { package = "hmac", version = "^0.12.1", default-features = false, features = ["reset"] }
@@ -4844,7 +4840,7 @@ doc = false
 "runtime-identity" = { path = "../../../crates/runtime/runtime-identity", default-features = false, features = [] }
 "runtime-portal" = { path = "../../../crates/runtime/runtime-portal", default-features = false, features = [] }
 "rusqlite-0_41_1" = { package = "rusqlite", version = "^0.41.1", default-features = false, features = ["bundled", "hooks", "modern_sqlite", "wal"] }
-"russh-0_63_3" = { package = "russh", version = "^0.63.3", default-features = false, features = ["flate2", "ring"] }
+"russh-0_65_1" = { package = "russh", version = "^0.65.1", default-features = false, features = ["flate2", "ring"] }
 "russh-cryptovec-0_62_0" = { package = "russh-cryptovec", version = "^0.62.0", default-features = false, features = ["ssh-encoding"] }
 "russh-util-0_52_0" = { package = "russh-util", version = "^0.52.0", default-features = false, features = [] }
 "rustc-hash-1_1_0" = { package = "rustc-hash", version = "^1.1.0", default-features = false, features = [] }

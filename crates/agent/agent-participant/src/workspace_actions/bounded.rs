@@ -494,9 +494,10 @@ impl Worker {
         let unavailable = |reason: String| ActionHostError::Unavailable { reason };
         let policy = self.policy_at(workspace_id, who, route)?;
         // Where the host's own mount holds it, so a part is held beside the
-        // same record for everyone.
-        self.mount(route, state)
-            .map_err(|_| ActionHostError::UnknownAction)?;
+        // same record for everyone. Why it does not mount is the caller's to
+        // read: a record this host cannot open is unavailable now, never a
+        // record that does not exist.
+        self.mount(route, state).map_err(unavailable)?;
         let holder = self.holder_of(route);
         let key = (holder.clone(), who.person.clone(), who.agent.clone());
         self.clock = self.clock.wrapping_add(1);
@@ -519,9 +520,7 @@ impl Worker {
                 };
                 self.bounded.remove(&oldest);
             }
-            let (bytes, heads) = state
-                .document(&holder)
-                .map_err(|_| ActionHostError::UnknownAction)?;
+            let (bytes, heads) = state.document(&holder).map_err(unavailable)?;
             let app = ConfinedReplica::open(
                 &self.catalogue,
                 &holder.app_id,
@@ -556,9 +555,7 @@ impl Worker {
             .ok_or_else(|| unavailable("the record did not mount".into()))?;
         held.held.used = clock;
         if holder != *route && !held.held.parts.contains_key(route) {
-            let (part, heads) = state
-                .document(route)
-                .map_err(|_| ActionHostError::UnknownAction)?;
+            let (part, heads) = state.document(route).map_err(unavailable)?;
             held.held
                 .app
                 .apply_record(

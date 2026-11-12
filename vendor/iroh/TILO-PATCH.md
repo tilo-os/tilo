@@ -11,7 +11,7 @@ when this was written, has the same code in every place patched. Pinned by
 
 Tilo binds every endpoint with an empty relay map until someone could need to
 dial the device, and empties it again five minutes after the last
-collaborator leaves (`crates/session/shell/src/network/reachability.rs`,
+collaborator leaves (`crates/system/fs/src/reachability.rs`,
 tilo-fs's `bind_endpoint_with_key`). With no relays a net report is skipped
 (`DirectAddrUpdateState::run`), yet the endpoint kept waking.
 

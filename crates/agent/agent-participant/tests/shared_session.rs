@@ -32,18 +32,6 @@
               driven on the test's own thread (the agent's apps are not Send)"
 )]
 
-#[path = "../../../session/client/tests/support/participant.rs"]
-mod participant;
-#[path = "../../../session/client/tests/support/mod.rs"]
-mod support;
-
-mod common;
-
-// Agents hold each record in a confined app worker (this binary, started
-// again), whose changes are admitted through the Automerge isolate.
-tilo_agent_participant::app_worker!();
-tilo_automerge_isolate::test_worker!();
-
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -79,8 +67,8 @@ use tilo_user_identity::{
     issue_device_cert,
 };
 
-use common::catalogue;
-use support::{Device, TestHost, WORKSPACE, enrol, ready, start_peer, wait_for, workspace};
+use crate::common::catalogue;
+use crate::support::{Device, TestHost, WORKSPACE, enrol, ready, start_peer, wait_for, workspace};
 
 /// Plans the task `gated` as a slow model would: only once its steps arrive
 /// on `release`, noting when the plan was ready. Anything else is planned as
@@ -325,7 +313,7 @@ async fn receive_until(
     }
 }
 
-fn body(app: &impl common::Body) -> String {
+fn body(app: &impl crate::common::Body) -> String {
     app.body()
 }
 
@@ -335,7 +323,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let user = root.verifying_key().to_bytes();
     let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
 
     // The supervisor hands each spawned agent to this thread, which drives
     // its participant (in a host, its own thread does).
@@ -353,7 +341,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     );
     let host = start_host(&root, &host_device, state.path(), &supervisor).await;
     let host_cert: DeviceCert = host_device.cert.clone();
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&host.relay, &root).await;
 
     // 1. The agent's identity: its own key, certified under the root by the
     // laptop (consent), and a root-signed delegation the host registers.
@@ -416,7 +404,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     browser.join_placed(WORKSPACE, "Workspace").unwrap();
     ready(&[&browser]).await;
     let catalogue = catalogue();
-    let mut page = common::open(SCRATCHPAD, "ada", ReplicaActor::Owner, Seed::New).unwrap();
+    let mut page = crate::common::open(SCRATCHPAD, "ada", ReplicaActor::Owner, Seed::New).unwrap();
     // Scratchpad keeps the workspace's one record: its package primary,
     // which travels as the route without a record id.
     let route = DocumentRoute {
@@ -436,7 +424,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
 
     // 3. The browser spawns the agent through the host, with a task that
     // edits the page's record through Scratchpad's own field edit.
-    let (note, arguments) = common::scratchpad_body("Drafted by the agent");
+    let (note, arguments) = crate::common::scratchpad_body("Drafted by the agent");
     let task = serde_json::json!([{
         "app": SCRATCHPAD,
         "record": route.record,
@@ -544,7 +532,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         )
         .await,
     );
-    let (note, arguments) = common::scratchpad_body("Second draft");
+    let (note, arguments) = crate::common::scratchpad_body("Second draft");
     let second = serde_json::json!({
         "app": SCRATCHPAD,
         "record": route.record,
@@ -611,7 +599,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     // between them (a loop on a 20 ms interval took one step per pump).
     let steps: Vec<serde_json::Value> = (1..=10)
         .map(|n| {
-            let (note, arguments) = common::scratchpad_body(&format!("Step {n} of ten"));
+            let (note, arguments) = crate::common::scratchpad_body(&format!("Step {n} of ten"));
             serde_json::json!({
                 "app": SCRATCHPAD,
                 "record": route.record,
@@ -658,7 +646,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     // 9. A plan that takes a while (a model call) is made beside the loop:
     // the loop goes on pumping meanwhile, and the plan's first step runs as
     // soon as it is ready.
-    let (note, arguments) = common::scratchpad_body("Planned beside the loop");
+    let (note, arguments) = crate::common::scratchpad_body("Planned beside the loop");
     let planned_steps = serde_json::json!([{
         "app": SCRATCHPAD,
         "record": route.record,
@@ -723,7 +711,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     // task's late plan is dropped. Each step goes through the agent's
     // action door while the loop pumps.
     let gated_edit = |text: &str| {
-        let (note, arguments) = common::scratchpad_body(text);
+        let (note, arguments) = crate::common::scratchpad_body(text);
         serde_json::json!([{
             "app": SCRATCHPAD,
             "record": route.record,
@@ -857,7 +845,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         .retained(workspace())
         .await
         .unwrap();
-    let (readable, sealed) = common::member_documents(
+    let (readable, sealed) = crate::common::member_documents(
         retained
             .into_iter()
             .map(|retained| (retained.author, retained.body)),

@@ -41,3 +41,6 @@ typst-a11y-live-preview = Live gerenderte Vorschau
 ## Fenster- und Barrierefreiheits-Texte
 typst-editor-a11y-outline = Gliederung
 typst-editor-page-of = Seite { $page } von { $pages }
+
+## Die Problemliste, wenn es nichts zu melden gibt
+typst-no-problems = Das Dokument wurde ohne Probleme übersetzt.

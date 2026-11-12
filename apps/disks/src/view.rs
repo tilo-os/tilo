@@ -102,7 +102,7 @@ fn action_name(action: ActionKind, offer: Offer) -> String {
         // A glyph in the row is named by what it does; a menu entry by its
         // verb.
         Offer::Available | Offer::Hidden if in_row(action) => action.describe().to_owned(),
-        Offer::Available | Offer::Hidden => action.label().to_owned(),
+        Offer::Available | Offer::Hidden => action.label(),
     }
 }
 
@@ -194,14 +194,14 @@ fn operations_menu(
         if mounted {
             let open = intents.clone();
             entries.push(
-                MenuEntry::new("Open in Files", move || {
+                MenuEntry::new(CATALOG.t("disks-open-in-files"), move || {
                     open.push(Intent::OpenInFiles(partition));
                 })
                 .with_icon(Icon::Folder),
             );
             let usage = intents.clone();
             entries.push(
-                MenuEntry::new("How much space is left?", move || {
+                MenuEntry::new(CATALOG.t("disks-space-left"), move || {
                     usage.push(Intent::DiskUsage(partition));
                 })
                 .with_icon(Icon::BarChart),

@@ -28,10 +28,6 @@ use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
-mod common;
-
-tilo_automerge_isolate::test_worker!();
-
 /// A device at `key` under `root`.
 fn device(root: u8, key: u8, label: &str) -> (SigningKey, SigningKey, DeviceCert) {
     let root = SigningKey::from_bytes(&[root; 32]);
@@ -577,7 +573,7 @@ async fn an_invitation_is_listed_and_cancelled_from_the_issuers_device() {
 /// holds, after the link alone, what the other device holds, on disk too.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_link_admits_into_the_owner_and_the_owner_publishes_it() {
-    use common::{addr, localhost_endpoint};
+    use crate::common::{addr, localhost_endpoint};
     use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync};
 
     let directory = tempfile::tempdir().unwrap();

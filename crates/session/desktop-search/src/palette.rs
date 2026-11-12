@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tilo_actions::ResourceSpec;
 use ui::{ActionPalette, CommandEntry};
 
-use crate::model::{Held, Hit, LaunchPlace, SearchStream, Source, Target};
+use crate::model::{Held, Hit, SearchStream, Source, Target};
 use crate::providers::{
     Actions, Answers, AppEntry, Applications, Captures, CommandSpec, Commands, Content, Published,
     PublishedActions, Recents, Switches, WebSearch, WindowEntry, Windows,
@@ -1046,15 +1046,7 @@ impl DesktopSearch {
         // reason it stood under goes with it.
         self.refusal = None;
         let mut target = hit.target;
-        // The place the person asked the window to go with the modifier
-        // they held as they chose: the row said what it would be.
-        if let (Target::Launch { place, .. }, Some(asked)) = (&mut target, held) {
-            *place = match asked {
-                ActivationModifier::Shift => LaunchPlace::TabHere,
-                ActivationModifier::Ctrl => LaunchPlace::Beside,
-                ActivationModifier::Alt => LaunchPlace::Focus,
-            };
-        }
+        target.place_by(held);
         let mut toggles = false;
         match &mut target {
             Target::Invoke(invoke) => {
@@ -1179,6 +1171,7 @@ fn switches(sources: &Sources, all: &[&dyn Source]) -> Option<Switches> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::LaunchPlace;
 
     mod early_enter;
     use ui::search::AppScope;

@@ -55,7 +55,25 @@ impl Disks {
     }
 }
 
-#[resource(kind = "disks.system", label = "Storage devices")]
+impl Disks {
+    /// What the record holds: the names the person gives their drives.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "disks.system",
+    read_content = Disks::read_document
+)]
 impl Disks {
     /// Name a drive, or forget its name.
     ///
@@ -103,32 +121,32 @@ pub enum DisksEffect {
         tab: String,
     },
     /// Mount.
-    #[effect(job)]
+    #[effect(job, label = "disks-action-mount")]
     Mount {
         #[param("Kernel name of the partition")]
         device: String,
     },
     /// Unmount.
-    #[effect(job)]
+    #[effect(job, label = "disks-action-unmount")]
     Unmount {
         #[param("Kernel name of the partition")]
         device: String,
     },
     /// Erase a drive or partition for good: every file on it is lost, and it
     /// starts again empty.
-    #[effect(job, destructive, returns, label = "Format")]
+    #[effect(job, destructive, returns)]
     Format {
         #[param("Kernel name of the drive or partition to erase")]
         device: String,
     },
     /// Benchmark.
-    #[effect(job, returns)]
+    #[effect(job, returns, label = "disks-action-benchmark")]
     Benchmark {
         #[param("Kernel name of the drive or partition")]
         device: String,
     },
     /// Eject.
-    #[effect(job)]
+    #[effect(job, label = "disks-action-eject")]
     Eject {
         #[param("Kernel name of the removable drive")]
         device: String,
@@ -137,14 +155,14 @@ pub enum DisksEffect {
     ///
     /// A mount is only useful once its files are reachable: this is the way
     /// there, without copying the path out of the row.
-    #[effect(job, returns, label = "Open in Files")]
+    #[effect(job, returns, label = "disks-open-in-files")]
     OpenFolder {
         #[param("Kernel name of the mounted partition")]
         device: String,
     },
     /// Show how much room a mounted filesystem's files take up, in the Disk
     /// Usage analyzer.
-    #[effect(job, returns, label = "Show disk usage")]
+    #[effect(job, returns)]
     DiskUsage {
         #[param("Kernel name of the mounted partition")]
         device: String,
@@ -310,13 +328,13 @@ fn partition_row(drive: &Drive, part: &Partition) -> LiveRow {
         &DisksEffect::OpenFolder {
             device: part.name.clone(),
         },
-        "Open in Files",
+        &CATALOG.t("disks-open-in-files"),
     ))
     .operation(row_view_operation(
         &DisksEffect::DiskUsage {
             device: part.name.clone(),
         },
-        "How much space is left?",
+        &CATALOG.t("disks-space-left"),
     ))
 }
 

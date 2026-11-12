@@ -24,8 +24,6 @@
               comparison itself"
 )]
 
-mod support;
-
 use tilolang_app::app::TlApp;
 use ui::framework::testing::TestApp;
 use ui::headless::InspectionNode;
@@ -60,7 +58,7 @@ fn at_now() -> ui::time::Instant {
 /// The scene the scenario stages in a window a person drives: the same fixtures, with the
 /// theme's motion playing as it plays live, at rest.
 fn staged(scenario: &str) -> TestApp<TlApp> {
-    support::installed("tasks");
+    crate::support::installed("tasks");
     let mut app = TestApp::<TlApp>::drive_at(scenario, DESKTOP).expect("the scenario stages");
     set_at(ui::time::Instant::now());
     settle(&mut app);

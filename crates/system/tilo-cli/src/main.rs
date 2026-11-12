@@ -540,8 +540,8 @@ fn device_examples(here: Here) -> String {
     if (here.has)("tilo-vm") {
         lines.extend([
             (
-                "tilo device swap shell",
-                "Put this checkout's shell onto your slot",
+                "tilo device swap tilo-session",
+                "Put this checkout's session onto your slot",
             ),
             ("tilo device shot", "Save a picture of your slot's screen"),
         ]);
@@ -2139,12 +2139,12 @@ mod tests {
         );
         assert_eq!(args, ["x.tapp", "--help"]);
         let matches = command_here(EVERYWHERE)
-            .try_get_matches_from(["tilo", "device", "swap", "shell", "--target", "lab"])
+            .try_get_matches_from(["tilo", "device", "swap", "tilo-session", "--target", "lab"])
             .expect("device swap parses");
         let (_, device) = matches.subcommand().expect("a noun");
         let (verb, args) = nouns::picked(device, nouns::DEVICE).expect("a handed-on verb");
         assert_eq!((verb.program, verb.prefix), ("tilo-vm", &["swap"][..]));
-        assert_eq!(args, ["shell", "--target", "lab"]);
+        assert_eq!(args, ["tilo-session", "--target", "lab"]);
         let matches = command_here(EVERYWHERE)
             .try_get_matches_from(["tilo", "device", "status"])
             .expect("device status parses");

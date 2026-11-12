@@ -109,23 +109,20 @@ pub enum View {
 /// must not offer online search or sources it cannot serve.
 const ONLINE_CATALOGUE: bool = cfg!(feature = "live");
 
-/// What Home says before the person has music or a source: it invites
-/// connecting one (a folder of their own files, Spotify, `YouTube` Music), and
-/// fetches nothing until they do.
-const HOME_EMPTY_TITLE: &str = "Add music";
-const HOME_EMPTY_MESSAGE: &str =
-    "Choose Open audio file to play a file from this device, or connect Spotify or YouTube Music.";
-const HOME_EMPTY_ACTION: &str = "Connect a source";
+/// Catalogue messages for what Home says before the person has music or a
+/// source: it invites connecting one (a folder of their own files, Spotify,
+/// `YouTube` Music), and fetches nothing until they do.
+const HOME_EMPTY_TITLE: &str = "music-home-empty-title";
+const HOME_EMPTY_MESSAGE: &str = "music-home-empty-message";
+const HOME_EMPTY_ACTION: &str = "music-home-empty-action";
 
-/// The first-run Home message, and whether searching is worth offering.
+/// The catalogue message for the first-run Home state, and whether searching
+/// is worth offering.
 fn first_run_copy(online: bool) -> (&'static str, bool) {
     if online {
-        ("Find a song, album or artist, or open an audio file.", true)
+        ("music-first-run-online", true)
     } else {
-        (
-            "This version can't find music online yet. Choose Open audio file to play a file from this device.",
-            false,
-        )
+        ("music-first-run-offline", false)
     }
 }
 

@@ -332,6 +332,7 @@ fn hosted_pump_inbound_event_refreshes_remote_document_state() {
     fixture.events.borrow_mut().push(CollabEvent::Context {
         collaborators: vec![],
         permissions: vec![],
+        apps: Vec::new(),
     });
     let report = fixture.pump();
     assert!(report.synced && report.published);

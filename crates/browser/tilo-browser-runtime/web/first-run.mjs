@@ -788,6 +788,22 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
   return controller;
 }
 
+/** Write `text` (the prompt an agent is given) into `element` so it wraps only between its words:
+ * each word stands in a span the page keeps whole (`.fr-word`), so a flag or a URL never breaks at
+ * its own hyphen or slash ("curl -" / "fsSL"). The element's text is `text` exactly, so what is
+ * copied from it is the prompt. */
+export function showPrompt(element, text) {
+  const document = element.ownerDocument;
+  const parts = String(text ?? '').split(/( +)/).filter(Boolean);
+  element.replaceChildren(...parts.map(part => {
+    if (/^ +$/.test(part)) return document.createTextNode(part);
+    const word = document.createElement('span');
+    word.className = 'fr-word';
+    word.textContent = part;
+    return word;
+  }));
+}
+
 /** The screen in `document` (index.html's `#first-run`): what each state
  * shows, said once to screen readers through its status line. */
 export function domView(document) {
@@ -807,7 +823,7 @@ export function domView(document) {
       // Whether a code is ready, for tests and tools driving the page.
       $('first-run').dataset[kind === 'setup' ? 'setup' : 'signIn'] = text ? 'ready' : problem ? 'failed' : 'waiting';
       if (kind === 'setup') {
-        $('first-run-offer').textContent = text ?? '';
+        showPrompt($('first-run-offer'), text);
         $('first-run-offer-retry').hidden = !problem;
       }
       const line = $(notes[kind]);
@@ -823,7 +839,7 @@ export function domView(document) {
     },
     waiting(mode, {text = null, copied = false, manual = false} = {}) {
       state('waiting', mode);
-      if (text !== null) $('first-run-prompt').textContent = text;
+      if (text !== null) showPrompt($('first-run-prompt'), text);
       for (const id of ['first-run-problem', 'first-run-left', 'first-run-net']) $(id).textContent = '';
       $('first-run-steps').replaceChildren();
       $('first-run').dataset.agentFailed = 'false';
@@ -865,7 +881,7 @@ export function domView(document) {
     // The prompt ran out: the fresh one (`text`), or why there is none yet.
     expired(mode, {text = null, note = null} = {}) {
       state('expired', mode);
-      $('first-run-prompt').textContent = text ?? '';
+      showPrompt($('first-run-prompt'), text);
       $('first-run-problem').textContent = note ?? '';
       $('first-run-net').textContent = '';
       $('first-run').dataset.copied = 'false';

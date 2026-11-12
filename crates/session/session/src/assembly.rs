@@ -317,10 +317,12 @@ pub(crate) struct Shared {
     /// pass: the desk's reading of it, and the record noted beside the window
     /// in its workspace's layout.
     pub(crate) notes: std::sync::Arc<crate::continuations::Continuations>,
-    /// The engine revision the desk's copy of each workspace's people was
-    /// last taken from: what nothing new of a workspace's governance has
-    /// passed since.
-    pub(crate) membership_fed: Cell<Option<u64>>,
+    /// The engine revision, and the workspaces the desk showed, the desk's
+    /// copy of each workspace's people was last taken from: what nothing new
+    /// of a workspace's governance, and no workspace the desk did not show
+    /// before, has passed since.
+    pub(crate) membership_fed:
+        std::cell::RefCell<Option<(u64, Vec<tilo_desktop_model::WorkspaceId>)>>,
     /// What the loop does with the answers of async work it started (a signature, a commit into a
     /// workspace's record), on the pass after each landed.
     pub(crate) landings: Rc<crate::landing::Landings>,
@@ -442,6 +444,10 @@ pub struct Session {
     /// The workspace in front, as this pass last read it: a change is a
     /// switch to time.
     pub(crate) active_workspace: Option<u64>,
+    /// The workspace in front as the login's own programs read it, which
+    /// they join ([`crate::published_workspace`]).
+    #[cfg(target_os = "linux")]
+    pub(crate) published_workspace: crate::published_workspace::Published,
     /// The session's own actions, as the broker's steps: what each pass hands the rows it read.
     #[cfg(target_os = "linux")]
     pub(crate) published_steps: Option<std::sync::Arc<crate::session_actions::SessionActions>>,
@@ -597,12 +603,11 @@ pub struct Session {
     /// The app a process runs, for the windows it shows.
     #[cfg(target_os = "linux")]
     pub(crate) pids: std::collections::BTreeMap<u32, String>,
-    /// The serial of the icon the desk was last handed each window's own
-    /// artwork at, and which windows it was told of at all, so a window that
-    /// sets another icon is handed the new one and a window that closed lets
-    /// go of its own.
+    /// The key of the artwork the desk was last handed for each window, and
+    /// which windows it was told of at all, so a window that sets another
+    /// icon is handed the new one and a window that closed lets go of its own.
     #[cfg(target_os = "linux")]
-    pub(crate) window_artwork: std::collections::BTreeMap<u64, u64>,
+    pub(crate) window_artwork: std::collections::BTreeMap<u64, String>,
     /// The watch that keeps the notification policy current; dropping it
     /// stops the news.
     #[cfg(target_os = "linux")]

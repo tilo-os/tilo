@@ -229,6 +229,8 @@ case ${1:-} in
     test -s "$root/home/tilo/.cargo/bin/rustup"
     test -x "$root/usr/bin/tilo-session"
     test -x "$root/usr/libexec/tilo/browser-session"
+    test -x "$root/usr/libexec/tilo/apps-session"
+    test -x "$root/usr/bin/Xwayland"
     grep -q 'so\.tilo\.browser' "$root/usr/share/tilo-apps/registry.toml"
     test -x "$root/usr/lib/tilo-runtime/$(chromium_runtime_version)/lib/chromium/tilo-chromium-host"
     wrap_guest "$root" "$kernel" "$out" hosted-guest-image

@@ -3089,6 +3089,11 @@
           "name": "can_go_back",
           "doc": "Whether the content's Back goes back now (a drill-down the app keeps).",
           "type": "bool"
+        },
+        {
+          "name": "nothing_listed",
+          "doc": "The window has nothing at all to list: what stands in `content` is the window's one empty state, in place of the overview, the content and the inspector ([`NavShell::nothing_listed`]).",
+          "type": "bool"
         }
       ],
       "slots": [

@@ -181,10 +181,13 @@ pub enum Consent {
     /// Serve it as agent `agent`, confined to `workspace`, acting for `person`:
     /// the person who admitted it, whose own records it reads and whose
     /// authority bounds what it does (the lesser of theirs and the agent's).
+    /// `name` is what the person's desk calls it: what everything it writes
+    /// is shown by.
     Admit {
         workspace: String,
         agent: String,
         person: String,
+        name: String,
     },
     /// Serve it as `person` themselves, in `workspace`: a REPL the person admitted to act as
     /// them. What its programs do is theirs, attributed to them, within their own authority.
@@ -513,7 +516,8 @@ where
             workspace,
             agent,
             person,
-        } => (workspace, Some(agent), person),
+            name,
+        } => (workspace, Some((agent, name)), person),
         Consent::Person { workspace, person } => (workspace, None, person),
         Consent::Refuse(message) => {
             write_line(&mut stream, &error_reply(&id, &message));
@@ -536,7 +540,8 @@ where
     // whoever the connection acts as: the agent, or the person typing at a REPL.
     let run = format!("door-{}", uuid::Uuid::new_v4().simple());
     let server = match agent {
-        Some(agent) => crate::mcp::McpServer::for_agent(host, workspace, &agent, &person)
+        Some((agent, name)) => crate::mcp::McpServer::for_agent(host, workspace, &agent, &person)
+            .agent_named(&name)
             .with_agent_run(run, agent),
         None => crate::mcp::McpServer::for_person(host, workspace, &person).with_work_group(
             tilo_actions::WorkGroup {
@@ -840,6 +845,7 @@ mod tests {
                 workspace: "workspace".into(),
                 agent: "claude-code".into(),
                 person: "ada".into(),
+                name: "Claude Code".into(),
             },
         );
         served.join().unwrap().unwrap();
@@ -864,6 +870,7 @@ mod tests {
                 workspace: "workspace".into(),
                 agent: "claude-code".into(),
                 person: "ada".into(),
+                name: "Claude Code".into(),
             },
         );
         near.shutdown(std::net::Shutdown::Write).unwrap();
@@ -900,6 +907,7 @@ mod tests {
                 workspace: "workspace".into(),
                 agent: "claude-code".into(),
                 person: "ada".into(),
+                name: "Claude Code".into(),
             },
         );
         let reader = std::thread::spawn(move || {
@@ -934,6 +942,7 @@ mod tests {
                 workspace: "workspace".into(),
                 agent: "claude-code".into(),
                 person: "ada".into(),
+                name: "Claude Code".into(),
             },
         );
         near.shutdown(std::net::Shutdown::Write).unwrap();

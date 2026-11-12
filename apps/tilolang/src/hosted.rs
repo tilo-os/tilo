@@ -338,14 +338,13 @@ impl ui::component_lifecycle::HostIntents for HostedWindow {
     }
 }
 
-/// The window is named by what it shows: the page, the record, the place its instance's composed
-/// shell names in its content header. Two windows of the app read apart in the desktop's tabs, the
-/// switcher and assistive technology without either being opened.
+/// The window is named by what it shows: the item it shows as its page, else the page, the record,
+/// the place its instance's composed shell names in its content header. Two windows of the app
+/// read apart in the desktop's tabs, the switcher and assistive technology without either being
+/// opened.
 impl ui::component_lifecycle::WindowTitle for HostedWindow {
     fn window_title(&self) -> Option<&str> {
-        self.view()
-            .and_then(tilo_ui_host::AppWindow::composed)
-            .and_then(tilo_ui_host::shell::shown_title)
+        self.view().and_then(tilo_ui_host::AppWindow::title)
     }
 }
 

@@ -679,6 +679,23 @@ fn is_part(record: &str) -> bool {
     ui::record::RecordId::parse(record).is_some_and(|id| id.chain_part().is_some())
 }
 
+/// How a person reads the record `record` of `app` in a message or a log: an
+/// app's own record of the workspace travels with no id
+/// ([`ui::record::RecordId::package_primary`]), so it is named for its app
+/// rather than left blank.
+fn named_record(app: &str, record: &str) -> String {
+    if record.is_empty() {
+        format!("{app}'s own record")
+    } else {
+        format!("{app} record {record}")
+    }
+}
+
+/// [`named_record`] of the record at `route`.
+pub(super) fn named(route: &DocumentRoute) -> String {
+    named_record(&route.app_id, &route.record)
+}
+
 /// What running an action came to: its answer and where it left its actor.
 pub(super) type Performed = Result<(ActionOutput, Option<ActorPlace>), Outcome>;
 
@@ -740,10 +757,7 @@ impl WorkspaceState {
             .record_update(&route.cluster_id, &route.app_id, &route.record, None)?
         {
             RecordReading::Captured { heads, bytes, .. } => Ok((bytes, heads)),
-            _ => Err(format!(
-                "the workspace has no record {} open here",
-                route.record
-            )),
+            _ => Err(format!("the workspace holds no {} yet", named(route))),
         }
     }
 }
@@ -1047,15 +1061,7 @@ impl Workspace {
         let sealed = self.sealed(workspace_id, needs);
         match needs {
             Needs::Act { app_id, record } if !sealed.is_empty() => {
-                // A record that travels with no id is the app's own record of
-                // the workspace ([`ui::record::RecordId::package_primary`]);
-                // naming it so says which record the caller waits on, rather
-                // than leaving the name blank.
-                let record = if record.is_empty() {
-                    format!("{app_id}'s own record")
-                } else {
-                    format!("{app_id} record {record}")
-                };
+                let record = named_record(app_id, record);
                 Err(ActionHostError::Unavailable {
                     reason: format!("the host does not hold the keys to {record} yet"),
                 })

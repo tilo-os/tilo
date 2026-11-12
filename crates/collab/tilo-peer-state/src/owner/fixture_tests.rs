@@ -153,32 +153,43 @@ async fn grant_app_authorship(fixture: &Fixture, app: &str) {
 
 /// One write of this device's record, committed to its custody.
 fn publish_write(fixture: &Fixture, workspace: crate::owner::WorkspaceId, key: &str) {
+    fixture
+        .owner
+        .commit_document(signed_write(fixture, workspace, key), fixture.now)
+        .unwrap();
+}
+
+/// A write of `key` to the chat record as its app signs it, before the
+/// owner's turn admits it. The app writes under one actor, as its store
+/// keeps it across writes and restarts.
+fn signed_write(
+    fixture: &Fixture,
+    workspace: crate::owner::WorkspaceId,
+    key: &str,
+) -> crate::owner_commit::OwnerCommitRequest {
     use automerge::transaction::Transactable as _;
     let message = fixture
         .owner
         .with_current(workspace, |view| {
             let mut document =
                 automerge::AutoCommit::load(&view.peer().document("so.tilo.chat", "").unwrap())
-                    .unwrap();
+                    .unwrap()
+                    .with_actor(automerge::ActorId::from(b"so.tilo.chat".as_slice()));
             let before = document.get_heads();
             document.put(automerge::ROOT, key, key).unwrap();
             document.commit_edit("fixture", key);
-            view.peer().clone().publication_mut().publish_incremental(
-                "so.tilo.chat",
-                "",
-                document.save_after(&before),
-                &fixture.key,
-                fixture.now,
-            )
+            view.peer()
+                .prepare_signed_mutation(
+                    "so.tilo.chat",
+                    "",
+                    crate::DocumentMutation::Incremental(document.save_after(&before)),
+                    &fixture.key,
+                    fixture.now,
+                )
+                .map(|(message, _)| message)
         })
         .unwrap();
-    fixture
-        .owner
-        .commit_document(
-            crate::owner::publication::request(&message).unwrap(),
-            fixture.now,
-        )
-        .unwrap();
+    crate::owner::publication::request(&message).unwrap()
 }
 
 /// A member of the workspace, not one of its owner's devices, restarts with
@@ -284,9 +295,19 @@ async fn only_a_governance_change_is_announced_to_authorization() {
     assert_ne!(epoch(), before, "the next grant is announced");
 }
 
-/// What a write costs on disk does not grow with its record's history: a
-/// keystroke into a record of 2,000 changes writes about what one into a
-/// record of 100 does, and every change reads back after a restart.
+/// The median of `of` over `range`.
+fn median<T: Ord + Copy>(of: &[T], range: std::ops::Range<usize>) -> T {
+    let mut window = of[range].to_vec();
+    window.sort_unstable();
+    window[window.len() / 2]
+}
+
+/// What a write costs does not grow with its record's history: a keystroke
+/// into a record of 2,000 changes writes about what one into a record of 100
+/// does, and reads about as much of what the record held already (to digest
+/// it, store it and check its size). After a restart the record is the
+/// state it was stored as, with the same digest, and every change reads
+/// back.
 #[tokio::test]
 async fn a_write_costs_what_it_changed_however_long_the_record_history() {
     const WRITES: usize = 2_050;
@@ -317,9 +338,16 @@ async fn a_write_costs_what_it_changed_however_long_the_record_history() {
     };
     let mut wholes = Vec::new();
     let mut costs = Vec::with_capacity(WRITES);
+    let mut reads = Vec::with_capacity(WRITES);
+    let mut times = Vec::with_capacity(WRITES);
     for n in 0..WRITES {
+        let request = signed_write(&fixture, workspace, &format!("k{n}"));
         let before = written();
-        publish_write(&fixture, workspace, &format!("k{n}"));
+        crate::write_work::take();
+        let started = std::time::Instant::now();
+        fixture.owner.commit_document(request, fixture.now).unwrap();
+        times.push(started.elapsed());
+        reads.push(crate::write_work::take());
         costs.push(written() - before);
         if n == 100 || n == 2_000 {
             wholes.push(whole());
@@ -329,30 +357,57 @@ async fn a_write_costs_what_it_changed_however_long_the_record_history() {
             fixture.owner.retire_outgoing(workspace).unwrap();
         }
     }
-    let median = |range: std::ops::Range<usize>| {
-        let mut window = costs[range].to_vec();
-        window.sort_unstable();
-        window[window.len() / 2]
-    };
-    let (early, late) = (median(100..150), median(2_000..2_050));
+    let (early, late) = (median(&costs, 100..150), median(&costs, 2_000..2_050));
+    let (read_early, read_late) = (median(&reads, 100..150), median(&reads, 2_000..2_050));
     println!(
-        "a write at 100 changes writes {early} bytes, at 2,000 {late}; the workspace's file \
-         whole is {wholes:?} bytes"
+        "a write at 100 changes writes {early} bytes and reads {read_early}, at 2,000 {late} \
+         and {read_late}, in {:?} and {:?}; the workspace's file whole is {wholes:?} bytes",
+        median(&times, 100..150),
+        median(&times, 2_000..2_050),
+    );
+    assert!(
+        read_late <= read_early * 2,
+        "a write at 2,000 changes reads {read_late} bytes of its record, at 100 {read_early}"
     );
     assert!(
         late <= early * 2,
         "a write at 2,000 changes costs {late} bytes, at 100 {early}"
     );
-    // A new snapshot now and then included: once the journal outgrows the
-    // last one, so each write pays about its own size again for it.
-    let average = costs[1_000..].iter().sum::<usize>() / (WRITES - 1_000);
-    assert!(
-        average <= early * 4,
-        "writes past 1,000 changes cost {average} bytes each on average, at 100 {early}"
-    );
+    // Rewrites now and then included: a new snapshot once the journal
+    // outgrows the last one, a record's base saved anew once its changes
+    // outweigh half of it, the settled admissions once the recent ones fill
+    // up. Each costs about what the writes since the last one did, so a long
+    // run of writes costs about as much late as early on average.
+    let average = |of: &[usize], range: std::ops::Range<usize>| {
+        of[range.clone()].iter().sum::<usize>() / range.len()
+    };
+    for (what, of) in [("cost", &costs), ("read", &reads)] {
+        let (before, after) = (average(of, 100..1_000), average(of, 1_000..WRITES));
+        assert!(
+            after <= before * 2,
+            "writes past 1,000 changes {what} {after} bytes each on average, before {before}"
+        );
+    }
+    reopens_as_it_was_stored(fixture.owner, &path, WRITES);
+}
 
-    drop(fixture.owner);
-    let reopened = open_file(&path).unwrap();
+/// The record reopens from `path` as the state it was stored as, with the
+/// same digest, and every one of the `writes` changes reads back.
+fn reopens_as_it_was_stored(owner: NativeWorkspaceOwner, path: &std::path::Path, writes: usize) {
+    let workspace = crate::owner::WorkspaceId::parse(testing::WORKSPACE).unwrap();
+    let digest = |owner: &NativeWorkspaceOwner| {
+        owner
+            .with_current(workspace, |view| view.peer().durable_hash())
+            .unwrap()
+    };
+    let before = digest(&owner);
+    drop(owner);
+    let reopened = open_file(path).unwrap();
+    assert_eq!(
+        digest(&reopened),
+        before,
+        "the record reopens as the state it was stored as"
+    );
     let document = reopened
         .with_current(workspace, |view| {
             view.peer()
@@ -361,7 +416,7 @@ async fn a_write_costs_what_it_changed_however_long_the_record_history() {
         })
         .unwrap();
     let document = automerge::AutoCommit::load(&document).unwrap();
-    for n in 0..WRITES {
+    for n in 0..writes {
         let key = format!("k{n}");
         assert!(
             automerge::ReadDoc::get(&document, automerge::ROOT, &key)

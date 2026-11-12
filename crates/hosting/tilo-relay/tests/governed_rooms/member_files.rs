@@ -20,10 +20,11 @@ struct Room {
     relay: Relay,
     listing: WorkspaceListing,
     host: TestDevice,
+    laptop: TestDevice,
     phone: TestDevice,
     bob: TestUser,
     keeper: std::sync::Arc<WorkspaceAttachments>,
-    _state: tempfile::TempDir,
+    state: tempfile::TempDir,
 }
 
 impl Room {
@@ -70,10 +71,11 @@ impl Room {
             relay,
             listing: room,
             host,
+            laptop,
             phone,
             bob,
             keeper,
-            _state: state,
+            state,
         }
     }
 
@@ -280,5 +282,151 @@ async fn a_piece_lost_on_the_way_is_asked_for_again_within_a_second() {
         took < Duration::from_secs(8),
         "a lost piece costs a re-ask, not a minute: {took:?}"
     );
+    room.relay.shutdown().await;
+}
+
+/// Every file under `root`, read whole.
+fn files_under(root: &std::path::Path) -> Vec<Vec<u8>> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            found.extend(files_under(&path));
+        } else if let Ok(bytes) = std::fs::read(&path) {
+            found.push(bytes);
+        }
+    }
+    found
+}
+
+/// What the host serves a member of `room` asking for `address`, its
+/// pieces put together.
+fn served(room: &Room, requester: u64, address: &str) -> Vec<u8> {
+    let want = postcard::to_allocvec(&NeighbourMsg::RecordContentWant {
+        requester,
+        app_id: "so.tilo.chat".into(),
+        cluster_id: room.listing.workspace.clone(),
+        hash: address.to_owned(),
+        have: Vec::new(),
+    })
+    .unwrap();
+    let mut whole = Vec::new();
+    for frame in room
+        .relay
+        .workspaces()
+        .unwrap()
+        .content_answer(&room.listing.workspace, &want)
+    {
+        let NeighbourMsg::RecordContentPiece { offset, bytes, .. } =
+            postcard::from_bytes(&frame).unwrap()
+        else {
+            panic!("the host serves what it keeps");
+        };
+        assert_eq!(offset, u64::try_from(whole.len()).unwrap());
+        whole.extend(bytes);
+    }
+    whole
+}
+
+/// A picture Bob posts in a sealed chat reaches the host, and stays there
+/// for whoever joins later, as ciphertext alone: nothing on the host's disk
+/// and nothing it serves holds the picture, while every member holding the
+/// message (its reference, with the key) reads it, Carol too, who joined
+/// after it was posted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sealed_attachment_is_ciphertext_on_the_host_and_its_readers_open_it() {
+    let room = Room::start(AttachmentLimits::default()).await;
+    let picture: Vec<u8> = b"a picture only the chat's members see. "
+        .iter()
+        .copied()
+        .cycle()
+        .take(700 * 1024)
+        .collect();
+    // Bob's chat window keeps the attachment in its record's store, which
+    // seals; the message keeps the reference.
+    let bob_store = tilo_content::ContentStore::memory().sealing();
+    let reference = bob_store.put(&picture).unwrap();
+    let address = tilo_content::content_address(&reference).unwrap();
+    assert!(tilo_content::is_sealed(&reference));
+    let sealed = bob_store.read(&address).unwrap();
+    assert!(!sealed.windows(39).any(|w| w == &picture[..39]));
+
+    let session = session(&room.relay, &room.phone, room.listing.workspace_id).await;
+    crate::common::wait_until_subscribed(
+        &room.relay,
+        room.listing.workspace_id,
+        &room.phone.device_pubkey(),
+    )
+    .await;
+    tokio::spawn(std::sync::Arc::clone(&room.keeper).run());
+    let mut ask = room.keeper.asks(
+        &[Referenced {
+            hash: address.clone(),
+            member: hex::encode(room.bob.user_pk),
+            size: Some(u64::try_from(sealed.len()).unwrap()),
+        }],
+        tilo_clock::unix_now_ms(),
+    );
+    assert_eq!(ask.len(), 1, "the host asks for the ciphertext's address");
+    let mut lost = false;
+    loop {
+        answer_window(
+            &session,
+            (&room.host, &room.phone),
+            &ask[0],
+            &sealed,
+            &address,
+            &mut lost,
+        );
+        match next_ask(&room, &session, &address).await {
+            None => break,
+            Some((again, _)) => ask = vec![again],
+        }
+    }
+    assert!(room.keeper.kept_for(&address).is_some());
+
+    let on_disk = files_under(room.state.path());
+    assert!(
+        on_disk.iter().any(|file| file == &sealed),
+        "the host keeps the ciphertext"
+    );
+    assert!(
+        on_disk
+            .iter()
+            .all(|file| !file.windows(39).any(|w| w == &picture[..39])),
+        "nothing on the host's disk holds the picture"
+    );
+    let bytes = served(&room, 7, &address);
+    assert_eq!(bytes, sealed, "the host serves the ciphertext alone");
+
+    // Alice's laptop and Bob's phone read the message's reference.
+    let alice_store = tilo_content::ContentStore::memory().sealing();
+    alice_store.put_public(&bytes).unwrap();
+    assert_eq!(alice_store.read(&reference), Some(picture.clone()));
+    assert_eq!(bob_store.read(&reference), Some(picture.clone()));
+    assert_eq!(
+        alice_store.read(&address),
+        Some(sealed.clone()),
+        "the address alone, all the host knows, is ciphertext"
+    );
+
+    // Carol joins afterwards: the message's reference reaches her with the
+    // record's history, and the host she fetches the picture from still
+    // holds it sealed.
+    let carol = TestUser::fresh("Carol");
+    let carol_phone = carol.enrol("carol-phone", DeviceCapabilities::member());
+    super::sealed_records::join(
+        &room.relay,
+        &room.laptop,
+        &room.listing.workspace,
+        &carol,
+        &carol_phone,
+        [6; 32],
+    )
+    .await
+    .unwrap();
+    let carol_store = tilo_content::ContentStore::memory().sealing();
+    carol_store.put_public(&served(&room, 9, &address)).unwrap();
+    assert_eq!(carol_store.read(&reference), Some(picture));
     room.relay.shutdown().await;
 }

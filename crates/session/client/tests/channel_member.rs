@@ -14,11 +14,6 @@
     reason = "in a test these are the assertion, not a hazard; each test is one transcript between a native participant and a browser"
 )]
 
-mod support;
-
-// Placing the workspace has the host build its governance in an automerge worker.
-tilo_automerge_isolate::test_worker!();
-
 use std::collections::BTreeSet;
 use tilo_session_client::{Cmd, Outbox};
 
@@ -34,7 +29,7 @@ use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
 use tilo_session_client::PeerStore as _;
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
-use support::{
+use crate::support::{
     Device, TestHost, WORKSPACE, enrol, hears, ready, route, said, say, start_host, start_peer,
     start_peer_with_store, wait_for, workspace,
 };
@@ -73,7 +68,7 @@ async fn session(host: &TestHost, root: &SigningKey, device: &Device) -> RelayCo
         .bind()
         .await
         .unwrap();
-    support::place(&host.relay, &device.cert).await;
+    crate::support::place(&host.relay, &device.cert).await;
     let client = RelayClient::connect(
         endpoint,
         host.relay.node_addr(),
@@ -238,7 +233,7 @@ impl Laptop {
             };
             // The workspace's host takes part as well: its own writes are not
             // the browser's.
-            if support::is_host(&author) {
+            if crate::support::is_host(&author) {
                 continue;
             }
             match postcard::from_bytes::<NeighbourMsg>(&data) {
@@ -341,14 +336,15 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     // every signature it asks for answers later, as a `WebCrypto` key's does.
     let store = std::sync::Arc::new(tilo_session_client::MemoryPeerStore::default());
     let page = || {
-        let peer = support::start_page(
+        let peer = crate::support::start_page(
             host.iroh(),
             browser.cert.clone(),
             host_device.cert.clone(),
             browser.key.clone(),
             store.clone(),
         );
-        peer.join_placed(support::WORKSPACE, "Workspace").unwrap();
+        peer.join_placed(crate::support::WORKSPACE, "Workspace")
+            .unwrap();
         peer.send(Cmd::OpenRoute(route())).unwrap();
         peer
     };
@@ -456,7 +452,9 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
         )
     };
     let first = start();
-    first.join_placed(support::WORKSPACE, "Workspace").unwrap();
+    first
+        .join_placed(crate::support::WORKSPACE, "Workspace")
+        .unwrap();
     first.send(Cmd::OpenRoute(route())).unwrap();
     ready(&[&first]).await;
     let edit = say(&mut AutoCommit::new(), "before the reload");
@@ -475,7 +473,7 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
 
     let reloaded = start();
     reloaded
-        .join_placed(support::WORKSPACE, "Workspace")
+        .join_placed(crate::support::WORKSPACE, "Workspace")
         .unwrap();
     reloaded.send(Cmd::OpenRoute(route())).unwrap();
     assert_eq!(
@@ -510,7 +508,8 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
         host_device.cert.clone(),
         browser.key.clone(),
     );
-    peer.join_placed(support::WORKSPACE, "Workspace").unwrap();
+    peer.join_placed(crate::support::WORKSPACE, "Workspace")
+        .unwrap();
     peer.send(Cmd::OpenRoute(route())).unwrap();
     ready(&[&peer]).await;
     let edit = say(&mut AutoCommit::new(), "before the genesis");

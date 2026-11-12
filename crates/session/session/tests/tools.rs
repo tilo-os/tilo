@@ -13,8 +13,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{BufRead as _, BufReader, Write as _};
@@ -148,7 +146,7 @@ fn session(
 
 /// Run frames until `done` holds.
 fn until(session: &mut Session, what: &str, done: impl FnMut(&mut Session) -> bool) {
-    common::until(session, what, done);
+    crate::common::until(session, what, done);
 }
 
 /// The workspace in front, as the session holds it.

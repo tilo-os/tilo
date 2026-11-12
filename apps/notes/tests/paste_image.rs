@@ -41,10 +41,7 @@ fn png(width: u32, height: u32, noisy: bool) -> Vec<u8> {
 fn images(app: &TestApp<NotesShell>, page: PageId) -> Vec<(String, Vec<u8>)> {
     let store = app.content();
     app.read_document(|doc| {
-        let assets =
-            notes::notebook::image_snapshot(&notes::read::notebook(doc).images, |digest| {
-                store.read(digest)
-            });
+        let assets = notes::notebook::image_snapshot(&notes::read::notebook(doc).images, &store);
         read::page_block_snapshots(doc, page)
             .into_iter()
             .filter_map(|(_, text)| {
@@ -286,11 +283,14 @@ fn a_collaborators_picture_is_drawn_when_its_bytes_arrive_and_not_looked_for_bef
     ui::tilo_resource::content::register(&theirs.handle(), tilo_content::ContentStore::memory());
     app.merge_peer_edit(|doc| {
         let _device = theirs.enter();
-        crate::component_support::apply_to(
-            doc,
+        // Their window keeps the picture as it places it.
+        let placed = ui::tilo_resource::Invoke::<notes::Notebook>::apply(
             &notes::actions::place_image_action(page, picture.clone(), Some("their photo")),
         )
+        .unwrap()
+        .build(0)
         .unwrap();
+        crate::component_support::apply_to(doc, &placed).unwrap();
     });
     for _ in 0..3 {
         app.harness().relayout();

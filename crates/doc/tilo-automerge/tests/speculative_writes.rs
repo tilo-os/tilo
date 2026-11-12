@@ -22,8 +22,7 @@ use tilo_automerge::ApplyIncoming;
     dead_code,
     reason = "this file uses the shared random source only; it replays nothing against upstream"
 )]
-mod upstream;
-use upstream::Rng;
+use crate::upstream::Rng;
 
 fn median(mut samples: Vec<Duration>) -> Duration {
     samples.sort_unstable();

@@ -119,17 +119,22 @@ impl RecordChanges for BrokerRecordChanges {
                 });
             }
         }
-        apply_record_change(state, workspace, change, (agent, person))
+        apply_record_change(
+            state,
+            workspace,
+            change,
+            (agent, person, caller.agent_name()),
+        )
     }
 }
 
 /// Apply `change` in `workspace` at its record's origin as `agent` acting for
-/// `person`, admitted already.
+/// `person`, by the name its admission gave it, admitted already.
 fn apply_record_change(
     state: Arc<AppBrokerState>,
     workspace: &str,
     change: &RecordChange,
-    (agent, person): (&str, &str),
+    (agent, person, name): (&str, &str, Option<&str>),
 ) -> Result<serde_json::Value, ActionHostError> {
     let unavailable = |reason: String| ActionHostError::Unavailable { reason };
     let origin = state
@@ -140,7 +145,8 @@ fn apply_record_change(
     drop(state);
     let invoker = tilo_actions::ActionInvoker::actor(format!("agent:{agent}"))
         .with_kind(tilo_actions::ActorKind::Agent)
-        .acting_for(person);
+        .acting_for(person)
+        .named(name.map(str::to_owned));
     origin
         .apply(workspace, change, &invoker)
         .map_err(unavailable)
@@ -169,7 +175,7 @@ impl RecordChanges for RunRecords {
             host.state(),
             host.workspace(),
             change,
-            (host.agent(), host.person()),
+            (host.agent(), host.person(), caller.agent_name()),
         )
     }
 }

@@ -14,8 +14,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -172,7 +170,7 @@ fn apps_at(home: &tilo_test_env::TestHome, launcher: Option<PathBuf>) -> Rc<Apps
 
 /// Run frames until `done` holds.
 fn until(session: &mut Session, what: &str, mut done: impl FnMut(&Session) -> bool) {
-    common::wait_for(session, what, |session| done(session).then_some(()));
+    crate::common::wait_for(session, what, |session| done(session).then_some(()));
 }
 
 /// Every tab of the desk, with the group it sits in: what a second window or a second tab of a

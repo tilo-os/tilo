@@ -70,12 +70,14 @@ fn every_description_is_documented_and_consistent() {
     }
 }
 
-/// An instance as a test gives it: values by prop, events queued on `queue`.
+/// An instance as a test gives it: values by prop, events queued on `queue`, and `views` views
+/// in every slot it asks for.
 struct Given {
     key: String,
     props: BTreeMap<String, Value>,
     queue: crate::Intents<Fired>,
     events: Vec<&'static str>,
+    views: usize,
 }
 
 impl Source for Given {
@@ -100,7 +102,9 @@ impl Source for Given {
     }
 
     fn children(&mut self, _slot: &str) -> Vec<Element> {
-        Vec::new()
+        (0..self.views)
+            .map(|_| Box::new(crate::widget::Text::new("view")) as Element)
+            .collect()
     }
 
     fn components(
@@ -121,6 +125,15 @@ fn given(key: &str, props: &[(&str, Value)]) -> Given {
             .collect(),
         queue: crate::Intents::default(),
         events: Vec::new(),
+        views: 0,
+    }
+}
+
+/// `key` with `props` where every slot the widget asks for holds `views` views.
+fn given_with_views(key: &str, props: &[(&str, Value)], views: usize) -> Given {
+    Given {
+        views,
+        ..given(key, props)
     }
 }
 
@@ -190,6 +203,105 @@ fn every_described_widget_builds_from_its_required_props() {
             description.name
         );
     }
+}
+
+/// The children a widget lists read-only, the ones it walks without allocating, and the ones
+/// it hands out to change are the same children, in the same order. A route that reaches a
+/// child by its index — an assistive technology's `tilo.child:` target, an agent's — is read
+/// from one list and dispatched through another, so a child missing from either side sends the
+/// action down to another widget, or to none.
+#[test]
+fn every_described_widget_lists_the_children_it_hands_out() {
+    use crate::widget::Widget;
+
+    /// Who each child is, by address, and what it calls itself: the identity a route's index
+    /// has to keep from the walk to the dispatch.
+    type Child = (*const (), String);
+
+    fn child(widget: &dyn Widget) -> Child {
+        (
+            std::ptr::from_ref(widget).cast::<()>(),
+            widget.name().to_owned(),
+        )
+    }
+
+    /// What `widget` says of its children: how many it has, and what tells its lists apart
+    /// (`None` when they agree).
+    fn children(widget: &mut dyn Widget) -> (usize, Option<String>) {
+        let listed: Vec<Child> = widget.children().into_iter().map(child).collect();
+        let mut walked = Vec::new();
+        widget.for_each_child(&mut |child_widget| walked.push(child(child_widget)));
+        let handed: Vec<Child> = widget
+            .children_mut()
+            .into_iter()
+            .map(|child_widget| child(child_widget))
+            .collect();
+        let read = |children: &[Child]| {
+            children
+                .iter()
+                .map(|(_, name)| name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let apart = if listed != handed {
+            Some(format!(
+                "children lists {} ({}), children_mut hands out {} ({})",
+                listed.len(),
+                read(&listed),
+                handed.len(),
+                read(&handed)
+            ))
+        } else if listed != walked {
+            Some(format!(
+                "children lists {} ({}), for_each_child visits {} ({})",
+                listed.len(),
+                read(&listed),
+                walked.len(),
+                read(&walked)
+            ))
+        } else {
+            None
+        };
+        (listed.len(), apart)
+    }
+
+    let mut disagreeing = Vec::new();
+    let mut holding: Vec<String> = Vec::new();
+    for entry in registry() {
+        let description = (entry.describe)();
+        // Twice: with its required props only, and with every prop it takes: a widget shows
+        // parts for props a person switched on, and its lists must agree whatever it shows.
+        for every_prop in [false, true] {
+            let props: Vec<(&str, Value)> = description
+                .props
+                .iter()
+                .filter(|p| every_prop || p.required)
+                .map(|p| (p.name.as_str(), sample(&p.ty)))
+                .collect();
+            let mut source = given_with_views("k", &props, 2);
+            let Ok(mut widget) = (entry.build)(&mut source) else {
+                continue;
+            };
+            let (count, apart) = children(widget.as_mut());
+            if count != 0 && !holding.contains(&description.name) {
+                holding.push(description.name.clone());
+            }
+            if let Some(apart) = apart {
+                disagreeing.push(format!("{}: {apart}", description.name));
+            }
+        }
+    }
+    assert!(
+        !holding.is_empty(),
+        "no described widget held a child, so this check proves nothing: give the harness views \
+         in the slots the widgets ask for (`Given::views`)"
+    );
+    assert!(
+        disagreeing.is_empty(),
+        "these widgets list one set of children read-only, walk another and hand out a third, so \
+         a route by index reaches a different widget than the walk found:\n  {}",
+        disagreeing.join("\n  ")
+    );
 }
 
 /// Every described widget takes its props where it stands: the adapter reaches it as its own

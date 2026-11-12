@@ -72,18 +72,15 @@ impl SelectionKey {
 fn offered_selection(
     releases: Vec<InternalRelease>,
     host_architecture: &str,
-) -> Result<SelectionKey, String> {
+) -> Result<SelectionKey, &'static str> {
     let mut host = releases
         .into_iter()
         .filter(|release| release.architecture() == host_architecture);
     let release = host
         .next()
-        .ok_or("No Full Tilo download is offered for this computer.")?;
+        .ok_or("imager-setup-error-download-not-offered")?;
     if host.next().is_some() {
-        return Err(
-            "More than one Full Tilo download is offered for this computer; selection policy is unresolved."
-                .into(),
-        );
+        return Err("imager-setup-error-download-multiple");
     }
     Ok(SelectionKey::from_release(&release))
 }
@@ -132,7 +129,7 @@ pub(super) struct InternalDownloadFlow {
     preference: SelectionPreference,
     saved: Option<SelectionKey>,
     offered: Option<SelectionKey>,
-    catalog_error: Option<String>,
+    catalog_error: Option<&'static str>,
     worker: Option<Worker>,
     token: Option<Token>,
     presentation: DownloadPresentation,
@@ -257,12 +254,13 @@ impl InternalDownloadFlow {
         }
     }
 
-    fn current_catalog(&mut self) -> Result<Vec<InternalRelease>, String> {
+    fn current_catalog(&mut self) -> Result<Vec<InternalRelease>, &'static str> {
         #[cfg(test)]
         if let Some(catalog) = self.catalogs.pop_front() {
             return Ok(catalog);
         }
         crate::release::bundled_internal_releases()
+            .map_err(|_| "imager-setup-error-download-catalog")
     }
 
     fn refresh_catalog(&mut self) {
@@ -377,8 +375,8 @@ impl InternalDownloadFlow {
         self.offered.clone()
     }
 
-    pub(super) fn catalog_error(&self) -> Option<&str> {
-        self.catalog_error.as_deref()
+    pub(super) fn catalog_error(&self) -> Option<&'static str> {
+        self.catalog_error
     }
 
     pub(super) fn can_resume(&self) -> bool {
@@ -1234,8 +1232,8 @@ mod tests {
             flow.poll();
             assert!(flow.presentation().pending);
             assert_eq!(
-                crate::setup::strings::t(flow.presentation().title_key),
-                "Cancelling download…"
+                flow.presentation().title_key,
+                "imager-setup-status-cancelling-download"
             );
             continue_tx.send(()).unwrap();
             wait_for(&mut flow, Phase::Cancelled);

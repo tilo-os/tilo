@@ -229,16 +229,28 @@ impl TiloRelease {
         }
     }
 
-    pub fn target_label(&self) -> String {
+    /// What the release says about the machines it starts on, for a surface
+    /// to put in the person's language.
+    pub fn target_name(&self) -> TargetName {
         if self.hardware_profile != "generic" {
-            return format!("{} only", self.hardware_profile);
+            return TargetName::Profile(self.hardware_profile.clone());
         }
         match self.architecture.as_str() {
-            "aarch64" => "Generic ARM64",
-            "x86_64" => "Generic x86-64",
-            _ => "Generic media",
+            "aarch64" => TargetName::Arm64,
+            "x86_64" => TargetName::X86_64,
+            _ => TargetName::Media,
         }
-        .into()
+    }
+
+    /// The same as a stored word a label or a comparison carries, never shown
+    /// as copy.
+    fn target_key(&self) -> String {
+        match self.target_name() {
+            TargetName::Arm64 => "aarch64".to_owned(),
+            TargetName::X86_64 => "x86-64".to_owned(),
+            TargetName::Media => "media".to_owned(),
+            TargetName::Profile(profile) => profile,
+        }
     }
 
     pub fn selection_id(&self) -> String {
@@ -274,7 +286,7 @@ impl TiloRelease {
                 "Tilo {} ({}), {}",
                 self.version,
                 self.channel,
-                self.target_label()
+                self.target_key()
             ),
             installable: authenticated,
             identity: None,
@@ -575,6 +587,19 @@ impl Step {
 // serialises to the installation-media preconfiguration profile.
 // ---------------------------------------------------------------------------
 
+/// The machines a release starts on, as a surface names them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TargetName {
+    /// The generic build for ARM64.
+    Arm64,
+    /// The generic build for x86-64.
+    X86_64,
+    /// A generic build whose architecture the app names by its medium.
+    Media,
+    /// A build for one hardware profile.
+    Profile(String),
+}
+
 /// Filesystem used for the installed system.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -591,15 +616,6 @@ impl Filesystem {
             Self::Btrfs => "btrfs",
             Self::Ext4 => "ext4",
             Self::Xfs => "xfs",
-        }
-    }
-    /// The filesystem's own name: the same in every language, the
-    /// recommendation a surface adds is the catalogue's.
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Btrfs => "Btrfs",
-            Self::Ext4 => "Ext4",
-            Self::Xfs => "XFS",
         }
     }
     pub fn from_key(k: &str) -> Option<Self> {

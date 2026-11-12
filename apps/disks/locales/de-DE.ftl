@@ -70,3 +70,25 @@ disks-format-loses-used-on = Die { $size } an Dateien auf „{ $label }“ werde
 ## Die Plätze der Fensterleiste
 disks-rescan-drives = Laufwerke erneut suchen
 disks-views = Ansicht
+
+
+## Wie die Operationen eines Laufwerks heißen und was SMART darüber sagt
+disks-action-mount = Einhängen
+disks-action-unmount = Aushängen
+disks-action-format = Formatieren…
+disks-action-benchmark = Benchmark
+disks-action-eject = Auswerfen
+disks-health-healthy = In Ordnung
+disks-health-attention = Braucht Aufmerksamkeit
+disks-health-failing = Fehlerhaft
+disks-health-unknown = Unbekannt
+
+## Actions
+
+disks-device-rescan = Neu einlesen
+disks-device-select = Auswählen
+disks-device-show-tab = Register anzeigen
+disks-device-format = Format
+disks-device-disk-usage = Speicherbelegung anzeigen
+disks-system = Speichergeräte
+disks-system-name-drive = Laufwerk benennen

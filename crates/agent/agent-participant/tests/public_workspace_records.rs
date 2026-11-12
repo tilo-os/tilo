@@ -22,20 +22,11 @@
               driven on the test's own thread (the agent's apps are not Send)"
 )]
 
-mod common;
-
-tilo_agent_participant::app_worker!();
-tilo_automerge_isolate::test_worker!();
-#[path = "../../../session/client/tests/support/participant.rs"]
-mod participant;
-#[path = "../../../session/client/tests/support/mod.rs"]
-mod support;
-
 use std::sync::Mutex;
 use tilo_session_client::Event;
 
+use crate::common::{Body as _, Driveable};
 use collab_types::DocumentMutation;
-use common::{Body as _, Driveable};
 use tilo_actions::door::ActionDescriptor;
 use tilo_agent_participant::{
     AgentControl, AgentIdentity, AgentParticipant, ParticipantConfig, PlanContext, Planner,
@@ -48,7 +39,7 @@ use tilo_relay_protocol::directory::Listing;
 use tilo_relay_protocol::workspaces::WorkspaceRole;
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
-use support::{door, enrol, enter, start_workspace_host, wait_for, written};
+use crate::support::{door, enrol, enter, start_workspace_host, wait_for, written};
 
 const WRITER: &str = "so.tilo.word-processor";
 const CHAT: &str = "so.tilo.chat";
@@ -126,7 +117,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
         "lounge-host",
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let host = start_workspace_host(&owner, &host_device, state.path(), false).await;
     let workspaces = host.relay.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
@@ -166,8 +157,9 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
     // The note, as the member's window made it: a document of its own with
     // the text they wrote.
     let mut note =
-        common::open_in(&workspace, WRITER, "member", ReplicaActor::Owner, Seed::New).unwrap();
-    let (edit, refused) = common::find_edit(&mut Held(&mut note), EDITS);
+        crate::common::open_in(&workspace, WRITER, "member", ReplicaActor::Owner, Seed::New)
+            .unwrap();
+    let (edit, refused) = crate::common::find_edit(&mut Held(&mut note), EDITS);
     assert!(
         edit.is_some(),
         "the member cannot write a document: {refused:#?}"
@@ -190,9 +182,10 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
 
     // The workspace's chat, as a member makes it: the record every window of
     // the app in this workspace opens, with a channel of their own in it.
-    let chat = common::open_in(&workspace, CHAT, "member", ReplicaActor::Owner, Seed::New).unwrap();
+    let chat =
+        crate::common::open_in(&workspace, CHAT, "member", ReplicaActor::Owner, Seed::New).unwrap();
     let mut chat_document = chat.read(Clone::clone).unwrap();
-    common::add_channel(&mut chat_document, "member", MEMBER_CHANNEL, None);
+    crate::common::add_channel(&mut chat_document, "member", MEMBER_CHANNEL, None);
     let chat_route = DocumentRoute {
         app_id: CHAT.into(),
         cluster_id: workspace.clone(),
@@ -215,7 +208,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
         .as_str()
         .to_owned();
     // Part 1, as a member's window starts it in this workspace's chat.
-    let member_records = support::scratch_dir();
+    let member_records = crate::support::scratch_dir();
     let store = ui::record::RecordOwners::new(member_records.path().to_owned())
         .open(CHAT, &workspace)
         .unwrap();
@@ -263,7 +256,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
         .register_agent(&agent_device.cert, delegation.clone())
         .await
         .unwrap();
-    let _laptop = participant::Participant::start(&host.relay, &owner).await;
+    let _laptop = crate::participant::Participant::start(&host.relay, &owner).await;
     let planned = std::sync::Arc::new(Mutex::new(Vec::new()));
     let control = AgentControl::new(delegation.clone());
     let mut agent = AgentParticipant::start(
@@ -280,7 +273,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
             delegation,
         },
         control.clone(),
-        common::catalogue(),
+        crate::common::catalogue(),
         Box::new(Scripted {
             note: note_route.record.clone(),
             planned: std::sync::Arc::clone(&planned),
@@ -316,7 +309,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
         .app(&note_route)
         .expect("the agent opened the member's note");
     assert!(
-        opened.body().contains(common::WRITTEN),
+        opened.body().contains(crate::common::WRITTEN),
         "the agent holds the member's note: {}",
         opened.body()
     );

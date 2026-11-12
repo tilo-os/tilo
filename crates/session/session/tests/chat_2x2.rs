@@ -18,13 +18,7 @@
               until their sessions end"
 )]
 
-mod common;
-
-// A site admits its members' records through an Automerge worker: this binary is that worker, as
-// the session's own is.
-tilo_automerge_isolate::test_worker!();
-
-use common::people::{Device, Person, Site};
+use crate::common::people::{Device, Person, Site};
 use tilo_relay_protocol::workspaces::WorkspaceRole;
 
 /// A studio and the two people in it, each on a laptop and a phone: Ada's site hosts the workspace

@@ -463,7 +463,7 @@ packaging and upload; changed content uses the full uncompressed archive.
 
 ## Opt-in phase CPU records
 
-`tilo-vm swap shell --frame-cpu-trace --slot <slot>` enables the shell's
+`tilo-vm swap tilo-session --frame-cpu-trace --slot <slot>` enables the session's
 phase CPU companion on an owned headful or headless stand-in slot. The flag is
 not supported for device logins, VM-wide components or applications. It is a
 typed generation setting, rather than an arbitrary environment override:

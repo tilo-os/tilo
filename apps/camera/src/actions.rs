@@ -70,31 +70,37 @@ pub enum CameraEffect {
     /// Set resolution
     ///
     /// The resolution this device's cameras capture at.
+    #[effect(label = "camera-settings-resolution")]
     SetResolution {
         #[param("Resolution", choices = ["12mp", "4k", "1080p", "720p"])]
         resolution: String,
     },
     /// Set photo format
+    #[effect(label = "camera-settings-photo-format")]
     SetPhotoFormat {
         #[param("Photo format", choices = ["jpeg", "png"])]
         format: String,
     },
     /// Set self-timer
+    #[effect(label = "camera-settings-timer")]
     SetTimer {
         #[param("Seconds before the shutter", choices = ["0", "3", "10"])]
         seconds: String,
     },
     /// Show composition grid
+    #[effect(label = "camera-a11y-composition-grid")]
     SetGrid {
         #[param("Whether the grid is shown")]
         on: bool,
     },
     /// Show level guide
+    #[effect(label = "camera-settings-level")]
     SetLevel {
         #[param("Whether the level guide is shown")]
         on: bool,
     },
     /// Mirror front camera
+    #[effect(label = "camera-settings-mirror")]
     SetMirrorFront {
         #[param("Whether front-camera photos are mirrored")]
         on: bool,
@@ -105,6 +111,7 @@ pub enum CameraEffect {
         on: bool,
     },
     /// Use HDR
+    #[effect(label = "camera-settings-hdr")]
     SetHdr {
         #[param("Whether photos use HDR")]
         on: bool,
@@ -120,12 +127,14 @@ pub enum CameraEffect {
     ///
     /// Saves the current frame and answers once the photo is registered.
     #[effect(row, job, cancellable)]
+    #[effect(label = "camera-a11y-take-photo")]
     Capture,
     /// Start recording
     ///
     /// Starts a clip, or stops the one recording and answers once it is
     /// saved and registered.
     #[effect(row, job, cancellable)]
+    #[effect(label = "camera-a11y-start-recording")]
     Record,
     /// Refresh cameras
     ///
@@ -134,6 +143,7 @@ pub enum CameraEffect {
     RetryCamera,
     /// Open camera privacy settings
     #[effect(row)]
+    #[effect(label = "camera-a11y-camera-privacy")]
     OpenCameraPrivacy,
     /// Use camera
     #[effect(row)]

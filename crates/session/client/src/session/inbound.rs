@@ -33,6 +33,8 @@ impl Task {
     /// waits, and lands as the governance admitting this device does
     /// ([`Self::follow_governance`]).
     pub(super) fn landed(&mut self, route: &DocumentRoute, author: Option<[u8; 32]>) {
+        // This device's writes that waited for the record to change go now.
+        self.outbound_due |= self.engine.held_writes().lock().contains_key(route);
         if !self.reads_as_member(route) {
             self.unadmitted.insert(route.clone(), author);
             return;

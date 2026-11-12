@@ -221,7 +221,7 @@ pub fn push_clean_environment(argv: &mut Vec<String>) {
 }
 
 /// Env var publishing the compositor's privileged Wayland socket.
-/// Mirrors `shell::compositor::native::PRIVILEGED_SOCKET_ENV`,
+/// Mirrors `tilo_compositor::native::PRIVILEGED_SOCKET_ENV`,
 /// duplicated since the launcher has no compositor dep.
 pub const PRIVILEGED_WAYLAND_ENV: &str = "TILO_WAYLAND_PRIVILEGED";
 

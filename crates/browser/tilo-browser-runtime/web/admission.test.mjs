@@ -233,17 +233,17 @@ test('a member whose device keys other tabs hold gets in as a new device, or is 
   const way = rules(['accounts', 'member', 'reconnect']);
   assert.deepEqual(await admit({scope: room, runtime: way.runtime, deps: reconnected.deps}),
     {peer: {origin: room.host, room: room.room, admission: 'reconnect'}});
-  assert.deepEqual(way.asked.at(-1).slice(0, 2), ['wayInAfter', 'member-busy']);
+  assert.deepEqual([way.asked.at(-1)[0], way.asked.at(-1)[2].accounts], ['wayIn', 0], 'asked again as a browser without the account');
   // Where it cannot, the page says other tabs hold them: another tab of this
   // browser says nothing about the host.
-  const stuck = rules(['accounts', 'member', 'reconnect', 'busy']);
+  const stuck = rules(['accounts', 'member', 'reconnect', 'no-access']);
   await assert.rejects(admit({scope: room, runtime: stuck.runtime, deps: doors(member).deps}), {name: 'CustodyError', code: 'custody-busy'});
   assert.deepEqual(stuck.asked.at(-1).slice(0, 2), ['wayInAfter', 'reconnect']);
   // As where the workspace cannot admit a new device of the person by itself.
-  const uninvited = rules(['accounts', 'reconnect', 'busy']);
+  const uninvited = rules(['accounts', 'reconnect']);
   await assert.rejects(admit({scope: room, runtime: uninvited.runtime, deps: doors({reconnect: async () => busy()}).deps}),
     {name: 'CustodyError', code: 'custody-busy'});
-  assert.deepEqual(uninvited.asked.at(-1).slice(0, 2), ['wayInAfter', 'reconnect-busy']);
+  assert.ok(!uninvited.asked.some(([, failed]) => failed === 'reconnect'), 'the runtime is not asked what follows');
 });
 
 test('a host this browser set up or joined as its person is reconnected to, and the door is the way in only when that fails', async () => {

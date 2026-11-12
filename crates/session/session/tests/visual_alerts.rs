@@ -13,8 +13,6 @@
     reason = "test fixtures: a failed step is the assertion, and the session outlives every call"
 )]
 
-mod common;
-
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;

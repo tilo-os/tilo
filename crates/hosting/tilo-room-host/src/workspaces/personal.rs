@@ -23,13 +23,20 @@
 //! address, so a person with no device that kept a list still reads the
 //! workspaces here. An agent's grant reads only what its scope reaches.
 //!
+//! A browser keeps one key per open tab, since a key has one writer; a page
+//! asking for the record names its browser's tab keys, which are added and
+//! kept together under the browser's id, so the list says which keys are one
+//! browser's.
+//!
 //! [`HostOperation::KeepPersonalList`]: crate::host_authority::HostOperation::KeepPersonalList
 //! [`HostOperation::ReadPersonalList`]: crate::host_authority::HostOperation::ReadPersonalList
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use tilo_relay_session::workspaces::{
-    MAX_PERSONAL_DEVICES, PersonalDevice, PersonalList, PersonalWorkspace, WorkspaceHostAddress,
+    MAX_BROWSER_DEVICES, MAX_PERSONAL_DEVICES, PersonalBrowser, PersonalDevice, PersonalList,
+    PersonalWorkspace, WorkspaceHostAddress,
 };
 use tilo_user_identity::{DeviceCert, verify_device_cert};
 
@@ -51,6 +58,10 @@ struct Kept {
     /// key, the newest certificate of each.
     #[serde(default)]
     devices: Vec<DeviceCert>,
+    /// Each browser's tab keys, hex, by the browser's id: as a page of it
+    /// last named them, each one of `devices`, each in one browser at most.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    browsers: BTreeMap<String, Vec<String>>,
 }
 
 /// The lists people's devices kept on this host.
@@ -84,6 +95,7 @@ impl PersonalLists {
             at_ns: 0,
             list: PersonalList::default(),
             devices: Vec::new(),
+            browsers: BTreeMap::new(),
         });
         kept.by = hex::encode(device.device_public_key);
         kept.at_ns = now;
@@ -101,8 +113,65 @@ impl PersonalLists {
             at_ns: 0,
             list: PersonalList::default(),
             devices: Vec::new(),
+            browsers: BTreeMap::new(),
         });
         if !add(&mut kept.devices, person, certs) {
+            return Ok(());
+        }
+        self.write(person, &kept)
+    }
+
+    /// Keep `browser`, the tab keys a page of `person`'s names, as that
+    /// browser's: each certificate their root signed for a device of theirs
+    /// is added, and the browser's keys are the ones of them their record
+    /// holds, replacing what it named before.
+    fn keep_browser(&self, person: &[u8; 32], browser: PersonalBrowser) -> Result<(), String> {
+        if !PersonalBrowser::is_id(&browser.id) {
+            return Err("a browser is named by 32 lowercase hex characters".to_owned());
+        }
+        // The newest, when a page names more than a browser keeps.
+        let older = browser.certs.len().saturating_sub(MAX_BROWSER_DEVICES);
+        let certs: Vec<DeviceCert> = browser
+            .certs
+            .into_iter()
+            .skip(older)
+            .filter(|cert| cert.capabilities.agent.is_none() && !cert.capabilities.stand_in)
+            .collect();
+        let _writing = self.lock();
+        let mut kept = self.read(person).unwrap_or_else(|| Kept {
+            by: String::new(),
+            at_ns: 0,
+            list: PersonalList::default(),
+            devices: Vec::new(),
+            browsers: BTreeMap::new(),
+        });
+        let added = add(&mut kept.devices, person, certs.clone());
+        // Only keys the record holds, which `add` verified as the person's.
+        let mut keys: Vec<String> = Vec::new();
+        for cert in &certs {
+            let key = hex::encode(cert.device_public_key);
+            if !keys.contains(&key)
+                && kept
+                    .devices
+                    .iter()
+                    .any(|known| known.device_public_key == cert.device_public_key)
+            {
+                keys.push(key);
+            }
+        }
+        // A key is one browser's: a page naming it takes it from any other.
+        for (id, others) in &mut kept.browsers {
+            if *id != browser.id {
+                others.retain(|key| !keys.contains(key));
+            }
+        }
+        kept.browsers.retain(|_, others| !others.is_empty());
+        let changed = if keys.is_empty() {
+            kept.browsers.remove(&browser.id).is_some()
+        } else {
+            kept.browsers.insert(browser.id, keys.clone()).as_ref() != Some(&keys)
+        };
+        if !added && !changed {
             return Ok(());
         }
         self.write(person, &kept)
@@ -137,11 +206,18 @@ impl PersonalLists {
         }
     }
 
-    /// The list `person`'s devices kept here last, and their devices; empty
-    /// when none did.
-    fn of(&self, person: &[u8; 32]) -> (PersonalList, Vec<DeviceCert>) {
+    /// The list `person`'s devices kept here last, their devices, and which
+    /// browser each tab key is of; empty when none did.
+    fn of(&self, person: &[u8; 32]) -> (PersonalList, Vec<DeviceCert>, BTreeMap<String, String>) {
         self.read(person)
-            .map(|kept| (kept.list, kept.devices))
+            .map(|kept| {
+                let browser_of = kept
+                    .browsers
+                    .into_iter()
+                    .flat_map(|(id, keys)| keys.into_iter().map(move |key| (key, id.clone())))
+                    .collect();
+                (kept.list, kept.devices, browser_of)
+            })
             .unwrap_or_default()
     }
 }
@@ -221,7 +297,7 @@ impl Workspaces {
                 .agent
                 .is_none_or(|scope| scope.reaches(workspace))
         };
-        let (list, certs) = self.inner.personal.of(&device.user_public_key);
+        let (list, certs, browser_of) = self.inner.personal.of(&device.user_public_key);
         let mut workspaces: Vec<PersonalWorkspace> = Vec::new();
         for kept in list.workspaces {
             if !reaches(&kept.workspace)
@@ -247,6 +323,9 @@ impl Workspaces {
                 .into_iter()
                 .map(|cert| PersonalDevice {
                     revoked: revocations.refuses(&cert),
+                    browser: browser_of
+                        .get(&hex::encode(cert.device_public_key))
+                        .cloned(),
                     cert,
                 })
                 .collect()
@@ -266,6 +345,25 @@ impl Workspaces {
             return;
         }
         self.keep_issued_device(device);
+    }
+
+    /// Keep `browser`, the tab keys a page of `device`'s person names as it
+    /// asks for their record, as that browser's (see [`LIST_PERSONAL`]).
+    /// Only a device of the person's own names them: an agent's grant and a
+    /// stand-in are no browser of theirs.
+    ///
+    /// [`LIST_PERSONAL`]: tilo_relay_session::workspaces::LIST_PERSONAL
+    pub(super) fn note_browser(&self, device: &DeviceCert, browser: PersonalBrowser) {
+        if device.capabilities.agent.is_some() || device.capabilities.stand_in {
+            return;
+        }
+        if let Err(error) = self
+            .inner
+            .personal
+            .keep_browser(&device.user_public_key, browser)
+        {
+            tracing::debug!(%error, "a page's browser is not in the person's record");
+        }
     }
 
     /// Add `cert`, a key its person's root just certified through this host

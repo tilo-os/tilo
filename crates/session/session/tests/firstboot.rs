@@ -10,8 +10,6 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-mod common;
-
 use std::path::PathBuf;
 use std::time::Duration;
 

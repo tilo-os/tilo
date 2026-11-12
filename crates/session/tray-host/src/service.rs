@@ -26,7 +26,7 @@ const ENTRY_SEPARATOR: char = '/';
 #[effect(operation = "so.tilo.tray.item")]
 pub enum TrayAction {
     /// Do what clicking the item's icon does: usually show its window.
-    #[effect(own_device, row, label = "Open", icon = "app-window")]
+    #[effect(own_device, row, icon = "app-window")]
     Activate,
     /// Choose an entry of the item's menu.
     #[effect(own_device, row)]
@@ -103,7 +103,7 @@ impl TrayService {
 impl Service for TrayService {
     fn resources(&self) -> Vec<ResourceSpec> {
         vec![
-            ResourceSpec::new(TRAY, TRAY_KIND, "Tray")
+            ResourceSpec::new(TRAY, TRAY_KIND, crate::i18n::name(TRAY_KIND, "Tray"))
                 .with_children(self.tray.snapshot().iter().map(item_spec)),
         ]
     }

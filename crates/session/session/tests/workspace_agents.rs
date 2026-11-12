@@ -14,11 +14,7 @@
               its whole test"
 )]
 
-mod common;
-
-tilo_automerge_isolate::test_worker!();
-
-use common::people::{Device, Person, Site};
+use crate::common::people::{Device, Person, Site};
 use serde_json::{Value, json};
 use tilo_relay_protocol::workspaces::WorkspaceRole;
 

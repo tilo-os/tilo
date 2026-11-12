@@ -11,8 +11,6 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-mod common;
-
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -32,11 +30,7 @@ use tilo_sheets::invite::InviteApp;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 use ui::a11y::Action as A11yAction;
 
-use common::{HEIGHT, WIDTH};
-
-// An engine admits a workspace's records through an Automerge worker: this binary is that worker,
-// as it is the session's own.
-tilo_automerge_isolate::test_worker!();
+use crate::common::{HEIGHT, WIDTH};
 
 /// The workspace this computer holds and the person invites into.
 const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
@@ -369,7 +363,7 @@ fn hosted(home: &mut tilo_test_env::TestHome) -> Hosted {
         .input(InputEvent::PointerMotion { x: 1100.0, y: 16.0 })
         .expect("the pointer");
     let mut place = None;
-    common::until(&mut session, "the bar offers Invite", |session| {
+    crate::common::until(&mut session, "the bar offers Invite", |session| {
         place = bar_control(session);
         place.is_some()
     });
@@ -412,7 +406,7 @@ fn press_create(app: &mut HeadlessApp<InviteApp>, session: &mut Session) -> Stri
     app.settle();
     settle(session);
     let mut link = String::new();
-    common::until(session, "the sheet shows the link it made", |session| {
+    crate::common::until(session, "the sheet shows the link it made", |session| {
         link = session
             .invite_sheet()
             .and_then(|seat| {
@@ -493,7 +487,7 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
             .expect("the create button is pressed");
         app.settle();
         // The link is signed off the loop and shows once it landed.
-        common::until(&mut session, "the sheet shows the part's link", |session| {
+        crate::common::until(&mut session, "the sheet shows the part's link", |session| {
             session
                 .invite_sheet()
                 .and_then(|seat| seat.invite().created)

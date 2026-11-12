@@ -4,9 +4,10 @@
 tools/ci/suites.toml declares each suite with the repository paths it reads.
 CI runs each group's suites when the group's inputs change. The same manifest declares
 the Cargo packages whose code reads repository files outside the package, so
-a change to those files selects the package's checks and tests. `check` is the
-repository policy that keeps every test-shaped file and every cross-package
-read accounted for.
+a change to those files selects the package's checks and tests, and a path no
+package owns (the tilolang apps under apps/tl) is attributed to the packages
+that read it. `check` is the repository policy that keeps every test-shaped
+file and every cross-package read accounted for.
 """
 
 from __future__ import annotations
@@ -257,6 +258,19 @@ def select_package_scopes(manifest: Manifest, changes: list[str]) -> dict[str, R
     return dict(sorted(selected.items()))
 
 
+def read_paths(manifest: Manifest, changes: list[str]) -> set[str]:
+    """The changed paths a declared package reads from outside its own directory.
+
+    A reader declaration says a package compiles or tests the path, which is
+    what a plan needs to run instead of the complete workspace when no Cargo
+    package owns the path. A suite's own inputs do not: they say only which
+    script runs, so a broad input (`apps/`) cannot stand in for the checks that
+    compiling the file would run.
+    """
+    patterns = [pattern for entry in manifest.cargo for pattern in entry.inputs]
+    return {path for path in changes if any(matches(path, pattern) for pattern in patterns)}
+
+
 def command(suite: str) -> list[str]:
     # Every suite runs without the desktop session of whoever runs it, as the
     # Rust tests do (tools/cargo-runner.sh).
@@ -394,16 +408,19 @@ def audit(root: Path, tracked: list[str], manifest: Manifest | None = None,
             text = (root / suite).read_text(encoding="utf-8")
             if re.search(r"\bTestCase\b", text) and "unittest.main(" not in text:
                 problems.append(f"{suite}: defines unittest cases but never calls unittest.main()")
-    # Cargo's automatically discovered integration targets are gates too.
-    # Require a tracked package manifest, an actual test, and an explicit
-    # reader declaration so covered drivers also participate in selection.
+    # Cargo's integration tests are gates too: what discovery builds, or the
+    # files one `tests/it.rs` binary compiles as modules. Require a tracked
+    # package manifest, an actual test, and an explicit reader declaration so
+    # covered drivers also participate in selection.
     packages = {name: directory for directory, name in cargo_packages(root, tracked).items()}
     for entry in manifest.cargo:
         directory = packages.get(entry.package)
         if directory is None:
             continue
         cargo = tomllib.loads((root / directory / "Cargo.toml").read_text(encoding="utf-8"))
-        if cargo.get("package", {}).get("autotests", True) is False:
+        discovered = cargo.get("package", {}).get("autotests", True) is not False
+        single_binary = (root / directory / "tests" / "it.rs").is_file()
+        if not (discovered or single_binary):
             continue
         for reader in entry.readers:
             if (reader in tracked_set

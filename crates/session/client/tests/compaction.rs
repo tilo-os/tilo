@@ -14,13 +14,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-#[path = "support/participant.rs"]
-mod participant;
-mod support;
-
-// Placing the workspace has the host build its governance in an automerge worker.
-tilo_automerge_isolate::test_worker!();
-
 use std::path::Path;
 use std::time::{Duration, Instant};
 use tilo_automerge::ApplyIncoming as _;
@@ -31,7 +24,7 @@ use collab_types::DocumentMutation;
 use tilo_session_client::Event;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{durable, enrol, ready, route, start_host, start_peer, wait_for, workspace};
+use crate::support::{durable, enrol, ready, route, start_host, start_peer, wait_for, workspace};
 
 fn channel() -> [u8; 32] {
     *blake3::hash(b"app\0so.tilo.notes\0note-1").as_bytes()
@@ -62,16 +55,18 @@ fn lineage_len(state: &Path, author: &[u8; 32]) -> usize {
 /// Join late until the replica holds everything `target` holds; returns the
 /// writes that landed and the duration.
 async fn join_late(
-    host: &support::TestHost,
-    device: support::Device,
+    host: &crate::support::TestHost,
+    device: crate::support::Device,
     host_cert: &tilo_user_identity::DeviceCert,
     target: &AutoCommit,
 ) -> (AutoCommit, usize, Duration) {
     let started = Instant::now();
     let joiner = start_peer(host.iroh(), device.cert, host_cert.clone(), device.key);
     let events = joiner.events();
-    joiner.join_placed(support::WORKSPACE, "Workspace").unwrap();
-    let replica = support::holds(&joiner, &route(), target).await;
+    joiner
+        .join_placed(crate::support::WORKSPACE, "Workspace")
+        .unwrap();
+    let replica = crate::support::holds(&joiner, &route(), target).await;
     let elapsed = started.elapsed();
     let documents = events
         .drain()
@@ -104,11 +99,12 @@ async fn a_member_compacts_a_sealed_route_the_host_cannot_read() {
     )
     .await;
     let route = route();
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&host.relay, &root).await;
     let https = || host.iroh();
     let [a, b, c] = [a, b, c].map(|device| {
         let peer = start_peer(https(), device.cert, host_device.cert.clone(), device.key);
-        peer.join_placed(support::WORKSPACE, "Workspace").unwrap();
+        peer.join_placed(crate::support::WORKSPACE, "Workspace")
+            .unwrap();
         peer
     });
     ready(&[&a, &b, &c]).await;

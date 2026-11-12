@@ -5,7 +5,7 @@
 //! Chat declares `Channel` as a resource and `page` as its default view. The channel is placed
 //! through the arrangement's published `place`, as an agent or the person does; the shell's
 //! runtime draws the channel's reading through Chat's view. Typing in the composer and pressing
-//! send posts to the channel through Chat's own `post`; pressing an attachment places what it
+//! send sends to the channel through Chat's own `send`; pressing an attachment places what it
 //! holds. What stands on screen is read from what the shell lays out for assistive technology,
 //! never from pixels.
 
@@ -18,8 +18,6 @@
     clippy::significant_drop_tightening,
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
-
-mod common;
 
 use serde_json::{Map, Value, json};
 use tilo_compositor::OutputConfig;
@@ -37,11 +35,11 @@ const TYPED: &str = "looks good";
 /// test hooks at `root`, the framed canvas in front.
 fn session(root: &std::path::Path) -> Session {
     let program = std::env::current_exe().expect("this test's program");
-    let apps = common::seeded_apps();
+    let apps = crate::common::seeded_apps();
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
-            person: common::PERSON.to_owned(),
+            person: crate::common::PERSON.to_owned(),
             shell: true,
             collab: false,
             services: vec![
@@ -57,14 +55,14 @@ fn session(root: &std::path::Path) -> Session {
         },
         &[OutputConfig::new(
             "HEADLESS-1",
-            common::WIDTH,
-            common::HEIGHT,
+            crate::common::WIDTH,
+            crate::common::HEIGHT,
         )],
     )
     .expect("session");
-    common::show_preset(&mut session, "Frames");
-    common::until(&mut session, "the canvas", |session| {
-        common::on_screen(session, common::CANVAS_ENTRY).is_some()
+    crate::common::show_preset(&mut session, "Frames");
+    crate::common::until(&mut session, "the canvas", |session| {
+        crate::common::on_screen(session, crate::common::CANVAS_ENTRY).is_some()
     });
     session
 }
@@ -128,7 +126,7 @@ fn shot(session: &mut Session, root: &std::path::Path, name: &str) {
     std::fs::create_dir_all(&dir).expect("the shots directory");
     let png = dir.join(name);
     let socket = root.join("test-control.sock");
-    let answer = common::control(
+    let answer = crate::common::control(
         session,
         &socket,
         &json!({"op": "snapshot", "path": png.to_str().unwrap()}),
@@ -147,10 +145,10 @@ fn a_place_620_to_700_tall_still_gives_its_transcript_its_room() {
     // channel under that room's top, and the composer stands under the room's foot.
     let _settled = ui::motion::testing::settled();
     for height in [620, 640, 660, 680, 700] {
-        let root = common::private_home();
+        let root = crate::common::private_home();
         let mut session = session(root.path());
         place_at(&mut session, CHANNEL, 720, height);
-        common::until(&mut session, "the channel's page", |session| {
+        crate::common::until(&mut session, "the channel's page", |session| {
             session.shell_says(MESSAGE)
         });
         let (_, clip_y, _, clip_h) = session.shell_scroll_clip(MESSAGE).unwrap_or_else(|| {
@@ -189,10 +187,10 @@ fn a_place_620_to_700_tall_still_gives_its_transcript_its_room() {
 #[test]
 fn a_chat_channel_placed_on_the_canvas_draws_its_own_page() {
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let mut session = session(root.path());
     place(&mut session, CHANNEL);
-    common::until(&mut session, "the channel's page", |session| {
+    crate::common::until(&mut session, "the channel's page", |session| {
         session.shell_says(MESSAGE)
     });
     // The channel's own view is on the canvas: its name, and its messages, each the component
@@ -231,7 +229,7 @@ fn a_chat_channel_placed_on_the_canvas_draws_its_own_page() {
     // The same page in the light theme: only shared components and theme roles, so every theme
     // reaches it.
     choose_appearance(&mut session, "light");
-    common::until(&mut session, "the page in the light theme", |session| {
+    crate::common::until(&mut session, "the page in the light theme", |session| {
         session.shell_says(MESSAGE)
     });
     shot(&mut session, root.path(), "channel-page-light.png");
@@ -240,12 +238,12 @@ fn a_chat_channel_placed_on_the_canvas_draws_its_own_page() {
 #[test]
 fn the_transcript_is_drawn_below_the_header_never_under_it() {
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let mut session = session(root.path());
     // The place a person's conversation stands in, the live shell's own size: a transcript
     // longer than the room the header and the composer leave it.
     place(&mut session, CHANNEL);
-    common::until(&mut session, "the channel's page", |session| {
+    crate::common::until(&mut session, "the channel's page", |session| {
         session.shell_says(MESSAGE)
     });
     // The page's header is the channel's name and topic, and the transcript is the scroll view
@@ -324,10 +322,10 @@ fn the_transcript_is_drawn_below_the_header_never_under_it() {
 #[test]
 fn typing_in_the_composer_and_pressing_send_posts_to_the_channel() {
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let mut session = session(root.path());
     place(&mut session, CHANNEL);
-    common::until(&mut session, "the channel's page", |session| {
+    crate::common::until(&mut session, "the channel's page", |session| {
         session.shell_says(MESSAGE)
     });
     // The composer's field takes the keyboard, as a person's click on it puts the caret there.
@@ -342,7 +340,7 @@ fn typing_in_the_composer_and_pressing_send_posts_to_the_channel() {
     let (cx, cy) = (x + w / 2.0, y + h / 2.0);
     let socket = root.path().join("test-control.sock");
     assert_eq!(
-        common::control(
+        crate::common::control(
             &mut session,
             &socket,
             &json!({"op": "click_at", "x": cx, "y": cy})
@@ -351,18 +349,18 @@ fn typing_in_the_composer_and_pressing_send_posts_to_the_channel() {
         "the click on the composer is taken"
     );
     assert_eq!(
-        common::control(&mut session, &socket, &json!({"op": "type", "text": TYPED})),
+        crate::common::control(&mut session, &socket, &json!({"op": "type", "text": TYPED})),
         json!({"ok": {}}),
         "the text is typed"
     );
     // What was typed stands in the field before it is sent: the draft the button reads.
-    common::until(&mut session, "the typed draft", |session| {
+    crate::common::until(&mut session, "the typed draft", |session| {
         session.shell_says(TYPED)
     });
-    // Pressing send posts what was typed through Chat's own `post`: the channel's reading the
+    // Pressing send sends what was typed through Chat's own `send`: the channel's reading the
     // place draws then holds a message saying it, which is what the page shows again — the
     // page's own message, not the draft still standing in the field.
-    let answer = common::control(
+    let answer = crate::common::control(
         &mut session,
         &socket,
         &json!({"op": "click_named", "name": "Send"}),
@@ -382,7 +380,7 @@ fn typing_in_the_composer_and_pressing_send_posts_to_the_channel() {
             .flatten()
             .any(|message| message["text"].as_str() == Some(TYPED))
     };
-    common::until(&mut session, "the message in the channel", |session| {
+    crate::common::until(&mut session, "the message in the channel", |session| {
         posted(session)
     });
     assert!(
@@ -400,26 +398,26 @@ fn pressing_an_attachment_places_the_resource_it_holds() {
     // row is what the page draws for the attachment: both stand within a place's view.
     const SHARED: &str = "I rewrote my window compositor in Rust and it changed EVERYTHING!!!";
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let mut session = session(root.path());
     place(&mut session, "chat.workspace.channels:c_general");
-    common::until(&mut session, "the channel's page", |session| {
+    crate::common::until(&mut session, "the channel's page", |session| {
         session.shell_says(SHARED)
     });
     // The attachment's row opens what it holds: activating it places it beside the page, which
     // is the system's open (shell.md §3), never Chat's.
-    let before: Vec<String> = common::places(&session)
+    let before: Vec<String> = crate::common::places(&session)
         .into_iter()
         .map(|place| place.record)
         .collect();
-    common::press(&mut session, SHARED);
+    crate::common::press(&mut session, SHARED);
     // The press places the video beside the page: the arrangement takes it as one step of the
     // person's, and the page stays where it was.
     for _ in 0..20 {
         session
             .step(std::time::Duration::from_millis(16))
             .expect("step");
-        if common::places(&session)
+        if crate::common::places(&session)
             .iter()
             .any(|place| place.record.starts_with("tube.video:"))
         {
@@ -427,12 +425,12 @@ fn pressing_an_attachment_places_the_resource_it_holds() {
         }
     }
     assert!(
-        common::places(&session)
+        crate::common::places(&session)
             .iter()
             .any(|place| place.record.starts_with("tube.video:")),
         "the attachment's press places what it holds; before: {before:?}, after: {:?}; the \
          shell refused {:?}",
-        common::places(&session)
+        crate::common::places(&session)
             .into_iter()
             .map(|place| place.record)
             .collect::<Vec<_>>(),

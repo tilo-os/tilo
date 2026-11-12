@@ -85,13 +85,13 @@ pub enum PrinterEffect {
     #[effect(job, idempotent)]
     FindPrinters,
     /// Add a nearby driverless printer as a queue.
-    #[effect(job, row, label = "Add printer")]
+    #[effect(job, row)]
     AddPrinter {
         #[param("The printer's address, as found nearby")]
         uri: String,
     },
     /// Make a printer the one apps print to unless told otherwise.
-    #[effect(job, row, idempotent, label = "Make default")]
+    #[effect(job, row, idempotent, label = "settings-printers-make-default")]
     SetDefaultPrinter {
         #[param("The printer's queue name")]
         printer: String,
@@ -105,19 +105,19 @@ pub enum PrinterEffect {
         paused: bool,
     },
     /// Remove a printer's queue from this device.
-    #[effect(job, row, destructive, label = "Remove printer")]
+    #[effect(job, row, destructive)]
     RemovePrinter {
         #[param("The printer's queue name")]
         printer: String,
     },
     /// Cancel a print job.
-    #[effect(job, row, destructive, label = "Cancel job")]
+    #[effect(job, row, destructive)]
     CancelPrintJob {
         #[param("The job's id")]
         job: String,
     },
     /// Send a stopped or failed print job again.
-    #[effect(job, row, label = "Retry job")]
+    #[effect(job, row)]
     RetryPrintJob {
         #[param("The job's id")]
         job: String,

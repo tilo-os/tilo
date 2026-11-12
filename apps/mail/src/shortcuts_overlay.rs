@@ -16,7 +16,7 @@ use ui::widget::modal_dialog::{self, ModalLayout, ModalSpec};
 
 const ROWS: &[(&str, &[&str])] = &[
     ("Open message", &["Enter"]),
-    ("Preview without marking read", &["P"]),
+    ("Preview", &["P"]),
     ("Next message", &["J"]),
     ("Previous message", &["K"]),
     ("Search this folder", &["/"]),

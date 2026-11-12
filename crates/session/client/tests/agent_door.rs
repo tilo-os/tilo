@@ -14,10 +14,6 @@
     reason = "in a test these are the assertion, not a hazard; the host lives until the test ends"
 )]
 
-mod support;
-
-tilo_automerge_isolate::test_worker!();
-
 use std::time::Duration;
 use tilo_session_client::{Cmd, Link, Outbox};
 
@@ -33,7 +29,7 @@ use tilo_session_core::remote::SessionActions;
 use tilo_user_identity::RevocationReason::Retired;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{door, enrol, enter, in_workspace, place, start_host, start_peer, wait_for};
+use crate::support::{door, enrol, enter, in_workspace, place, start_host, start_peer, wait_for};
 
 fn now() -> u64 {
     tilo_clock::unix_now_ns()
@@ -122,7 +118,7 @@ async fn agent_says_its_run(agent: &Link) -> bool {
 /// Someone else (`other`) reads nothing of the door and stops nothing of
 /// the computer `device` the agent runs on; the agent itself keeps no door.
 async fn nobody_else_reaches(other: &Link, agent: &Link, device: [u8; 32], host_key: [u8; 32]) {
-    let workspace = support::workspace();
+    let workspace = crate::support::workspace();
     let grant = hex::encode(device);
     let others = SessionActions::new(other, workspace, host_key);
     assert!(!ask(&others, agent_door::DOOR, InvokeArgument::None).1);
@@ -140,12 +136,12 @@ async fn nobody_else_reaches(other: &Link, agent: &Link, device: [u8; 32], host_
 /// The session the person stopped (`stopped`) closes for good, told why; the computer then comes
 /// back as the same agent in a session of its own, which is answered.
 async fn comes_back_after_its_stop(
-    host: &support::TestHost,
+    host: &crate::support::TestHost,
     stopped: &Link,
-    computer: &support::Device,
-    host_device: &support::Device,
+    computer: &crate::support::Device,
+    host_device: &crate::support::Device,
 ) -> Link {
-    let workspace = support::workspace();
+    let workspace = crate::support::workspace();
     wait_for("the stopped session to close", || {
         let status = stopped.status();
         async move {
@@ -177,7 +173,7 @@ async fn revoked_by_someone_else(
     other: &Link,
     other_root: &ed25519_dalek::SigningKey,
     agent: &Link,
-    computer: &support::Device,
+    computer: &crate::support::Device,
     state: &std::path::Path,
 ) {
     let device = computer.cert.device_public_key;
@@ -223,7 +219,7 @@ async fn the_persons_door_lists_stops_and_revokes_their_agent_and_nobody_elses()
         DeviceCapabilities::member(),
     );
     let stranger = enrol(&other_root, "browser", DeviceCapabilities::member());
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let host = start_host(
         &root,
         &host_device,
@@ -231,7 +227,7 @@ async fn the_persons_door_lists_stops_and_revokes_their_agent_and_nobody_elses()
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let workspace = support::workspace();
+    let workspace = crate::support::workspace();
     let mut peers = Vec::new();
     for device in [&browser, &computer] {
         place(&host.relay, &device.cert).await;
@@ -247,7 +243,14 @@ async fn the_persons_door_lists_stops_and_revokes_their_agent_and_nobody_elses()
     }
     // Someone else is a member of the workspace, let in by its owner.
     let person = other_root.verifying_key().to_bytes();
-    let invited = door(&host, &root, &host_device, support::WORKSPACE, person).await;
+    let invited = door(
+        &host,
+        &root,
+        &host_device,
+        crate::support::WORKSPACE,
+        person,
+    )
+    .await;
     let (cert, key) = (&stranger.cert, &stranger.key);
     peers.push(enter(&host, invited, cert, key, &host_device.cert, workspace).await);
     let [page, stopped, other] = <[Link; 3]>::try_from(peers).ok().unwrap();

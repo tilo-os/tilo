@@ -495,7 +495,10 @@ pub enum Envelope {
     /// workspace, which asked the workspace for it. Routed like
     /// [`Envelope::RemoteAction`] — to the addressed device's live
     /// connection, never stored, never fanned out — but never answered:
-    /// content that does not arrive is asked for again.
+    /// content that does not arrive is asked for again. A shared window's
+    /// control message (a viewer's ask, its input, a keyframe request) takes
+    /// the same route to a device no direct connection reaches, such as a
+    /// hosted environment's.
     RecordContent {
         /// Workspace id both devices are subscribed to.
         workspace_id: u64,

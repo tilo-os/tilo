@@ -26,6 +26,8 @@ console-run-changes = { $count ->
     [one] 1 change
    *[other] { $count } changes
 }
+console-run-started-by-you = Started by you
+console-run-started-by = Started by { $name }
 
 console-run = Agent run
 console-run-copy-link = Copy link

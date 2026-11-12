@@ -1312,7 +1312,7 @@ impl<C: ChildRecord> Children<C> {
     /// As the door refuses it.
     pub fn apply(&self, id: &Id, action: &C::Action) -> Result<(), ActionError> {
         self.state
-            .apply_to(id, action, &ActionInvoker::actor(&self.me))
+            .apply_to(id, action, &super::record::acting(&self.me))
             .map(drop)
     }
 
@@ -1324,7 +1324,7 @@ impl<C: ChildRecord> Children<C> {
         let Some(parent) = &self.dispatch else {
             return self.state.lifecycle(
                 step,
-                &ActionInvoker::actor(&self.me),
+                &super::record::acting(&self.me),
                 tilo_resource::origin_now_ms(),
                 None,
             );

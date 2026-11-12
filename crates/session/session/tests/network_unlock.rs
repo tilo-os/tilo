@@ -20,8 +20,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::net::Ipv4Addr;
 use std::rc::Rc;
 use std::sync::Arc;

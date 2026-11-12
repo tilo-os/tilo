@@ -1,0 +1,30 @@
+#!/bin/sh
+# A workspace VM's Linux apps session: the VM's headless Tilo desktop
+# (headless-session), run as the workspace's tenant with Xwayland, holding the
+# windows of the Linux apps the workspace opens (docs/hosted-browser.md, "Linux
+# apps").
+#
+# The guest agent runs this, as the tenant, at the workspace's first Linux app
+# (`crates/runtime/legacy-vm/src/hosted/browser.rs`, "The session in the
+# guest"), with `TILO_HOSTED_APPS` set. Its standard input's first line is the
+# workspace's material; every later line is one app to start (a desktop file
+# of this guest's, `tilo_actions::remote::linux_apps::AppLaunch`). Each app's
+# windows are shared with the workspace's members, who see and drive them on
+# their own desks.
+#
+# It is the tenant's: the apps are the tenant's own programs, run with the
+# tenant's files, never as Browser's account and never with its profile.
+#
+# Usage: apps-session [CONFIG]
+#   CONFIG  default: $TILO_SESSION_CONFIG, when it names one
+set -eu
+
+if [ "$(id -u)" = 0 ]; then
+    echo 'apps-session: the Linux apps are the tenant'"'"'s, never root'"'"'s' >&2
+    exit 1
+fi
+if [ "$(id -un)" = tilo-browser ]; then
+    echo 'apps-session: the Linux apps never run as the browser'"'"'s account' >&2
+    exit 1
+fi
+exec /usr/libexec/tilo/headless-session --x11 "$@"

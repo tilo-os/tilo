@@ -67,6 +67,11 @@
 //!   ([`history::read_at`]) and restored, field by field and item by item,
 //!   from the record's stored [`Shape`];
 //! * **search** — text fields are indexed by default ([`Resource::search`]);
+//! * **reading** — a record whose declaration names a document read answers
+//!   the framework's `read` with what it holds, as typed data
+//!   ([`read::fields`] for a record whose fields are all it holds), so an
+//!   agent, a script or the SDK with no window open reads any record through
+//!   the same action, permissions and audit as everything else;
 //! * **lookup by kind** — a host that works with whatever a workspace holds
 //!   reads, publishes and replays any registered type from the kind its
 //!   record names ([`Kinds`], [`ResourceKind`]);
@@ -323,7 +328,7 @@ pub mod __private {
     )]
     pub struct VerbDecl {
         pub id: &'static str,
-        pub label: &'static str,
+        pub label: crate::label::Word,
         /// The other words people use for it (`keywords = "…"`).
         pub keywords: &'static [&'static str],
         /// Its own picture (`icon = "…"`), by its Lucide name.
@@ -475,10 +480,11 @@ pub mod __private {
         let mut decl = crate::Declaration::new(
             vocabulary,
             verb.id,
-            verb.label.to_owned(),
+            verb.label.source.to_owned(),
             params_of(verb.params),
             build,
         );
+        decl.word = Some(verb.label);
         decl.param_types = verb
             .params
             .iter()
@@ -497,7 +503,7 @@ pub mod __private {
         // What the description says beyond its first line, the label.
         let description = verb
             .description
-            .strip_prefix(verb.label)
+            .strip_prefix(verb.label.source)
             .map_or(verb.description, |rest| {
                 rest.trim_start_matches('.').trim_start()
             });
@@ -980,18 +986,6 @@ pub mod __private {
             None if optional => Ok(serde_json::Value::Null),
             None => Err(serde_json::Error::missing_field(name)),
         }
-    }
-
-    /// The byte argument `name` taken from `args`, decoded by `decode`
-    /// ([`crate::content::bytes`]): inline, or by a content reference.
-    pub fn bytes_arg<T>(
-        args: &mut serde_json::Map<String, serde_json::Value>,
-        name: &'static str,
-        decode: fn(serde_json::Value) -> Result<T, serde_json::Error>,
-    ) -> Result<T, serde_json::Error> {
-        use serde::de::Error as _;
-        args.remove(name)
-            .map_or_else(|| Err(serde_json::Error::missing_field(name)), decode)
     }
 
     /// The action name and arguments of an action's JSON form

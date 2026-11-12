@@ -5,21 +5,22 @@ use tilo_desktop_surface::host::records::{app_of, wire_record};
 use tilo_relay_protocol::live::{LiveLayout, LiveRecord};
 use ui::record::RecordId;
 
-/// Who each window of this desk is, by tab, as presence names records: the short digest of the app
-/// and the record its component bound. What places a person in the window they work in, and a
-/// follower's view bringing it forward.
+/// Who each window of this desk is, by tab, as presence names records: the app and record each
+/// window shows, and the digest presence names the record by. What places a person in the window
+/// they work in, and a follower's view bringing it forward. A window whose app named none is read
+/// from the desk's own tree; a page keeps no continuations, so it hands its own windows here and
+/// names the people it reads by them the way a session does.
 #[must_use]
-pub(crate) fn bindings(
+pub fn bindings_of(
     tree: &tilo_desktop_model::DesktopTree,
-    records: &std::collections::BTreeMap<tilo_desktop_model::TabId, String>,
-) -> Vec<(tilo_desktop_model::TabId, String)> {
-    records
+    windows: &[(tilo_desktop_model::TabId, Option<String>, String)],
+) -> Vec<(tilo_desktop_model::TabId, String, String)> {
+    windows
         .iter()
-        .filter_map(|(&tab, record)| {
-            Some((
-                tab,
-                hex::encode(live_record(tree, tab, record)?.short_digest()),
-            ))
+        .filter_map(|(tab, app, record)| {
+            let record = live_record_as(tree, *tab, record, app.as_deref())?;
+            let digest = hex::encode(record.short_digest());
+            Some((*tab, record.app, digest))
         })
         .collect()
 }
@@ -52,16 +53,18 @@ pub fn placed(
 /// What the window `tab` shows, as presence names it to the others: the app it runs and its
 /// record's wire spelling ([`wire_record`]), the spelling a receiver matches against its own
 /// records. `None` for a window that runs no app, or shows a record this session does not know yet.
-pub(crate) fn live_record(
+/// The app is said by whoever knows it: a window drawn by its app's own surface names no app in
+/// the desk's tree, and its app is what told the session what it shows.
+pub(crate) fn live_record_as(
     tree: &tilo_desktop_model::DesktopTree,
     tab: tilo_desktop_model::TabId,
     record: &str,
+    app: Option<&str>,
 ) -> Option<LiveRecord> {
-    let app = app_of(tree, tab)?;
+    let app = app
+        .map(str::to_owned)
+        .or_else(|| app_of(tree, tab).map(str::to_owned))?;
     let record =
         RecordId::parse(record).map_or_else(|| record.to_owned(), |id| wire_record(&id).to_owned());
-    Some(LiveRecord {
-        app: app.to_owned(),
-        record,
-    })
+    Some(LiveRecord { app, record })
 }

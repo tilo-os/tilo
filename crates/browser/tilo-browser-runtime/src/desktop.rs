@@ -677,12 +677,13 @@ impl Shared {
     /// record by, as a native session's windows note theirs. An app's primary record is spelled
     /// empty, as an agent working in it names it, and the roster matches the window's app too: a
     /// Notes window showing Notes' primary record is where an agent writing a note there is, and
-    /// following it brings that window forward rather than opening Notes again.
-    pub fn shown_records(&self) -> std::collections::BTreeMap<u64, String> {
+    /// following it brings that window forward rather than opening Notes again. A window drawn by
+    /// its app's own surface names no app here; the desk's tree says which app it runs.
+    pub fn shown_records(&self) -> Vec<(u64, Option<String>, String)> {
         self.records
             .borrow()
             .iter()
-            .map(|(tab, checkout)| (*tab, checkout.id.route().to_owned()))
+            .map(|(tab, checkout)| (*tab, None, checkout.id.route().to_owned()))
             .collect()
     }
 }
@@ -1216,12 +1217,15 @@ impl Tiles {
 
 impl TileSource for Tiles {
     fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
-        // Another device's window whose page travels here: this page draws it, as the native desk
-        // does, with the same tile.
-        if matches!(tab.tile, TileContent::HostedWindow { .. })
-            && let Some(host) = crate::pages::tile(tab.id, &tab.title)
-        {
-            return host;
+        // Another device's window whose pictures or page travel here: this page draws it, as the
+        // native desk does.
+        if let TileContent::HostedWindow { app_id, label, .. } = &tab.tile {
+            let title = if label.is_empty() { &tab.title } else { label };
+            if let Some(host) = crate::window_pictures::tile(tab.id, title, app_id)
+                .or_else(|| crate::pages::tile(tab.id, &tab.title))
+            {
+                return host;
+            }
         }
         let shared = self.shared.clone();
         let id = tab.id;

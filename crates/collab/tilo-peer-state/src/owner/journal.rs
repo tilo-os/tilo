@@ -179,9 +179,31 @@ fn delta(old: &[Arc<[u8]>], new: &[Arc<[u8]>]) -> Vec<Op> {
             ops.copy(*offset, part.len());
             continue;
         }
-        match old.get(index).zip(offsets.get(index)) {
-            Some((before, offset)) => changed(&mut ops, before, *offset, part),
-            None => ops.bytes(part),
+        // The part at its place, counted from the start or, once a part
+        // was added or taken out before it, from the end.
+        let from_end = index
+            .checked_add(old.len())
+            .and_then(|at| at.checked_sub(new.len()));
+        let alike = |at: usize| {
+            let matched = matched(old.get(at).map_or(&[][..], |before| &**before), part);
+            matched.prefix.saturating_add(matched.suffix)
+        };
+        let mut at = match from_end {
+            Some(end) if end != index && alike(end) > alike(index) => end,
+            _ => index,
+        };
+        // A part that joined parts kept apart before starts with them whole.
+        let mut rest = &**part;
+        while let Some((before, offset)) = old.get(at).zip(offsets.get(at)).filter(|(before, _)| {
+            !before.is_empty() && before.len() < rest.len() && rest.starts_with(before)
+        }) {
+            ops.copy(*offset, before.len());
+            rest = after(rest, before.len());
+            at = at.saturating_add(1);
+        }
+        match old.get(at).zip(offsets.get(at)) {
+            Some((before, offset)) => changed(&mut ops, before, *offset, rest),
+            None => ops.bytes(rest),
         }
     }
     ops.0
@@ -196,6 +218,36 @@ const LENGTH_PREFIX: usize = 10;
 /// Where their starts differ only in a count ahead of them, what follows
 /// the counts is matched instead.
 fn changed(ops: &mut Ops, before: &[u8], offset: u64, part: &[u8]) {
+    let Matched {
+        skipped,
+        skip,
+        prefix,
+        suffix,
+    } = matched(before, part);
+    let rest = after(part, skip.saturating_add(prefix));
+    ops.bytes(part.get(..skip).unwrap_or_default());
+    ops.copy(offset.saturating_add(skipped as u64), prefix);
+    ops.bytes(
+        rest.get(..rest.len().saturating_sub(suffix))
+            .unwrap_or_default(),
+    );
+    ops.copy(
+        offset.saturating_add(before.len().saturating_sub(suffix) as u64),
+        suffix,
+    );
+}
+
+/// What `part` shares with `before`: past the first `skipped` bytes of
+/// `before` and `skip` of `part` (counts ahead of what they hold), `prefix`
+/// bytes, then `suffix` bytes at their ends.
+struct Matched {
+    skipped: usize,
+    skip: usize,
+    prefix: usize,
+    suffix: usize,
+}
+
+fn matched(before: &[u8], part: &[u8]) -> Matched {
     let (mut skipped, mut skip, mut prefix) = (0, 0, common_prefix(before, part));
     if prefix < LENGTH_PREFIX {
         for from in 0..=LENGTH_PREFIX.min(before.len()) {
@@ -207,19 +259,16 @@ fn changed(ops: &mut Ops, before: &[u8], offset: u64, part: &[u8]) {
             }
         }
     }
-    let before_rest = after(before, skipped.saturating_add(prefix));
-    let rest = after(part, skip.saturating_add(prefix));
-    let suffix = common_suffix(before_rest, rest);
-    ops.bytes(part.get(..skip).unwrap_or_default());
-    ops.copy(offset.saturating_add(skipped as u64), prefix);
-    ops.bytes(
-        rest.get(..rest.len().saturating_sub(suffix))
-            .unwrap_or_default(),
+    let suffix = common_suffix(
+        after(before, skipped.saturating_add(prefix)),
+        after(part, skip.saturating_add(prefix)),
     );
-    ops.copy(
-        offset.saturating_add(before.len().saturating_sub(suffix) as u64),
+    Matched {
+        skipped,
+        skip,
+        prefix,
         suffix,
-    );
+    }
 }
 
 /// `bytes` but their last `cut`, empty when they are no longer.
@@ -330,6 +379,33 @@ mod tests {
         let (bytes, literal) = rebuilt(&old, &new);
         assert_eq!(bytes, new.concat());
         assert!(literal <= 1 + 5 + 8, "{literal} literal bytes");
+    }
+
+    #[test]
+    fn a_part_added_before_others_leaves_their_changes_small() {
+        let old = parts(&[b"head", &[7; 4096], &[1; 300], b"tail"]);
+        let mut grown = vec![2; 300];
+        grown.push(3);
+        let new = parts(&[b"head", &[7; 4096], b"added", &grown, b"tail"]);
+        let (bytes, literal) = rebuilt(&old, &new);
+        assert_eq!(bytes, new.concat());
+        assert!(literal <= 5 + 1 + 300, "{literal} literal bytes");
+        // The part after the added one is a fresh allocation that grew by one byte.
+        let new = parts(&[b"head", &[7; 4096], b"added", &[1; 301], b"tail"]);
+        let (bytes, literal) = rebuilt(&old, &new);
+        assert_eq!(bytes, new.concat());
+        assert!(literal <= 5 + 1 + 4, "{literal} literal bytes");
+    }
+
+    #[test]
+    fn parts_joined_into_one_are_copied_from_where_they_were() {
+        let old = parts(&[b"head", &[7; 4096], &[8; 2048], b"meta"]);
+        let mut joined = [[7; 4096].as_slice(), &[8; 2048]].concat();
+        joined.extend_from_slice(b"new");
+        let new = parts(&[b"head", &joined, b"meta2"]);
+        let (bytes, literal) = rebuilt(&old, &new);
+        assert_eq!(bytes, new.concat());
+        assert!(literal <= 3 + 1, "{literal} literal bytes");
     }
 
     #[test]

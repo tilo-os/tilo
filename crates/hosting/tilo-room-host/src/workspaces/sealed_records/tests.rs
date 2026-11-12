@@ -424,7 +424,11 @@ async fn a_members_checkpoint_folds_what_a_newcomer_replays() {
     follows(&workspaces, &workspace, "line 399").await;
     // The member's engine folds the history it holds into one checkpoint
     // and publishes it in place of every write it covers.
-    let compaction = member.compact(&workspaces, &workspace).await;
+    let [compaction]: [NeighbourMsg; 1] = member
+        .compact(&workspaces, &workspace)
+        .await
+        .try_into()
+        .unwrap();
     let (channel, _) = neighbour_wire::retention(&compaction, false).unwrap();
     send_members_delta(
         &client,

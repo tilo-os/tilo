@@ -35,6 +35,12 @@ app gets on a real system:
              from its row's menu, pressed by name as a tool presses it, and Today's "Morning
              cleanup", pressed by name, runs on them and asks the person before changing Tasks
              and Notes
+  reopened   a task Tasks holds before the session stops shows in Today's card after it starts
+             again and Today opens: Today reads what Tasks' record already held, not only what
+             arrives while it is open (today-reopened.png)
+  record-open a task no window shows opens from search: Enter on its row takes a window of
+             Tasks to it, the task as its page, its tab named by it; Ctrl+Enter opens a window
+             of its own beside, named by the task (record-open*.png)
   native     native Notes (so.tilo.notes), installed beside them, launches and
              presents a frame (native-notes.png)
   activation "Show this window" answers for tilolang Notes as for native Notes
@@ -319,9 +325,10 @@ def window_pixels(shot: tuple[int, int, int, bytes], rect: list[int]) -> bytes:
                     for row in range(y0, y1))
 
 
-def search_beside(session: Session, title: str) -> None:
-    """Open a window of its own of the app called `title`, as a person does: search
-    (Super+Space), its name, and Ctrl+Enter on its row."""
+def search_beside(session: Session, title: str, beside: bool = True) -> None:
+    """Open what is called `title` in a window of its own, as a person does: search
+    (Super+Space), its name, and Ctrl+Enter on its row; without `beside`, Enter opens it
+    where its app shows it."""
     session.control({"op": "key_down", "key": "Super"})
     session.control({"op": "key", "key": "Space"})
     session.control({"op": "key_up", "key": "Super"})
@@ -337,6 +344,9 @@ def search_beside(session: Session, title: str) -> None:
     index, rows = until(f"search's row for {title!r}", settled, 30)
     for _ in range(index):
         session.control({"op": "key", "key": "ArrowDown"})
+    if not beside:
+        session.control({"op": "key", "key": "Enter"})
+        return
     session.control({"op": "modifiers", "ctrl": True})
     try:
         session.control({"op": "key", "key": "Enter"})
@@ -445,6 +455,56 @@ def check_titles(session: Session, out: Path) -> dict:
             "page": "Today", "app_name": "Tasks"}
 
 
+def tasks_titles(session: Session) -> list[str]:
+    """What the tabs of Tasks' windows read, in the strip's order."""
+    return sorted(w.get("title") for w in session.windows() if w.get("app_id") == app_id("tasks"))
+
+
+def check_record_open(session: Session, out: Path) -> dict:
+    """A task no window shows opens from search. With both windows of Tasks on Today, Enter on an
+    Inbox task's row opens it where Tasks shows it: a window of Tasks goes to the Inbox, shows the
+    task as its page and comes forward, its tab named by the task, and no window is added.
+    Ctrl+Enter on the row then opens a window of its own beside it, as Ctrl+Enter opens an app's,
+    showing the task's page, in front and named by the task."""
+    tasks = app_id("tasks")
+    title = "Book the ferry"
+    def tasks_windows() -> list[dict]:
+        return [w for w in session.windows() if w.get("app_id") == tasks]
+    before = tasks_windows()
+    if [w.get("title") for w in before] != ["Today"] * len(before):
+        raise Failed(f"Tasks' windows do not all stand on Today: {before}")
+    made = until("New task", lambda: app_action(session, tasks, "New task", "Document"))
+    invoke_found(session, made, {"title": title})
+    search_beside(session, title, beside=False)
+    shown = until(f"a window of Tasks named {title!r}", lambda: next(
+        (w for w in tasks_windows() if w.get("title") == title and w.get("active")), None), 30)
+    if len(tasks_windows()) != len(before):
+        raise Failed(f"Enter opened another window: {tasks_windows()}")
+    time.sleep(1.0)
+    session.control_cmd("snapshot", str(out / "record-open-in-place.png"))
+    search_beside(session, title)
+    def opened_beside() -> dict | None:
+        new = [w for w in tasks_windows() if w["tab"] not in {b["tab"] for b in before}]
+        return new[0] if len(new) == 1 and new[0].get("title") == title else None
+    beside = until(f"a window of its own named {title!r}", opened_beside, 30)
+    if not beside.get("active"):
+        raise Failed(f"the window opened for the task is not in front: {beside}")
+    time.sleep(1.0)
+    session.control_cmd("snapshot", str(out / "record-open-beside.png"))
+    # The task's page stands in the window: the controls of its fields, which its row has not.
+    names: list[str] = []
+    def shows_task() -> bool:
+        names[:] = window_controls(session, beside)
+        return "Add date" in names
+    try:
+        until(f"the window named {title!r} showing the task's page", shows_task, 30)
+    except Failed:
+        raise Failed(f"the window named {title!r} shows no task's page: {names}") from None
+    return {"in_place": {"tab": shown["tab"], "title": shown.get("title")},
+            "beside": {"tab": beside["tab"], "title": beside.get("title")},
+            "titles": tasks_titles(session)}
+
+
 def window_controls(session: Session, window: dict) -> list[str]:
     """The controls the desk names in `window`, with the window in front: what its app drew of its
     own content — its rows, its lists — named where the window stands."""
@@ -492,8 +552,8 @@ def check_today(session: Session, out: Path, before: bytes) -> dict:
     row's menu, opened where the row stands and run by the command a tool presses by name, both
     standing in Tasks' history. Its "Morning cleanup" is a control of that window too, pressed here
     as a tool or an assistive technology presses it: with tasks done in Tasks it clears them and
-    files "Morning: 2 done" in Notes, or asks the person's leave to change those two apps — a
-    headless session has nobody to answer, and an app's change of another app is refused unasked
+    files "Morning: 2 done" in Notes, or asks the person's leave to change those two apps, which
+    this check denies: an app's change of another app is made only with the person's leave
     (`docs/architecture/apps.md`)."""
     today = app_id("today")
     held = ["Water the plants", "Call the plumber"]
@@ -514,15 +574,21 @@ def check_today(session: Session, out: Path, before: bytes) -> dict:
     session.click_named("Morning cleanup")
 
     def ran():
-        if note in named(session):
+        shown = named(session)
+        if note in shown:
             return "answered"
-        # The app's own log reaches the session's with escape sequences in it, so the line is
-        # matched for its words and the app it names, not by its fields.
-        asked = [line for line in session.log().splitlines()
-                 if "another app's door refused a change asked of it" in line and today in line]
-        return "consent" if asked else None
+        return "consent" if "Allow once" in shown else None
     how = until("Today's cleanup to run", ran, 30)
+    denied = 0
     if how == "consent":
+        # Each question the cleanup asks is denied, as a person who gives no leave answers it.
+        quiet = time.monotonic() + 3
+        while time.monotonic() < quiet:
+            if "Allow once" in named(session):
+                session.click_named("Deny")
+                denied += 1
+                quiet = time.monotonic() + 3
+            time.sleep(0.3)
         for title in (title for title in held if title in named_before):
             if title not in named(session):
                 raise Failed(f"{title!r} left Tasks without the note Morning cleanup files")
@@ -535,8 +601,38 @@ def check_today(session: Session, out: Path, before: bytes) -> dict:
                 if after[i:i + width] != before[i:i + width]) / max(1, len(before) // width)
     return {"before": str(out / "today-before.png"), "after": str(out / "today-after.png"),
             "note": note if how == "answered" else None,
-            "asked_consent": how == "consent", "controls": len(named_before),
+            "asked_consent": how == "consent", "denied": denied, "controls": len(named_before),
             "moved": round(moved, 3), "done": done, "menu": menu}
+
+
+# The task Tasks holds when the session stops, which Today's card lists after it starts again.
+KEPT_TASK = "Book the dentist"
+
+
+def keep_task(session: Session) -> dict:
+    """Type a task into the window of Tasks on Today, due there and not done, and see it list it:
+    what Tasks' record holds when the session stops."""
+    tasks = app_id("tasks")
+    window = next(w for w in session.windows()
+                  if w.get("app_id") == tasks and w.get("title") == "Today")
+    focus(session, window)
+    time.sleep(0.5)
+    session.control({"op": "type", "text": KEPT_TASK})
+    session.control({"op": "key", "key": "Enter"})
+    until(f"{KEPT_TASK!r} in Tasks' window", lambda: KEPT_TASK in window_controls(session, window), 30)
+    return {"task": KEPT_TASK}
+
+
+def check_reopened(session: Session, out: Path) -> dict:
+    """The session started again on the state the first start left, and Today opened in it:
+    Today's Tasks card lists the task Tasks' record held before the stop. Today reads what that
+    record already holds when it opens, not only what arrives while it is open."""
+    today = app_id("today")
+    window = session.launch(today)
+    until(f"{KEPT_TASK!r} in Today's card", lambda: KEPT_TASK in window_controls(session, window), 60)
+    today_shown(session, out, "reopened")
+    return {"task": KEPT_TASK, "window": {"group": window["group"], "tab": window["tab"]},
+            "shot": str(out / "today-reopened.png")}
 
 
 def mark_done(session: Session, title: str) -> dict:
@@ -825,9 +921,11 @@ def check_routes(session: Session) -> dict:
     each do on the routes it tried."""
     open_probes(session)
     pattern = re.compile(r"\[app (\S+) stdout\] probe: ROUTE (\S+) (.*)")
+    # Each probe's answer on each route it tries: a log line said twice is one answer.
+    wanted = {(app_id(who), route) for who, routes in PROBE_ROUTES.items() for route in routes}
     def answered():
         lines = [m.groups() for m in pattern.finditer(session.log())]
-        return lines if len(lines) >= sum(map(len, PROBE_ROUTES.values())) else None
+        return lines if wanted <= {(who, route) for who, route, _ in lines} else None
     lines = until("the probes' route answers", answered, 60)
     result = {f"{who} -> {route}": answer for who, route, answer in lines}
     today = result.get(f"{app_id('today')} -> {app_id('notes')}", "")
@@ -881,13 +979,24 @@ def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
         ("windows", lambda: check_windows(session, summary["checks"]["processes"], pid, out)),
         ("titles", lambda: check_titles(session, out)),
         ("today", lambda: check_today(session, out, today_before[0])),
+        ("record-open", lambda: check_record_open(session, out)),
+        ("kept", lambda: keep_task(session)),
     ])
     stop_session(proc)
     running["proc"] = None
-    # The second start writes its own session log over this one.
+    # The next start writes its own session log over this one.
     shutil.copy(state / "logs/session.log", out / "shell-apps.log")
     if not ok:
         return False
+    if "kept" not in summary["failed"]:
+        # The same session started again, with what Tasks held when it stopped, and Today opened.
+        proc, session = start_session(state, out, [out / "build" / f"{n}.tapp" for n in APPS],
+                                      "reopened", apps="notes")
+        running["proc"] = proc
+        run_checks(summary, [("reopened", lambda: check_reopened(session, out))])
+        stop_session(proc)
+        running["proc"] = None
+        shutil.copy(state / "logs/session.log", out / "shell-reopened.log")
     # Route access, with the probe installed as Today and as Tasks. The probes first: until
     # a package names the probe's runtime, the collection after each install reclaims it.
     tapps = [*probe_packages(state, out), out / "build/notes.tapp"]

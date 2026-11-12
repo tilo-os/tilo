@@ -19,7 +19,7 @@ set -e
     echo "RPM builder unexpectedly succeeded without fixture binaries" >&2
     exit 1
 }
-grep -Fqx "missing $target_dir/release/shell — run without --no-cargo" <<<"$output"
+grep -Fqx "missing $target_dir/release/tilo-session — run without --no-cargo" <<<"$output"
 
 # An explicit binary directory remains an escape hatch for --no-cargo callers.
 override_dir=$work/prebuilt
@@ -32,7 +32,7 @@ set -e
     echo "RPM builder unexpectedly succeeded without override fixture binaries" >&2
     exit 1
 }
-grep -Fqx "missing $override_dir/shell — run without --no-cargo" <<<"$output"
+grep -Fqx "missing $override_dir/tilo-session — run without --no-cargo" <<<"$output"
 
 # Keep this check build-free: the regression happens after a successful Cargo
 # build, and the packaging script's contract is visible in its target lookup.

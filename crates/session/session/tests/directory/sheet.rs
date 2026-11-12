@@ -7,11 +7,11 @@ use std::time::Duration;
 use tilo_session::Session;
 use tilo_sheets::Seat as _;
 
-use crate::{
-    CLUB_WORKSPACE, ask_to_join, club_entry, common, community_entry, community_site, joining_site,
-    now_ms, open_directory, page_of, session, site, this_computer,
+use super::{
+    CLUB_WORKSPACE, ask_to_join, club_entry, community_entry, community_site, joining_site, now_ms,
+    open_directory, page_of, session, site, this_computer,
 };
-use common::window::{Client, KEY_ESCAPE, click, tap_key};
+use crate::common::window::{Client, KEY_ESCAPE, click, tap_key};
 
 /// The session with the directory's sheet up, and a client window focused behind it.
 fn sheet_over_a_window() -> (Session, Client) {
@@ -44,7 +44,7 @@ fn typing_reaches_the_sheets_field_and_not_the_window_behind_it() {
         tap_key(&mut session, keycode);
         client.exchange();
     }
-    common::until(
+    crate::common::until(
         &mut session,
         "the search field to hold the typing",
         |session| {
@@ -84,7 +84,7 @@ fn escape_closes_the_sheet_and_never_reaches_the_window() {
     );
     let seen_before = client.seen.keys.clone();
     tap_key(&mut session, KEY_ESCAPE);
-    common::until(&mut session, "the sheet to close on Escape", |session| {
+    crate::common::until(&mut session, "the sheet to close on Escape", |session| {
         client.exchange();
         session.step(Duration::from_millis(2)).expect("step");
         client.exchange();
@@ -109,7 +109,7 @@ fn a_click_outside_the_sheet_never_reaches_the_window() {
     // The sheet covers the whole display; a press at its corner is beside the card and closes the
     // sheet.
     click(&mut session, 1.0, 1.0);
-    common::until(
+    crate::common::until(
         &mut session,
         "the press beside the card to close the sheet",
         |session| {
@@ -135,7 +135,7 @@ fn a_click_inside_the_sheet_reaches_its_controls() {
     let (mut session, mut client) = sheet_over_a_window();
     // The sheet publishes its field as the screen reader reads it: the shared search field, named
     // by the words it stands for.
-    let field = common::wait_for(&mut session, "the sheet's search field", |session| {
+    let field = crate::common::wait_for(&mut session, "the sheet's search field", |session| {
         session
             .step(Duration::from_millis(16))
             .expect("a turn of the session");
@@ -149,7 +149,7 @@ fn a_click_inside_the_sheet_reaches_its_controls() {
     );
     tap_key(&mut session, 30);
     client.exchange();
-    common::until(
+    crate::common::until(
         &mut session,
         "the field to take the typed letter",
         |session| {
@@ -200,7 +200,7 @@ fn choosing_join_closes_the_sheet() {
     session.step(Duration::from_millis(1)).unwrap();
     open_directory(&mut session);
     ask_to_join(&mut session, CLUB_WORKSPACE);
-    common::until(
+    crate::common::until(
         &mut session,
         "the sheet to close once the join started",
         |session| {
@@ -226,7 +226,7 @@ fn a_sheet_the_session_closed_stops_being_drawn() {
         .expect("the session hosts the workspace directory")
         .clone();
     seat.presentation().close();
-    common::until(
+    crate::common::until(
         &mut session,
         "the closed sheet to stop being drawn",
         |session| {

@@ -159,7 +159,26 @@ fn valid_ref(media_ref: &str) -> bool {
         && !media_ref.chars().any(char::is_control)
 }
 
-#[resource(kind = "video-player.library", label = "Video Player")]
+impl Library {
+    /// What the record holds: the playlists, the timestamp annotations and where playback
+    /// stands for everyone watching a video together.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "video-player.library",
+    read_content = Library::read_document
+)]
 impl Library {
     /// Create shared playlist.
     ///

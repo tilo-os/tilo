@@ -135,3 +135,11 @@ shortcuts-evidence = Du hast diese { $steps } { $steps ->
     [one] Schritt
    *[other] Schritte
 } { $times } Mal hintereinander gemacht.
+
+## Where a problem is, and what became of the last change
+shortcuts-problem-shortcut = Kurzbefehl
+shortcuts-problem-result = Ergebnis
+shortcuts-problem-a-step = Ein Schritt
+shortcuts-problem-step = Schritt { $number }
+shortcuts-deleted = “{ $name }” gelöscht
+shortcuts-not-finished = Konnte nicht abgeschlossen werden

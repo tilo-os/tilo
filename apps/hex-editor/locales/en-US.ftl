@@ -45,3 +45,19 @@ hex-editor-empty-hint = Inspect and edit any file byte by byte, or start an empt
 hex-editor-edit-mode = Edit mode
 hex-editor-hide-inspector = Hide inspector
 hex-editor-show-inspector = Show inspector
+
+## Actions
+
+hex-editor-effects-save = Save file
+hex-editor-effects-save-as = Save as
+hex-editor-effects-search = Search bytes
+hex-editor-effects-goto-offset = Go to offset
+hex-editor-document = Hex document
+hex-editor-document-load = Load file
+hex-editor-document-insert-bytes = Insert bytes
+hex-editor-document-overwrite-bytes = Replace bytes
+hex-editor-document-delete-bytes = Delete bytes
+
+## The endianness strip
+hex-editor-little-endian = Little endian
+hex-editor-big-endian = Big endian

@@ -770,7 +770,7 @@ pub(super) fn queue_view(snapshot: &Snapshot, tx: &Door, pending_cancel: Option<
     }
     if pending_cancel.is_some() {
         items.push(Box::new(
-            Banner::warning("Cancel this document?")
+            Banner::warning(CATALOG.t("print-centre-cancel-pending-title"))
                 .with_message(CATALOG.t("print-centre-cancel-pending-message")),
         ));
     }

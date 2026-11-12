@@ -11,8 +11,6 @@
     reason = "test fixtures: a failed step is the assertion, and the session lives for its whole test"
 )]
 
-mod common;
-
 use std::fs;
 use std::rc::Rc;
 use std::sync::Mutex;
@@ -31,7 +29,7 @@ use tilo_session::{AppActions, Options, Records, SearchOptions};
 use ui::mentions::MARK;
 use ui::record::{RecordId, RecordKind};
 
-use common::{PERSON, headless};
+use crate::common::{PERSON, headless};
 
 /// The app whose record a mention is written in.
 const PROBE: &str = "so.tilo.probe";
@@ -253,7 +251,7 @@ fn a_mention_in_a_record_is_told_and_choosing_it_opens_the_record() {
         &workspace,
         &mut notebook(&workspace, &person),
     );
-    let notice = common::wait_for(
+    let notice = crate::common::wait_for(
         &mut session,
         "the person is told of the mention",
         |session| {
@@ -288,7 +286,7 @@ fn a_mention_in_a_record_is_told_and_choosing_it_opens_the_record() {
     session
         .notifications()
         .invoke_action(notice.notification.id, OPEN_ACTION);
-    let opening = common::wait_for(&mut session, "the record opens", |_| {
+    let opening = crate::common::wait_for(&mut session, "the record opens", |_| {
         opens.taken().into_iter().next()
     });
     let opened = chosen.elapsed();

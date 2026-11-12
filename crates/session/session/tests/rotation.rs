@@ -13,12 +13,10 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use common::window::{Client, Seen, window_of};
+use crate::common::window::{Client, Seen, window_of};
 use tilo_compositor::{Compositor, OutputConfig};
 use tilo_session::{Accelerometer, Options, Session};
 
@@ -139,7 +137,7 @@ fn fill(
         if let Some((width, height)) = size
             && drawn != size
         {
-            client.show(index, width, height, common::window::WINDOW_BYTES);
+            client.show(index, width, height, crate::common::window::WINDOW_BYTES);
             drawn = size;
         }
         if let Some((x, y, width, height)) =

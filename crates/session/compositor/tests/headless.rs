@@ -13,8 +13,6 @@
 
 #[path = "headless/framing.rs"]
 mod framing;
-#[path = "headless/harness.rs"]
-mod harness;
 #[path = "headless/idle_inhibit.rs"]
 mod idle_inhibit;
 #[path = "headless/ime.rs"]
@@ -36,7 +34,7 @@ mod typing;
 #[path = "headless/window_icons.rs"]
 mod window_icons;
 
-use harness::{
+use crate::harness::{
     Seen, TestClient, headless, mapped_client, mapped_client_without_touch, pump, shown,
 };
 

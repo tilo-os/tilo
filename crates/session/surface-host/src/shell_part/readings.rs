@@ -309,44 +309,36 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
         let ask = match invocation {
             Invocation::Action {
                 action,
-                args,
                 subject: Some(subject),
                 from,
                 ..
-            } => {
-                let subject_id = subject.id_string();
-                let mut arguments = BTreeMap::new();
-                for (name, value) in args {
-                    if matches!(value, Value::Ref(r) if r.target.id_string() == subject_id)
-                        || matches!(value, Value::Opt(None))
-                    {
-                        continue;
-                    }
-                    arguments.insert(name.clone(), argument_text(value));
-                }
+            } => Ask {
+                resource: subject.id_string(),
+                action: action.clone(),
+                arguments: invocation.door_arguments().into_iter().collect(),
+                from: from
+                    .as_ref()
+                    .map(|from| ui::tilo_actions::params::MadeFrom {
+                        resource: from.id_string(),
+                        kind: from.ty.clone(),
+                    }),
+            },
+            Invocation::Action { app, action, .. }
+                if app == super::SESSION_APP && self.session.contains_key(action) =>
+            {
                 Ask {
-                    resource: subject_id,
+                    // The guard says this action's resource is here; read it
+                    // without indexing so a later change to the guard cannot
+                    // panic a press.
+                    resource: self.session.get(action).cloned().unwrap_or_default(),
                     action: action.clone(),
-                    arguments,
-                    from: from
-                        .as_ref()
-                        .map(|from| ui::tilo_actions::params::MadeFrom {
-                            resource: from.id_string(),
-                            kind: from.ty.clone(),
-                        }),
+                    arguments: session_arguments(
+                        self.verbs.get(action),
+                        invocation.door_arguments(),
+                    ),
+                    from: None,
                 }
             }
-            Invocation::Action {
-                app, action, args, ..
-            } if app == super::SESSION_APP && self.session.contains_key(action) => Ask {
-                // The guard says this action's resource is here; read it
-                // without indexing so a later change to the guard cannot
-                // panic a press.
-                resource: self.session.get(action).cloned().unwrap_or_default(),
-                action: action.clone(),
-                arguments: session_arguments(self.verbs.get(action), args),
-                from: None,
-            },
             Invocation::Action { name, .. } => {
                 return Invoked::Failed(format!(
                     "`{name}` names no resource of its app to be sent to"
@@ -366,8 +358,11 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
                     resource: target.id_string(),
                     action: action.to_owned(),
                     arguments: BTreeMap::from([
-                        ("field".to_owned(), field_id.clone()),
-                        ("value".to_owned(), argument_text(value)),
+                        ("field".to_owned(), field_id.clone().into()),
+                        (
+                            "value".to_owned(),
+                            tilolang_tilo::runtime::value::to_argument(value).unwrap_or_default(),
+                        ),
                     ]),
                     from: None,
                 }
@@ -378,55 +373,17 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
     }
 }
 
-/// The arguments of a call of one of the session's loose actions, `verb` as its description
-/// declares it: each left-out one dropped, and those of a parameter published as a field of
-/// another nested back under that parameter, as its JSON.
+/// The arguments `given` of a call of one of the session's loose actions, `verb` as its
+/// description declares it: those of a parameter published as a field of another nested back
+/// under that parameter.
 fn session_arguments(
     verb: Option<&ui::tilo_actions::surface::VerbSurface>,
-    args: &[(String, Value)],
-) -> BTreeMap<String, String> {
-    let given = args
-        .iter()
-        .filter(|(_, value)| !matches!(value, Value::Opt(None)));
-    let Some(verb) = verb.filter(|verb| verb.params.iter().any(|param| param.within.is_some()))
-    else {
-        return given
-            .map(|(name, value)| (name.clone(), argument_text(value)))
-            .collect();
-    };
-    let json = given
-        .map(|(name, value)| {
-            let text = argument_text(value);
-            let json = match value {
-                Value::Text(_) => serde_json::Value::String(text),
-                Value::Opt(Some(inner)) if matches!(**inner, Value::Text(_)) => {
-                    serde_json::Value::String(text)
-                }
-                _ => serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text)),
-            };
-            (name.clone(), json)
-        })
-        .collect();
-    ui::tilo_actions::surface::nest_arguments(verb, json)
-        .into_iter()
-        .map(|(name, value)| {
-            let text = match value {
-                serde_json::Value::String(text) => text,
-                other => other.to_string(),
-            };
-            (name, text)
-        })
-        .collect()
-}
-
-/// An argument as the session's door takes it from the shell: a text as it is, anything else
-/// as its JSON, read back by the parameter's type.
-fn argument_text(value: &Value) -> String {
-    match value {
-        Value::Text(text) => text.clone(),
-        Value::Ref(r) => r.target.id_string(),
-        Value::Opt(Some(value)) => argument_text(value),
-        other => tilolang_tilo::runtime::value::to_json(other)
-            .map_or_else(|_| String::new(), |json| json.to_string()),
+    given: serde_json::Map<String, serde_json::Value>,
+) -> BTreeMap<String, serde_json::Value> {
+    match verb {
+        Some(verb) => ui::tilo_actions::surface::nest_arguments(verb, given.into_iter().collect())
+            .into_iter()
+            .collect(),
+        None => given.into_iter().collect(),
     }
 }

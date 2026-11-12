@@ -70,6 +70,7 @@ pub enum DestinationEffect {
         layout: String,
     },
     /// Refresh networks.
+    #[effect(label = "installer-action-refresh-networks")]
     RefreshNetworks,
     /// Choose Wi-Fi network.
     SelectNetwork {
@@ -86,8 +87,10 @@ pub enum DestinationEffect {
     /// Retry signing in using the private form.
     RetryAccount,
     /// Cancel sign-in.
+    #[effect(label = "installer-accounts-cancel")]
     CancelSignIn,
     /// Continue offline.
+    #[effect(label = "imager-installer-continue-offline")]
     ContinueOffline,
     /// Choose install method.
     SetMethod {
@@ -98,6 +101,7 @@ pub enum DestinationEffect {
         method: String,
     },
     /// Refresh disks.
+    #[effect(label = "installer-action-refresh-disks")]
     RefreshDisks,
     /// Use this disk.
     #[effect(row)]
@@ -113,6 +117,7 @@ pub enum DestinationEffect {
     },
     /// Use N GiB for Tilo.
     #[effect(row)]
+    #[effect(label = "installer-storage-use-capacity")]
     SetSize {
         #[param("Total Tilo capacity in whole GiB (at least 35)")]
         gib: i64,
@@ -202,6 +207,7 @@ pub enum DestinationEffect {
         timezone: String,
     },
     /// I will save my recovery key.
+    #[effect(label = "installer-action-recovery-promise")]
     SetRecoveryPromise {
         #[param(
             "A recovery key is shown once during install; it is the only backup if the TPM or passphrase is lost"
@@ -224,15 +230,19 @@ pub enum DestinationEffect {
     /// Copy the key to this live session's clipboard. The key itself is never
     /// returned to the caller.
     #[effect(own_device)]
+    #[effect(label = "installer-action-copy-recovery-key")]
     CopyRecoveryKey,
     /// I saved this key off this computer.
+    #[effect(label = "installer-action-recovery-saved")]
     ConfirmRecoverySaved {
         #[param("The recovery key is stored somewhere other than this computer")]
         saved: bool,
     },
     /// Reboot now.
+    #[effect(label = "installer-action-reboot")]
     Reboot,
     /// Power off.
+    #[effect(label = "installer-action-power-off")]
     PowerOff,
 }
 

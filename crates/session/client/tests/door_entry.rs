@@ -14,10 +14,6 @@
     reason = "in a test these are the assertion, not a hazard; the test is one entry, in order; the host lives until it ends"
 )]
 
-mod support;
-
-tilo_automerge_isolate::test_worker!();
-
 use std::sync::Arc;
 use std::time::Duration;
 use tilo_session_client::{Cmd, Outbox, TransportPhase};
@@ -35,7 +31,7 @@ use tilo_session_client::MemoryPeerStore;
 use tilo_session_client::device::{Entering, Held, door_entry, entered};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, UserIdentity};
 
-use support::{enrol, enter_page, in_workspace, start_peer, start_workspace_host};
+use crate::support::{enrol, enter_page, in_workspace, start_peer, start_workspace_host};
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))
@@ -179,7 +175,7 @@ fn binding(connection: &iroh::endpoint::Connection) -> [u8; 32] {
 
 /// A raw session stream to the host, as anyone on the internet opens one.
 async fn dial(
-    host: &support::TestHost,
+    host: &crate::support::TestHost,
 ) -> (
     iroh::Endpoint,
     iroh::endpoint::Connection,

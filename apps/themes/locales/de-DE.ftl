@@ -126,3 +126,27 @@ themes-preview-label-desktop = Vorschau von { $theme }
 themes-preview-label-list = Listenvorschau von { $theme }
 themes-preview-label-dialog = Dialogvorschau von { $theme }
 themes-preview-label-presence = Anwesenheitsfarben von { $theme }
+
+## Actions
+
+themes-effect-apply-theme = Als Systemdesign festlegen
+themes-effect-export = Design exportieren
+themes-effect-duplicate-theme = Design duplizieren
+themes-studio = Designs
+themes-studio-import-theme = Designdatei importieren
+themes-studio-reset = Auf Voreinstellung zurücksetzen
+themes-studio-switch-polarity = Zwischen Hell und Dunkel wechseln
+
+## The preview's own sample window
+themes-app-title = Theme Studio
+themes-preview-inbox = Posteingang
+themes-preview-move-title = In den Papierkorb legen?
+themes-preview-move-body = Die Datei bleibt 30 Tage wiederherstellbar.
+themes-preview-keep-copy = Kopie behalten
+themes-preview-cancel = Abbrechen
+themes-preview-move = Verschieben
+themes-preview-document = Quartalsbericht
+themes-preview-shared = Geteilt mit Ada und Bo
+themes-preview-edited = Vor 2 Minuten bearbeitet
+themes-preview-field = Budgetnotizen
+themes-preview-share = Teilen

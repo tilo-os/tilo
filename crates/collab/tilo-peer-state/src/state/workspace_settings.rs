@@ -84,7 +84,7 @@ impl StatePeer {
                 // Enough for any action that at most changes the workspace
                 // undoably: an outside effect still asks.
                 let grant = Grant::new(
-                    format!("app-action:{}", uuid::Uuid::new_v4().simple()),
+                    action.grant_id().as_str(),
                     Subject::App(action.app.clone()),
                     action.node(&workspace.node()),
                     KindSet::READ_UNDOABLE,

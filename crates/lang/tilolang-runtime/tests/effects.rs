@@ -3,15 +3,11 @@
 //! replay answers from the record instead of the host.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::run::{Clock, JournalEntry};
     use tilolang_runtime::{
         AmStore, InvokeOutcome, Resolution, ResourceRef, RunOutcome, Runtime, SimpleAuthority,

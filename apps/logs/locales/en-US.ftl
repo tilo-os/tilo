@@ -31,3 +31,13 @@ logs-facet-unit = Unit
 logs-facet-boot = Boot
 logs-copy-message = Copy message
 logs-copy-entry = Copy entry
+
+## Actions
+
+logs-effects-refresh = Refresh journal
+logs-effects-set-live-tail = Follow live
+logs-effects-stop-live-tail = Stop following
+logs-effects-export-filtered-jsonl = Export filtered logs
+logs-effects-select-entry = Show entry details
+logs-journal = System journal
+logs-journal-clear-filters = Clear filters

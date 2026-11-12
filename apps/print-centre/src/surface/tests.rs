@@ -52,7 +52,7 @@ ui::action_contract_tests! {
     seed: ui::automerge::AutoCommit::new(),
     registry: registry(),
     resources: |_| populated_resources(),
-    palette: ["Print a document", "Open print queue", "Find network printers", "Open printer"],
+    palette: ["Print document", "Open print queue", "Find network printers", "Open printer"],
 }
 
 /// Print Centre's own widget in a captured frame, without the window

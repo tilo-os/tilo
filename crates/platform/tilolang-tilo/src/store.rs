@@ -206,6 +206,10 @@ struct LocalWrite {
     /// it is the store's unsaved layer, and no change commits it. The record moving on leaves
     /// it in the mirror ([`Inner::drop_committed_local`]).
     derived: bool,
+    /// Whether those who read the mirror were told what it changed when its action committed
+    /// ([`unsaved::tell`]): the record's change that carries it then tells only what the record
+    /// says differently ([`TiloStore::sync`]).
+    told: bool,
 }
 
 /// A write of the store's the record holds, with the change that carried it: the overlay derives
@@ -251,6 +255,10 @@ struct Planned {
     items: Vec<(FieldKey, String)>,
     placed: Vec<(DocId, String, bool)>,
 }
+
+/// What a write did ([`Inner::write`]): the steps each collection's listing took, per document,
+/// and every field it reached.
+type Written = (BTreeMap<DocId, Vec<ListingChange>>, Vec<FieldKey>);
 
 /// Where an item is: the resource holding its collection, the field, the order key; where an
 /// item of a record written before items were flat is nested; and its type.
@@ -339,7 +347,7 @@ mod reading;
 use index_build::AppIndex;
 use reading::{
     collections_by_doc, everything, mirror_of, name_version_changes, note_derived, scan,
-    version_fields, write_as_a_known_actor,
+    told_differently, version_fields, write_as_a_known_actor,
 };
 mod outbox;
 mod plan;
@@ -1851,7 +1859,9 @@ impl Inner {
 
     /// Apply one edit to the mirror's open transaction and derive what it changed into the
     /// overlay. `touched` names what it changes, and `items` the collection items it adds,
-    /// removes or moves. Returns the steps each collection's listing took.
+    /// removes or moves. Returns the steps each collection's listing took, and every field the
+    /// writes reached: `touched` and the fields their derivation moved on resources they did
+    /// not name.
     fn write(
         &mut self,
         app: &str,
@@ -1859,10 +1869,15 @@ impl Inner {
         seed: &[u8],
         touched: &[FieldKey],
         (items, placed): Moves,
-    ) -> Result<BTreeMap<DocId, Vec<ListingChange>>, StoreError> {
+    ) -> Result<Written, StoreError> {
         let before = (!items.is_empty()).then(|| Arc::clone(&self.overlay));
+        let mut reached = touched.to_vec();
         for edit in edits {
-            self.write_one(app, edit, seed, touched, (items.clone(), placed.clone()))?;
+            for key in self.write_one(app, edit, seed, touched, (items.clone(), placed.clone()))? {
+                if !reached.contains(&key) {
+                    reached.push(key);
+                }
+            }
         }
         let mut listings: BTreeMap<DocId, Vec<ListingChange>> = BTreeMap::new();
         if let (Some(before), Some(held)) = (before, self.apps.get(app).filter(|h| h.ready())) {
@@ -1891,12 +1906,12 @@ impl Inner {
                 }
             }
         }
-        Ok(listings)
+        Ok((listings, reached))
     }
 
     /// One of the edits of a write, into the chunk it is addressed to: the run's manifest into
     /// the record itself, and an item into the chunk the run it joins is in, so one write reaches
-    /// one document.
+    /// one document. Returns the fields it reached, derivation included.
     fn write_one(
         &mut self,
         app: &str,
@@ -1904,7 +1919,7 @@ impl Inner {
         seed: &[u8],
         touched: &[FieldKey],
         (items, placed): Moves,
-    ) -> Result<(), StoreError> {
+    ) -> Result<Vec<FieldKey>, StoreError> {
         let derived = unsaved::writes_derived(self, edit.resource(), touched, &items);
         let chunk = edit
             .chunk()
@@ -1943,6 +1958,7 @@ impl Inner {
             placed,
             versions: None,
             derived,
+            told: false,
         };
         // Derived either way: a failed edit may have written part of itself. What the manifest
         // change places is derived with the edit that places it.
@@ -1951,8 +1967,9 @@ impl Inner {
         }
         self.touch(&write);
         applied.map_err(|error| invalid(error.to_string()))?;
+        let reached = write.touched.clone();
         self.local.push(write);
-        Ok(())
+        Ok(reached)
     }
 
     /// Drop the open transaction of the chunk `chunk`'s mirror, if it has one.

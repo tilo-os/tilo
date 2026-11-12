@@ -37,6 +37,7 @@ use ui::framework::{
 };
 
 use crate::blocked::BlockedReport;
+use crate::locales::CATALOG;
 use crate::model::{
     Action, FirewallConfig, Matcher, Proto, Rule, RuleId, Zone, ZoneKind, validate_port,
     validate_source,
@@ -827,7 +828,13 @@ impl Store {
     fn set_active_zone(&mut self) {
         self.dispatch(Firewall::paths().default_zone.set(self.selected_zone));
         self.report(
-            format!("{} is now the active zone", self.selected_zone.title()),
+            CATALOG.t_args(
+                "firewall-firewall-default-zone",
+                &[(
+                    "new",
+                    ui::i18n::ArgValue::Text(CATALOG.t(self.selected_zone.title_message())),
+                )],
+            ),
             Tone::Success,
         );
     }
@@ -985,7 +992,7 @@ impl FirewallWindow {
             wide: self.wide,
         };
         let page = view::zone_page(&model, &store.intents, &store.switches, &store.scroll);
-        zone.kind.title().clone_into(&mut self.title);
+        self.title = CATALOG.t(zone.kind.title_message());
         self.shell.set_content(page);
     }
 

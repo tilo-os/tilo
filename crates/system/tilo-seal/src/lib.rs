@@ -4,6 +4,8 @@
 //!   X25519-HKDF-SHA256, ChaCha20-Poly1305). Used for anything addressed to
 //!   a device or member key: enrollment offers, per-device secrets, key
 //!   history for channel joiners.
+//! * [`content`]: content a record references, sealed in chunks under a
+//!   fresh key its reference carries.
 //! * [`envelope`]: at-rest XChaCha20-Poly1305 envelopes under a symmetric
 //!   key or an Argon2id password, with a versioned header, 192-bit random
 //!   nonces, mandatory [`Context`] binding and key wrapping.
@@ -37,6 +39,7 @@
 )]
 
 pub mod compat;
+pub mod content;
 pub mod discord_voice;
 pub mod envelope;
 pub mod error;

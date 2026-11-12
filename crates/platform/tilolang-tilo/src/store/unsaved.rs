@@ -76,6 +76,34 @@ pub(super) fn commit_derived(inner: &mut Inner, state: &mut TxnState, by: &str) 
     true
 }
 
+/// Note and tell what the transaction `state` committed to the record, the store's writes up to
+/// `writes` its own: it is told now, as the mirror's open transaction and the overlay show it,
+/// and the record's change that brings it back tells only what the record says differently
+/// ([`super::TiloStore::sync`]). A `marked` transaction (a migration's or a trigger's mark) wrote
+/// what it names no field of, and its change tells all it wrote.
+pub(super) fn tell_saved(
+    inner: &mut Inner,
+    state: &mut TxnState,
+    note: &ChangeNote,
+    writes: usize,
+    marked: bool,
+) {
+    for doc in state.touched.keys() {
+        inner
+            .notes
+            .entry(doc.clone())
+            .or_default()
+            .push(note.clone());
+    }
+    tell(inner, state, &note.invoker);
+    if !marked {
+        let start = state.start.min(writes);
+        for write in inner.local.iter_mut().take(writes).skip(start) {
+            write.told = true;
+        }
+    }
+}
+
 /// Tell whoever reads what the transaction `state` wrote: each document it reached, with the
 /// fields it changed and how each collection's listing moved, `by` naming who made it. Returns
 /// the documents told.
@@ -105,6 +133,17 @@ pub(super) fn tell(inner: &mut Inner, state: &mut TxnState, by: &str) -> Vec<Doc
         told.push(doc);
     }
     told
+}
+
+/// The store's writes a sync found the record holds ([`Inner::drop_committed_local`]).
+pub(super) struct Taken {
+    /// The collection items they added, removed or moved.
+    pub(super) items: ItemTouches,
+    /// Whether they are every edit the record's new changes carry, and those who read the
+    /// mirror were told each when its action committed.
+    pub(super) told: bool,
+    /// The versions they told, provisional: per resource, what its action made of it.
+    pub(super) versions: super::Ends,
 }
 
 /// Keep what `write` took out of each collection it moved items of, with the version that
@@ -190,12 +229,18 @@ impl Inner {
     /// taken stays pending: a change that arrives from elsewhere leaves the edits a person has
     /// here, and the reads that answer from the store keep showing them, until the record's
     /// change for them comes back.
+    ///
+    /// Also says whether those who read the mirror were told every one of `committed` already:
+    /// each is a write of the store's, told when its action committed ([`tell`]), and with
+    /// the versions those writes told provisionally.
     pub(super) fn drop_committed_local(
         &mut self,
         chunk: ChunkNo,
         committed: &[(ChangeHash, DynEdit)],
-    ) -> ItemTouches {
+    ) -> Taken {
         let mut items = ItemTouches::new();
+        let mut told = true;
+        let mut versions = super::Ends::new();
         let mut held: Vec<(ChangeHash, DynEdit)> = committed
             .iter()
             .map(|(change, edit)| (*change, edit.bare().clone()))
@@ -218,10 +263,35 @@ impl Inner {
             for (key, id) in &write.items {
                 items.entry(key.clone()).or_default().insert(id.clone());
             }
+            told &= write.told;
+            if let Some(ends) = &write.versions {
+                versions.extend(ends.iter().map(|(at, end)| (at.clone(), end.clone())));
+            }
             self.accepted.push(Accepted { write, change });
         }
         self.local = kept;
-        items
+        // An edit the record holds in this chunk's document that the store routed to another
+        // chunk — a record kept as one document, whose manifest places items in chunks above it —
+        // stays pending there ([`super::TiloStore::sync`]); it was told all the same.
+        for (_, edit) in &held {
+            let Some(write) = self
+                .local
+                .iter()
+                .find(|write| !write.derived && write.edit.bare() == edit)
+            else {
+                told = false;
+                continue;
+            };
+            told &= write.told;
+            if let Some(ends) = &write.versions {
+                versions.extend(ends.iter().map(|(at, end)| (at.clone(), end.clone())));
+            }
+        }
+        Taken {
+            items,
+            told,
+            versions,
+        }
     }
 
     /// Write the store's pending writes of the chunk `chunk` onto the mirror again, as pending

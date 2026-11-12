@@ -8,10 +8,7 @@
 //! key a person approved there, and plays another person who follows the
 //! invitation links the run hands them ([`accept_invitation`]).
 
-use super::{
-    Arc, Device, DeviceCapabilities, Hosted, ModelChoice, Options, SigningKey, common, enrol,
-    harness, support,
-};
+use super::{Arc, Device, DeviceCapabilities, Hosted, ModelChoice, Options, SigningKey, enrol};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use tilo_front_door::{Config, Door, store::Store};
@@ -67,6 +64,8 @@ pub struct OnRelay {
     pub host_origin: String,
     /// The relay's own device, which a page joining its workspaces trusts.
     pub host: Device,
+    /// The person running the relay, whose device it is.
+    pub operator: SigningKey,
     pub hosted: Hosted,
     _site: test_http::Responder,
     /// Where the relay keeps its state.
@@ -127,8 +126,8 @@ pub async fn door_on_relay_limiting(
         "relay",
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
-    let state = support::scratch_dir();
-    let hosted = harness::hosted::start(
+    let state = crate::support::scratch_dir();
+    let hosted = crate::harness::hosted::start(
         &operator,
         &host,
         state.path(),
@@ -136,7 +135,7 @@ pub async fn door_on_relay_limiting(
             plain: true,
             member_limits,
             web_entry: Some(format!("http://127.0.0.1:{}/", site.port())),
-            ..Options::offering(common::catalogue, ModelChoice::Scripted)
+            ..Options::offering(crate::common::catalogue, ModelChoice::Scripted)
         },
     )
     .await;
@@ -187,9 +186,73 @@ pub async fn door_on_relay_limiting(
         web_entry,
         host_origin: hosted.web.origin.clone(),
         host,
+        operator,
         hosted,
         _site: site,
         state,
+    }
+}
+
+impl OnRelay {
+    /// The relay stopped and started again on the state it kept, as a deployment restarts it:
+    /// closed, or dropped as a killed process is when `killed`. The door before it is a new one
+    /// pointed at the restarted relay; it remembers no key approved before.
+    pub async fn restart(self, killed: bool) -> Self {
+        let Self {
+            issuer,
+            lobby,
+            web_entry,
+            host,
+            operator,
+            hosted,
+            _site: site,
+            state,
+            ..
+        } = self;
+        let Hosted {
+            relay, web, agents, ..
+        } = hosted;
+        drop(agents);
+        drop(web);
+        if killed {
+            drop(relay);
+        } else {
+            relay.shutdown().await;
+        }
+        let hosted = crate::harness::hosted::start(
+            &operator,
+            &host,
+            state.path(),
+            Options {
+                plain: true,
+                web_entry: Some(web_entry.clone()),
+                ..Options::offering(crate::common::catalogue, ModelChoice::Scripted)
+            },
+        )
+        .await;
+        let relay = hosted.web.plain_origin.clone().unwrap();
+        let door = Door::new(
+            &Config {
+                issuer: issuer.clone(),
+                web_entry: web_entry.trim_end_matches('/').to_owned(),
+                relay: relay.clone(),
+            },
+            Store::in_memory(),
+        )
+        .unwrap();
+        Self {
+            door,
+            issuer,
+            lobby,
+            relay,
+            web_entry,
+            host_origin: hosted.web.origin.clone(),
+            host,
+            operator,
+            hosted,
+            _site: site,
+            state,
+        }
     }
 }
 

@@ -220,6 +220,161 @@ fn the_palette_makes_a_task_and_asks_the_form_for_a_moment() {
     the_moment_picked_answers_the_reminder(&mut host, &mut window, &task);
 }
 
+/// The title the window's shell heads what it shows with: the place, the page.
+fn shown_title(window: &Window) -> Option<String> {
+    fn shell(node: &patch::Node) -> Option<&patch::Node> {
+        if node.kind.ends_with("NavShell") {
+            return Some(node);
+        }
+        node.children.iter().find_map(shell)
+    }
+    match shell(window.root.as_ref()?)?.props.get("title")? {
+        patch::Value::Text(title) => Some(title.clone()),
+        _ => None,
+    }
+}
+
+/// Choose the place `label` in the window's sidebar, as a person does.
+fn choose_place(host: &mut TilolangHost, window: &mut Window, label: &str) {
+    let place = node_with(
+        window.root.as_ref().expect("the window shows"),
+        "label",
+        label,
+    )
+    .unwrap_or_else(|| panic!("the window lists {label}"))
+    .clone();
+    let pick = place
+        .events
+        .keys()
+        .next()
+        .expect("a place is chosen")
+        .clone();
+    window.send(&[ToApp::Fire {
+        lane: Lane::Root,
+        key: place.key,
+        event: pick,
+        value: None,
+    }]);
+    settle(host, window);
+}
+
+/// Type `title` into the Inbox's entry, as a person adds a task with no day.
+fn add_to_inbox(host: &mut TilolangHost, window: &mut Window, title: &str) {
+    choose_place(host, window, "Inbox");
+    let entry = node_with(
+        window.root.as_ref().expect("the window shows"),
+        "placeholder",
+        "New task",
+    )
+    .expect("the Inbox's entry stands at the list's foot")
+    .clone();
+    let submit = entry
+        .events
+        .get_key_value("submit")
+        .expect("the entry submits")
+        .0
+        .clone();
+    window.send(&[ToApp::Fire {
+        lane: Lane::Root,
+        key: entry.key,
+        event: submit,
+        value: Some(patch::Value::text(title)),
+    }]);
+    settle(host, window);
+}
+
+/// A task's entry in the session's search index opens it in a window that shows none of its
+/// items: the window stands on Today, so the Inbox task is published by no window, and the entry
+/// names the `open` of the record that holds it, which every window showing the record publishes
+/// and which a person choosing it in the palette runs as it is. Told the task, it takes the window
+/// to the place that holds it — the Inbox, for one with no day — and opens the task there.
+#[test]
+fn a_task_no_window_shows_opens_from_search_through_its_record() {
+    let (app, bundle) = shipped(&shipped_dir().join("tasks"));
+    let (mut host, mut window, sent, inbox, _route) = running_app("ada", &app, bundle);
+    settle(&mut host, &mut window);
+    add_to_inbox(&mut host, &mut window, "Book the ferry");
+    let task = tasks_of(host.instances().next().expect("the instance runs"))
+        .first()
+        .cloned()
+        .expect("the entry made a task");
+    let Value::Ref(made) = &task else {
+        panic!("a task is a resource: {task:?}")
+    };
+    choose_place(&mut host, &mut window, "Today");
+    assert_eq!(
+        shown_title(&window).as_deref(),
+        Some("Today"),
+        "the window stands on Today"
+    );
+    let hosted = host.instances().next().expect("the instance runs");
+    let published = tilolang_tilo::instance::wire::resource(&made.target).id;
+    let path = published
+        .strip_prefix(&format!("tl:{app}:"))
+        .unwrap_or(&published);
+    let entry = tilolang_tilo::search::index_entry_at(
+        &hosted.instance().host().expect("the runtime"),
+        &hosted.bundle().meta,
+        path,
+    )
+    .unwrap_or_else(|| panic!("the task is found by its name: {published}"));
+    let open = entry.action.expect("a hit opens what it names");
+    let published_open = |resource: &str| {
+        hosted
+            .published()
+            .iter()
+            .find(|action| action.address.resource == resource && action.address.action == "open")
+            .cloned()
+    };
+    assert!(
+        published_open(&entry.resource).is_none(),
+        "the window on Today publishes nothing of the Inbox task"
+    );
+    let record = published_open(&open.resource).unwrap_or_else(|| {
+        panic!(
+            "the hit names an `open` the window publishes: {}",
+            open.resource
+        )
+    });
+    assert_eq!(
+        record.prompt_param(),
+        None,
+        "chosen as it is, the record's `open` asks for nothing"
+    );
+    let arguments = serde_json::json!({ "anchor": entry.resource }).to_string();
+    inbox.borrow_mut().push_back(CollabEvent::Invocation {
+        id: 42,
+        invocation: tilo_actions::InvocationId::new(),
+        resource: open.resource,
+        action: open.action,
+        argument: Some(format!(
+            "{}{arguments}",
+            tilo_actions::ARGUMENTS_JSON_PREFIX
+        )),
+        actor: "ada".to_owned(),
+        context: None,
+    });
+    settle(&mut host, &mut window);
+    assert!(
+        matches!(
+            answered(&sent, 42),
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+        ),
+        "{:?}",
+        answered(&sent, 42)
+    );
+    assert_eq!(
+        shown_title(&window).as_deref(),
+        Some("Inbox"),
+        "the task has no day: the window shows it in the Inbox"
+    );
+    assert_eq!(
+        window.in_place.as_ref().map(|shown| shown.id.as_str()),
+        Some(path),
+        "the window shows the task as its page"
+    );
+}
+
 /// The day the task `task` is due, as its record holds it.
 fn due_of(hosted: &Hosted, task: &Value) -> Option<String> {
     let Value::Ref(task) = task else {

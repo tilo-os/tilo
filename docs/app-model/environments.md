@@ -458,6 +458,12 @@ that workspace environment's own, never in a guest sharing the host's kernel
   its stdin, `ready`, `up` and `used` on its stdout — is documented in
   [`crates/runtime/legacy-vm/src/hosted/browser.rs`](../../crates/runtime/legacy-vm/src/hosted/browser.rs),
   and the whole of it in [`hosted-browser.md`](../hosted-browser.md).
+- **Linux apps with windows:** opening one (`app.so.tilo.linux#open`, naming
+  its desktop file) starts a second headless session in the same VM, as the
+  tenant, with Xwayland ([`hosted-browser.md`](../hosted-browser.md#linux-apps)).
+  It joins the workspace as a device like Browser's and shares every window
+  its apps open with the workspace's members, over the live plane. Opening one
+  is a Linux action: it needs the plan and the card.
 
 ## Members that take work
 

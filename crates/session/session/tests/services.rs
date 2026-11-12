@@ -14,9 +14,7 @@
               outlives every call made into it"
 )]
 
-mod common;
-
-use common::audio::Card;
+use crate::common::audio::Card;
 use std::io::BufReader;
 use std::sync::{Arc, Mutex};
 
@@ -134,7 +132,7 @@ fn arguments(value: Value) -> Map<String, Value> {
 /// Wait until `resource` reads as `done` says, taking in what the services report as the session's
 /// loop does.
 fn until(session: &mut Session, resource: &str, done: impl Fn(&Value) -> bool) -> Value {
-    common::wait_for(
+    crate::common::wait_for(
         session,
         format!("{resource} to read as expected"),
         |session| {
@@ -398,7 +396,7 @@ impl Wait {
 /// Step the session's passes until Settings hears of the change they see: a pass is what tells it
 /// to read the groups again.
 fn when_settings_hears(session: &mut Session, wait: &mut Wait) -> u64 {
-    common::wait_for(
+    crate::common::wait_for(
         session,
         "the session's passes to tell Settings",
         |session| {

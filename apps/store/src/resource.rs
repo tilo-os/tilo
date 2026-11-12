@@ -102,6 +102,7 @@ pub enum StoreEffect {
     /// The app then appears nowhere in the Store or in search, and cannot be
     /// opened or installed from them. Only you can unblock it.
     #[effect(idempotent)]
+    #[effect(label = "store-block-button")]
     BlockApp {
         #[param("App identity (for example com.example.Game)")]
         app: String,
@@ -172,6 +173,7 @@ pub enum StoreEffect {
     },
     /// Install reviewed package.
     #[effect(job)]
+    #[effect(label = "store-package-install")]
     InstallImportedPackage {
         #[param("Previously reviewed app identity")]
         app: String,
@@ -210,12 +212,14 @@ pub enum StoreEffect {
     ///
     /// A Tilo app is fetched when it is not on this device yet.
     #[effect(job, returns)]
+    #[effect(label = "store-action-open")]
     OpenApp {
         #[param("App identity")]
         app: String,
     },
     /// Update.
     #[effect(job)]
+    #[effect(label = "store-action-update")]
     Update {
         #[param("App identity")]
         app: String,
@@ -228,30 +232,35 @@ pub enum StoreEffect {
     },
     /// Allow cleanup.
     #[effect(job)]
+    #[effect(label = "store-action-release")]
     Unpin {
         #[param("App identity")]
         app: String,
     },
     /// Install.
     #[effect(job)]
+    #[effect(label = "store-action-install")]
     FlatpakInstall {
         #[param("App identity")]
         app: String,
     },
     /// Update.
     #[effect(job)]
+    #[effect(label = "store-action-update")]
     FlatpakUpdate {
         #[param("App identity")]
         app: String,
     },
     /// Open.
     #[effect(job)]
+    #[effect(label = "store-action-open")]
     FlatpakOpen {
         #[param("App identity")]
         app: String,
     },
     /// Flatpak unavailable.
     #[effect(job)]
+    #[effect(label = "store-flatpak-unavailable")]
     FlatpakSetup {
         #[param("App identity")]
         app: String,
@@ -278,12 +287,14 @@ pub enum StoreEffect {
     },
     /// Enable source.
     #[effect(job)]
+    #[effect(label = "store-remote-enable")]
     EnableRemote {
         #[param("Account repository identity")]
         remote: String,
     },
     /// Disable source.
     #[effect(job)]
+    #[effect(label = "store-remote-disable")]
     DisableRemote {
         #[param("Account repository identity")]
         remote: String,
@@ -317,6 +328,7 @@ pub enum StoreEffect {
     ///
     /// Fetches the verified status of the app's moderation case.
     #[effect(job)]
+    #[effect(label = "store-report-refresh")]
     RefreshStatus {
         #[param("App identity of the report")]
         app: String,
@@ -325,6 +337,7 @@ pub enum StoreEffect {
     ///
     /// Appeals the app's moderation case, with its note as the reason.
     #[effect(job, sensitive)]
+    #[effect(label = "store-report-appeal")]
     Appeal {
         #[param("App identity of the report")]
         app: String,
@@ -333,6 +346,7 @@ pub enum StoreEffect {
     },
     /// Export evidence envelope.
     #[effect(job)]
+    #[effect(label = "store-report-export")]
     ExportEvidence {
         #[param("App identity of the report")]
         app: String,

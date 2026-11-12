@@ -108,14 +108,17 @@ impl TopBarChrome {
             rooms.push(Room::beside(right_x, self.center_rect.x1 + gap));
             rooms.push(Room::beside(right_x, self.center_lane.x0 + gap));
             rooms.push(Room::beside(right_x, past_workspace));
-            // The band taken whole stops short of the person's own face, which the bar draws at its
-            // end: their face stays theirs to press, and the ask's answer never stands under it.
-            let band_right = if self.own_avatar_rect.is_zero_area() {
-                self.rect.x1 - seat
-            } else {
-                (self.own_avatar_rect.x0 - f64::from(theme.tokens.spacing.s2))
-                    .min(self.rect.x1 - seat)
-            };
+            // The band taken whole stops short of the person's own face and of the people beside
+            // it, which the bar draws at its end: each face stays its own to press, and the ask's
+            // answer never stands under one. On a phone the answer stood under the one face the
+            // bar shows, and a press meant for that face's card answered the ask instead.
+            let edge = f64::from(theme.tokens.spacing.s2);
+            let people = self.collaborators_rect();
+            let band_right = [self.own_avatar_rect, people]
+                .into_iter()
+                .filter(|rect| !rect.is_zero_area())
+                .map(|rect| rect.x0 - edge)
+                .fold(self.rect.x1 - seat, f64::min);
             rooms.push(Room::band(self.rect.x0 + seat, band_right));
         }
         // The question stands whole wherever a room holds it. Its decline gives way first — a press
@@ -685,17 +688,17 @@ mod tests {
                     bar.center_rect
                 );
             }
-            // Below this the band has no room beside them at all: the ask is the band's.
-            if viewport.0 < 720 {
-                continue;
+            // Below this the band has no room beside the workspace's chip: the ask may take it.
+            if viewport.0 >= 720 {
+                for part in ask {
+                    assert!(
+                        part.intersect(bar.ws_pill_rect).is_zero_area(),
+                        "{viewport:?}: the ask's {part:?} stands over the workspace {:?}",
+                        bar.ws_pill_rect
+                    );
+                }
             }
-            for part in ask {
-                assert!(
-                    part.intersect(bar.ws_pill_rect).is_zero_area(),
-                    "{viewport:?}: the ask's {part:?} stands over the workspace {:?}",
-                    bar.ws_pill_rect
-                );
-            }
+            // At every width, the faces and the buttons beside them stay their own to press.
             for part in ask {
                 for (name, rect) in others {
                     assert!(
@@ -704,6 +707,45 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// On a phone the face beside the person's own is theirs to press with an ask open: a press on
+    /// it opens that person's card, never the ask's answer. Across the whole band, the answer of a
+    /// short ask stood under the one face a phone's bar shows, and the agent's card never opened.
+    #[test]
+    fn a_phones_face_opens_its_card_with_an_ask_open() {
+        let mut here = tree();
+        let mut agent = tilo_desktop_model::Collaborator::new("agent", "Claude Code");
+        agent.role_id = Some("agent".into());
+        here.workspaces[0].collaborators = vec![agent];
+        for viewport in [(390, 844), (360, 780)] {
+            let (mut frame, host) = asking_desktop_over(viewport, &here);
+            *host.ask.borrow_mut() = Some(AvatarAsk {
+                question: "Keep it?".into(),
+                detail: String::new(),
+                answer: "Keep".into(),
+                open: true,
+            });
+            settle(&mut frame);
+            let face = frame
+                .bar()
+                .face_rect("agent")
+                .expect("the agent's face stands on the bar");
+            let answer = frame.bar().avatar_ask_answer_rect();
+            assert!(
+                answer.intersect(face).is_zero_area(),
+                "{viewport:?}: the ask's answer {answer:?} stands clear of the face {face:?}"
+            );
+            host.intents.borrow_mut().clear();
+            Framed::harness_mut(&mut frame).click_at(face.center().x, face.center().y);
+            // The press folds the ask, as a press anywhere else does, and reaches the face.
+            let asked = host.intents.borrow().clone();
+            assert!(
+                asked.contains(&ChromeIntent::ShowPerson("agent".into()))
+                    && !asked.contains(&ChromeIntent::AnswerAvatarAsk),
+                "{viewport:?}: the face opens the agent's card, never the ask's answer: {asked:?}"
+            );
         }
     }
 

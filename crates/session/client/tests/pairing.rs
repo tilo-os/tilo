@@ -21,13 +21,6 @@
     reason = "in a test these are the assertion, not a hazard; each test is one pairing, in order"
 )]
 
-#[path = "support/participant.rs"]
-mod participant;
-mod support;
-
-// This binary re-execs as the automerge worker (a governed workspace uses it).
-tilo_automerge_isolate::test_worker!();
-
 use std::sync::Arc;
 use tilo_session_client::{Cmd, Outbox};
 
@@ -47,7 +40,7 @@ use tilo_user_identity::{
 };
 use tokio::task::JoinHandle;
 
-use support::{
+use crate::support::{
     door, enrol, enter, hears, in_workspace, ready, redeem, route, say, start_host, start_peer,
     start_peer_with_store, start_workspace_host, wait_for,
 };
@@ -157,7 +150,7 @@ async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&host.relay, &root).await;
     let approver = MemberApprover::new(host.iroh());
     let page = host.iroh();
 
@@ -169,7 +162,7 @@ async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting
         laptop.key.clone(),
     );
     laptop_peer
-        .join_placed(support::WORKSPACE, "Workspace")
+        .join_placed(crate::support::WORKSPACE, "Workspace")
         .unwrap();
     ready(&[&laptop_peer]).await;
 
@@ -206,7 +199,7 @@ async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting
         store.clone(),
     );
     phone_peer
-        .join_placed(support::WORKSPACE, "Workspace")
+        .join_placed(crate::support::WORKSPACE, "Workspace")
         .unwrap();
     ready(&[&phone_peer]).await;
     let mut note = automerge::AutoCommit::new();
@@ -229,7 +222,7 @@ async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting
     assert_eq!(store.load().unwrap().cert.as_ref(), Some(&cert));
     let reloaded = start_peer_with_store(page, cert, host_cert, phone_key, store);
     reloaded
-        .join_placed(support::WORKSPACE, "Workspace")
+        .join_placed(crate::support::WORKSPACE, "Workspace")
         .unwrap();
     ready(&[&reloaded]).await;
     laptop_peer

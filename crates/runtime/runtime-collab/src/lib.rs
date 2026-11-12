@@ -1037,6 +1037,10 @@ pub struct PresenceEvent {
 pub struct ChannelContext {
     pub collaborators: Vec<collab_types::presence::Collaborator>,
     pub permissions: Vec<String>,
+    /// What each app installed on this device is called, in each language its
+    /// package names it in: a window names another app's changes by these,
+    /// never by an id. Session-local presentation, sent with the roster.
+    pub apps: Vec<collab_types::history::NamedApp>,
     /// `Some` only for a session-local Follow control frame. The inner
     /// `None` means stop following; ordinary context snapshots keep this
     /// field at `None` and replace roster/permissions as before.

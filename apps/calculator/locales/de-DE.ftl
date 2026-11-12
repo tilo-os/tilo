@@ -119,3 +119,23 @@ calculator-key-subtract = Minus
 calculator-key-pi = Pi
 calculator-key-euler = Eulersche Zahl
 calculator-key-other = Rechnertaste { $key }
+
+## Actions
+
+calculator-effect-show-calculator = Rechner anzeigen
+calculator-effect-show-graph2d = 2D-Graph anzeigen
+calculator-effect-show-graph3d = 3D-Graph anzeigen
+calculator-effect-show-convert = Einheitenumrechnung anzeigen
+calculator-effect-use-degrees = Grad verwenden
+calculator-effect-use-radians = Bogenmaß verwenden
+calculator-effect-toggle-panel = Formeln ein- oder ausblenden
+calculator-effect-open = Berechnung abrufen
+calculator-effect-recall = Berechnung verwenden
+calculator-document = Rechner
+calculator-document-commit-history = Zum Verlauf hinzufügen
+calculator-document-delete-history-entry = Aus dem Verlauf entfernen
+calculator-document-clear-history = Verlauf leeren
+calculator-document-add-function = Kurve hinzufügen
+calculator-document-add-surface = Fläche hinzufügen
+calculator-document-delete-function = Kurve entfernen
+calculator-document-delete-surface = Fläche entfernen

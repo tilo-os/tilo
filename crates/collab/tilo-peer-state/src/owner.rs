@@ -53,7 +53,7 @@ pub use file_store::{FileHost, open_file, open_file_with, owner_file_of, read_fi
 pub use history_content::HistoryContent;
 #[cfg(not(target_arch = "wasm32"))]
 pub use join_service::OwnerJoinWorkspaces;
-pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES, preflight};
+pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES};
 pub use publication::{
     HostAnswer, NativeOutgoing, NativeOutgoingEntry, RecordWrites, SealedHistoryKeys,
     custody_run_name, outgoing_bytes, validate_file_layout,
@@ -62,7 +62,7 @@ pub use record::{
     EnrollmentTarget, NativeAuthorityStorage, PendingEnrollmentId, PendingEnrollmentStatus,
     StoredPendingEnrollment,
 };
-pub use write::Committed;
+pub use write::{Committed, WriteRefusal};
 
 use crate::replica::Replica;
 use crate::{AdmissionReport, StatePeer, TransportOrigin};
@@ -1081,7 +1081,8 @@ impl NativeWorkspaceOwner {
                 }
             }
         };
-        limits::preflight(&record, limits::MAX_AUTHORITY_BYTES).map_err(|e| e.to_string())?;
+        limits::preflight_record(&record, limits::MAX_AUTHORITY_BYTES)
+            .map_err(|e| e.to_string())?;
         if changed {
             record.continuity = record
                 .continuity

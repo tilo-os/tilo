@@ -6,13 +6,11 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-mod support;
-
 use tilo_relay::web::{TlsSource, WebConfig};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-use support::{enrol, start_host_plain};
+use crate::support::{enrol, start_host_plain};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn host_routes_answer_over_loopback_plain_http_only() {

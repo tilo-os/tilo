@@ -67,3 +67,19 @@ weather-notice-offline-message = This is the last forecast saved on this device.
 
 ## The window bar's slots
 weather-refresh-forecast = Refresh forecast
+
+## The forecast page while the forecast is on its way
+weather-loading-forecast = Loading the forecast
+
+## Actions
+
+weather-effects-refresh = Refresh forecasts
+weather-effects-open-location = Open forecast
+weather-locations = Weather
+weather-locations-save-location = Add location
+weather-locations-use-as-default = Use as default location
+weather-locations-move-to-top = Move to top
+weather-locations-remove = Remove location
+
+## The forecast's own button
+weather-retry = Retry

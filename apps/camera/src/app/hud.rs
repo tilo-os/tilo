@@ -418,7 +418,13 @@ impl CameraApp {
         let side = 2.0 * m.control - 2.0 * m.pad;
         let height = side + 2.0 * m.pad;
         let (_, destination) = crate::actions::capture_destination(capture.is_video());
-        let label = format!("Open in {destination}");
+        let label = crate::CATALOG.t_args(
+            "camera-open-in",
+            &[(
+                "destination",
+                ui::i18n::ArgValue::Text(destination.to_owned()),
+            )],
+        );
         let label_w = ButtonFace::new(Rect::ZERO, &label)
             .role(ButtonRole::Plain)
             .intrinsic_width(tr, theme);

@@ -40,6 +40,7 @@ pub mod agent_runs;
 mod application;
 pub mod browser;
 mod caller;
+pub mod linux_apps;
 pub use caller::Caller;
 mod catalogue;
 mod confirmation;
@@ -326,6 +327,11 @@ pub mod identity_admin {
         /// them.
         #[serde(default)]
         pub kind: KeyKind,
+        /// The browser profile it is a tab of, by the profile's id: a
+        /// browser keeps one key per open tab, and the person sees and takes
+        /// back all of one browser's keys as one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub browser: Option<String>,
     }
 
     /// What a key the person's root certified is.

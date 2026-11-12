@@ -70,3 +70,25 @@ disks-format-loses-used-on = The { $size } of files on “{ $label }” are eras
 ## The window bar's slots
 disks-rescan-drives = Rescan drives
 disks-views = View
+
+
+## What a drive's operations are called, and what SMART says of it
+disks-action-mount = Mount
+disks-action-unmount = Unmount
+disks-action-format = Format…
+disks-action-benchmark = Benchmark
+disks-action-eject = Eject
+disks-health-healthy = Healthy
+disks-health-attention = Needs attention
+disks-health-failing = Failing
+disks-health-unknown = Unknown
+
+## Actions
+
+disks-device-rescan = Rescan
+disks-device-select = Select
+disks-device-show-tab = Show tab
+disks-device-format = Format
+disks-device-disk-usage = Show disk usage
+disks-system = Storage devices
+disks-system-name-drive = Name drive

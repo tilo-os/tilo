@@ -17,8 +17,6 @@
     reason = "test fixtures: a failed step is the assertion, and a session outlives every call"
 )]
 
-mod common;
-
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -29,7 +27,7 @@ use tilo_desktop_policy::Window;
 use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
 
-use common::PERSON;
+use crate::common::PERSON;
 
 /// The app whose window each test opens: a tilolang app, whose windows hold none of its data, so
 /// each of them is an instance the session's host runs and a tab of the desk's.
@@ -119,7 +117,7 @@ fn a_window(id: u64) -> Window {
 
 /// A headless session whose desk the tests open windows on, its apps started through `apps`.
 fn session(apps: Rc<Apps>) -> Session {
-    common::headless(Options {
+    crate::common::headless(Options {
         person: PERSON.to_owned(),
         collab: false,
         apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
@@ -155,7 +153,7 @@ fn instances(handed: &Path) -> Vec<u64> {
 
 /// The instance the one start the launcher made was told, once it made it.
 fn the_instance(session: &mut Session, handed: &Path) -> u64 {
-    common::wait_for(session, "the window's process starts", |_| {
+    crate::common::wait_for(session, "the window's process starts", |_| {
         instances(handed).first().copied()
     })
 }
@@ -196,7 +194,7 @@ fn a_window_of_its_own_opens_in_the_tab_beside_the_one_the_app_has() {
     session
         .desktop()
         .with_policy(|policy| policy.map(a_window(11)).unwrap());
-    common::until(&mut session, "the app's window is on the desk", |session| {
+    crate::common::until(&mut session, "the app's window is on the desk", |session| {
         tabs_of(session, APP).len() == 1
     });
     let had = tabs_of(&session, APP)[0];

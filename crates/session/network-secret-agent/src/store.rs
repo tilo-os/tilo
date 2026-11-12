@@ -215,7 +215,7 @@ impl VaultStore {
                     secrets
                 }),
             Err(error) => {
-                tracing::warn!(target: "shell::network_secrets", %error, "vault unreadable");
+                tracing::warn!(target: "tilo_network_secrets", %error, "vault unreadable");
                 None
             }
         }
@@ -282,7 +282,7 @@ impl SecretStore for VaultStore {
                 // Kept once, where the person's other devices find it too.
                 Ok(()) => return self.forget(key),
                 Err(error) => tracing::info!(
-                    target: "shell::network_secrets",
+                    target: "tilo_network_secrets",
                     %error,
                     "Wi-Fi password not shared across devices; keeping it on this one"
                 ),

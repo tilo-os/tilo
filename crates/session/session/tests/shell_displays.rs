@@ -14,11 +14,9 @@
     reason = "test fixtures: a failed step is the assertion, and the session outlives every call"
 )]
 
-mod common;
-
 use std::time::Duration;
 
-use common::window::Client;
+use crate::common::window::Client;
 use tilo_compositor::{OutputChange, OutputConfig};
 use tilo_session::{Options, Session};
 
@@ -55,7 +53,7 @@ fn session(places: &[(i32, i32)]) -> Session {
 /// Run frames until `done` holds.
 #[track_caller]
 fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
-    common::wait_for(session, "what the test asked of the session", |session| {
+    crate::common::wait_for(session, "what the test asked of the session", |session| {
         done(session).then_some(())
     });
 }

@@ -9,15 +9,10 @@
     reason = "in a test these are the assertion, not a hazard; the test holds its host for its length"
 )]
 
-mod support;
-
-// This binary re-execs as the automerge worker (support is shared with crates that lack the dep).
-tilo_automerge_isolate::test_worker!();
-
 use tilo_session_client::Outbox;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{enrol, start_peer, start_workspace_host};
+use crate::support::{enrol, start_peer, start_workspace_host};
 
 /// A page joining a workspace of its person that the host does not govern
 /// yet has the host place it there first, under the workspace's name, and
@@ -38,7 +33,7 @@ async fn a_page_places_its_persons_workspace_before_joining_it() {
         laptop.key.clone(),
     );
     page.join_placed(workspace, "Garden").unwrap();
-    support::in_workspace(&page, workspace_id).await;
+    crate::support::in_workspace(&page, workspace_id).await;
     let summary = host
         .relay
         .workspaces()
@@ -56,7 +51,7 @@ async fn a_page_places_its_persons_workspace_before_joining_it() {
         laptop.key.clone(),
     );
     again.join_placed(workspace, "Another name").unwrap();
-    support::in_workspace(&again, workspace_id).await;
+    crate::support::in_workspace(&again, workspace_id).await;
     assert_eq!(
         host.relay
             .workspaces()

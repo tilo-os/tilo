@@ -376,7 +376,9 @@ fn failure_scope(code: &str) -> (&'static str, &'static str, Vec<RecoveryRequest
         }
         "storage-transaction-failed" => ("record", "error", vec![RecoveryRequest::RetrySaving]),
         "permission-required" => ("permission", "error", Vec::new()),
-        "protocol-rejected" | "signature-rejected" => ("record", "error", Vec::new()),
+        "protocol-rejected" | "write-refused" => ("record", "error", Vec::new()),
+        // Writes that wait, kept on this device: they go once the record or the signer takes them.
+        "record-history-full" | "signing-failed" => ("record", "notice", Vec::new()),
         _ => (
             "transport",
             "notice",

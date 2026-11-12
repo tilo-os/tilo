@@ -85,6 +85,7 @@ pub use native_publication::NativePublicationCut;
 pub use personal::link::{AdmittedFrame, PERSONAL_ALPN, PersonalSync};
 pub use personal::{PeerPersonal, PersonalStore};
 pub use seed::{seed_workspace, workspace_seed};
+mod compaction_set;
 mod sealed_compaction;
 mod sealed_history;
 pub use sealed_compaction::{
@@ -271,16 +272,38 @@ struct DurableDocument {
 /// Each encrypted record's sealed writes, in admission order.
 type SealedHistory = Vec<(Route, Vec<SignedOp>)>;
 
-/// Most sealed writes, and their bytes, one record keeps for a key holder.
-/// Past them a key holder compacts the history
-/// ([`PeerPublication::draft_sealed_compaction`]). This crate's tests keep
-/// fewer, so a test crosses the bound many times over in the writes it can
-/// afford.
+/// Most sealed writes, and their bytes, one record keeps for a key holder
+/// since its last compaction. Past them a key holder compacts the history
+/// ([`PeerPublication::draft_sealed_compaction`]); the compaction set itself
+/// counts toward its own bound ([`MAX_COMPACTION_SET_BYTES`]), so the work a
+/// compaction costs tracks the writes since the last one, not the record's
+/// size. This crate's tests keep fewer, so a test crosses the bound many
+/// times over in the writes it can afford.
 #[cfg(not(test))]
 const MAX_SEALED_OPS: usize = 4096;
 #[cfg(test)]
 const MAX_SEALED_OPS: usize = 256;
 const MAX_SEALED_BYTES: usize = 16 * 1024 * 1024;
+/// Most payload bytes of a record's compaction set, the compaction and the
+/// segments it names: a snapshot as large as one document transfer, with
+/// room for its pieces' envelopes (a few bytes each) and the writers it
+/// covers.
+const MAX_COMPACTION_SET_BYTES: usize =
+    collab_types::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES + 1024 * 1024;
+/// Most ops of a compaction set: one transfer in segments no smaller than a
+/// receiver of a transfer accepts.
+const MAX_COMPACTION_SET_OPS: usize = collab_types::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES
+    / collab_types::document_transfer::MIN_DOCUMENT_SEGMENT_BYTES
+    + 1;
+
+/// Whether a record's sealed history, a compaction set of `set` ops and bytes
+/// and `writes` ops and bytes after it, is within its bounds.
+const fn sealed_within_bounds(set: (usize, usize), writes: (usize, usize)) -> bool {
+    set.0 <= MAX_COMPACTION_SET_OPS
+        && set.1 <= MAX_COMPACTION_SET_BYTES
+        && writes.0 <= MAX_SEALED_OPS
+        && writes.1 <= MAX_SEALED_BYTES
+}
 
 #[derive(Clone)]
 pub struct StatePeer {
@@ -294,6 +317,8 @@ pub struct StatePeer {
     app_surfaces: AppSurfaces,
     /// What app messages let go unapplied waited for. Never persisted.
     missed: held::Missed,
+    /// The pieces of segmented compactions not yet whole. Never persisted.
+    gathering: compaction_set::Gathering,
     /// Whether this is a workspace host's copy of the workspace
     /// ([`Self::write_as_workspace_host`]). Set by the host, never persisted.
     workspace_host: bool,
@@ -301,6 +326,9 @@ pub struct StatePeer {
     /// stored layout ([`workspace::layout`]): a device that governs the
     /// workspace then publishes it anew ([`Self::governance_brought_up`]).
     brought_up: bool,
+    /// The digests of the durable parts [`Self::durable_hash`] last took,
+    /// shared by the copies of this replica. Never persisted.
+    durable_digests: durable::PartDigests,
 }
 
 /// The Automerge actor a workspace host's own changes to a workspace are made under,

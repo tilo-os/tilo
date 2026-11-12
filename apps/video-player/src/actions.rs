@@ -36,6 +36,7 @@ pub enum VideoEffect {
     /// Opens a video file or stream on this device and answers once its
     /// first picture has decoded.
     #[effect(job, kind = "read")]
+    #[effect(label = "video-open-video")]
     OpenVideo {
         #[param(
             "A video's path or stream URL on this device; omit to choose with the file picker"
@@ -55,6 +56,7 @@ pub enum VideoEffect {
     ///
     /// Removes the entry from this device's queue; the video file stays.
     #[effect(row, kind = "read")]
+    #[effect(label = "video-remove-from-queue")]
     RemoveQueued {
         #[param("The queued video's item id")]
         item: String,
@@ -63,6 +65,7 @@ pub enum VideoEffect {
     ///
     /// Forgets the videos played on this device; no file is deleted.
     #[effect(destructive, kind = "read")]
+    #[effect(label = "video-clear-recent")]
     ClearRecent,
     /// Show library.
     #[effect(view)]

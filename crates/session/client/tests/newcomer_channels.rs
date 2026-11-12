@@ -14,10 +14,6 @@
     reason = "in a test these are the assertion, not a hazard; the test is one visit, in order; the host lives until it ends"
 )]
 
-mod support;
-
-tilo_automerge_isolate::test_worker!();
-
 use std::sync::Arc;
 use tilo_session_client::{Cmd, Link, Outbox};
 
@@ -29,7 +25,9 @@ use tilo_session_client::MemoryPeerStore;
 use tilo_session_client::device::{Entering, door_entry};
 use tilo_user_identity::{DeviceCert, UserIdentity};
 
-use support::{enrol, enter_page, hears, in_workspace, start_workspace_host_relaying, wait_keyed};
+use crate::support::{
+    enrol, enter_page, hears, in_workspace, start_workspace_host_relaying, wait_keyed,
+};
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))
@@ -48,7 +46,7 @@ fn change(base: &mut automerge::AutoCommit, key: &str) -> DocumentMutation {
 /// A visitor's page entering `workspace` through its door, its session
 /// opening the desktop.
 async fn visitor(
-    host: &support::TestHost,
+    host: &crate::support::TestHost,
     host_cert: &DeviceCert,
     workspace: &str,
     workspace_id: u64,
@@ -95,7 +93,7 @@ async fn a_newcomer_reads_writes_follows_and_rejoins_its_channel_group() {
         "lounge-host",
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let host = start_workspace_host_relaying(&owner, &host_device, state.path(), false, true).await;
     let workspaces = host.relay.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();

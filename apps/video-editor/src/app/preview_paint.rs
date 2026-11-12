@@ -152,7 +152,8 @@ impl VideoEditorApp {
                 top + th + S1,
             );
             if let Some(button) = go_to_clip {
-                let face = ButtonFace::new(button, super::go_to_clip::GO_TO_CLIP_LABEL)
+                let label = crate::resource::CATALOG.t(super::go_to_clip::GO_TO_CLIP_LABEL);
+                let face = ButtonFace::new(button, &label)
                     .control_size(ControlSize::Small)
                     .hovered(button.contains(self.last_mouse));
                 Button::paint(scene, tf, tr, theme, &face);

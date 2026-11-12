@@ -258,3 +258,6 @@ calendar-open-settings = Open Settings
 
 ## The event form's notes hint
 calendar-notes-placeholder = Add notes
+
+## A new event's empty fields
+calendar-title-placeholder = New event

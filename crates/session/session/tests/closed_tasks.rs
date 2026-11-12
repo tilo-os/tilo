@@ -20,15 +20,9 @@
               until their sessions end"
 )]
 
-mod common;
-
-// A site admits its members' records through an Automerge worker: this binary is that worker, as
-// the session's own is.
-tilo_automerge_isolate::test_worker!();
-
 use std::time::Instant;
 
-use common::people::{Device, Person, Site};
+use crate::common::people::{Device, Person, Site};
 use serde_json::{Value, json};
 use tilo_relay_protocol::workspaces::WorkspaceRole;
 

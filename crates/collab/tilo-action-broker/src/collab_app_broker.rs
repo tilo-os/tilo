@@ -2538,6 +2538,9 @@ struct ContextSub {
     private_alias: bool,
     /// The workspace's verified agents this receiver was last told.
     history_agents: Vec<collab_types::history::RosterAgent>,
+    /// The apps installed here, by what each is called, this receiver was last told: it is sent
+    /// the context again when one is installed, removed, or renamed.
+    apps: Vec<collab_types::history::NamedApp>,
 }
 
 #[derive(Clone)]
@@ -2799,9 +2802,11 @@ pub struct AppBrokerState {
     app_action_consent: RwLock<Option<Arc<dyn crate::app_actions::AppActionConsentPrompter>>>,
     /// The notices of runs' questions given, by handle, with their workspace.
     run_question_notices: Mutex<HashMap<String, String>>,
-    /// Applications with a grant question on screen, by workspace: one at a
-    /// time each, so an app cannot bury the person in sheets.
-    app_action_consent_pending: Mutex<std::collections::HashSet<(String, String)>>,
+    /// The grant questions on screen ([`app_consent::ConsentKey`]): one at a
+    /// time for each action an app asks for, so an app cannot bury the person
+    /// in sheets, while the two apps one action of it changes are asked about
+    /// in turn.
+    app_action_consent_pending: Mutex<std::collections::HashSet<app_consent::ConsentKey>>,
     /// Bumped whenever a pending or completed invocation changes, so hosts
     /// can refresh retained invocation projections exactly when needed and
     /// a waiter on a running invocation wakes when it may have moved.
@@ -5097,7 +5102,10 @@ impl AppBrokerState {
         // In native workspaces an agent's action authority comes only from the
         // authenticated task admission callback, never from ambient context
         // or a workspace grant alone (including after its run has stopped).
-        if actor.is_agent && self.confines_agents_to_tasks(&offered.0.route.cluster_id) {
+        if actor.is_agent
+            && !actor.is_app()
+            && self.confines_agents_to_tasks(&offered.0.route.cluster_id)
+        {
             match durable {
                 Some(DurableContext::Task { binding, .. })
                     if actor.id.strip_prefix("agent:").unwrap_or(&actor.id) == binding.agent_id => {
@@ -6869,7 +6877,8 @@ impl AppBrokerState {
             CollabEvent::Context {
                 collaborators,
                 permissions,
-            } => Self::fanout_context(channels, except, collaborators, permissions),
+                apps,
+            } => Self::fanout_context(channels, except, collaborators, permissions, apps),
             CollabEvent::FollowChanged { peer_id } => {
                 Self::fanout_follow_changed(channels, except, peer_id.as_deref());
             }
@@ -7017,13 +7026,15 @@ impl AppBrokerState {
         except: u64,
         collaborators: &[ui::collaboration::Collaborator],
         permissions: &[String],
+        apps: &[collab_types::history::NamedApp],
     ) {
         let env = ContextUpdate::Snapshot {
             collaborators: collaborators.to_vec(),
             permissions: permissions.to_vec(),
+            apps: apps.to_vec(),
         };
         for subs in channels {
-            subs.context.retain(|s| {
+            subs.context.retain_mut(|s| {
                 if s.peer_id == except {
                     return true;
                 }
@@ -7033,7 +7044,11 @@ impl AppBrokerState {
                 if s.native.is_some() {
                     return true;
                 }
-                s.tx.send(env.clone()).is_ok()
+                if s.tx.send(env.clone()).is_err() {
+                    return false;
+                }
+                s.apps = apps.to_vec();
+                true
             });
         }
     }
@@ -7105,10 +7120,14 @@ impl AppBrokerState {
         native: Option<NativeContext>,
     ) -> mpsc::UnboundedReceiver<ContextUpdate> {
         let (tx, rx) = mpsc::unbounded_channel();
+        // What each app installed here is called, with the people's names: what this window's
+        // history names another app's changes by.
+        let apps = self.installed_apps();
         if let Some(native) = native.as_ref() {
             let _ = tx.send(ContextUpdate::Snapshot {
                 collaborators: native.roster.clone(),
                 permissions: Vec::new(),
+                apps: apps.clone(),
             });
         }
         // Who the app's history names for changes an agent's own key signed.
@@ -7128,6 +7147,7 @@ impl AppBrokerState {
                     native,
                     private_alias: false,
                     history_agents,
+                    apps,
                 });
         }
         // The records of its app's trees this device already holds in the
@@ -7162,6 +7182,7 @@ impl AppBrokerState {
                     native: subscriber.native.clone(),
                     private_alias: true,
                     history_agents: subscriber.history_agents.clone(),
+                    apps: subscriber.apps.clone(),
                 });
             if let Some(subscriber) = subscriber {
                 let context = &mut channels.entry(alias.to_owned()).or_default().context;
@@ -7308,10 +7329,13 @@ impl AppBrokerState {
             tilo_peer_state::workspace_membership::valid_agent_id(&agent)
                 .map_err(|_| "native context contains a noncanonical agent identity")?;
             let is_self = admitted.agent_id.as_deref() == Some(agent.as_str());
+            // The colour its face wears everywhere ([`agent_rgb`]): an app draws it as
+            // the bar does, never in the colour its id would derive here.
+            let colour = ui::tokens::PresenceHue::of_agent(&agent);
             collaborators.push(ui::collaboration::Collaborator {
                 id: format!("agent:{agent}"),
                 name: agent,
-                colour: None,
+                colour: Some(colour),
                 is_agent: true,
                 is_self,
                 joined_at: None,
@@ -7431,6 +7455,15 @@ impl AppBrokerState {
             admitted: current,
             roster,
         }))
+    }
+
+    /// What each app installed on this device is called, as the host's authority knows it: what
+    /// a window's history names another app's change by. Presentation only.
+    fn installed_apps(&self) -> Vec<collab_types::history::NamedApp> {
+        self.membership
+            .as_ref()
+            .map(|membership| membership.installed_apps())
+            .unwrap_or_default()
     }
 
     /// The delegated agents of the workspace `channel` belongs to whose person's
@@ -7555,7 +7588,9 @@ impl AppBrokerState {
     }
 
     /// Tell one native context subscriber what its workspace's governance now
-    /// admits: the roster. Returns whether the roster changed.
+    /// admits: the roster, and the name of every app installed here, when one
+    /// was installed or removed since it was last told. Returns whether it
+    /// heard something new.
     fn tell_context_subscriber(
         &self,
         route: &CrdtRoute,
@@ -7579,6 +7614,7 @@ impl AppBrokerState {
         }
 
         let roster = self.native_membership_roster(route, current)?;
+        let apps = self.installed_apps();
         let mut channels = self
             .channels
             .lock()
@@ -7592,7 +7628,7 @@ impl AppBrokerState {
                 if subscriber.peer_id != peer_id || native.admitted != *admitted {
                     return true;
                 }
-                if same_roster(&native.roster, &roster) {
+                if same_roster(&native.roster, &roster) && subscriber.apps == apps {
                     return true;
                 }
                 changed = true;
@@ -7601,12 +7637,14 @@ impl AppBrokerState {
                     .send(ContextUpdate::Snapshot {
                         collaborators: roster.clone(),
                         permissions: Vec::new(),
+                        apps: apps.clone(),
                     })
                     .is_err()
                 {
                     return false;
                 }
                 native.roster.clone_from(&roster);
+                subscriber.apps.clone_from(&apps);
                 true
             });
         }
@@ -13287,6 +13325,19 @@ pub mod tests {
                 )
                 .is_err()
         );
+        // An agent wears the colour its face wears everywhere, so the card it
+        // shows in a window is drawn as the bar draws it.
+        for agent in roster.iter().filter(|row| row.is_agent) {
+            let key = agent
+                .id
+                .strip_prefix("agent:")
+                .expect("an agent's id names its key");
+            assert_eq!(
+                agent.colour,
+                Some(ui::tokens::PresenceHue::of_agent(key)),
+                "{key}"
+            );
+        }
 
         let channel = route.channel_key();
         let native = state
@@ -13331,6 +13382,7 @@ pub mod tests {
                 channels.values_mut(),
                 u64::MAX,
                 std::slice::from_ref(&forged),
+                &[],
                 &[],
             );
         }

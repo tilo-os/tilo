@@ -2646,7 +2646,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        let now = crate::time::now();
+        let now = crate::motion::frame_now();
         self.overlay_bar
             .as_ref()
             .is_some_and(crate::widget::OverlayScrollbar::needs_animation_frame)

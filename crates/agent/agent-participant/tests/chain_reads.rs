@@ -20,11 +20,6 @@
     reason = "in a test these are the assertion, not a hazard, and one scenario runs in order"
 )]
 
-mod common;
-
-tilo_agent_participant::app_worker!();
-tilo_automerge_isolate::test_worker!();
-
 use collab_types::DocumentMutation;
 use tilo_actions::door::ActionAddress;
 use tilo_actions::remote::{CatalogueQuery, CatalogueRow};
@@ -37,7 +32,8 @@ fn messages() -> String {
 
 /// A chat a page founded: its record, with the channel the posts go in.
 fn founded() -> Replica {
-    let mut page = common::open("so.tilo.chat", "ada", ReplicaActor::Owner, Seed::New).unwrap();
+    let mut page =
+        crate::common::open("so.tilo.chat", "ada", ReplicaActor::Owner, Seed::New).unwrap();
     page.invoke(
         &ActionAddress::new("chat.workspace", "create-channel-with-id"),
         serde_json::json!({"id": "c_chat", "name": "chat", "category": null,
@@ -55,7 +51,7 @@ fn held(page: &mut Replica) -> ConfinedReplica {
     let Some(DocumentMutation::Snapshot(changes)) = page.take_mutation().unwrap() else {
         panic!("a new record is published whole");
     };
-    common::confined(
+    crate::common::confined(
         "so.tilo.chat",
         "host",
         &ReplicaActor::Owner,

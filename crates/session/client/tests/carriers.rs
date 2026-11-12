@@ -18,15 +18,6 @@
     reason = "in a test these are the assertion, not a hazard; the host lives until the test ends"
 )]
 
-#[path = "support/call.rs"]
-mod call;
-#[path = "support/participant.rs"]
-mod participant;
-mod support;
-
-// Placing the workspace has the host build its governance in an automerge worker.
-tilo_automerge_isolate::test_worker!();
-
 use std::sync::Arc;
 use tilo_session_client::{Cmd, Event, Link, Outbox, TransportPhase, VoiceEvent};
 
@@ -44,7 +35,7 @@ use tilo_user_identity::{
     sign_revocation_entry,
 };
 
-use support::{
+use crate::support::{
     Device, HostSettings, TestHost, WORKSPACE, approve_one_over, enrol, holds, in_workspace, place,
     ready, route, say, start_host_serving, start_page, start_peer, wait_for,
 };
@@ -103,7 +94,7 @@ impl Ada {
         let (root, _) = UserIdentity::generate("Ada", 1);
         let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
         let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
-        let state = support::scratch_dir();
+        let state = crate::support::scratch_dir();
         let host = start_host_serving(
             &root,
             &host_device,
@@ -263,7 +254,7 @@ async fn the_persons_root_pairs_a_new_device(carrier: Carrier) {
 
 async fn documents_sync_both_ways_until_the_device_is_revoked(carrier: Carrier) {
     let ada = Ada::start().await;
-    let _channels = participant::Participant::start(&ada.host.relay, &ada.root).await;
+    let _channels = crate::participant::Participant::start(&ada.host.relay, &ada.root).await;
     let (key, cert, host_cert) = ada.certified(&ada.host.over(carrier)).await;
     let page = page(&ada.host, carrier, key, &cert, &host_cert);
     page.join_placed(WORKSPACE, "Workspace").unwrap();
@@ -344,20 +335,23 @@ async fn the_workspace_admits_the_device_and_its_live_plane_carries_it(carrier: 
     page.send(Cmd::InstallChannelKeys(plane_route(), keys.clone()))
         .unwrap();
     page.join_placed(WORKSPACE, "Workspace").unwrap();
-    in_workspace(&page, support::workspace()).await;
+    in_workspace(&page, crate::support::workspace()).await;
     let laptop = ada.laptop_peer(&host_cert).await;
     laptop
         .send(Cmd::InstallChannelKeys(plane_route(), keys.clone()))
         .unwrap();
-    in_workspace(&laptop, support::workspace()).await;
+    in_workspace(&laptop, crate::support::workspace()).await;
 
     // The page says where it is on the workspace's plane, and the laptop
     // hears it, opened with the scope's keys.
     let events = laptop.events();
     let said = Presence::pointing(WORKSPACE, 7, 0.25, 0.75);
     let (from, track, body) = wait_for("the laptop to hear the page on its plane", || {
-        page.send(Cmd::Presence(support::workspace(), vec![said.clone()]))
-            .unwrap();
+        page.send(Cmd::Presence(
+            crate::support::workspace(),
+            vec![said.clone()],
+        ))
+        .unwrap();
         let events = events.drain();
         async move {
             events.into_iter().find_map(|event| match event {
@@ -367,7 +361,7 @@ async fn the_workspace_admits_the_device_and_its_live_plane_carries_it(carrier: 
                     track,
                     body,
                     ..
-                } if workspace_id == support::workspace() => Some((from, track, body)),
+                } if workspace_id == crate::support::workspace() => Some((from, track, body)),
                 _ => None,
             })
         }
@@ -411,7 +405,7 @@ async fn voice<T>(
 async fn the_device_takes_part_in_a_call(carrier: Carrier) {
     // Alice's governed workspace has a call; Bob, whom she invited, takes
     // part from his page's session.
-    let workspace = call::GovernedCall::start_relaying(true).await;
+    let workspace = crate::call::GovernedCall::start_relaying(true).await;
     let workspace_id = workspace.workspace_id;
     let (_bob, page) = workspace.invite("bob-browser").await;
     let peer = start_page(
@@ -455,7 +449,7 @@ async fn the_device_takes_part_in_a_call(carrier: Carrier) {
     })
     .await;
     assert!(bob.directions.publish && bob.directions.subscribe);
-    let alice = call::native(&workspace.owner, |envelope| match envelope {
+    let alice = crate::call::native(&workspace.owner, |envelope| match envelope {
         Envelope::VoiceGranted { grant, .. } if grant.participants.len() == 2 => Some(*grant),
         _ => None,
     })

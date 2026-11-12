@@ -427,7 +427,7 @@ impl<R: Resource> TypedRoot for Typed<R> {
             None => tilo_actions::ResourceSpec::new(
                 id,
                 R::KIND,
-                tilo_resource::label::published(R::KIND, label, R::LABEL),
+                tilo_resource::label::published(R::KIND, label, R::LABEL, R::CATALOGUE),
             ),
         }
     }

@@ -9,11 +9,8 @@
     clippy::panic,
     reason = "in a test these are the assertion, not a hazard"
 )]
-tilo_automerge_isolate::test_worker!();
 
-mod common;
-
-use common::{addr, device, localhost_endpoint, workspace};
+use crate::common::{addr, device, localhost_endpoint, workspace};
 
 use ed25519_dalek::SigningKey;
 use iroh::endpoint::RecvStream;

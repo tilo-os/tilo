@@ -377,7 +377,7 @@ impl Store {
         let readiness = connection_readiness(saved);
         if !readiness.can_connect() {
             let reason = match saved.profile_issue() {
-                Some(issue) if readiness == TransportReadiness::InvalidProfile => issue.to_owned(),
+                Some(issue) if readiness == TransportReadiness::InvalidProfile => CATALOG.t(issue),
                 _ => CATALOG.t(readiness.detail_message(saved.kind)),
             };
             return Err(reason);

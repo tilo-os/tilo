@@ -10,6 +10,11 @@ import re
 from pathlib import Path
 
 
+# The component a replacement swaps in: the session, whose layer carries the
+# compositor, the desk and the desktop's surface apps.
+SESSION = "tilo-session"
+
+
 class ReplacementError(ValueError):
     """A required observation is missing or contradicts another observation."""
 
@@ -67,7 +72,7 @@ def provenance(shown, component):
 
 
 def audit(evidence, vm, slot, source):
-    """Check a fresh slot's successful shell replacement and failed recovery.
+    """Check a fresh slot's successful session replacement and failed recovery.
 
     Input observations are local evidence, not a remote attestation. A passing
     result means these captures agree; it cannot substitute for running the
@@ -87,17 +92,17 @@ def audit(evidence, vm, slot, source):
     active = shown(evidence["active-run"], vm, slot)
     recovered = shown(evidence["recovered-run"], vm, slot)
     sdk = provenance(active, "apps+runtime")
-    candidate = provenance(active, "shell")
-    baseline = provenance(before, "shell")
+    candidate = provenance(active, SESSION)
+    baseline = provenance(before, SESSION)
     require(provenance(before, "apps+runtime") == sdk,
             "activation: runtime provenance changed")
     for field in ("target", "toolchain", "cargo_lock_hash"):
         require(baseline[field] == sdk[field], f"baseline/runtime: {field} mismatch")
-    require(candidate["source_commit"] == source, "shell: unexpected source commit")
+    require(candidate["source_commit"] == source, f"{SESSION}: unexpected source commit")
     for field in ("source_commit", "dirty_tree_hash", "target", "toolchain", "cargo_lock_hash"):
-        require(candidate.get(field) == sdk.get(field), f"shell/runtime: {field} mismatch")
+        require(candidate.get(field) == sdk.get(field), f"{SESSION}/runtime: {field} mismatch")
     components = active["slot"].get("components", {})
-    for component in ("shell", "apps+runtime"):
+    for component in (SESSION, "apps+runtime"):
         require(re.fullmatch(r"[0-9a-f]{64}", components.get(component, "")),
                 f"{component}: active layer hash unavailable")
     require(any(f.get("component") == "apps+runtime" and
@@ -105,23 +110,23 @@ def audit(evidence, vm, slot, source):
                 re.fullmatch(r"/usr/lib/tilo-runtime/[^/]+/lib/libruntime_dylib\.so", f.get("path", ""))
                 for f in active.get("files", [])), "runtime: selected layer inventory unavailable")
     activation = evidence["activate-run"]
-    applied = receipt(activation, vm, "swap shell")
-    require(activation.get("slot") == slot and activation.get("component") == "shell" and
-            activation.get("layer") == components["shell"], "activation: target/layer mismatch")
+    applied = receipt(activation, vm, f"swap {SESSION}")
+    require(activation.get("slot") == slot and activation.get("component") == SESSION and
+            activation.get("layer") == components[SESSION], "activation: target/layer mismatch")
     require(isinstance(applied, dict) and applied.get("slot") == slot and
             applied.get("generation") == active["slot"].get("generation") and
             applied.get("changed") is True and applied.get("policy") == "session_restart",
             "activation: successful session activation unavailable")
     require(active["slot"]["generation"] > before["slot"]["generation"] and
-            components["shell"] != before["slot"].get("components", {}).get("shell"),
+            components[SESSION] != before["slot"].get("components", {}).get(SESSION),
             "activation: no replacement observed")
     require(components["apps+runtime"] == before["slot"].get("components", {}).get("apps+runtime"),
-            "activation: runtime cohort changed during shell replacement")
+            "activation: runtime cohort changed during the session replacement")
     failure = evidence["fail-run"]
-    error = receipt(failure, vm, "swap shell", "failure")
-    require(failure.get("slot") == slot and failure.get("component") == "shell" and
+    error = receipt(failure, vm, f"swap {SESSION}", "failure")
+    require(failure.get("slot") == slot and failure.get("component") == SESSION and
             re.fullmatch(r"[0-9a-f]{64}", failure.get("layer", "")) and
-            failure["layer"] != components["shell"], "failure: target/layer mismatch")
+            failure["layer"] != components[SESSION], "failure: target/layer mismatch")
     detail = error.get("error", "") if isinstance(error, dict) else ""
     generation = active["slot"]["generation"]
     require(re.search(rf"\brestored generation {generation}\b", detail) and "also failed" not in detail,

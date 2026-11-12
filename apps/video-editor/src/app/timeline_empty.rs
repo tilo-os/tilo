@@ -20,10 +20,10 @@ pub(super) enum TimelineEmptyAction {
 }
 
 impl TimelineEmptyAction {
-    pub(super) fn label(self) -> &'static str {
+    pub(super) fn label_message(self) -> &'static str {
         match self {
-            Self::Import => "Import media",
-            Self::ShowMedia => "Show media",
+            Self::Import => "video-editor-timeline-import",
+            Self::ShowMedia => "video-editor-timeline-show-media",
         }
     }
 }
@@ -32,19 +32,38 @@ impl TimelineEmptyAction {
 pub(super) struct TimelineEmpty {
     /// Where the state is centred: the tracks' content area.
     pub(super) area: Rect,
-    pub(super) message: &'static str,
+    /// The catalogue message asking for the step that fills the timeline.
+    pub(super) message_message: &'static str,
     pub(super) action: Option<TimelineEmptyAction>,
 }
 
-impl TimelineEmpty {
-    pub(super) const TITLE: &'static str = "Nothing on the timeline";
+/// The empty timeline's words, resolved from the catalogue for one frame: the
+/// state borrows them as it paints and as it names its node.
+pub(super) struct TimelineEmptyWords {
+    title: String,
+    message: String,
+    action: Option<String>,
+}
 
-    pub(super) fn content(&self) -> ui::widget::EmptyStateContent<'static> {
+impl TimelineEmpty {
+    pub(super) const TITLE_MESSAGE: &'static str = "video-editor-timeline-empty-title";
+
+    pub(super) fn words(&self) -> TimelineEmptyWords {
+        TimelineEmptyWords {
+            title: crate::resource::CATALOG.t(Self::TITLE_MESSAGE),
+            message: crate::resource::CATALOG.t(self.message_message),
+            action: self
+                .action
+                .map(|action| crate::resource::CATALOG.t(action.label_message())),
+        }
+    }
+
+    pub(super) fn content(words: &TimelineEmptyWords) -> ui::widget::EmptyStateContent<'_> {
         ui::widget::EmptyStateContent {
             icon: Some(Icon::Layers),
-            message: Some(self.message),
-            action_label: self.action.map(TimelineEmptyAction::label),
-            ..ui::widget::EmptyStateContent::new(Self::TITLE)
+            message: Some(&words.message),
+            action_label: words.action.as_deref(),
+            ..ui::widget::EmptyStateContent::new(&words.title)
         }
     }
 }
@@ -95,13 +114,13 @@ impl VideoEditorApp {
         Some(if self.project.media.is_empty() {
             TimelineEmpty {
                 area,
-                message: "Import media, then drag it here.",
+                message_message: "video-editor-timeline-import-media",
                 action: hidden.then_some(TimelineEmptyAction::Import),
             }
         } else {
             TimelineEmpty {
                 area,
-                message: "Drag a clip from the media bin onto a track.",
+                message_message: "video-editor-timeline-drag-clip",
                 action: hidden.then_some(TimelineEmptyAction::ShowMedia),
             }
         })
@@ -114,8 +133,14 @@ impl VideoEditorApp {
     ) -> Option<(Rect, TimelineEmptyAction)> {
         let empty = self.timeline_empty(r)?;
         let action = empty.action?;
+        let words = empty.words();
         let rect = self.with_dialog_layout(|_, tr, theme| {
-            ui::widget::EmptyState::action_rect_in(tr, theme, empty.area, &empty.content())
+            ui::widget::EmptyState::action_rect_in(
+                tr,
+                theme,
+                empty.area,
+                &TimelineEmpty::content(&words),
+            )
         })?;
         Some((rect, action))
     }
@@ -137,15 +162,16 @@ impl VideoEditorApp {
     /// as a button where it is drawn.
     pub(super) fn a11y_timeline_empty(&self, r: &Regions) -> Option<AccessNode> {
         let empty = self.timeline_empty(r)?;
+        let words = empty.words();
         let mut node = AccessNode::new(Role::Group)
-            .with_name(TimelineEmpty::TITLE)
-            .with_description(empty.message)
+            .with_name(&words.title)
+            .with_description(&words.message)
             .with_bounds(empty.area)
             .with_key(ui::a11y::hash_key(&TIMELINE_EMPTY_KEY));
         if let Some((rect, action)) = self.timeline_empty_action_rect(r) {
             node = node.with_children(vec![
                 AccessNode::new(Role::Button)
-                    .with_name(action.label())
+                    .with_name(crate::resource::CATALOG.t(action.label_message()))
                     .with_bounds(rect)
                     .with_key(ui::a11y::hash_key(&TIMELINE_EMPTY_ACTION_KEY))
                     .with_state(AccessState::new().focusable(true)),

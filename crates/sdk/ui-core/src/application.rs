@@ -695,24 +695,13 @@ impl HostContext {
         // The app's surface is content too: whoever decides its changes
         // reads it by the hash its ops name.
         if let Some(bytes) = crate::app_surface::bytes_of(&self.app_id)
-            && let Err(error) = store.put(bytes)
+            && let Err(error) = store.put_public(bytes)
         {
             tracing::warn!(%error, "the app's surface could not be kept");
         }
         // The large parts of the actions this window records, and of those
-        // it replays, live here too.
-        let keep = store.clone();
-        let read = store.clone();
-        tilo_actions::keep_content_in(
-            move |content: tilo_actions::ContentParts| {
-                for (_, bytes) in content {
-                    if let Err(error) = keep.put(&bytes) {
-                        tracing::warn!(%error, "an action's content could not be kept");
-                    }
-                }
-            },
-            move |hash| read.read(hash),
-        );
+        // it replays, live here too, sealed as the window's record content is.
+        tilo_actions::keep_content_in(store.clone());
         self.content = Some(store);
     }
     pub fn content(&self) -> Option<&tilo_content::ContentStore> {
@@ -1481,6 +1470,10 @@ impl AppComponent {
         ) -> R,
     ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
         let _entry = captured.enter()?;
+        // What the component's own code starts off the frame reports back to
+        // it: a wake it captures here that reaches no component is a broken
+        // wire, caught where it is made ([`crate::wake::FeedsComponent`]).
+        let _feeding = crate::wake::FeedsComponent::begin();
         let current = self.callback_binding();
         if !captured.same_component(&current) {
             return Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime);

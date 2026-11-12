@@ -1,13 +1,63 @@
 //! The page a window draws for the item its list or tree shows: the fields of that page belong
-//! to the item, so what the person types into them lands in it.
+//! to the item, so what the person types into them lands in it, and the window is named by it.
 
 use std::collections::BTreeSet;
 
-use tilo_render_protocol::patch::{Lane, ResourceRef};
+use tilo_render_protocol::patch::{self as wire, Lane, ResourceRef};
 
 use super::{AppWindow, UiNode, Value, lane_of};
 
 impl AppWindow {
+    /// What the window is named by: the item its own view shows as its page, by the name its row
+    /// gives it — a task opened from search, the row the person opened — else what its shell's
+    /// headers name, the page or the place it stands on. A desktop names the window's tab, its
+    /// switcher entry and its assistive-technology node by this.
+    #[must_use]
+    pub fn title(&self) -> Option<&str> {
+        self.page_title
+            .as_deref()
+            .or_else(|| self.built.as_ref().and_then(crate::shell::shown_title))
+    }
+
+    /// The name the row of the item the window's own view shows as its page gives it: its
+    /// `title`, or a tree node's `label`.
+    pub(super) fn shown_item_title(&self) -> Option<String> {
+        let shown = self.built.as_ref().and_then(shown_item_of)?;
+        let rows = self.rows.borrow();
+        rows.values().find_map(|list| {
+            let list = list.borrow();
+            list.rendered()
+                .iter()
+                .find_map(|key| list.row(key).and_then(|row| item_title(row, &shown)))
+        })
+    }
+
+    /// A lane's page came to the front of a narrow window, showing `shows`' item in place where
+    /// the window draws its own page: what the person types into it is that item's. Whether the
+    /// press takes the keyboard into the page.
+    pub(super) fn fronted(
+        &mut self,
+        brought: wire::Front,
+        shows: Option<(u64, ResourceRef)>,
+    ) -> bool {
+        if let Some((press, shows)) = shows {
+            if press > 0 {
+                self.shows_by_press.insert(press, shows.clone());
+                // A press a person made long ago has no typing left on its way.
+                self.shows_by_press
+                    .retain(|press, _| press.saturating_add(64) > self.fired);
+            }
+            self.shown_in_place = Some(shows);
+        }
+        // A person's press takes the keyboard into the page it shows; what a scenario or a
+        // search opened leaves the keyboard where the person had it.
+        if self.detail.is_none() && brought == wire::Front::Input {
+            self.opened = Some(self.fired);
+            return true;
+        }
+        false
+    }
+
     /// The resource a field of the window's own view belongs to: a field of the page the
     /// window draws beside its list or tree for the item that list selects belongs to that
     /// item (as a page after the window's own does), so what the person types into it lands in
@@ -112,6 +162,46 @@ pub(super) fn chosen_item<'a>(node: &'a UiNode, out: &mut Option<&'a ResourceRef
         return true;
     }
     node.children.iter().any(|child| chosen_item(child, out))
+}
+
+/// The item the window's own view shows as its page, by its id: the row its list stands open
+/// into where it stands, else the item its tree selects.
+pub(super) fn shown_item_of(tree: &UiNode) -> Option<String> {
+    fn open(node: &UiNode) -> Option<String> {
+        if node.kind == crate::adapter::kind("VirtualList") {
+            match node.props.get("open") {
+                Some(Value::Ref(item)) => return Some(item.id.clone()),
+                Some(Value::Text(item)) if !item.is_empty() => return Some(item.clone()),
+                _ => {}
+            }
+        }
+        node.children.iter().find_map(open)
+    }
+    open(tree).or_else(|| chosen_item_of(tree).map(|item| item.id))
+}
+
+/// What the node of `tree` standing for the item `item` (its `item`, by id) names it: the first
+/// `title` of its row, else a tree node's `label`. What the row opens into and its menu (its
+/// slots) name other things.
+pub(super) fn item_title(tree: &UiNode, item: &str) -> Option<String> {
+    fn named(node: &UiNode) -> Option<String> {
+        if node.kind == crate::adapter::SLOT {
+            return None;
+        }
+        ["title", "label"]
+            .iter()
+            .find_map(|prop| match node.props.get(*prop) {
+                Some(Value::Text(text)) if !text.trim().is_empty() => Some(text.trim().to_owned()),
+                _ => None,
+            })
+            .or_else(|| node.children.iter().find_map(named))
+    }
+    if matches!(tree.props.get("item"), Some(Value::Ref(at)) if at.id == item) {
+        return named(tree);
+    }
+    tree.children
+        .iter()
+        .find_map(|child| item_title(child, item))
 }
 
 /// The node of the composed tree `tree` whose own key is `key`.

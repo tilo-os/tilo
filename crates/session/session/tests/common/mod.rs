@@ -2,9 +2,9 @@
 //! runs until the desk has done what it asked, the shell's laid-out tree read as assistive
 //! technology hears it, a press on one of its controls, the REPL's end of the agent door, and the
 //! test-control socket `tilo-control` drives a session over.
-//! Included by each test binary with `mod common;` , as a directory is not a test target of its
-//! own: the same helpers serve the REPL's test, the shell screen's, the test-control socket's and
-//! the acceptance path's.
+//! Included once by `tests/it.rs` as `mod common`, as a directory is not a test target of its own:
+//! the same helpers serve the REPL's test, the shell screen's, the test-control socket's and the
+//! acceptance path's.
 
 #![allow(
     dead_code,

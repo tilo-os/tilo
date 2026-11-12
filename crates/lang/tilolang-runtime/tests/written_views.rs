@@ -5,12 +5,8 @@
 //! Mail in their own record; only the chat they share syncs between them.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang::IdsLock;
     use tilolang_runtime::{
         AmStore, InvokeOutcome, Principal, ResourceRef, Runtime, UiNode, Value,

@@ -559,8 +559,9 @@ const backOff = ({attempt, retryAfter = null, signal}) => new Promise((resolve, 
   signal?.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, {once: true});
 });
 
-/** This browser's device key for `profile`: the first one no other tab
- * holds, a new one when they all are (`device-custody.mjs`). */
+/** This tab's device key for `profile`: the one it held before a reload,
+ * else a free one this browser has, a new one when other tabs hold them all
+ * (`device-custody.mjs`). */
 const browserCustody = profile => openDeviceCustody({profile, storage: idbStorage()});
 
 /**

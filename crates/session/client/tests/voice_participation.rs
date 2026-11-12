@@ -11,19 +11,12 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-#[path = "support/call.rs"]
-mod call;
-mod support;
-
-// This binary re-execs as the automerge worker (support is shared with crates that lack the dep).
-tilo_automerge_isolate::test_worker!();
-
 use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::{CallOperation, VoiceGrant};
 use tilo_session_client::{Cmd, Event, Link, Outbox, VoiceEvent};
 
-use call::{GovernedCall, native, operate};
-use support::{ready, start_peer, wait_for};
+use crate::call::{GovernedCall, native, operate};
+use crate::support::{ready, start_peer, wait_for};
 
 /// The next call event of `peer` that `pick` accepts.
 async fn voice<T>(
@@ -90,7 +83,7 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
     // (`voice-controls.mjs`): Chat's app, its record, and the voice
     // channel's own id, the one the chat minted, active.
     assert!(calls[0].state.active);
-    assert_eq!(calls[0].app_id, call::CHAT);
+    assert_eq!(calls[0].app_id, crate::call::CHAT);
     assert_eq!(calls[0].record_id, "");
     assert_eq!(calls[0].channel_id, workspace.channel);
     assert!(calls[0].participants.is_empty());

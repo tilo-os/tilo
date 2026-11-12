@@ -307,3 +307,89 @@ video-editor-choose-media = Medien auswählen…
 
 ## Ein Projekt ohne Namen
 video-editor-untitled = Unbenannt
+
+## Der Medienkorb, der Inspektor und die Bedienelemente der Zeitleiste
+video-editor-title-button = Titel
+video-editor-new-title = Neuer Titel
+video-editor-import-media = Medien importieren
+video-editor-fill-frame = Bild füllen
+video-editor-reset-curve = { $channel } zurücksetzen
+video-editor-sample-centre = Mitte abtasten
+video-editor-no-frame-to-sample = Kein Bild zum Abtasten
+video-editor-fit-to-picture = An Bild anpassen
+video-editor-title-colour = Titelfarbe
+video-editor-add-effect-button = Effekt hinzufügen
+video-editor-split = Teilen
+video-editor-delete-button = Löschen
+video-editor-video-track = Videospur
+video-editor-audio-track = Tonspur
+
+## An empty timeline, and the marker list
+video-editor-timeline-empty-title = Nichts auf der Zeitleiste
+video-editor-timeline-import-media = Importiere Medien und ziehe sie hierher.
+video-editor-timeline-drag-clip = Ziehe einen Clip aus der Medienablage auf eine Spur.
+video-editor-timeline-import = Medien importieren
+video-editor-timeline-show-media = Medien anzeigen
+video-editor-marker-add = Marke an der Abspielposition setzen
+video-editor-go-to-clip = Zum Clip springen
+
+## Actions
+
+video-editor-mark-in-button = Startmarke setzen
+video-editor-mark-out-button = Endmarke setzen
+video-editor-effect-reveal-track = Spur anzeigen
+video-editor-effect-reveal-clip = Clip anzeigen
+video-editor-effect-reveal-effect = Effekt anzeigen
+video-editor-effect-reveal-marker = Marke anzeigen
+video-editor-effect-reveal-media = Medium anzeigen
+video-editor-effect-open-project-file = Projektdatei öffnen
+video-editor-effect-export-project-file = Projektdatei exportieren
+video-editor-effect-import-content = Inhalt importieren
+video-editor-effect-export-timeline-content = Zeitstrahl exportieren
+video-editor-effect-show-export = Exporteinstellungen anzeigen
+video-editor-effect-toggle-media = Medien ein- oder ausblenden
+video-editor-effect-toggle-inspector = Inspektor ein- oder ausblenden
+video-editor-effect-split-selection = An der Abspielposition teilen
+video-editor-effect-render-timeline = Video rendern
+video-editor-effect-export-video-content = Videoinhalt exportieren
+video-editor-effect-export-video-status = Exportstatus lesen
+video-editor-effect-cancel-video-export = Videoexport abbrechen
+video-editor-effect-view-frame-content = Bildinhalt lesen
+video-editor-project = Projekt
+video-editor-project-set-frame-size = Bildgröße festlegen
+video-editor-project-set-frame-rate = Bildrate festlegen
+video-editor-project-set-render-range = Renderbereich festlegen
+video-editor-project-clear-marks = Marken entfernen
+video-editor-project-add-title = Titel hinzufügen
+video-editor-project-set-title = Titel neu gestalten
+video-editor-project-add-clip = Clip hinzufügen
+video-editor-project-move-clip = Clip verschieben
+video-editor-project-set-clip = Clipeigenschaften einstellen
+video-editor-project-remove-clip = Clip entfernen
+video-editor-project-add-marker = Marke hinzufügen
+video-editor-project-place-two-angles = Zwei Blickwinkel platzieren
+video-editor-project-unplace-two-angles = Zwei Blickwinkel aufheben
+video-editor-project-remove-marker = Marke entfernen
+video-editor-project-add-track = Spur hinzufügen
+video-editor-project-reset-mix = Spurabmischung zurücksetzen
+video-editor-project-trim-lanes = Spurenpegel senken
+video-editor-project-delete-track = Spur löschen
+video-editor-project-place-clip = Clip platzieren
+video-editor-project-delete-media = Medium löschen
+video-editor-project-use-as-project-format = Projektformat übernehmen
+video-editor-project-delete = Clip löschen
+video-editor-project-ripple-delete = Lücke schließen
+video-editor-project-split-clip = Clip teilen
+video-editor-project-trim-in-clip = Clipanfang trimmen
+video-editor-project-trim-out-clip = Clipende trimmen
+video-editor-project-set-speed = Clipgeschwindigkeit festlegen
+video-editor-project-toggle-reverse = Clip rückwärts abspielen
+video-editor-project-reset-speed = Clipgeschwindigkeit zurücksetzen
+video-editor-project-set-param = Wert zu einem Zeitpunkt setzen
+video-editor-project-remove-effect = Effekt entfernen
+video-editor-project-move-effect = Effekt verschieben
+video-editor-project-set-effect-amount = Effektstärke festlegen
+video-editor-project-clear-effects = Effekte entfernen
+video-editor-project-unlink = Verknüpfung lösen
+video-editor-project-link-audio = Ton abtrennen
+video-editor-project-link-with = Clips verknüpfen

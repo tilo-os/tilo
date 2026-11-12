@@ -5,7 +5,7 @@
 //! this one.
 
 use iroh_base::{EndpointAddr, EndpointId};
-use neighbour_wire::{NeighbourMsg, PeerId};
+use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::document_frame::DocumentRoute;
 
 /// A host's own transport of the plane: the client says `outgoing`, reads `arrived` and what became
@@ -327,14 +327,10 @@ pub enum Cmd {
     Leave(Topic),
     /// Publish `msg` on the topic of a workspace.
     Publish { ws: Topic, msg: Box<NeighbourMsg> },
-    /// Send one window's stream on the topic of the workspace it is shared in, to the members that
-    /// asked to view it and no one else.
-    PublishSurfaceTo {
-        ws: Topic,
-        msg: Box<NeighbourMsg>,
-        viewers: Vec<PeerId>,
-    },
-    /// Say one workspace-control message to `target` alone, over the authenticated direct route.
+    /// Say one shared window's control message (a viewer's ask, input or keyframe request, a page's
+    /// announcement) to `target` alone: over the authenticated direct route while one is up, and
+    /// through the workspace's host to that device alone otherwise. A window's pictures travel the
+    /// workspace's live plane ([`tilo_live::live::Track::Window`]).
     SendControl {
         ws: Topic,
         msg: Box<NeighbourMsg>,

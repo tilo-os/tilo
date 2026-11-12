@@ -829,11 +829,16 @@ mod tests {
         tree
     }
 
-    /// What the bar tells a reader its faces are, in the order drawn.
+    /// What the bar tells a reader its faces are, in the order drawn. A face is a control of its
+    /// own (`FACE_TARGET`), so the "+N" counted beside them is not one of them.
     fn face_names(bar: &TopBarChrome) -> Vec<String> {
         bar.face_accessibility()
             .into_iter()
-            .filter(|node| node.role == ui::a11y::Role::Image)
+            .filter(|node| {
+                node.action_target
+                    .as_deref()
+                    .is_some_and(|target| target.starts_with(TopBarChrome::FACE_TARGET))
+            })
             .filter_map(|node| node.name)
             .collect()
     }
@@ -842,8 +847,16 @@ mod tests {
     /// that starts working (or comes back) is on the bar at once, as its client's square face,
     /// and everyone else here is the stack's "+N" beside it. The invite waits in the panel, and
     /// nothing stands on the clock or the workspace's name.
+    ///
+    /// The bar reads the workspace at one monotonic instant throughout: who did something last is
+    /// the order the changes reached the bar, so no amount of clock the host does or does not
+    /// advance can decide it.
     #[test]
     fn a_phone_bar_shows_whoever_did_something_last() {
+        ui::time::testing::with_monotonic_time(ui::time::now(), phone_bar_at_one_instant);
+    }
+
+    fn phone_bar_at_one_instant() {
         let theme = Theme::default();
         let gap = f64::from(theme.tokens.spacing.s2);
         for width in [390.0f32, 360.0] {
@@ -856,7 +869,6 @@ mod tests {
                 "and the other counted at {width}"
             );
             // The agent starts writing: its presence says so, and its face takes the bar.
-            std::thread::sleep(std::time::Duration::from_millis(2));
             tree.workspaces[0].collaborators[1].status = Some(tilo_desktop_model::Status {
                 text: "Editing Launch notes in Notes".into(),
                 automatic: true,

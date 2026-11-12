@@ -258,6 +258,20 @@ fn faces(
     (faces, count)
 }
 
+/// The part an invitation hands a member who holds `role`, so that redeeming
+/// it leaves them as they are. The owner holds the workspace whatever an
+/// invitation names: none is theirs.
+const fn invited_part(role: tilo_action_policy::Role) -> Option<WorkspaceRole> {
+    use tilo_action_policy::Role;
+    match role {
+        Role::Viewer => Some(WorkspaceRole::Viewer),
+        Role::Commenter => Some(WorkspaceRole::Commenter),
+        Role::Editor => Some(WorkspaceRole::Editor),
+        Role::Moderator => Some(WorkspaceRole::Moderator),
+        Role::Owner => None,
+    }
+}
+
 fn person(hex_key: &str) -> Result<[u8; 32], CollaborationError> {
     let mut key = [0; 32];
     hex::decode_to_slice(hex_key, &mut key)
@@ -399,6 +413,24 @@ impl Workspaces {
             .any(|invitation| invitation.recipient_user_public_key == Some(user))
     }
 
+    /// The role `user` holds in `workspace` as one of its members now: `None`
+    /// for someone it does not have in it, a person it removed, and one it
+    /// banned.
+    pub(super) async fn member_role(
+        &self,
+        workspace: &str,
+        user: [u8; 32],
+    ) -> Option<tilo_action_policy::Role> {
+        let state = self.workspace(workspace).await.ok()?;
+        let state = state.lock().await;
+        state
+            .peer()
+            .permissions(self.inner.host.cert.device_public_key, tilo_clock::wall())
+            .ok()?
+            .policy
+            .active_role(&hex::encode(user))
+    }
+
     pub fn listing(&self, workspace: &str) -> Option<Listing> {
         self.inner.listings.get(workspace)
     }
@@ -503,6 +535,12 @@ impl Workspaces {
     /// [`PendingInvitation::recipient_user_public_key`]. Everyone else is
     /// turned away with the door's own words.
     ///
+    /// Someone the workspace has in it is let in at the part they hold there,
+    /// never the listing's default: their device's redemption writes the
+    /// invitation's part as theirs, and a door that handed them another would
+    /// change it. A device of theirs that enters on its session is admitted as
+    /// theirs before it would ask this door at all.
+    ///
     /// For a person an invitation still names, the door answers with that
     /// invitation, and records a grant for it at once so the page that made
     /// the join redeems it the way every page redeems a door's answer: its
@@ -520,18 +558,24 @@ impl Workspaces {
             .ok_or_else(|| DoorRefusal::refused("that workspace is not public"))?;
         let user = person(&join.user_public_key).map_err(refused)?;
         let now = tilo_clock::unix_now_ns();
+        let member = self.member_role(workspace, user).await;
         // An invitation-only door refuses a stranger who holds no
         // invitation of their own, and says so: the person's page offers
         // them the way to be invited (the site's wait list) instead of a
         // link in as a guest.
-        if self.inner.listings.invites_only(workspace) && !self.invited(workspace, user, now).await
+        if self.inner.listings.invites_only(workspace)
+            && member.is_none()
+            && !self.invited(workspace, user, now).await
         {
             return Err(DoorRefusal::InvitationOnly);
         }
+        let role = member
+            .and_then(invited_part)
+            .unwrap_or(listing.default_role);
         let token = hex::encode(rand::random::<[u8; 32]>());
-        let grant = self.door_grant(workspace, listing.default_role, now, &token)?;
+        let grant = self.door_grant(workspace, role, now, &token)?;
         let issued = self
-            .admit_governed(workspace, join, listing.default_role, user, now, grant)
+            .admit_governed(workspace, join, role, user, now, grant)
             .await?;
         self.written(workspace, true).await.map_err(refused)?;
         Ok((issued, token))
@@ -563,13 +607,13 @@ impl Workspaces {
         Ok(grant)
     }
 
-    /// The invitation `workspace`'s door answers `join` with, its grant
-    /// recorded for the token the door hands out.
+    /// The invitation `workspace`'s door answers `join` with, at `role`, its
+    /// grant recorded for the token the door hands out.
     async fn admit_governed(
         &self,
         workspace: &str,
         join: &DoorJoin,
-        default_role: WorkspaceRole,
+        role: WorkspaceRole,
         user: [u8; 32],
         now: u64,
         grant: PreAdmission,
@@ -636,7 +680,7 @@ impl Workspaces {
                     &host,
                     IssueInvitationRequest {
                         request_id: rand::random(),
-                        role: super::pages::member_role(default_role),
+                        role: super::pages::member_role(role),
                         recipient_user_public_key: Some(user),
                         invitee_name: tilo_user_identity::display_name(&join.display_name)
                             .ok()

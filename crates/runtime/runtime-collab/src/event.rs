@@ -50,6 +50,10 @@ pub enum CollabEvent<C: EndpointCustody = NoCustody> {
     Context {
         collaborators: Vec<Collaborator>,
         permissions: Vec<String>,
+        /// What each app installed on this device is called, in each language
+        /// its package names it in: what a history row names another app's
+        /// change by, never an id. Session-local presentation.
+        apps: Vec<collab_types::history::NamedApp>,
     },
     /// The delegated agents on `cluster_id`'s roster whose person's root
     /// signed the delegation for exactly that device, as the session

@@ -506,3 +506,63 @@ fn a_conversation_that_is_here_and_a_person_that_is_not_are_named_apart() {
         "the window says what it lacks: {refused}"
     );
 }
+
+/// An agent Ada admitted sends a message from her window: the message is the agent's, not
+/// Ada's, on her device and on Bob's, and names her as the person it acts for.
+#[test]
+fn an_agents_send_is_the_agents_on_every_member() {
+    use ui::tilo_resource::Resource as _;
+
+    const WORKSPACE: &str = "00000000-0000-4000-8000-00000000000e";
+    let ada = "ad".repeat(32);
+    let bob = "b0".repeat(32);
+    let (mut ada_window, mut bob_window) = a_pair_of_windows(WORKSPACE, &ada, &bob);
+    let conversation =
+        Chat::direct_id([Participant::person(ada.clone()), Participant::person(bob)]);
+    let helper = tilo_actions::ActionInvoker::actor("agent:helper")
+        .with_kind(tilo_actions::ActorKind::Agent)
+        .acting_for(ada)
+        .named(Some("Helper".into()));
+
+    ada_window
+        .call_by(
+            helper,
+            Chat::KIND,
+            "send",
+            serde_json::json!({
+                "to": [{ "kind": "conversation", "id": conversation.to_string(), "name": "Bob" }],
+                "attached": [],
+                "text": "hello from the agent",
+            }),
+        )
+        .expect("the agent's send is taken");
+
+    let mine = crate::testing::mounted_rows(&mut ada_window, &conversation.to_string());
+    assert_eq!(
+        mine.iter()
+            .map(|row| (row.text.as_str(), row.author.as_str()))
+            .collect::<Vec<_>>(),
+        [("hello from the agent", "agent:helper")],
+        "on Ada's device the message is the agent's"
+    );
+    deliver_messages(&mut ada_window, &mut bob_window);
+    let theirs = crate::testing::mounted_rows(&mut bob_window, &conversation.to_string());
+    assert_eq!(
+        theirs
+            .iter()
+            .map(|row| (row.text.as_str(), row.author.as_str()))
+            .collect::<Vec<_>>(),
+        [("hello from the agent", "agent:helper")],
+        "and on Bob's"
+    );
+    ada_window.harness().relayout();
+    ada_window
+        .deliver_changes_to(&mut bob_window)
+        .expect("one record");
+    bob_window.harness().relayout();
+    assert_eq!(
+        bob_window.with_chat(|chat| chat.agent_authors.get("agent:helper").cloned()),
+        Some(Some("Helper".to_owned())),
+        "Bob reads it by the name Ada's device gave the agent"
+    );
+}

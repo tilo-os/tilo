@@ -43,11 +43,11 @@ pub trait ParticipantNames {
         None
     }
 
-    /// What the reader calls the app `app_id` in their language ([`app_name`]): a reader with
-    /// the app's catalogue reads it in its own words ("Heute"), one without it in the words its
-    /// id makes ("Today").
+    /// What the reader calls the app `app_id`: the session's name for it in this window's
+    /// language ([`installed_app_name`]), else the words its id makes ("Today") — an app
+    /// installed nowhere near this device.
     fn app(&self, app_id: &str) -> String {
-        app_words(app_id)
+        installed_app_name(app_id).unwrap_or_else(|| app_words(app_id))
     }
 
     /// What the reader calls the agent whose id is `name` ([`name_words`]): its name, and — for
@@ -95,27 +95,74 @@ pub fn name_words(name: &str) -> String {
         .unwrap_or_else(|| UNKNOWN_AUTHOR_NAME.to_owned())
 }
 
-/// What the app `app_id` is called to a person reading `words`: its own name in their language,
-/// from the word its package declares for itself, else [`app_words`]. `words` is the reader's
-/// own catalogue (a word's key and the source words to fall back on).
-pub fn app_name(app_id: &str, words: impl Fn(&str, &str) -> String) -> String {
-    let app_id = app_id.trim();
-    words(&app_word_key(app_id), &app_words(app_id))
+thread_local! {
+    /// What the session said each app installed on this device is called, and the language this
+    /// process reads names in: both ride with the workspace's roster names, so a window names
+    /// another app by the same feed it names people. A process no session serves names an app by
+    /// the words its id makes.
+    static INSTALLED_APPS: std::cell::RefCell<(String, Option<Vec<collab_types::history::NamedApp>>)> =
+        const { std::cell::RefCell::new((String::new(), None)) };
 }
 
-/// The catalogue key an app's own title is under: its app declaration's stable id, which names
-/// the message every package's catalogue holds its own name in (`d-so-tilo-lang-notes`).
-#[must_use]
-pub fn app_word_key(app_id: &str) -> String {
-    let mut key = String::from("d-");
-    key.extend(app_id.chars().map(|c| {
-        if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-            c
-        } else {
-            '-'
+/// Say the language this process reads names in (`de-DE`), for the app names the session sends:
+/// a window names an app in its own language, whatever language its people's names arrive in.
+/// Whether this thread's names changed.
+pub fn set_names_language(language: &str) -> bool {
+    INSTALLED_APPS.with(|held| {
+        let mut held = held.borrow_mut();
+        if held.0 == language {
+            return false;
         }
-    }));
-    key
+        language.clone_into(&mut held.0);
+        true
+    })
+}
+
+/// Take the installed apps the session sent (`CollabEvent::Context`), with what each is called in
+/// every language its package names it in. Whether this thread's names changed.
+pub fn set_installed_apps(apps: Vec<collab_types::history::NamedApp>) -> bool {
+    INSTALLED_APPS.with(|held| {
+        let mut held = held.borrow_mut();
+        let changed = held.1.as_ref() != Some(&apps);
+        held.1 = Some(apps);
+        changed
+    })
+}
+
+/// What the app `app_id` is called in the language this process reads (`set_names_language`), as
+/// the session sent it (`set_installed_apps`): `None` for an app installed nowhere near this
+/// device.
+#[must_use]
+pub fn installed_app_name(app_id: &str) -> Option<String> {
+    let app_id = app_id.trim();
+    INSTALLED_APPS.with(|held| {
+        let held = held.borrow();
+        let (language, apps) = (&held.0, held.1.as_ref()?);
+        apps.iter()
+            .find(|app| app.id == app_id)
+            .map(|app| app.name_in(language).to_owned())
+    })
+}
+
+/// What the app `app_id` is called to a person reading `locale`: the session's name for it in
+/// that language, else [`app_words`] — an app installed nowhere near this device. Never an id.
+#[must_use]
+pub fn app_name(app_id: &str, locale: &str) -> String {
+    installed_app_name_in(app_id, locale).unwrap_or_else(|| app_words(app_id))
+}
+
+/// [`installed_app_name`] in `locale`, whatever language this process reads.
+#[must_use]
+pub fn installed_app_name_in(app_id: &str, locale: &str) -> Option<String> {
+    let app_id = app_id.trim();
+    INSTALLED_APPS.with(|held| {
+        let held = held.borrow();
+        held.1.as_ref().and_then(|apps| {
+            apps.iter()
+                .find(|app| app.id == app_id)
+                .map(|app| app.name_in(locale).to_owned())
+        })
+    })
 }
 
 /// An app id written as words for a person: the id's last dotted part, its `-`/`_` breaks made
@@ -473,17 +520,35 @@ mod tests {
     }
 
     #[test]
-    fn an_app_name_is_read_from_the_reader_s_catalogue_when_it_holds_one() {
-        // A reader with the app's words reads the name the app gives itself in their language;
-        // one without them reads the words its id makes.
-        let german = |key: &str, source: &str| match key {
-            "d-so-tilo-lang-today" => "Heute".to_owned(),
-            _ => source.to_owned(),
-        };
-        assert_eq!(app_name("so.tilo.lang.today", german), "Heute");
+    fn an_app_name_is_the_one_the_session_sent_in_the_reader_s_language() {
+        // The session knows what each installed app is called, in every language its package
+        // names it in: a reader names it so, and an app this device does not have by the words
+        // its id makes — never by its id.
+        assert!(set_installed_apps(vec![collab_types::history::NamedApp {
+            id: "so.tilo.lang.today".to_owned(),
+            name: "Today".to_owned(),
+            names: [("de-DE".to_owned(), "Heute".to_owned())]
+                .into_iter()
+                .collect(),
+        }]));
+        assert_eq!(app_name("so.tilo.lang.today", "de-DE"), "Heute");
+        assert_eq!(app_name("so.tilo.lang.today", "en-US"), "Today");
         assert_eq!(
-            app_name("so.tilo.lang.today", |_, source| source.to_owned()),
-            "Today"
+            app_name("so.tilo.lang.today", ""),
+            "Today",
+            "a reader with no language reads the name the package gives itself"
+        );
+        assert_eq!(
+            app_name("org.example.Editor", "de-DE"),
+            "Editor",
+            "an app installed nowhere near this device reads as the words its id makes"
+        );
+        assert!(set_installed_apps(Vec::new()), "the apps are gone");
+        assert!(!set_installed_apps(Vec::new()), "the same names read once");
+        assert_eq!(
+            app_name("so.tilo.lang.today", "de-DE"),
+            "Today",
+            "with no session's names, the words its id makes"
         );
     }
 
@@ -492,6 +557,5 @@ mod tests {
         assert_eq!(app_words("so.tilo.lang.today"), "Today");
         assert_eq!(app_words("so.tilo.file-explorer"), "File Explorer");
         assert_eq!(app_words("org.gnome.TextEditor"), "Text Editor");
-        assert_eq!(app_word_key("so.tilo.lang.today"), "d-so-tilo-lang-today");
     }
 }

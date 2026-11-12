@@ -398,7 +398,7 @@ pub(crate) fn published_place_resources(favorites: &[favorites::Favorite]) -> Ve
                     item: resource_id.clone(),
                 },
                 crate::search_provider::OPEN_ACTION,
-                "Open",
+                crate::i18n::CATALOG.t("files-shortcuts-open"),
             );
             ResourceSpec::new(resource_id, "files.place", favorite.label.clone()).with_action(open)
         })
@@ -8620,7 +8620,7 @@ impl FilesState {
                         account: account_id.clone(),
                     },
                     crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION,
-                    "Open",
+                    crate::i18n::CATALOG.t("files-shortcuts-open"),
                 );
                 open.type_mut().contract.availability = availability;
                 resource.actions.push(open);
@@ -8629,14 +8629,14 @@ impl FilesState {
                         account: account_id.clone(),
                     },
                     "details",
-                    "Show account status",
+                    crate::i18n::CATALOG.t("files-account-status"),
                 ));
                 resource.actions.push(crate::effects::row_action(
                     &crate::effects::FilesEffect::Reauthenticate {
                         account: account_id,
                     },
                     "reauthenticate",
-                    "How to sign in again",
+                    crate::i18n::CATALOG.t("files-account-reauthenticate"),
                 ));
                 resource
             })

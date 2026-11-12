@@ -84,10 +84,7 @@ fn app_display_name(apps: &dyn AppDirectory, app_id: &str) -> String {
         .unwrap_or_else(|| tilo_desktop_search::names::app_name(app_id))
 }
 
-pub use tilo_desktop_model::{
-    APP_ACTION_GRANT_ACTION_ID, APP_ACTION_REVOKE_ACTION_ID, GRANT_ACTION_ID,
-    PRESET_ASSIGN_ACTION_ID, PRESET_SAVE_ACTION_ID, REVOKE_ACTION_ID,
-};
+pub use tilo_desktop_model::{APP_ACTION_GRANT_ACTION_ID, APP_ACTION_REVOKE_ACTION_ID};
 
 pub fn role_label(role: CapRole) -> String {
     t(match role {
@@ -223,6 +220,10 @@ pub fn grant_set_sentence(grants: &[tilo_action_policy::Grant], apps: &dyn AppDi
                 _ => None,
             }
         }
+
+        fn everything(&self) -> String {
+            t("workspace-settings-scope-everything")
+        }
     }
     tilo_action_policy::sentences(grants, &Named(apps))
 }
@@ -239,6 +240,10 @@ pub fn node_phrase(node: &tilo_action_policy::TreePath, apps: &dyn AppDirectory)
                 Level::Resource | Level::Item => self.0.resource_label(id),
                 _ => None,
             }
+        }
+
+        fn everything(&self) -> String {
+            t("workspace-settings-scope-everything")
         }
     }
     let below_workspace = node.within_workspace();

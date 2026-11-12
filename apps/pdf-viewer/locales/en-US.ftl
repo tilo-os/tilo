@@ -278,3 +278,43 @@ pdf-drawn-signed = Signed { $date }
 ## What the window shows
 pdf-viewer-untitled = Untitled document
 pdf-viewer-page-unreadable = Page { $page } cannot be read: { $detail }
+
+## The sample document's own note
+pdf-viewer-sample-comment = Should we name the harrier's species here, as the later sections do?
+
+## Actions
+
+pdf-viewer-effects-toggle-sidebar = Sidebar
+pdf-viewer-effects-toggle-pages = Page thumbnails
+pdf-viewer-effects-find = Find
+pdf-viewer-effects-use-tool = Use tool
+pdf-viewer-effects-mark-strikeout = Strike through
+pdf-viewer-effects-go-to = Go to page
+pdf-viewer-effects-go-to-match = Go to match
+pdf-viewer-effects-read-text = Read text
+pdf-viewer-effects-read-form-fields = Read form fields
+pdf-viewer-effects-look-page = Show page
+pdf-viewer-effects-import-pdf-content = Open PDF from content
+pdf-viewer-effects-select-text = Select text
+pdf-viewer-effects-select-all = Select all
+pdf-viewer-effects-copy-selection = Copy selection
+pdf-viewer-effects-insert-pages = Insert pages
+pdf-document = PDF
+pdf-document-record-reading-position = Remember reading position
+pdf-document-start-page-plan = Start page plan
+pdf-document-pin-source = Pin source
+pdf-document-adopt-existing = Adopt existing markup
+pdf-document-import-pages = Import pages
+pdf-document-duplicate-page = Duplicate page
+pdf-document-delete-page = Delete page
+pdf-document-move-page = Move page
+pdf-document-rotate-page = Rotate page
+pdf-document-add-annotation = Add annotation
+pdf-document-delete-annotation = Delete annotation
+pdf-document-create-note = Add note
+pdf-document-add-note = Add note at page top
+pdf-document-add-comment = Add comment
+pdf-document-add-typed-signature = Sign with typed name
+pdf-signature-profile = Signature
+pdf-signature-profile-set-signer = Sign as
+pdf-signature-profile-set-strokes = Draw signature

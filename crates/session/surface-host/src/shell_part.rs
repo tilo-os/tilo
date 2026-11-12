@@ -2420,10 +2420,10 @@ impl ShellPart {
 impl ShellPart {
     /// Ask the session for the desk action `action` with `arguments`: what a key of the part's
     /// own asks, as a press of the views asks through the session's door.
-    fn ask(&self, action: &str, arguments: &[(&str, &str)]) {
+    fn ask(&self, action: &str, arguments: &[(&str, serde_json::Value)]) {
         let arguments = arguments
             .iter()
-            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .map(|(name, value)| ((*name).to_owned(), value.clone()))
             .collect();
         self.origin.borrow().link.ask(Ask {
             resource: DESK_RESOURCE.to_owned(),
@@ -2443,9 +2443,9 @@ impl ShellPart {
         }
         for (target, view, _front) in opened {
             let mut arguments = BTreeMap::new();
-            arguments.insert("resource".to_owned(), target.id_string());
+            arguments.insert("resource".to_owned(), target.id_string().into());
             if let Some(view) = view {
-                arguments.insert("view".to_owned(), view);
+                arguments.insert("view".to_owned(), view.into());
             }
             self.origin.borrow().link.ask(Ask {
                 resource: ARRANGEMENT_RESOURCE.to_owned(),

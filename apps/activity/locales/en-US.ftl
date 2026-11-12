@@ -81,3 +81,8 @@ activity-was = Was { $before }
 # The fields a run changed, with what each holds now and what it held before.
 activity-changed-fields = What changed, before and after
 activity-removed = Nothing now
+
+## Actions
+
+activity-effects-remove-source = Remove source
+activity-filter = Workspace activity

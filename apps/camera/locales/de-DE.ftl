@@ -8,8 +8,33 @@ camera-record-scan = { $raw } eingelesen
 camera-title = Kamera
 
 ## Aktionen
+
 camera-action-use-device = { $device } verwenden
 camera-action-stop-recording = Aufnahme beenden
+camera-action-register-capture = Aufnahme weitergeben
+camera-action-record-scan = Gescannten Code festhalten
+camera-effect-open-camera = Kamera öffnen
+camera-effect-open-scanner = Scan öffnen
+camera-effect-open-document = Dokumente öffnen
+camera-effect-open-settings = Einstellungen öffnen
+camera-effect-use-mode = Aufnahmemodus wählen
+camera-effect-use-lens = Objektiv wählen
+camera-effect-set-geotag = Ort speichern
+camera-effect-set-default-lens = Standardobjektiv
+camera-effect-retry-camera = Kameras neu suchen
+camera-effect-use-camera = Kamera verwenden
+camera-effect-import-image = Bild scannen
+camera-effect-choose-scan-setting = Scan-Einstellung
+camera-effect-capture-page = Seite aufnehmen
+camera-effect-rotate-page = Seite drehen
+camera-effect-recognize-text = Text erkennen
+camera-effect-copy-text = Text kopieren
+camera-effect-export-pdf = PDF exportieren
+camera-effect-crop-page = Seite zuschneiden
+camera-effect-move-page-earlier = Seite nach vorne
+camera-effect-move-page-later = Seite nach hinten
+camera-effect-remove-page = Seite entfernen
+camera = Kamera
 
 ## Was das Fenster benennt
 camera-screen-camera = Kamera
@@ -86,3 +111,8 @@ camera-open-photos = Fotos öffnen
 ## Wie die Aktion eines Hinweises heißt
 camera-try-again = Erneut versuchen
 camera-refresh = Aktualisieren
+
+## Die Bedienelemente des Dokumentenscanners und wo eine Aufnahme sich öffnen lässt
+camera-scanning = Wird gescannt…
+camera-scan-page = Seite scannen
+camera-open-in = In { $destination } öffnen

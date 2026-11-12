@@ -3039,11 +3039,21 @@ fn describe_grant(grant: &tilo_action_policy::Grant) -> String {
             ("kinds", kinds.into()),
             (
                 "node",
-                tilo_action_policy::describe_node(&grant.node, &tilo_action_policy::Ids).into(),
+                tilo_action_policy::describe_node(&grant.node, &GrantTree).into(),
             ),
             ("subject", describe_grantee(&grant.subject).into()),
         ],
     )
+}
+
+/// The grant tree as the activity pane names it: the whole tree in the
+/// window's language, every node below by its id.
+struct GrantTree;
+
+impl tilo_action_policy::Labels for GrantTree {
+    fn everything(&self) -> String {
+        t("activity-grant-everything")
+    }
 }
 
 fn describe_grantee(subject: &tilo_action_policy::Subject) -> String {

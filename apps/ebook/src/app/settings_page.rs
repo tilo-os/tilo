@@ -128,7 +128,12 @@ impl BooksApp {
             &body,
         );
         let top = body.y0 + gutter - self.settings_scroll;
-        let mut y = Self::draw_page_title(ctx, Point::new(col.x, top), "Settings", None);
+        let mut y = Self::draw_page_title(
+            ctx,
+            Point::new(col.x, top),
+            &crate::resource::CATALOG.t("ebook-settings-title"),
+            None,
+        );
         y += f64::from(rhythm.section);
         y = self.draw_settings_tabs(ctx, col, y);
         y += f64::from(rhythm.group);
@@ -364,8 +369,8 @@ impl BooksApp {
             ctx,
             col,
             y,
-            "Keyboard shortcuts",
-            Some("Choose a shortcut, then press a key. Arrow and Page keys always turn pages."),
+            &crate::resource::CATALOG.t("ebook-tab-shortcuts"),
+            Some(&crate::resource::CATALOG.t("ebook-settings-shortcuts-hint")),
         );
         if let Some(error) = self.shortcut_capture_error.clone() {
             let x = col.x;
@@ -381,6 +386,7 @@ impl BooksApp {
                 + f64::from(theme.tokens.spacing.rhythm.related);
         }
         let keycap_h = InputHint::keycap_height(theme);
+        let pressing = crate::resource::CATALOG.t("ebook-settings-press-key");
         for (i, shortcut) in ReaderShortcut::ALL.into_iter().enumerate() {
             let capturing = self.shortcut_capture == Some(shortcut);
             let key = key_legend(
@@ -390,7 +396,7 @@ impl BooksApp {
             );
             let labels = [key];
             let trailing = if capturing {
-                ctx.measure_role("Press a key", TextRole::Body, None).width
+                ctx.measure_role(&pressing, TextRole::Body, None).width
             } else {
                 InputHint::measure_keycap_labels(&labels, ctx.text, theme)
             } + 2.0 * f64::from(theme.tokens.spacing.s3);
@@ -411,15 +417,8 @@ impl BooksApp {
             );
             let x1 = col.x1();
             if capturing {
-                let w = ctx.measure_role("Press a key", TextRole::Body, None).width;
-                ctx.text_role_in_band(
-                    "Press a key",
-                    TextRole::Body,
-                    theme.text_dim,
-                    x1 - w,
-                    row,
-                    None,
-                );
+                let w = ctx.measure_role(&pressing, TextRole::Body, None).width;
+                ctx.text_role_in_band(&pressing, TextRole::Body, theme.text_dim, x1 - w, row, None);
             } else {
                 let w = InputHint::measure_keycap_labels(&labels, ctx.text, theme);
                 InputHint::paint_keycap_labels_at(
@@ -449,8 +448,8 @@ impl BooksApp {
             ctx,
             col,
             y,
-            "Watched folders",
-            Some("Turn a folder on to add its books to your library, now and as new ones arrive."),
+            &crate::resource::CATALOG.t("ebook-settings-folders-title"),
+            Some(&crate::resource::CATALOG.t("ebook-settings-folders-hint")),
         );
 
         // Candidate folders: watched ones, plus folders books were opened
@@ -638,10 +637,8 @@ impl BooksApp {
             ctx,
             col,
             y,
-            "Reading fonts",
-            Some(
-                "Turn a font off to leave it out of the reading settings. Select a name to rename it.",
-            ),
+            &crate::resource::CATALOG.t("ebook-settings-fonts-title"),
+            Some(&crate::resource::CATALOG.t("ebook-settings-fonts-hint")),
         );
         for (i, f) in fonts.iter().enumerate() {
             y = self.draw_font_row(ctx, col, y, f, i + 1 < fonts.len());
@@ -663,13 +660,13 @@ impl BooksApp {
     ) -> f64 {
         let theme = ctx.theme;
         let spacing = &theme.tokens.spacing;
-        let kind = match &f.kind {
-            FontKind::Default => "Default face".to_string(),
-            FontKind::Serif => "System reading face".to_string(),
-            FontKind::Reading(_) => "Reading face".to_string(),
-            FontKind::Mono => "Monospace".to_string(),
-            FontKind::Named(_) => "System font".to_string(),
-        };
+        let kind = crate::resource::CATALOG.t(match &f.kind {
+            FontKind::Default => "ebook-font-kind-default",
+            FontKind::Serif => "ebook-font-kind-system",
+            FontKind::Reading(_) => "ebook-font-kind-reading",
+            FontKind::Mono => "ebook-font-kind-mono",
+            FontKind::Named(_) => "ebook-font-kind-named",
+        });
         let field = NumberField::FontMult(f.id.clone());
         let stepper_w = self.number_controls.preferred_width(
             &field,
@@ -713,11 +710,15 @@ impl BooksApp {
         let cy = row.center().y;
         let mut x = controls_x0;
         if matches!(f.kind, FontKind::Named(_)) {
+            let remove_font = crate::resource::CATALOG.t_args(
+                "ebook-action-remove-font",
+                &[("font", ui::i18n::ArgValue::Text(title.clone()))],
+            );
             self.icon_button(
                 ctx,
                 Point::new(x + small / 2.0, cy),
                 ControlSize::Small,
-                (Icon::Trash2, "Remove font"),
+                (Icon::Trash2, &remove_font),
                 false,
                 Action::RemoveFont(f.id.clone()),
             );
@@ -816,8 +817,8 @@ impl BooksApp {
             ctx,
             col,
             y,
-            "Colour schemes",
-            Some("Turn a scheme off to leave it out of the reading settings."),
+            &crate::resource::CATALOG.t("ebook-tab-schemes"),
+            Some(&crate::resource::CATALOG.t("ebook-settings-schemes-hint")),
         );
         let schemes = self.schemes.clone();
         for (i, s) in schemes.iter().enumerate() {
@@ -855,13 +856,13 @@ impl BooksApp {
         } else {
             self.settings.scheme_id == s.id
         };
-        let status = if in_use {
-            "In use"
+        let status = crate::resource::CATALOG.t(if in_use {
+            "ebook-scheme-in-use"
         } else if s.builtin {
-            "Built-in"
+            "ebook-scheme-builtin"
         } else {
-            "Custom"
-        };
+            "ebook-scheme-custom"
+        });
         let gap = f64::from(spacing.rhythm.related);
         let controls = SchemeControls::measure(ctx);
         let controls_w = controls.width();
@@ -878,7 +879,7 @@ impl BooksApp {
             y,
             &SettingsRow {
                 title: &title,
-                secondary: Some(status),
+                secondary: Some(&status),
                 trailing: controls_w + 2.0 * f64::from(spacing.s3),
                 separator: false,
                 selected: false,
@@ -951,27 +952,37 @@ impl BooksApp {
         x1 -= m.switch_w + m.gap;
         self.button(
             ctx,
-            ButtonFace::new(face_rect(x1, m.duplicate_w), "Duplicate")
-                .role(ButtonRole::Plain)
-                .control_size(small),
+            ButtonFace::new(
+                face_rect(x1, m.duplicate_w),
+                &crate::resource::CATALOG.t("ebook-duplicate"),
+            )
+            .role(ButtonRole::Plain)
+            .control_size(small),
             Action::DuplicateScheme(s.id.clone()),
         );
         x1 -= m.duplicate_w + m.gap;
         if !s.builtin {
+            let delete_scheme = crate::resource::CATALOG.t_args(
+                "ebook-action-delete-scheme",
+                &[("scheme", ui::i18n::ArgValue::Text(s.title()))],
+            );
             self.icon_button(
                 ctx,
                 Point::new(x1 - m.small_h / 2.0, cy),
                 small,
-                (Icon::Trash2, "Delete scheme"),
+                (Icon::Trash2, &delete_scheme),
                 false,
                 Action::DeleteScheme(s.id.clone()),
             );
             x1 -= m.small_h + m.gap;
             self.button(
                 ctx,
-                ButtonFace::new(face_rect(x1, m.edit_w), "Edit")
-                    .role(ButtonRole::Plain)
-                    .control_size(small),
+                ButtonFace::new(
+                    face_rect(x1, m.edit_w),
+                    &crate::resource::CATALOG.t("ebook-edit"),
+                )
+                .role(ButtonRole::Plain)
+                .control_size(small),
                 Action::EditScheme(s.id.clone()),
             );
         }
@@ -1109,7 +1120,7 @@ impl BooksApp {
         } = m;
         let mut y = body.y0;
         panel.text_role(
-            "Name",
+            &crate::resource::CATALOG.t("ebook-field-name"),
             TextRole::Subheading,
             panel_theme.text_primary,
             Point::new(body.x0, y),
@@ -1136,7 +1147,10 @@ impl BooksApp {
                 panel,
                 ButtonFace::new(rect, &title)
                     .icon(Icon::Pencil)
-                    .accessible_name("Rename scheme")
+                    .accessible_name(&crate::resource::CATALOG.t_args(
+                        "ebook-action-rename-scheme",
+                        &[("scheme", ui::i18n::ArgValue::Text(title.clone()))],
+                    ))
                     .role(ButtonRole::Plain),
                 Action::BeginRenameScheme(scheme.id.clone()),
             );
@@ -1144,7 +1158,7 @@ impl BooksApp {
         y = field.y1 + f64::from(rhythm.group);
 
         panel.text_role(
-            "Colours",
+            &crate::resource::CATALOG.t("ebook-appearance-colours"),
             TextRole::Subheading,
             panel_theme.text_primary,
             Point::new(body.x0, y),
@@ -1173,7 +1187,7 @@ impl BooksApp {
         y += swatch_h + f64::from(rhythm.tight) + caption + f64::from(rhythm.group);
 
         panel.text_role(
-            "Preview",
+            &crate::resource::CATALOG.t("ebook-scheme-editor-preview"),
             TextRole::Subheading,
             panel_theme.text_primary,
             Point::new(body.x0, y),
@@ -1186,10 +1200,10 @@ impl BooksApp {
         panel.fill_round(page, radius, pal.page);
         panel.stroke_round(page, radius, pal.page_edge, 1.0);
         let inset = f64::from(spacing.s4);
-        let sample = "The quick brown fox jumps over the lazy dog.";
+        let sample = crate::resource::CATALOG.t("ebook-scheme-editor-preview-text");
         let wrap = Some(ui::num::f32_of_f64((page.width() - 2.0 * inset).max(1.0)));
         panel.text_role(
-            sample,
+            &sample,
             TextRole::Reading,
             pal.ink,
             Point::new(page.x0 + inset, page.y0 + inset),

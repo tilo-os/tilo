@@ -345,6 +345,7 @@ pub fn trusted_devices(
                 cert.capabilities.agent.is_some(),
                 cert.capabilities.server_key,
             ),
+            browser: None,
         })
         .collect())
 }
@@ -357,21 +358,26 @@ pub fn trusted_devices(
 /// key their root certifies need not be certified here: a browser approves
 /// one in its own tab, and another of their computers pairs one. `record` is
 /// that record's devices, each with whether the host that keeps it refuses
-/// the key. A key this device's fleet knows is listed as the fleet says it —
+/// the key and the browser it is a tab of, when it is. A key this device's fleet knows is listed as the fleet says it —
 /// it is the one that signed a revocation here — and the record can only add
 /// that the key is refused, never that it is not.
 #[must_use]
 pub fn with_record(
     listed: Vec<FleetDevice>,
-    record: impl IntoIterator<Item = (tilo_user_identity::DeviceCert, bool)>,
+    record: impl IntoIterator<Item = (tilo_user_identity::DeviceCert, bool, Option<String>)>,
 ) -> Vec<FleetDevice> {
     let mut devices = listed;
-    for (cert, refused) in record {
+    for (cert, refused, browser) in record {
         match devices
             .iter_mut()
             .find(|known| known.key_hex == hex::encode(cert.device_public_key))
         {
-            Some(known) => known.revoked |= refused,
+            Some(known) => {
+                known.revoked |= refused;
+                if known.browser.is_none() {
+                    known.browser = browser;
+                }
+            }
             None => devices.push(FleetDevice {
                 label: cert.device_label.clone(),
                 key_hex: hex::encode(cert.device_public_key),
@@ -383,6 +389,7 @@ pub fn with_record(
                     cert.capabilities.agent.is_some(),
                     cert.capabilities.server_key,
                 ),
+                browser,
             }),
         }
     }
@@ -458,6 +465,7 @@ mod tests {
             revoked,
             can_host: false,
             kind: tilo_actions::remote::identity_admin::KeyKind::Device,
+            browser: None,
         }
     }
 
@@ -469,8 +477,8 @@ mod tests {
         let devices = with_record(
             vec![listed("This desktop", 2, true, false)],
             [
-                (certified("This desktop", 2), false),
-                (certified("Browser", 3), false),
+                (certified("This desktop", 2), false, None),
+                (certified("Browser", 3), false, Some("0f".repeat(16))),
             ],
         );
         assert_eq!(
@@ -481,6 +489,11 @@ mod tests {
             [("This desktop", true, false), ("Browser", false, false)]
         );
         assert_eq!(devices[1].key_hex, hex::encode([3; 32]));
+        assert_eq!(
+            devices[1].browser.as_deref(),
+            Some("0f".repeat(16).as_str()),
+            "a browser's tab key says which browser it is of"
+        );
     }
 
     /// A revocation reaches this device's list from either side: one its own
@@ -494,8 +507,8 @@ mod tests {
                 listed("Phone", 5, false, false),
             ],
             [
-                (certified("Lost laptop", 4), false),
-                (certified("Phone", 5), true),
+                (certified("Lost laptop", 4), false, None),
+                (certified("Phone", 5), true, None),
             ],
         );
         assert_eq!(

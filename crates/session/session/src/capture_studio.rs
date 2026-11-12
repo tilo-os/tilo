@@ -24,7 +24,7 @@
     reason = "frames are bounded by the displays' pixels, far from the integers' limits"
 )]
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -248,7 +248,7 @@ pub(crate) fn mount(
         Ok(sheet) => {
             let sheet = sheet.always_serving();
             let seat = sheet.seat().clone();
-            let sheet = Rc::new(RefCell::new(sheet));
+            let sheet = sheet.layer();
             compositor.add_host(sheet.clone());
             doors.add(sheet);
             Some(CaptureStudio {

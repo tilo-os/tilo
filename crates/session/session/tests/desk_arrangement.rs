@@ -22,12 +22,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
-// A device that founds its workspace does it through an Automerge worker: this binary is that
-// worker, as the session's own is.
-tilo_automerge_isolate::test_worker!();
-
 use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_session::{Options, Session};
 
@@ -118,7 +112,7 @@ fn a_desk_this_device_cannot_seal_is_not_said_to_have_been_refused() {
 
     // The desk is up, and the workspace it shows is one the engine holds: a workspace it founded
     // here keeps its records as sealed channels.
-    common::until(&mut session, "the workspace the desk shows", |session| {
+    crate::common::until(&mut session, "the workspace the desk shows", |session| {
         !workspaces(session).is_empty()
     });
 
@@ -134,7 +128,7 @@ fn a_desk_this_device_cannot_seal_is_not_said_to_have_been_refused() {
                 .expect("an object"),
         )
         .expect("an app opens on the desk");
-    common::until(&mut session, "the app's window on the desk", |session| {
+    crate::common::until(&mut session, "the app's window on the desk", |session| {
         session.handle().read(|tree| {
             tree.workspaces
                 .iter()

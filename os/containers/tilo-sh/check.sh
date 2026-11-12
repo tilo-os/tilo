@@ -43,8 +43,27 @@
 #      once; a key minted with the scope unticked is asked about the page
 #      actions that act on the page; a reviewer who joined by invitation reads
 #      the run in
-#      History, and page actions past the plans file's free ones are refused
-#      until the provider adds the account there.
+#      History, and page actions past the plans file's free ones are refused;
+#  13. a Linux command in that workspace's VM, from an agent's run, while the
+#      provider's plans file names no card for the account: refused at once,
+#      in words that say what would let it through, having run nothing
+#      (integration/hosted-terminal.py);
+#  14. the provider puts the account on file, and the Browser's page action
+#      the allowance refused runs;
+#  15. the workspace's Terminal, as the person's own key runs it: a file
+#      made, `ls` and `uname` answered in the VM, the run kept as a structured
+#      record of its session and as a step of History named after that key;
+#  16. an agent's key, scoped to that one workspace, running a command there
+#      through the `tilo` command (the MCP behind it), and its own step of
+#      History;
+#  17. the Linux session runs as the VM's tenant, not as the account its
+#      Browser session runs as, and neither reads the other's files;
+#  18. a Linux GUI app in that workspace's VM: the agent opens the guest's X11
+#      terminal, a person invited into the workspace sees its window appear on
+#      their desk in their own browser and types a command into it, and the
+#      file the command wrote is read back from the VM; the app runs as the
+#      tenant, not as Browser's account, and the VM's memory with it open is
+#      measured, in the guest and on the host.
 #
 # usage: check.sh [WORK]
 # The stack runs this checkout's programs natively (the outputs a check hands
@@ -59,9 +78,9 @@
 # startup person are answered by TILO_SH_TILO_APPROVE (tilo-approve, built by
 # the t check beside tilo-enroll), from the root of theirs kept in
 # WORK/startup/root, through the relay address the VM host names.
-# TILO_SH_ONLY names the steps to run (`1`, `2-6`, `7`, `10`, comma separated)
-# to chase one of them without the rest; the stack is brought up either way and
-# each step's own seconds are printed beside it.
+# TILO_SH_ONLY names the steps to run (`1`, `2-6`, `7`, `10,13-18`, comma
+# separated) to chase one of them without the rest; the stack is brought up
+# either way and each step's own seconds are printed beside it.
 #
 #   check.sh --flow signin|visa|entry|passkey
 #
@@ -211,9 +230,11 @@ report=$work/report.json
 # TILO_SH_ONLY names the steps to run, comma separated (`1`, `2-6`, `7`): what
 # a step that failed is chased with, instead of the whole check around it.
 # Naming none runs them all. A step that reads what an earlier one made is run
-# with that one: the visa run (2-6) and the hosted Browser (8-12) read the key
-# and the person the startup made in 1, so naming either runs 1 as well. The
-# stack is brought up either way.
+# with that one: the visa run (2-6) and the hosted Browser and its Linux
+# commands (8-18) read the key and the person the startup made in 1, and the
+# Linux commands read the workspace the open made in 10, so naming any of them
+# wants those too (`TILO_SH_ONLY=10,13-18`). The stack is brought up either
+# way.
 only=${TILO_SH_ONLY:-}
 runs_step() {
   [[ -z $only ]] && return 0
@@ -242,7 +263,7 @@ bring_up=$(cat "$state/bring-up-seconds")
 tilo=$(find_tilo)
 echo "the tilo command: $tilo"
 
-if runs_any 1 2 3 4 5 6 8 9 10 11 12; then
+if runs_any 1 2 3 4 5 6 8 9 10 11 12 13 14 15 16 17 18; then
   startup_identity
 fi
 
@@ -280,6 +301,16 @@ if [[ $hosted == 1 ]]; then
     > "$work/startup/person-root.json" \
     || fail "the startup person could not be held from the recovery key their page made (see $work/startup)"
   [[ -n $relay_address ]] || fail 'the VM host names no relay address for Browser sessions'
+
+  # A Linux command in the VM needs the card the check puts on file in step
+  # 14: without it a person's own command waits for the card rather than
+  # running, and the step that runs one would sit there. Naming the commands
+  # without the steps that add the card says so instead.
+  if runs_any 15 16 17 18 && ! runs_any 13 14; then
+    python3 -c 'import json,sys; sys.exit(0 if sys.argv[2] in (json.load(open(sys.argv[1])).get("accounts") or {}) else 1)' \
+        "$plans" "$vm_account" \
+      || fail "the plans file $plans names no card for $vm_account: run steps 13 and 14 too (TILO_SH_ONLY=10,13-18)"
+  fi
 
   if runs_any 8 10 12; then
     step '8. the visa test page, where a VM may reach it'
@@ -346,6 +377,16 @@ if [[ $hosted == 1 ]]; then
       HOSTED_VISA_RELAY=$relay_address HOSTED_VISA_UNSCOPED_KEY=$plain_key \
       sdk_python "$here/integration/hosted-visa.py" "$door" "$key" "$work/hosted" "$form_url" "$1"
   }
+  # A Linux command in that workspace's VM, as its people and their agents
+  # run them (integration/hosted-terminal.py).
+  hosted_terminal() { # PHASE
+    HOSTED_TERMINAL_CLI=$tilo HOSTED_TERMINAL_DOOR=$door \
+      HOSTED_TERMINAL_PLANS=$plans HOSTED_TERMINAL_ACCOUNT=$vm_account \
+      HOSTED_TERMINAL_APPROVER=$approve HOSTED_TERMINAL_ROOT=$work/startup/root \
+      HOSTED_TERMINAL_RELAY=$relay_address \
+      HOSTED_TERMINAL_SITE=$site HOSTED_TERMINAL_SITE_RELAY=$relay \
+      sdk_python "$here/integration/hosted-terminal.py" "$door" "$key" "$work/hosted" "$1"
+  }
   launch=$SECONDS
   if runs_step 10; then
     step '10. a key opens Browser in a hosted workspace, in its VM'
@@ -359,14 +400,32 @@ if [[ $hosted == 1 ]]; then
       sudo -n podman logs --tail 80 tilo-sh-vm-host-0 >&2 2>/dev/null || true
       # The relay dials the host's member by the device key the members file
       # names; a member answering with another key fails the handshake.
-      echo '--- the members file the relay reads, and the key the member holds:' >&2
+      echo '--- the members file the relay reads, and the keys on either side:' >&2
       cat "$state/secrets/vm-host-members.json" >&2 2>/dev/null || true
-      sudo -n sha256sum "$state/vm/member/root/device-private/keypair.bin" >&2 2>/dev/null || true
+      keys=$(mktemp -d)
+      mkdir -p "$keys/certified/device-private" "$keys/member/device-private"
+      sudo -n cat /var/lib/tilo-sh-local-vm/vm/member/root/device-private/keypair.bin \
+        > "$keys/certified/device-private/keypair.bin" 2>/dev/null || true
+      sudo -n podman exec tilo-sh-vm-host-0 cat /var/lib/tilo-hosted/member/profile/identity/device-private/keypair.bin \
+        > "$keys/member/device-private/keypair.bin" 2>/dev/null || true
+      chmod 0600 "$keys"/*/device-private/keypair.bin
+      for side in certified member; do
+        echo "$side: $("${TILO_SH_TILO_ENROLL:-tilo-enroll}" device-key --identity-root "$keys/$side" 2>&1)" >&2
+      done
+      rm -rf "$keys"
       sudo -n podman exec tilo-sh-vm-host-0 sh -c \
-        'sha256sum /var/lib/tilo-hosted/member/root/device-private/keypair.bin; ls -la /var/lib/tilo-hosted/member/root /var/lib/tilo-hosted/member/root/device-private' >&2 2>/dev/null || true
-      echo '--- what the member said of its identity:' >&2
-      sudo -n podman logs tilo-sh-vm-host-0 2>&1 \
-        | grep -iE 'identity|device|endpoint|member|provision|certif|refus|error' | tail -60 >&2 || true
+        'ls -la --time-style=full-iso /var/lib/tilo-hosted/member/profile/identity/device-private /var/lib/tilo-hosted/member/profile/identity/device' >&2 2>/dev/null || true
+      echo '--- the member, from its start:' >&2
+      sudo -n podman logs tilo-sh-vm-host-0 2>&1 | grep -v 'net_report' | head -60 >&2 || true
+      echo '--- the relay said:' >&2
+      bash "$here/stack.sh" logs relay 2>/dev/null | tail -40 >&2 || true
+      # What the host's container was given to trust, and what it mounted: a
+      # member that cannot reach the relay says one of these.
+      echo '--- what the VM host trusts and mounts:' >&2
+      sudo -n podman inspect --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{"\n"}}{{end}}' \
+        tilo-sh-vm-host-0 >&2 2>/dev/null || true
+      sudo -n podman exec tilo-sh-vm-host-0 sh -c \
+        'grep -c "BEGIN CERTIFICATE" /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem 2>&1 || true' >&2 2>/dev/null || true
       fail "Browser did not open in the workspace's VM (see $work/hosted-open.log)"
     fi
     hosted_workspace=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workspace"])' "$hosted_report")
@@ -409,6 +468,77 @@ print(found.group(1) if found else "")' "$hosted_workspace" <<<"$(vm_host status
     [[ $fill_status == 0 ]] || fail "the hosted Browser flow failed (see $work/hosted-fill.log)"
     echo "ok: the hosted Browser ran in $((SECONDS - launch))s, its open taking ${hosted_seconds}s"
   fi
+
+  # The Linux half of a workspace's VM: the commands its people and their
+  # agents run there, what the plans file lets run, and the account they run
+  # as. They read the workspace the Browser opened above, so that both halves
+  # are held to the same VM a customer gets.
+  if runs_step 13; then
+    step '13. a Linux command in a workspace without a card on file is refused'
+    hosted_terminal --refused || fail "the plans rule did not hold for a Linux command (see $work/hosted/refused.json)"
+    echo "ok: a Linux command without a card is refused in $((SECONDS - at))s, saying where a card is added"
+  fi
+
+  if runs_step 14; then
+    step '14. the provider puts the account on file, and what it refused runs'
+    hosted_terminal --card || fail "the card on file did not release what it refused (see $work/hosted/terminal.json)"
+    echo "ok: the card on file released the Browser's page action and the account's Linux commands in $((SECONDS - at))s"
+  fi
+
+  if runs_step 15; then
+    step "15. the workspace's Terminal runs a command in its VM"
+    hosted_terminal --terminal || fail "the workspace's Terminal did not run a command in its VM (see $work/hosted/terminal-run.json)"
+    echo "ok: the Terminal ran in the VM in $((SECONDS - at))s, recorded as the run it became and in History"
+  fi
+
+  if runs_step 16; then
+    step "16. an agent's key runs a command in the VM through the tilo command"
+    hosted_terminal --agent || fail "the agent's command did not run in the VM (see $work/hosted/terminal.json)"
+    echo "ok: a key scoped to the workspace ran a command through the tilo command in $((SECONDS - at))s, and History names it"
+  fi
+
+  if runs_step 17; then
+    step '17. the Linux session and the Browser session are isolated'
+    hosted_terminal --isolated || fail "the tenant's commands and the Browser's session are not held apart (see $work/hosted/isolation.json)"
+    echo "ok: the Linux session ran as the tenant in $((SECONDS - at))s, and neither account read the other's files"
+  fi
+
+  if runs_step 18; then
+    step "18. a Linux GUI app opens in the workspace's VM, on a person's desk"
+    # What the workspace's VM takes of this host, as the VM host measures it,
+    # before the app and with it open: what admitting a VM counts.
+    vm_resident() {
+      vm_host status 2>/dev/null | python3 -c '
+import re, sys
+workspace = sys.argv[1]
+for line in sys.stdin.read().splitlines():
+    fields = line.split()
+    if fields and (fields[0] == workspace or fields[0].startswith(workspace + "/")):
+        found = re.search(r"(\d+) MiB", line)
+        print(found.group(1) if found else "")
+        break' "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workspace"])' "$work/hosted/open.json" 2>/dev/null)"
+    }
+    resident_before=$(vm_resident)
+    if ! hosted_terminal --gui; then
+      echo '--- the apps session in the VM said:' >&2
+      sudo -n podman exec tilo-sh-vm-host-0 sh -c \
+        'find /var /srv /mnt -name apps.log -path "*/vms/*" 2>/dev/null | while read -r log; do echo "$log:"; tail -80 "$log"; done' \
+        >&2 2>/dev/null || true
+      echo '--- the VM host said:' >&2
+      sudo -n podman logs --tail 40 tilo-sh-vm-host-0 >&2 2>/dev/null || true
+      fail "the Linux app did not open on the person's desk, or the typing did not take (see $work/hosted/gui.json and $work/hosted/gui-person)"
+    fi
+    resident_after=$(vm_resident)
+    echo "the VM on its host: ${resident_before:-?} MiB before the app, ${resident_after:-?} MiB with it open"
+    python3 - "$work/hosted/gui.json" "${resident_before:-}" "${resident_after:-}" <<'EOF_GUI'
+import json, sys
+path, before, after = sys.argv[1:]
+report = json.load(open(path))
+report["host_resident_mib"] = {"before": int(before) if before else None, "after": int(after) if after else None}
+json.dump(report, open(path, "w"), indent=2)
+EOF_GUI
+    echo "ok: a Linux app opened in the VM and on the person's desk, and took their typing, in $((SECONDS - at))s"
+  fi
 fi
 
 if runs_any 2 3 4 5 6; then
@@ -433,8 +563,10 @@ report = {
     "entry_ms_median": statistics.median(entries) if entries else None,
 }
 work = os.path.dirname(path)
-# The hosted Browser's own numbers, when this stack ran with its VM host.
-for name, key in (("hosted/report.json", "hosted"), ("vm/vm-proofs.json", "vm")):
+# The hosted Browser's and its Linux commands' own numbers, when this stack
+# ran with its VM host.
+for name, key in (("hosted/report.json", "hosted"), ("vm/vm-proofs.json", "vm"),
+                  ("hosted/terminal.json", "linux")):
     where = os.path.join(work, name)
     if os.path.isfile(where):
         report[key] = json.load(open(where))

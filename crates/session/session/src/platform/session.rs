@@ -215,6 +215,15 @@ impl Session {
         // apps installed here are the lists' to resolve, on their worker.
         crate::app_icons::set_wake(options.wake.handle());
         crate::app_icons::set_lists(options.lists.clone());
+        // An app installed or removed here changes what every window calls app-made changes: this
+        // session's own views read the names at once, and the broker is told, so the windows it
+        // serves are sent them again with the workspace's people.
+        options.lists.on_change(|| {
+            if let Some(lists) = crate::app_icons::app_lists() {
+                crate::app_icons::tell_names(&lists);
+            }
+            tilo_identity_host::policy_change::announce();
+        });
         let settings_watch = settings_store::watch::watch_settings(move || {
             let document = settings_store::load();
             *watched.lock_recover() =
@@ -705,10 +714,9 @@ impl Session {
         // A window another device shares is decoded on the same waker, so a
         // picture that comes out late lands without waiting for the next
         // frame the desk draws for something else.
-        // A session holding a hosted Browser runs for the workspace's members: nobody sits at it, so
-        // its windows are shared the moment they open.
-        let hosted_browser =
-            std::env::var_os("TILO_HOSTED_BROWSER").is_some_and(|mark| mark == "1");
+        // A session in a workspace's VM, holding its Browser or its Linux apps, runs for the
+        // workspace's members: nobody sits at it, so its windows are shared the moment they open.
+        let hosted_browser = crate::hosted_browser::shares_by_default();
         let window_shares = crate::window_share::WindowShares::new(
             options.wake.handle(),
             options.person.clone(),
@@ -852,7 +860,7 @@ impl Session {
                 seated: options.person.clone(),
                 notes: {
                     let notes = std::sync::Arc::clone(&notes);
-                    Rc::new(move || notes.records())
+                    Rc::new(move || notes.windows())
                 },
                 apps: Some(std::sync::Arc::new(options.lists.clone())
                     as std::sync::Arc<dyn crate::platform::apps::Apps>),
@@ -864,7 +872,9 @@ impl Session {
                     let notes = std::sync::Arc::clone(&notes);
                     Rc::new(move |tree: &mut tilo_desktop_model::DesktopTree| {
                         if let Some(sync) = &sync {
-                            sync.show(tree, &notes.records(), &|_: &str| None);
+                            sync.show(tree, &notes, &|app: &str| {
+                                Some(crate::app_names::app_name(app))
+                            });
                         }
                     })
                 },
@@ -1476,7 +1486,7 @@ impl Session {
                 options.wake.clone(),
             ),
             notes,
-            membership_fed: Cell::new(None),
+            membership_fed: std::cell::RefCell::new(None),
             landings,
             _channels: channels,
             personal,
@@ -1506,6 +1516,14 @@ impl Session {
         // it opens in, as the person there: the workspace's governance gives
         // it before the process is planned, so the app starts able to keep
         // what they do in it.
+        // An app of a workspace this device waits for its host to admit it to is not started:
+        // whoever asked hears why at once (`Apps::spawn`).
+        if let (Some(launch), Some(engine)) = (&shared.launch, &shared.engine) {
+            let (engine, handle) = (std::sync::Arc::clone(engine), shared.handle.clone());
+            launch.lend_admission(Rc::new(move |workspace: &str| {
+                crate::agent_door::awaited_reason(&engine, &handle, workspace)
+            }));
+        }
         if let Some(launch) = &shared.launch {
             let handle = shared.handle.clone();
             let engine = shared.engine.clone();
@@ -1710,6 +1728,7 @@ impl Session {
             ended: false,
             first_frame: false,
             active_workspace: None,
+            published_workspace: crate::published_workspace::Published::none(),
             published_steps: Some(std::sync::Arc::clone(&session_actions)),
             kept_at: Instant::now(),
             tool_input: std::time::Duration::ZERO,
@@ -2459,7 +2478,36 @@ impl Session {
         let Some(broker) = plane.action_broker() else {
             return;
         };
-        self.shared.notes.read(&broker.state().window_records());
+        // The app each window runs, and the windows the desk shows: a record of another app is
+        // not what a window shows, and a window the desk no longer shows says nothing.
+        let (apps, live): (
+            std::collections::BTreeMap<u64, String>,
+            std::collections::BTreeSet<u64>,
+        ) = self.shared.handle.read(|tree| {
+            let tabs: Vec<(u64, Option<String>)> = tree
+                .workspaces
+                .iter()
+                .flat_map(tilo_desktop_model::Workspace::tabs)
+                .map(|tab| {
+                    (
+                        tab.id,
+                        tilo_desktop_surface::host::records::app_of(tree, tab.id)
+                            .map(str::to_owned),
+                    )
+                })
+                .collect();
+            (
+                tabs.iter()
+                    .filter_map(|(tab, app)| Some((*tab, app.clone()?)))
+                    .collect(),
+                tabs.iter().map(|(tab, _)| *tab).collect(),
+            )
+        });
+        self.shared.notes.read(
+            &broker.state().window_records(),
+            &|instance| apps.get(&instance).cloned(),
+            &live,
+        );
     }
 
     /// Hand every agent following the catalogue the session's own actions again when what it

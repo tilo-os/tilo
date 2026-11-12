@@ -120,6 +120,17 @@ impl NetworkSnapshot {
     }
 }
 
+/// What the network step can say about the connection it has.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Connection {
+    /// Online through a network this step names.
+    Via(String),
+    /// Online, with no network named.
+    Available,
+    /// Less than full internet access.
+    Partial(ConnectivityState),
+}
+
 fn sort_networks(networks: &mut [WifiNetworkInfo]) {
     networks.sort_by(|a, b| {
         b.connected
@@ -320,7 +331,9 @@ impl InstallerNetwork {
         true
     }
 
-    pub fn connection_summary(&self) -> String {
+    /// The connection this step has, for a surface to put in the person's
+    /// language.
+    pub fn connection(&self) -> Connection {
         if self.snapshot.connectivity == ConnectivityState::Full {
             if let Some(network) = self
                 .snapshot
@@ -328,14 +341,11 @@ impl InstallerNetwork {
                 .iter()
                 .find(|network| network.connected)
             {
-                return format!("Internet via {} (saved for first boot)", network.ssid);
+                return Connection::Via(network.ssid.clone());
             }
-            return "Internet available".to_string();
+            return Connection::Available;
         }
-        format!(
-            "{} — offline installation remains available",
-            self.snapshot.connectivity.label()
-        )
+        Connection::Partial(self.snapshot.connectivity)
     }
 }
 

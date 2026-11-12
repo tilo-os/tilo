@@ -1245,6 +1245,206 @@ class CopyLanguageTests(unittest.TestCase):
                 "location's value (the address a person typed) and a word "
                 "resolved through the catalogue are not copy")
 
+    def test_the_words_a_paint_helper_takes_first_are_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn paint(&mut self, ctx: &mut PaintCtx<'_>) {",
+                '    ctx.text_role("Colours", TextRole::Subheading, ctx.theme.text_primary, x, None);',
+                '    ctx.text_role_in_band("Preview", TextRole::Body, ctx.theme.text_primary, 0.0, band, None);',
+                '    ctx.text_role(&crate::CATALOG.t("demo-name"), TextRole::Body, ink, x, None);',
+                '    let face = ButtonFace::new(rect, "Duplicate").control_size(size);',
+                '    let alone = ButtonFace::icon_only(rect, Icon::Trash2, "Remove font");',
+                '    let swatch = ColorSwatchFace::new(rect, colour, "Key colour");',
+                '    let named = ButtonFace::new(rect, label).accessible_name("Rename scheme");',
+                "    paint(face, alone, swatch, named);",
+                "}",
+                "fn menu(&self, intents: Intents) {",
+                '    let open = MenuEntry::new("Open in Files", move || intents.push(Open));',
+                '    let away = MenuEntry::destructive("Delete scheme", move || intents.push(Delete));',
+                '    let why = MenuEntry::caption("The firewall is stopped");',
+                "    show(open, away, why);",
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Colours", "Preview", "Duplicate", "Remove font", "Key colour",
+                 "Rename scheme", "Open in Files", "Delete scheme",
+                 "The firewall is stopped"],
+                "a context paints its words through the helper it holds them "
+                "first in, and a button face, a swatch and a menu entry are the "
+                "words a person reads; what the catalogue answered is not")
+
+    def test_a_helpers_struct_says_the_words_of_the_fields_it_paints(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn draw_row(ctx: &mut PaintCtx<'_>, row: &Row<'_>) {",
+                "    let &Row { title, secondary, trailing } = row;",
+                "    let mut face = ListRowFace::new(title);",
+                "    if let Some(secondary) = secondary {",
+                "        face = face.secondary(secondary);",
+                "    }",
+                "    face.paint(ctx, row_rect(trailing));",
+                "}",
+                "fn font_row(&self, ctx: &mut PaintCtx<'_>) {",
+                "    let kind = match &f.kind {",
+                '        Kind::Default => "Default face".to_string(),',
+                '        Kind::Mono => "Monospace".to_string(),',
+                "    };",
+                '    self.draw_row(ctx, &Row { title: &name, secondary: Some(&kind), trailing: 0.0 });',
+                "    let status = if in_use {",
+                '        "In use"',
+                "    } else {",
+                '        "Built-in"',
+                "    };",
+                '    self.draw_row(ctx, &Row { title: &name, secondary: Some(status), trailing: 0.0 });',
+                '    self.draw_row(ctx, &Note { title: "Quiet hours".into(), secondary: None, trailing: 0.0 });',
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Default face", "Monospace", "In use", "Built-in"],
+                "a helper that takes a struct apart and paints its fields says "
+                "the words of those fields at every call site, whether a local or "
+                "a selection names them; another type's field there is not")
+
+    def test_a_tuple_parameter_paints_its_element_of_the_callers_tuple(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "pub(super) fn icon_button(",
+                "    &mut self,",
+                "    ctx: &mut PaintCtx<'_>,",
+                "    center: Point,",
+                "    size: ControlSize,",
+                "    (icon, name): (Icon, &str),",
+                "    action: Action,",
+                ") -> Rect {",
+                "    let rect = Rect::from_center_size(center, size.height(ctx.theme));",
+                "    let face = ButtonFace::icon_only(rect, icon, name);",
+                "    self.button(ctx, face, action);",
+                "    rect",
+                "}",
+                "fn row(&mut self, ctx: &mut PaintCtx<'_>) {",
+                '    self.icon_button(ctx, at(0.0), ControlSize::Small, (Icon::Trash2, "Remove font"), Action::Remove);',
+                '    self.icon_button(ctx, at(1.0), ControlSize::Small, (Icon::Pencil, "Edit"), Action::Edit);',
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Remove font", "Edit"],
+                "the element of a tuple parameter a helper names a control with is "
+                "the word at that element of the tuple its caller hands it, and the "
+                "icon beside it is no word at all")
+
+    def test_an_action_label_a_helper_sets_is_copy_at_its_call_site(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn row_operation(effect: &DemoEffect, label: &str) -> ActionSpec {",
+                "    let mut spec = effect.bound();",
+                "    spec.type_mut().label.clone_from(&label.to_owned());",
+                "    spec",
+                "}",
+                "fn partition_row(part: &Partition) -> LiveRow {",
+                "    row.operation(row_operation(",
+                "        &DemoEffect::OpenFolder { device: part.name.clone() },",
+                '        "Open in Files",',
+                "    ))",
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Open in Files"],
+                "an action's label names it in its menu row and in the action "
+                "directory, so a helper that sets one paints its callers' words")
+
+    def test_words_another_crate_writes_for_a_window_are_copy_where_written(self):
+        root = self._root({
+            "crates/backend/src/disk.rs": "\n".join([
+                "pub enum Filesystem { Btrfs, Ext4 }",
+                "impl Filesystem {",
+                "    pub fn label(&self) -> &'static str {",
+                "        match self {",
+                '            Self::Btrfs => "Btrfs",',
+                '            Self::Ext4 => "Ext4",',
+                "        }",
+                "    }",
+                "}",
+            ]) + "\n",
+            "apps/demo/src/lib.rs": "\n".join([
+                "fn row(filesystem: Filesystem) -> Bound {",
+                "    Node::new(Role::List).with_description(filesystem.label())",
+                "}",
+            ]) + "\n",
+        })
+        self.assertEqual(
+            [(file, text) for file, _, text in copy.source_copy_literals(root)],
+            [("crates/backend/src/disk.rs", "Btrfs")],
+            "the window paints the backend's words, so the backend is where "
+            "the source language is written and where the catalogue goes")
+
+    def test_a_name_the_painting_crate_defines_itself_is_not_another_crates(self):
+        root = self._root({
+            "crates/backend/src/tool.rs": "\n".join([
+                "pub fn kind_label(kind: Kind) -> &'static str {",
+                '    "Stored in a database"',
+                "}",
+            ]) + "\n",
+            "apps/demo/src/lib.rs": "\n".join([
+                "fn kind_label() -> &'static str {",
+                '    "A page of notes"',
+                "}",
+                "fn row() -> Bound {",
+                "    Node::new(Role::List).with_description(kind_label())",
+                "}",
+            ]) + "\n",
+        })
+        self.assertEqual(
+            [text for _, _, text in copy.source_copy_literals(root)],
+            ["A page of notes"],
+            "the call is the window's own helper, judged as one")
+
+    def test_another_types_constant_is_not_the_crates_constant(self):
+        root = self._root({
+            "apps/demo/src/lib.rs": "\n".join([
+                'const TITLE: &str = "Disks";',
+                "fn row() -> Bound {",
+                "    Row::new(RowShape::TITLE)",
+                "}",
+            ]) + "\n",
+        })
+        self.assertEqual(
+            [text for _, _, text in copy.source_copy_literals(root)],
+            [],
+            "`RowShape::TITLE` names another type's own TITLE, not the "
+            "constant the crate defines")
+
     def test_the_tree_passes(self):
         self.assertEqual(
             copy.check(copy.ROOT, copy.GLOSSARY, copy.BASELINE, copy.SAVE_EXCEPTIONS,

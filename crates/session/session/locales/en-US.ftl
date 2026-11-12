@@ -85,6 +85,7 @@ desk-not-opened-old-unreadable-detail = { $path } is your desk from the version 
 desk-window-not-installed = { $app } is not installed on this machine
 desk-window-would-not-start = { $app } could not be started: { $why }
 desk-window-did-not-open = { $app } started but did not open a window
+desk-window-waits-for-host = { $app } is waiting for { $host } to take this device in
 
 ## A window the person's record kept whose saved state this version cannot
 ## read: its tab says why the window is not here instead of the place being
@@ -415,3 +416,56 @@ session-resource-diagnostics = Session diagnostics
 session-resource-window-menu = Window menu
 session-resource-surfaces = Surfaces
 session-resource-keyboard-focus = Keyboard focus
+
+## Actions
+
+so-tilo-session-desk-switch-workspace = Switch to workspace
+so-tilo-session-desk-invitations = List invitations
+so-tilo-session-desk-issue-invitation = Make an invitation link
+so-tilo-session-desk-show-invite = Invite people
+so-tilo-session-desk-cancel-invitation = Cancel invitation
+so-tilo-session-desk-show-surface = Show or hide a panel
+so-tilo-session-desk-close-surface = Close panel
+so-tilo-session-desk-clear-notices = Clear notifications
+so-tilo-session-desk-dismiss-notice = Dismiss notification
+so-tilo-session-desk-act-on-notice = Answer notification
+so-tilo-session-desk-walk-switcher = Switch windows
+so-tilo-session-desk-select-switcher = Choose window in switcher
+so-tilo-session-desk-commit-switcher = Go to chosen window
+
+## Actions
+
+so-tilo-session-clipboard-clear = Clear the history
+so-tilo-session-clipboard-copy = Copy text
+so-tilo-session-clipboard-paste = Paste a copy
+so-tilo-session-clipboard-paste-files = Paste files
+so-tilo-session-clipboard-pin = Pin the copy
+so-tilo-session-clipboard-remove = Remove a copy from the history
+so-tilo-session-devices-hand-off = Hand off an accessory
+so-tilo-session-devices-press = Press one of the person's devices
+so-tilo-session-displays-brightness-down = Dimmer
+so-tilo-session-displays-brightness-up = Brighter
+so-tilo-session-displays-close-sheet = Close the display sheet
+so-tilo-session-displays-next-mode = Next arrangement
+so-tilo-session-displays-open-sheet = Open the display sheet
+so-tilo-session-displays-set-brightness = Set the brightness
+so-tilo-session-displays-set-display-brightness = Set one display's brightness
+so-tilo-session-displays-set-mode = Use this arrangement
+so-tilo-session-keyboard-set-visible = Show the keyboard
+so-tilo-session-keyboard-type = Type text
+so-tilo-session-notifications-act = Choose an action
+so-tilo-session-notifications-clear = Clear all
+so-tilo-session-notifications-dismiss = Dismiss
+so-tilo-session-notifications-open = Open
+so-tilo-session-notifications-set-quiet = Hold banners back
+so-tilo-session-notifications-undo-clear = Bring back the cleared notifications
+so-tilo-session-quick-settings-hide-control = Remove a control
+so-tilo-session-quick-settings-move-control = Move a control
+so-tilo-session-quick-settings-reset-controls = Reset the panel
+so-tilo-session-quick-settings-show-control = Add a control
+so-tilo-session-send-to-send = Send to
+so-tilo-desktop-overlays-close = Close a surface
+so-tilo-desktop-overlays-open = Open a surface
+so-tilo-desktop-window-menu-choose = Choose a row
+so-tilo-desktop-window-menu-close = Close the window menu
+so-tilo-desktop-window-menu-open = Open the window menu

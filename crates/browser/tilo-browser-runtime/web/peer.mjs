@@ -31,7 +31,7 @@ import {createPeerVoice} from './voice-peer.mjs';
 import {memberText} from './json-text.mjs';
 import {WEBKIT_WEBGPU_REFUSAL} from './webgpu-safety.mjs';
 import {AdmissionError} from './admission.mjs';
-import {idbStorage, openDeviceCustody} from './device-custody.mjs';
+import {idbStorage, openDeviceCustody, rememberBrowserDevice} from './device-custody.mjs';
 import {identityProfile} from './identity-profile.mjs';
 import {currentIdentity, fitDisplayName, IdentityError} from './identity.mjs';
 import {FETCH_PROXY_PATH} from './fetch-proxy.mjs';
@@ -757,6 +757,8 @@ async function connect({
       storage ? undefined : bytes => { store.put(PEER_RECORD, bytes).catch(() => {}); },
       channelVault,
     );
+    // Settings lists this browser's tabs' device keys as one entry.
+    if (profile) rememberBrowserDevice(certified, namespaces);
     peer.subscribe(publish);
     if (!reached) siteHostCheck ??= setTimeout(checkSiteHost, SITE_HOST_CHECK_MS);
     if (workspace) {

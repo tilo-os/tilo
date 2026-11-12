@@ -175,3 +175,41 @@ print-centre-device-no-supplies = Dieser Drucker meldet keine Füllstände.
 print-centre-device-unreachable = Live-Details sind nicht verfügbar. Der Drucker ist vielleicht im Ruhezustand oder getrennt.
 print-job-document = Dokument { $number }
 print-centre-cancel-pending-message = Das Dokument wird vom Drucker entfernt. Das lässt sich nicht rückgängig machen.
+
+## A document waiting to be cancelled
+print-centre-cancel-pending-title = Dieses Dokument abbrechen?
+
+## Actions
+
+print-centre-effects-refresh = Drucker aktualisieren
+print-centre-effects-find-printers = Netzwerkdrucker suchen
+print-centre-effects-add-printer = Drucker hinzufügen
+print-centre-effects-open-dashboard = Übersicht öffnen
+print-centre-effects-open-queue = Druckwarteschlange öffnen
+print-centre-effects-open-history = Druckverlauf öffnen
+print-centre-effects-run-diagnostics = Druckerdiagnose ausführen
+print-centre-effects-open-needs = Öffnen, was eine Person braucht
+print-centre-effects-print-document = Dokument drucken
+print-centre-effects-scan-document = Dokument scannen
+print-centre-effects-new-scanned-document = Neuer Scan
+print-centre-effects-open-printer = Drucker öffnen
+print-centre-effects-set-default-printer = Als Standarddrucker festlegen
+print-centre-effects-cancel-document = Auftrag abbrechen
+print-centre-effects-confirm-cancel = Abbrechen bestätigen
+print-centre-effects-choose-printer = Drucker wählen
+print-centre-effects-set-print-option = Druckoption festlegen
+print-centre-effects-send-to-printer = An Drucker senden
+print-centre-effects-close-print-setup = Druckeinrichtung schließen
+print-centre-effects-scan-with = Scanner wählen
+print-centre-effects-previous-scan-page = Vorherige gescannte Seite
+print-centre-effects-next-scan-page = Nächste gescannte Seite
+print-centre-effects-move-scan-page-earlier = Gescannte Seite nach vorn
+print-centre-effects-move-scan-page-later = Gescannte Seite nach hinten
+print-centre-effects-remove-scan-page = Gescannte Seite entfernen
+print-centre-effects-rotate-scan-page = Gescannte Seite drehen
+print-centre-effects-crop-scan-page = Gescannte Seite zuschneiden
+print-centre-effects-recognize-text = Text erkennen
+print-centre-effects-copy-recognized-text = Erkannten Text kopieren
+print-centre-effects-save-scanned-page = Gescannte Seite exportieren
+print-centre-effects-save-scanned-document = Gescanntes Dokument speichern
+print-centre-defaults = Druckzentrale

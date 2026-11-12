@@ -603,7 +603,9 @@ pub struct Photos {
     /// window that analyses nothing (a past version History shows) starts
     /// no worker.
     analysis_tx: Option<SyncSender<AnalysisJob>>,
-    analysis_result_tx: SyncSender<AnalysisResult>,
+    /// The analysis worker's results: a result landing wakes this window to
+    /// take it in, instead of waiting for the person to touch something.
+    analysis_result_tx: ui::wake::WakingSyncSender<AnalysisResult>,
     analysis_rx: Receiver<AnalysisResult>,
     active_analysis: HashSet<tilo_actions::InvocationId>,
     cancelled_analysis: HashSet<tilo_actions::InvocationId>,
@@ -939,7 +941,7 @@ impl Photos {
         reason = "construction lists every app-owned state field explicitly so local, shared, and transient state remain auditable"
     )]
     pub fn with_content(content: ContentStore) -> Self {
-        let (analysis_result_tx, analysis_rx) = std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
+        let (analysis_result_tx, analysis_rx) = ui::wake::waking_sync_channel(ANALYSIS_QUEUE_LIMIT);
         // In memory until `new_persistent` swaps in the per-user preview cache:
         // tests and offscreen shots must not write the user's cache.
         let thumbnail_service = with_thumbnail_wake(thumbnail::ThumbnailService::ephemeral(1));

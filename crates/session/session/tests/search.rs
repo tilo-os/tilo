@@ -13,8 +13,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -182,7 +180,7 @@ fn settings_search_finds_the_appearance_theme_and_enter_opens_it() {
 
 /// Run frames until `done` holds.
 fn until(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
-    common::wait_for(session, "what the test asked for", |session| {
+    crate::common::wait_for(session, "what the test asked for", |session| {
         done(session).then_some(())
     });
 }
@@ -857,7 +855,7 @@ fn search_settled(search: &ResourceSpec) -> bool {
 /// Step until the open search is over: it names `query` when one is given,
 /// and is no longer filling in.
 fn await_search(session: &mut Session, query: Option<&str>) {
-    let over = common::wait_maybe(session, |session| {
+    let over = crate::common::wait_maybe(session, |session| {
         open_search(session)
             .is_some_and(|search| {
                 search_settled(&search) && query.is_none_or(|query| search.label == query)
@@ -1668,7 +1666,7 @@ fn a_search_row_for_an_app_starts_it_through_the_sessions_own_host() {
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().expect("a home");
     let store = home.data().join("tilo-apps");
-    common::install_apps_in(&store, &home.state().join("tilolang"));
+    crate::common::install_apps_in(&store, &home.state().join("tilolang"));
     home.env().set("TILO_APPS_DATA_DIR", &store);
     let handed = home.home().join("handed");
     let launcher = tilo_test_env::stand_in(
@@ -1717,7 +1715,7 @@ fn a_search_row_for_an_app_starts_it_through_the_sessions_own_host() {
         "choose-search-row",
         serde_json::json!({}),
     );
-    let started = common::wait_maybe_past(&mut session, Duration::from_secs(2), |_| {
+    let started = crate::common::wait_maybe_past(&mut session, Duration::from_secs(2), |_| {
         std::fs::read_to_string(&handed)
             .is_ok_and(|said| said.contains("started"))
             .then_some(())
@@ -1749,10 +1747,10 @@ fn a_search_row_for_an_app_starts_it_through_the_sessions_own_host() {
 /// workspace keeps, which the pass hands it before a search opens.
 fn session_with_agents() -> Session {
     let mut session = crate::common::headless(Options {
-        person: common::PERSON.to_owned(),
+        person: crate::common::PERSON.to_owned(),
         shell: true,
         collab: false,
-        services: vec![Box::new(common::seeded_apps())],
+        services: vec![Box::new(crate::common::seeded_apps())],
         ..Options::default()
     });
     for _ in 0..3 {

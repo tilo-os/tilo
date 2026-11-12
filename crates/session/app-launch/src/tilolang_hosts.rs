@@ -382,6 +382,9 @@ impl Hosts {
             records_under,
             applies_change: false,
             formats: ui::format::region::current(),
+            // The person's language, as this session resolved it: their windows read every word in
+            // it, so the host that draws them must not read its own process's language instead.
+            language: ui::i18n::preferred_language().unwrap_or_default(),
             record: instance.opens.record,
             reveal: instance.opens.reveal,
             installed: if uses_packages {

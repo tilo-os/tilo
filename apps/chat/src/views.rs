@@ -1075,8 +1075,8 @@ fn reactions(c: &Channel, message: &Message, key: &str) -> Node {
 /// The foot of the conversation: the box a message is typed in, and the button that sends it.
 ///
 /// The field is the composer's own draft, and what it holds is the `text` argument of Chat's own
-/// `post` action: Enter sends what the field carries, and the button sends the draft the field is
-/// bound to, so a press and an agent's step take the one path to the record.
+/// `send`: Enter sends what the field carries, and the button sends the draft the field is bound
+/// to, so a press, an agent's send and the desk's send-to box take the one path to the record.
 fn composer(c: &Channel, cx: &ViewCx) -> Node {
     let field: Node = ui::TextInputBuilder::new(&cx.key("draft"))
         .placeholder(crate::i18n::t_args(
@@ -1090,7 +1090,7 @@ fn composer(c: &Channel, cx: &ViewCx) -> Node {
     // once it submits, so the next message starts from an empty box.
     let input = node::bind(field, ViewCx::bind_state(DRAFT));
     // Enter hands the action the text the field carries as it submits.
-    let input = post(cx, input, "submit", &c.id, Arg::Event);
+    let input = send(cx, input, "submit", c, Arg::Event);
     // The field takes everything the buttons leave, so the two read as one full-width control.
     let input = ui::fill(input);
     // The attach button: raises the system's own file chooser for the conversation (Chat's
@@ -1107,7 +1107,7 @@ fn composer(c: &Channel, cx: &ViewCx) -> Node {
         .icon("send")
         .icon_only(true)
         .into();
-    let send = post(cx, send, "press", &c.id, Arg::state(DRAFT));
+    let send = self::send(cx, send, "press", c, Arg::state(DRAFT));
     ui::row(&cx.key("composer"), Gap::Tight, vec![attach, input, send])
 }
 
@@ -1118,11 +1118,28 @@ const DRAFT: &str = "Composer";
 /// button sets it, and the composer reads it as the next message's parent.
 const REPLYING: &str = "Replying";
 
-/// `node` with its event `event` running the chat's `post` of channel `channel`, with the text
-/// `text`: what the composer's field and its button both do.
-fn post(cx: &ViewCx, node: Node, event: &str, channel: &str, text: Arg) -> Node {
-    let fired = cx.action_with(&node, event, "post", vec![Arg::text(channel), text]);
+/// `node` with its event `event` running Chat's `send` to the conversation `c`, carrying nothing
+/// but the text `text`: what the composer's field and its button both do.
+fn send(cx: &ViewCx, node: Node, event: &str, c: &Channel, text: Arg) -> Node {
+    let fired = cx.action_with(
+        &node,
+        event,
+        "send",
+        vec![to(c), Value::List(Vec::new()).into(), text],
+    );
     node::on(node, event, fired)
+}
+
+/// Who a message sent from the conversation `c`'s own box goes to: that conversation, as Chat's
+/// `send` takes a recipient.
+fn to(c: &Channel) -> Arg {
+    let field = |name: &str, value: &str| (Value::Text(name.into()), Value::Text(value.into()));
+    let conversation = [
+        field("kind", "conversation"),
+        field("id", &c.id),
+        field("name", &c.name),
+    ];
+    Value::List(vec![Value::Map(conversation.into())]).into()
 }
 
 /// What a message's byline says of who wrote it: their name, or their id when the channel does
@@ -1652,7 +1669,7 @@ mod tests {
     }
 
     #[test]
-    fn the_composer_posts_the_typed_text_to_the_channel() {
+    fn the_composer_sends_the_typed_text_to_the_conversation() {
         let channel = demo_channel();
         let cx = view_cx(&channel);
         let tree = page(&channel, &cx);
@@ -1664,10 +1681,14 @@ mod tests {
         assert_eq!(
             cx.effect(&field.key, "submit"),
             Some(tilo_view::Effect::Action {
-                action: "post".to_owned(),
-                args: vec![tilo_view::Arg::text("c_crit"), tilo_view::Arg::Event],
+                action: "send".to_owned(),
+                args: vec![
+                    to(&channel),
+                    Value::List(Vec::new()).into(),
+                    tilo_view::Arg::Event
+                ],
             }),
-            "the field posts what is typed to the channel"
+            "the field sends what is typed to the conversation"
         );
         let send = walk(&tree)
             .into_iter()
@@ -1679,13 +1700,14 @@ mod tests {
         assert_eq!(
             cx.effect(&send.key, "press"),
             Some(tilo_view::Effect::Action {
-                action: "post".to_owned(),
+                action: "send".to_owned(),
                 args: vec![
-                    tilo_view::Arg::text("c_crit"),
+                    to(&channel),
+                    Value::List(Vec::new()).into(),
                     tilo_view::Arg::state("Composer"),
                 ],
             }),
-            "the send button posts the draft the field holds"
+            "the send button sends the draft the field holds"
         );
     }
 

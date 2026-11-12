@@ -44,7 +44,26 @@ pub struct ClocksOnDevices {
     pub devices: BTreeMap<String, OnThisDevice>,
 }
 
-#[resource(kind = "clocks.on-devices", label = "Clocks on each device")]
+impl ClocksOnDevices {
+    /// What the record holds: what each device has already rung.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "clocks.on-devices",
+    label = "Clocks on each device",
+    read_content = ClocksOnDevices::read_document
+)]
 impl ClocksOnDevices {
     /// What `device` keeps for itself is now `kept`.
     #[action(housekeeping)]

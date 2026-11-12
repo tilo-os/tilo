@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "canvas"
 version = "0.1.0"
 edition = "2024"
@@ -29,6 +31,12 @@ thin = ["dep:runtime-dylib"]
 # links the engines statically, because the engine library links only through
 # tools/ci/rustc-thin-app-wrapper.sh.
 runtime-engine = ["thin", "tilo-paint-engine/thin"]
+
+# One test binary for the app's integration tests, whose files it includes as
+# modules: a file per binary linked the whole app once each.
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }

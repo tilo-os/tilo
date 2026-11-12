@@ -25,7 +25,7 @@
 use std::collections::BTreeMap;
 use std::net::ToSocketAddrs as _;
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use iroh::{Endpoint, EndpointAddr, EndpointId};
@@ -82,6 +82,23 @@ pub struct PlacedShells {
 }
 
 impl PlacedShells {
+    /// The host's one placement, made once: its workspaces' shells and its
+    /// placed Browsers are the same placement, asked as this host's own
+    /// device ([`Self::ask_from`]), so both read the same account, members and
+    /// placer — and a host that told its shells where it asks would otherwise
+    /// leave the Browsers it places unable to ask at all.
+    ///
+    /// # Errors
+    ///
+    /// A placer is named but the members or the account are not usable.
+    pub fn shared_from_env() -> Result<Option<Arc<Self>>, String> {
+        static SHARED: OnceLock<Arc<PlacedShells>> = OnceLock::new();
+        let Some(placed) = Self::from_env()? else {
+            return Ok(None);
+        };
+        Ok(Some(Arc::clone(SHARED.get_or_init(|| Arc::new(placed)))))
+    }
+
     /// The placed shells the host's environment names: [`PLACER_ENV`],
     /// [`MEMBERS_ENV`], and the account and size VMs are run for
     /// (`TILO_HOSTED_ACCOUNT`, `TILO_HOSTED_VM_SIZE`). `None` without a

@@ -4,12 +4,8 @@
 //! a moment read against one.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::{AmStore, ResourceRef, Runtime, SimpleAuthority, UiNode, Value};
 
     const SOURCE: &str = r#"app so.tilo.time "Time"

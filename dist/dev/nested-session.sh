@@ -798,10 +798,10 @@ WIREPLUMBER
     fi
 fi
 
-# The default window is 1600x900 physical pixels, which a 2x host shows as
-# 800x450: too small for the task centre, which drops a card that does not
-# fit. Ask for 1280x800 logical at the host's scale (GNOME reports it; others
-# get scale 1) unless the caller chose a size.
+# The session's own nested window is 1280x720 physical pixels by default,
+# which a 2x host shows as 640x360: too small for the task centre, which drops
+# a card that does not fit. Ask for 1280x800 logical at the host's scale
+# (GNOME reports it; others get scale 1) unless the caller chose a size.
 if ((headless)); then
     export TILO_HEADLESS_SIZE=${TILO_HEADLESS_SIZE:-1280x800}
 elif [[ -z ${TILO_WINIT_SIZE:-} ]]; then
@@ -831,7 +831,7 @@ if ((headless)); then
     display_env=(-u WAYLAND_DISPLAY -u DISPLAY)
     say "starting the session headless at ${TILO_HEADLESS_SIZE}${density} (log: $logs/session.log)"
 else
-    backend=(--backend nested)
+    backend=(--backend nested --size "$TILO_WINIT_SIZE")
     display_env=(-u DISPLAY -u WAYLAND_DISPLAY)
     host_client=(python3 -I "$repo_root/dist/dev/host-wayland.py" "$host_display")
     say "starting the nested session at ${TILO_WINIT_SIZE} (log: $logs/session.log)"

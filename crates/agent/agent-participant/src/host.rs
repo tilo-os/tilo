@@ -284,9 +284,12 @@ impl AgentHost {
     ///
     /// Returns why the workspace is not one, or why the store refused the bytes.
     pub fn put_content(&self, workspace: &str, bytes: &[u8]) -> Result<String, String> {
+        // Sealed here, before an action names it: the host keeps and serves
+        // ciphertext, and the reference the action carries holds the key.
         let hash = self
             .shared
             .workspace_content(workspace)?
+            .sealing()
             .put(bytes)
             .map_err(|error| error.to_string())?;
         tilo_actions::content_resource(&hash).ok_or_else(|| "the store named no content".into())
@@ -297,14 +300,14 @@ impl AgentHost {
     /// the workspace holds none there.
     #[must_use]
     pub fn content(&self, workspace: &str, address: &str) -> Option<Vec<u8>> {
-        let hash = tilo_actions::content_hash(address).unwrap_or(address);
-        if !tilo_content::valid_hash(hash) {
+        let reference = tilo_actions::content_hash(address).unwrap_or(address);
+        if !tilo_content::valid_reference(reference) {
             return None;
         }
         self.shared
             .workspace_content(workspace)
             .ok()?
-            .read(&hash.to_ascii_lowercase())
+            .read(reference)
     }
 
     /// Write the state now.

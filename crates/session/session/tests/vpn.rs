@@ -16,8 +16,6 @@
     reason = "test fixtures: a failed step is the assertion, and the session outlives every call"
 )]
 
-mod common;
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};

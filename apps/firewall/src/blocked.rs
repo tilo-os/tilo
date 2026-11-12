@@ -14,7 +14,10 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+use ui::i18n::ArgValue;
 use ui::time::SystemTime;
+
+use crate::locales::CATALOG;
 
 /// How many buckets a report's time series has.
 pub const BUCKETS: usize = 12;
@@ -43,22 +46,35 @@ pub struct BlockedGroup {
     pub window_minutes: u32,
 }
 
+/// One named variable of a catalogued sentence, holding `value` verbatim.
+fn arg<'a>(name: &'a str, value: &str) -> (&'a str, ArgValue) {
+    (name, ArgValue::Text(value.to_owned()))
+}
+
 impl BlockedGroup {
     /// What the rule is, in the person's words: `Drop TCP port 5900`.
     pub fn title(&self) -> String {
-        let action = match self.action.as_str() {
-            "REJECT" => "Reject",
-            _ => "Drop",
-        };
-        let proto = if self.protocol.is_empty() {
-            String::new()
-        } else {
-            format!("{} ", self.protocol.to_ascii_uppercase())
-        };
+        let action = CATALOG.t(match self.action.as_str() {
+            "REJECT" => "firewall-blocked-action-reject",
+            _ => "firewall-blocked-action-drop",
+        });
+        let proto = self.protocol.to_ascii_uppercase();
         match &self.port {
-            Some(port) => format!("{action} {proto}port {port}"),
-            None if proto.is_empty() => action.to_owned(),
-            None => format!("{action} {proto}traffic").trim_end().to_owned(),
+            Some(port) => CATALOG.t_args(
+                "firewall-blocked-title-port",
+                &[
+                    arg("action", &action),
+                    arg("proto", &proto),
+                    arg("port", port),
+                ],
+            ),
+            None if proto.is_empty() => {
+                CATALOG.t_args("firewall-blocked-title-plain", &[arg("action", &action)])
+            }
+            None => CATALOG.t_args(
+                "firewall-blocked-title-traffic",
+                &[arg("action", &action), arg("proto", &proto)],
+            ),
         }
     }
 

@@ -178,7 +178,7 @@ impl InstallerApp {
                 "xkb_variant": layout.variant_or_empty(),
             },
             "network": {
-                "summary": self.network.connection_summary(),
+                "summary": super::network_summary(&self.network),
                 "notice": self.network.notice,
                 "busy": self.network.is_busy(),
                 "selected": self.network.selected_ssid,

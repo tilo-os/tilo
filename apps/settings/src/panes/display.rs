@@ -109,7 +109,7 @@ pub enum DisplayEffect {
     #[effect(returns, row, idempotent)]
     UseDisplay { display: String, on: bool },
     /// Make a display the one panels and new windows open on.
-    #[effect(returns, row, idempotent, label = "Make primary")]
+    #[effect(returns, row, idempotent)]
     SetPrimaryDisplay { display: String },
     /// A display's scale. Staged until applied.
     #[effect(returns, row, idempotent)]
@@ -124,7 +124,7 @@ pub enum DisplayEffect {
     #[effect(returns, row)]
     MoveDisplay { display: String, x: i32, y: i32 },
     /// Request this peer's screens at a shared logical position. No input grant.
-    #[effect(returns, row, label = "Move device display")]
+    #[effect(returns, row)]
     MoveDeviceDisplay {
         display: String,
         revision: u64,
@@ -132,7 +132,7 @@ pub enum DisplayEffect {
         y: i32,
     },
     /// Inspect the observed displays and their shared arrangement, including offline devices.
-    #[effect(view, returns, kind = "read", label = "Inspect shared displays")]
+    #[effect(view, returns, kind = "read")]
     InspectSharedDisplays,
     /// Include a display in the shared layout. This does not allow remote input.
     #[effect(returns, row, idempotent)]
@@ -176,22 +176,22 @@ pub enum DisplayEffect {
     #[effect(returns, row, idempotent)]
     SetColorProfile { display: String, profile: String },
     /// Read the compositor observations, staged configuration and preview transaction.
-    #[effect(view, returns, kind = "read", label = "Inspect display configuration")]
+    #[effect(view, returns, kind = "read")]
     InspectDisplayConfiguration,
     /// Show each display's number and name on it for a few seconds.
-    #[effect(returns, label = "Identify displays")]
+    #[effect(returns)]
     IdentifyDisplays,
     /// Preview the staged arrangement; it is kept only when confirmed.
-    #[effect(returns, label = "Apply display changes")]
+    #[effect(returns)]
     ApplyDisplayChanges,
     /// Keep the arrangement being previewed.
-    #[effect(returns, label = "Keep display changes")]
+    #[effect(returns)]
     KeepDisplayChanges,
     /// Go back to the arrangement before the preview.
-    #[effect(returns, label = "Revert display changes")]
+    #[effect(returns)]
     RevertDisplayChanges,
     /// Ask again before keeping display changes from a layout tool.
-    #[effect(returns, row, label = "Ask again")]
+    #[effect(returns, row, label = "display-tools-forget")]
     ForgetDisplayTool {
         #[param("The tool's executable")]
         tool: String,

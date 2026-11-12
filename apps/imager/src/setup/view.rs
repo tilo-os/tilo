@@ -953,7 +953,7 @@ impl SetupApp {
             let summary = if presentation.phase.is_none()
                 && let Some(error) = flow.catalog_error()
             {
-                error.to_string()
+                super::strings::t(error)
             } else {
                 super::strings::t(presentation.sentence_key)
             };
@@ -1095,7 +1095,7 @@ impl SetupApp {
                     Text::new(&self.internal_readiness_text()).with_live(Politeness::Polite),
                 )])
                 .with_header(SectionHeader::heading(
-                    &CATALOG.t("imager-section-before-installing"),
+                    CATALOG.t("imager-section-before-installing"),
                 )),
             ));
         }
@@ -2409,7 +2409,7 @@ mod tests {
             harness
                 .expect(
                     &SemanticExpectation::named("setup.internal.status")
-                        .name_contains("Full Tilo download"),
+                        .name_contains("No Tilo download is offered right now."),
                 )
                 .unwrap();
             harness
@@ -2473,7 +2473,7 @@ mod tests {
             ready
                 .expect(
                     &SemanticExpectation::named("setup.internal.release")
-                        .name_contains("Keep for later")
+                        .name_contains("Keep download for later")
                         .enabled(true),
                 )
                 .unwrap();

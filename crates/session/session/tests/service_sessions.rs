@@ -15,8 +15,6 @@
               lives until the app it serves is done"
 )]
 
-mod common;
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -33,10 +31,6 @@ use tilo_peer_state::owner::{self, testing};
 use tilo_service::LoopWake;
 use tilo_session::{ActionPlane, Launches, Lists, Options, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
-
-// A host admits its members' records through an Automerge worker: this binary is that worker, as it
-// is the session's own.
-tilo_automerge_isolate::test_worker!();
 
 /// The app whose website sessions these are.
 const BROWSER: &str = "so.tilo.browser";
@@ -351,7 +345,7 @@ fn connect(socket: &Path, app: &str) -> CollabClient {
 
 /// The session's pass until the app is done, as the session runs its loop.
 fn until_the_app_is_done<T>(session: &mut Session, seen: &std::sync::mpsc::Receiver<T>) -> T {
-    common::wait_for(session, "the app to finish its calls", |session| {
+    crate::common::wait_for(session, "the app to finish its calls", |session| {
         session.settle_services();
         session
             .step(std::time::Duration::from_millis(1))

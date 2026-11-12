@@ -20,18 +20,35 @@ use ui::widget::Element;
 
 use crate::app::{Notice, Tone};
 use crate::backend::Backend;
+use crate::locales::CATALOG;
 pub use crate::model::Firewall;
 use crate::model::{FirewallConfig, ZoneKind};
 use ui::capability_door::Door;
 
+impl Firewall {
+    /// What the record holds: the stored configuration — each zone's policy, members and rules,
+    /// and the active zone.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
 #[resource(
     kind = "firewall.config",
-    label = "Firewall",
     available = Firewall::available,
     children = Firewall::zone_places,
     search = Firewall::search,
     version = 3,
     migrate = crate::model::upgrade,
+    read_content = Firewall::read_document
 )]
 impl Firewall {
     /// Start firewall.
@@ -139,7 +156,7 @@ impl Firewall {
             .zones
             .iter()
             .map(|zone| {
-                Derived::new(zone.kind.title())
+                Derived::new(CATALOG.t(zone.kind.title_message()))
                     .of_kind("zone")
                     .identified(zone.kind.name())
                     .with(Self::DELETE_RULE.bind(firewall::DeleteRule::paths().zone, zone.kind))
@@ -152,8 +169,11 @@ impl Firewall {
             .zones
             .iter()
             .map(|zone| {
-                SearchEntry::new(zone.kind.title(), format!("{} rules", zone.rules.len()))
-                    .anchored(format!("firewall.zone:{}", zone.kind.name()))
+                SearchEntry::new(
+                    CATALOG.t(zone.kind.title_message()),
+                    format!("{} rules", zone.rules.len()),
+                )
+                .anchored(format!("firewall.zone:{}", zone.kind.name()))
             })
             .collect()
     }
@@ -185,7 +205,25 @@ pub struct AppliedConfig {
     pub devices: BTreeMap<String, String>,
 }
 
-#[resource(kind = "firewall.applied", label = "Applied configuration")]
+impl AppliedConfig {
+    /// What the record holds: what each device last pushed to, or read from, its firewalld.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "firewall.applied",
+    read_content = AppliedConfig::read_document
+)]
 impl AppliedConfig {
     /// `device`'s firewalld holds `config`, in canonical JSON.
     #[action(housekeeping)]
@@ -579,10 +617,7 @@ mod tests {
         };
         for (id, label) in [
             ("stop", "Stop firewall"),
-            (
-                "enter-panic-mode",
-                "Enter panic mode: drop all traffic in and out",
-            ),
+            ("enter-panic-mode", "Enter panic mode"),
         ] {
             let spec = spec(id);
             assert_eq!(spec.label, label, "{id}");
@@ -827,10 +862,42 @@ mod german_catalogue_tests {
             crate::locales::CATALOG.t("firewall-start"),
             "Die Firewall gestartet"
         );
+        // The words a table holds read in German too: a zone's name, the
+        // action on a rule, and a dropped-traffic row.
+        assert_eq!(
+            crate::locales::CATALOG.t(crate::model::ZoneKind::Trusted.title_message()),
+            "Trusted"
+        );
+        assert_eq!(
+            crate::locales::CATALOG.t(crate::model::Action::Allow.title_message()),
+            "Zulassen"
+        );
+        assert_eq!(
+            crate::locales::CATALOG.t_args(
+                "firewall-blocked-title-port",
+                &[
+                    ("action", ui::i18n::ArgValue::Text("Verworfen".to_owned())),
+                    ("proto", ui::i18n::ArgValue::Text("TCP".to_owned())),
+                    ("port", ui::i18n::ArgValue::Text("5900".to_owned())),
+                ],
+            ),
+            "TCP-Port 5900: Verworfen"
+        );
         crate::locales::CATALOG.set_locale("en-US");
         assert_eq!(
             crate::locales::CATALOG.t("firewall-start"),
             "Started the firewall"
+        );
+        assert_eq!(
+            crate::locales::CATALOG.t_args(
+                "firewall-blocked-title-port",
+                &[
+                    ("action", ui::i18n::ArgValue::Text("Drop".to_owned())),
+                    ("proto", ui::i18n::ArgValue::Text("TCP".to_owned())),
+                    ("port", ui::i18n::ArgValue::Text("5900".to_owned())),
+                ],
+            ),
+            "Drop TCP port 5900"
         );
     }
 }

@@ -241,8 +241,9 @@ its own seconds as the next one begins, so a run says where its time went.
 
 To chase one step, name it: `TILO_SH_ONLY=7 stack.sh check` brings
 the stack up and times the visitors, `TILO_SH_ONLY=2-6` runs only the visa
-run (with the startup's key, which it needs), and `TILO_SH_ONLY=10` only a
-key opening Browser in a workspace's VM. Naming none runs every step.
+run (with the startup's key, which it needs), and `TILO_SH_ONLY=10,13-18` only
+the Browser and the Linux commands of a workspace's VM (with the workspace the
+open makes, which they need). Naming none runs every step.
 
 ### The Browser of a hosted workspace
 
@@ -289,8 +290,37 @@ startup's key it holds:
     by invitation reads the run in
     History; and page actions past the plans file's free ones
     (`TILO_SH_BROWSER_FREE_ACTIONS`, 200 here: what the fills, the
-    submissions and the refusals take) are refused until the account is added
-    to it, which the check does as the provider would.
+    submissions and the refusals take) are refused with `no_payment_method`
+    and the page a card is added on.
+
+The same workspace's VM runs its Linux programs, and the steps after it hold
+that half to what a customer gets (`integration/hosted-terminal.py`):
+
+13. a Linux command in the workspace's VM, asked by an agent's run while the
+    plans file names no card for the account, is refused at once with
+    `no_payment_method`, the words that say it needs a Linux machine, and the
+    page a card is added on — and nothing ran: the directory it would have
+    made is not there when the next step looks.
+14. the provider puts the account on file, as it would once a card is: the
+    page action the free allowance refused a moment ago runs.
+15. the workspace's Terminal, run as the person's own backend key: a file is
+    made in the workspace's directory, listed and read back, `uname` answers,
+    and `ls -d /usr/libexec/tilo/hosted-init` is there — a file only a
+    workspace VM has, so the command ran in the VM and not on the machine
+    holding it. The run is a structured record of the Terminal's session (the
+    command, where it ran, when, how it ended, what it printed, who ran it)
+    and a step of History named after the key that ran it, for the person.
+16. an agent's key, minted for that one workspace, runs a command there
+    through the `tilo` command (with `TILO_API_KEY`, the MCP behind it), and
+    History keeps that run as the agent's, apart from the person's.
+17. the Linux session runs as the VM's tenant, not as the account its Browser
+    session runs as: `id` says `tilo` (uid 1000), the tenant cannot read the
+    Browser user's home, and the Browser user cannot read a file the tenant
+    made.
+18. a Linux GUI app: the VM runs no display server, so a hosted workspace has
+    Browser's window and no other, and there is no Linux app's window to open
+    on the desk yet. The step holds the VM to that and fails, saying what to
+    do, once one is wired: open it, see its window on the desk, close it.
 
 Who answers the person: `tilo-approve` (a program this tree builds for the
 check, like `tilo-enroll`) connects to the relay as one of the startup

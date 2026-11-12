@@ -3,7 +3,7 @@
 //! for how long its record's history grew.
 use super::*;
 use crate::owner::testing::{governed_fixture_at, member_key};
-use crate::owner::{NativeCommittedView, SealedHistoryKeys};
+use crate::owner::{NativeCommittedView, SealedHistoryKeys, WriteRefusal};
 use automerge::{ActorId, ChangeHash};
 use channel_crypto::ChannelContentKeys;
 use collab_types::{ContentRetention, DocumentMutation, EncryptionMetadata, OpKind, SignedOp};
@@ -27,7 +27,7 @@ impl SealedHistoryKeys for Held {
         self.0
             .seal_content(
                 collab_types::document_artifact_id(app, WORKSPACE, record),
-                ContentRetention::Checkpoint,
+                ContentRetention::of_frame(snapshot),
                 snapshot,
             )
             .map_err(|error| error.to_string())
@@ -111,25 +111,47 @@ async fn write(
     changes: Vec<u8>,
     now: SystemTime,
 ) -> Result<usize, String> {
-    let frame = DocumentMutation::Incremental(changes).encode().unwrap();
+    write_all(owner, workspace, keys, vec![changes], now)
+        .await
+        .map_err(String::from)
+}
+
+/// Write every one of `changes` in one owner turn, as a session commits the writes it held.
+async fn write_all(
+    owner: &NativeWorkspaceOwner,
+    workspace: WorkspaceId,
+    keys: &ChannelContentKeys,
+    changes: Vec<Vec<u8>>,
+    now: SystemTime,
+) -> Result<usize, WriteRefusal> {
+    let frames: Vec<Vec<u8>> = changes
+        .into_iter()
+        .map(|changes| DocumentMutation::Incremental(changes).encode().unwrap())
+        .collect();
     let author = member_key().verifying_key().to_bytes();
     let draft = |view: &NativeCommittedView| {
-        let op = view.peer().draft_write(
-            (APP, ""),
-            &frame,
-            Some(&mut seal_delta(keys)),
-            author,
-            0,
-            now,
-        )?;
-        Ok(vec![OwnerCommitRequest {
-            workspace: WORKSPACE.into(),
-            operation: CommitOperation::Document {
-                app: APP.into(),
-                record: String::new(),
-                envelope: Box::new(op),
-            },
-        }])
+        frames
+            .iter()
+            .zip(0..)
+            .map(|(frame, drafted)| {
+                let op = view.peer().draft_write(
+                    (APP, ""),
+                    frame,
+                    Some(&mut seal_delta(keys)),
+                    author,
+                    drafted,
+                    now,
+                )?;
+                Ok(OwnerCommitRequest {
+                    workspace: WORKSPACE.into(),
+                    operation: CommitOperation::Document {
+                        app: APP.into(),
+                        record: String::new(),
+                        envelope: Box::new(op),
+                    },
+                })
+            })
+            .collect()
     };
     owner
         .write(workspace, draft, &member_key(), now)
@@ -386,6 +408,63 @@ async fn a_device_that_compacted_offline_converges_with_a_peer_that_wrote_meanwh
     joins_after(&late, &sent, peers, &keys, &everything);
 }
 
+/// A sealed history just short of three quarters of its bound, where a device compacts it before
+/// a write, and the writes a session then commits at once, together past the bound.
+const BEFORE_FULL: usize = 256 / 4 * 3 - 1;
+const AT_ONCE: usize = 80;
+
+#[tokio::test]
+async fn writes_past_a_full_sealed_history_land_after_its_compaction() {
+    let joined = enrolled();
+    let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
+    let (_, keys) = rotated_channel();
+    owner.keep_sealed_histories(Arc::new(Held(keys.clone())));
+    let mut typist = Typist::over(&base(owner, workspace), 1);
+    let held = || {
+        owner
+            .with_current(workspace, |view| Ok(history(view.peer(), &keys).len()))
+            .unwrap()
+    };
+    let mut written = 0;
+    while held() < BEFORE_FULL {
+        let changes = typist.change(&format!("k{written}"));
+        assert_eq!(write(owner, workspace, &keys, changes, now).await, Ok(1));
+        written += 1;
+    }
+    assert_eq!(held(), BEFORE_FULL, "no compaction yet");
+
+    // Held while the device was away, the writes go in one turn: none is refused or dropped.
+    let changes: Vec<Vec<u8>> = keys_typed('k', written + AT_ONCE)
+        .skip(written)
+        .map(|key| typist.change(&key))
+        .collect();
+    assert_eq!(
+        write_all(owner, workspace, &keys, changes, now).await,
+        Ok(AT_ONCE),
+        "every held write is taken"
+    );
+    assert_eq!(
+        typed(&opened(owner, workspace, &keys)),
+        keys_typed('k', written + AT_ONCE).collect(),
+        "every change reads"
+    );
+    assert!(held() <= 256, "the history stays within its bound");
+    // Custody sends the compaction before the writes it made room for.
+    let sent = drain(owner, workspace, now, &mut 0).await;
+    let compaction = sent
+        .iter()
+        .position(|message| {
+            matches!(message,
+            NeighbourMsg::AppDocument { envelope, .. } if envelope.kind == OpKind::Compaction)
+        })
+        .expect("the full history was compacted");
+    assert_eq!(
+        sent.len() - compaction - 1,
+        AT_ONCE,
+        "the held writes follow the compaction"
+    );
+}
+
 /// Writes a device makes while its host is away: custody keeps every one of them, past what
 /// it keeps in its record (eight writes here) and the record's sealed history bound many times.
 const AWAY: usize = 2_000;
@@ -570,10 +649,16 @@ fn compacted_at(
             now,
         )
         .unwrap();
-    collab_types::sign_op(&mut op, governor_key).unwrap();
-    host.publication_mut()
+    for op in &mut op {
+        collab_types::sign_op(op, governor_key).unwrap();
+    }
+    let [compaction]: [NeighbourMsg; 1] = host
+        .publication_mut()
         .admit_sealed_compaction(APP, "", op, now)
         .unwrap()
+        .try_into()
+        .unwrap();
+    compaction
 }
 
 /// The host's side of the link: the history it holds, what it relayed in its order, the most

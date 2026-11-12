@@ -480,3 +480,72 @@ fn a_moderator_renames_the_workspace_and_a_grant_on_a_set_assigns_only_it() {
     assert!(change_settings(&mut peer, &editor, rename, now).unwrap());
     assert_eq!(peer.governance().workspace_name().as_deref(), Some("Plans"));
 }
+
+/// An administrator lets one app use another app's action: the grant the consent
+/// sheet's "Always allow" writes, named by the person here — recorded once however
+/// often it is given, and taken back by the same four names.
+#[test]
+fn an_administrator_lets_one_app_use_another_apps_action_and_takes_it_back() {
+    use crate::workspace_membership::{AppAction, SettingsChange};
+    use tilo_action_policy::{Answer, KindSet, Subject, TreePath};
+    let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
+    let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
+    let named = AppAction::new(
+        "so.tilo.lang.today",
+        "so.tilo.lang.notes",
+        "tl:so.tilo.lang.notes:root",
+        "file-note",
+    )
+    .expect("an app's action, named");
+    let grant = SettingsChange::GrantAppAction(named.clone());
+    assert!(
+        change_settings(&mut peer.clone(), &editor, grant.clone(), now).is_err(),
+        "an editor lets no app act"
+    );
+    peer.governance_mut()
+        .set_member_administrator(user, &host_key, now)
+        .unwrap();
+    let held = |peer: &mut StatePeer| -> Vec<tilo_action_policy::Grant> {
+        peer.permissions(editor.device_public_key, now)
+            .unwrap()
+            .policy
+            .grants
+            .into_iter()
+            .filter(|grant| grant.subject == Subject::app("so.tilo.lang.today"))
+            .collect()
+    };
+    assert!(change_settings(&mut peer, &editor, grant.clone(), now).unwrap());
+    let once = held(&mut peer);
+    let [granted] = once.as_slice() else {
+        panic!("one grant: {once:?}");
+    };
+    assert_eq!(granted.id, named.grant_id(), "the action is the grant's id");
+    assert_eq!(
+        granted.node,
+        named.node(&TreePath::workspace(peer.workspace_id().to_string())),
+        "it names the action wherever the resource sits in the app"
+    );
+    assert_eq!(granted.kinds, KindSet::READ_UNDOABLE);
+    assert_eq!(granted.answer, Answer::Allow);
+    assert_eq!(granted.granted_by, Subject::person(hex::encode(user)));
+    // Given again, it is the grant already there, not a second one.
+    change_settings(&mut peer, &editor, grant, now).unwrap();
+    assert_eq!(
+        held(&mut peer).len(),
+        1,
+        "one standing grant for one action"
+    );
+    assert!(
+        change_settings(
+            &mut peer,
+            &editor,
+            SettingsChange::RevokeAppAction(named),
+            now
+        )
+        .unwrap()
+    );
+    assert!(
+        held(&mut peer).is_empty(),
+        "taken back by the same four names"
+    );
+}

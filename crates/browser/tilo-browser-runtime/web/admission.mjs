@@ -205,7 +205,11 @@ export async function admit({scope, secrets = {}, tickets, home = null, runtime,
           // The host's reason could tell "no such workspace" from "not a member".
           if (!held) console.warn('admission: connecting failed', error?.code ?? error?.name ?? 'error');
           busy = held ? error : busy;
-          way = runtime.wayInAfter(held ? 'member-busy' : 'member', JSON.stringify({...here, accounts: accounts.length}));
+          // A tab is a device of its own: with every key the account has here
+          // held, it gets in as a new device of the person, as a browser
+          // without the account would.
+          way = held ? runtime.wayIn(link, JSON.stringify({...here, accounts: 0}))
+            : runtime.wayInAfter('member', JSON.stringify({...here, accounts: accounts.length}));
           continue;
         }
       }
@@ -223,11 +227,14 @@ export async function admit({scope, secrets = {}, tickets, home = null, runtime,
           if (!held) console.warn('admission: reconnecting failed', error?.code ?? error?.name ?? 'error');
         }
         if (peer) return ready(peer);
-        way = runtime.wayInAfter(held ? 'reconnect-busy' : 'reconnect', JSON.stringify({...here, accounts: accounts.length}));
+        // Every key this browser could get in with is held by other tabs:
+        // that is what to say, not the host's answer.
+        if (held) throw busy;
+        way = runtime.wayInAfter('reconnect', JSON.stringify({...here, accounts: accounts.length}));
+        // Reached with an account only when its keys were all held elsewhere.
+        if (way === 'no-access' && busy) throw busy;
         continue;
       }
-      case 'busy':
-        throw busy ?? new AdmissionError('no-access', NO_ACCESS);
       default: {
         const [code, message] = REFUSED[way] ?? REFUSED['no-access'];
         throw new AdmissionError(code, message);

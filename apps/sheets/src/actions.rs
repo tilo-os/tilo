@@ -33,18 +33,18 @@ pub enum SheetsEffect {
     /// Import Notion export
     ///
     /// Adds every database of a Notion export as a sheet.
-    #[effect(job, cancellable, opens_path = "zip", label = "Import Notion export")]
+    #[effect(
+        job,
+        cancellable,
+        opens_path = "zip",
+        label = "sheets-notion-import-title"
+    )]
     ImportNotion {
         #[param("Absolute path of the file; omit to choose one")]
         path: Option<tilo_resource::AbsolutePath>,
     },
     /// Adds every sheet of an `.ods` spreadsheet.
-    #[effect(
-        job,
-        cancellable,
-        opens_path = "ods",
-        label = "Import OpenDocument spreadsheet"
-    )]
+    #[effect(job, cancellable, opens_path = "ods")]
     ImportOds {
         #[param("Absolute path of the file; omit to choose one")]
         path: Option<tilo_resource::AbsolutePath>,
@@ -66,12 +66,7 @@ pub enum SheetsEffect {
         path: Option<tilo_resource::AbsolutePath>,
     },
     /// Saves every sheet as an `.ods` spreadsheet.
-    #[effect(
-        job,
-        cancellable,
-        risk = "export_risk",
-        label = "Export OpenDocument spreadsheet"
-    )]
+    #[effect(job, cancellable, risk = "export_risk")]
     ExportOds {
         #[param("Absolute path to write it to; omit to choose")]
         path: Option<tilo_resource::AbsolutePath>,

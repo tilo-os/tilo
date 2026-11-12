@@ -625,10 +625,19 @@ impl Live {
             }
         }
         // A window's change mark counts every version in its document: any change there is a
-        // new one.
-        reach
-            .hit
-            .extend(self.index.readers(&change.doc, crate::marks::DOC_VERSIONS));
+        // new one. A change that names its items' versions and nothing else names versions the
+        // window was told of before, provisional, that the record holds now: whoever reads an
+        // item's versions reads them again, and the count stands.
+        let renamed = !change.fields.is_empty()
+            && change
+                .fields
+                .iter()
+                .all(|key| key.resource != change.doc && key.field == crate::marks::DOC_VERSIONS);
+        if !renamed {
+            reach
+                .hit
+                .extend(self.index.readers(&change.doc, crate::marks::DOC_VERSIONS));
+        }
         if change.fields.is_empty() {
             if let Some(set) = self.index.docs.get(&change.doc) {
                 reach.hit.extend(set.iter().copied());

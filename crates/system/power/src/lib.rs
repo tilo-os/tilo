@@ -29,7 +29,7 @@
 //!
 //! # Wiring
 //!
-//! The compositor's idle state machine (`shell::compositor::idle`) grows a
+//! The compositor's idle state machine (`tilo_compositor::idle`) grows a
 //! *suspend* threshold and emits a suspend transition, which the compositor
 //! loop turns into a [`bridge::PowerCommand::Suspend`] — gated by
 //! [`InhibitRegistry::is_inhibited`]. The service issues

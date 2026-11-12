@@ -70,7 +70,7 @@ async fn a_member_links_their_discord_account_through_the_host() {
         .prepare_application(
             &workspace.workspace,
             &host.cert,
-            &common::catalogue(),
+            &crate::common::catalogue(),
             "so.tilo.discord",
             "",
         )
@@ -108,7 +108,7 @@ async fn a_member_links_their_discord_account_through_the_host() {
         .author_application(
             &workspace.workspace,
             &host.cert,
-            &common::catalogue(),
+            &crate::common::catalogue(),
             "so.tilo.discord",
             "",
             |doc| {
@@ -234,7 +234,7 @@ async fn the_hosts_workspace_actions_read_what_the_governor_commits() {
         .prepare_application(
             &workspace.workspace,
             &host.cert,
-            &common::catalogue(),
+            &crate::common::catalogue(),
             "so.tilo.discord",
             "",
         )

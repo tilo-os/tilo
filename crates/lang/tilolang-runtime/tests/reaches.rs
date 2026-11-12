@@ -5,12 +5,8 @@
 //! builds (`DockItem(...)`) is a value of its type wherever it is handed.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::{AmStore, ResourceRef, Runtime, SimpleAuthority, Value};
 
     /// The desk's shape, as the shell's is: a root view on one root (`arrangement`) that reads

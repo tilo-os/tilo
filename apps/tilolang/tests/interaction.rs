@@ -14,8 +14,6 @@
     reason = "test assertions"
 )]
 
-mod support;
-
 use tilolang_app::app::TlApp;
 use ui::framework::testing::TestApp;
 use ui::headless::InspectionNode;
@@ -24,7 +22,7 @@ const DESKTOP: (u32, u32) = (1280, 800);
 const PHONE: (u32, u32) = (420, 860);
 
 fn staged(viewport: (u32, u32)) -> TestApp<TlApp> {
-    support::installed("interaction");
+    crate::support::installed("interaction");
     let mut app = TestApp::<TlApp>::capture_at(Some("a conversation"), viewport)
         .expect("the scenario stages");
     settle(&mut app);

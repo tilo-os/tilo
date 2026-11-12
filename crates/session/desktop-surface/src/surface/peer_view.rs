@@ -1,7 +1,8 @@
 //! Another device's shared window, as the tile this desktop shows it in.
 //!
-//! A peer announces a surface it streams ([`PeerStreamStart`]); this desktop
-//! decodes it into that window's tab and shows it:
+//! A peer shares a window ([`PeerStreamStart`], what its keyframes say of the
+//! pictures, or a page's announcement); this desktop decodes it into that
+//! window's tab and shows it:
 //!
 //! - **One decoder per shared surface.** [`PeerSurface`] owns the surface's
 //!   [`VideoDecoder`], replaced when the sender restarts the stream, and feeds
@@ -16,8 +17,9 @@
 //!   type into it, how the stream stands and, once it is here, the newest
 //!   picture: [`PeerSurface::read`], published as one resource per tile
 //!   ([`PeerSurface::resource`]).
-//! - **The behaviour is actions on that resource**: pointer motion and
-//!   buttons, keys, a keyframe request, and letting the window go. Every input
+//! - **The behaviour is actions on that resource**: pointer motion, buttons
+//!   and scrolling, keys and composed text, a keyframe request, and letting
+//!   the window go. Every input
 //!   goes through the share's own rule ([`ShareRegistry`]), and leaves as the
 //!   [`NeighbourMsg::RemoteInput`] the owner replays.
 //!
@@ -69,6 +71,10 @@ pub const POINTER_MOTION: &str = "pointer-motion";
 pub const POINTER_BUTTON: &str = "pointer-button";
 /// Press or release one key on the viewer's keyboard.
 pub const KEY: &str = "key";
+/// Scroll the shared window under the viewer's pointer.
+pub const SCROLL: &str = "scroll";
+/// Type text the viewer composed into the shared window's focused field.
+pub const TEXT: &str = "text";
 /// Ask the sender for a keyframe.
 pub const KEYFRAME: &str = "keyframe";
 /// Let the shared window's tile go.
@@ -77,6 +83,8 @@ pub const END: &str = "end";
 const POINTER_MOTION_OPERATION: &str = "desktop.peer-surface.pointer-motion";
 const POINTER_BUTTON_OPERATION: &str = "desktop.peer-surface.pointer-button";
 const KEY_OPERATION: &str = "desktop.peer-surface.key";
+const SCROLL_OPERATION: &str = "desktop.peer-surface.scroll";
+const TEXT_OPERATION: &str = "desktop.peer-surface.text";
 const KEYFRAME_OPERATION: &str = "desktop.peer-surface.keyframe";
 const END_OPERATION: &str = "desktop.peer-surface.end";
 
@@ -270,6 +278,10 @@ pub enum PeerAction {
     PointerButton,
     /// One key.
     Key,
+    /// Scrolling, in the sender's pixels.
+    Scroll,
+    /// Composed text.
+    Text,
     /// Ask the sender for a keyframe.
     Keyframe,
     /// Let the tile go.
@@ -284,6 +296,8 @@ impl PeerAction {
             POINTER_MOTION_OPERATION => Some(Self::PointerMotion),
             POINTER_BUTTON_OPERATION => Some(Self::PointerButton),
             KEY_OPERATION => Some(Self::Key),
+            SCROLL_OPERATION => Some(Self::Scroll),
+            TEXT_OPERATION => Some(Self::Text),
             KEYFRAME_OPERATION => Some(Self::Keyframe),
             END_OPERATION => Some(Self::End),
             _ => None,
@@ -501,6 +515,8 @@ impl PeerSurface {
             .with_action(motion_action())
             .with_action(button_action())
             .with_action(key_action())
+            .with_action(scroll_action())
+            .with_action(text_action())
             .with_action(keyframe_action())
             .with_action(end_action())
     }
@@ -733,6 +749,21 @@ impl PeerSurface {
                     modifiers,
                 })
             }
+            PeerAction::Scroll => {
+                let dx = number(arguments, "dx")?;
+                let dy = number(arguments, "dy")?;
+                self.send(&InputEvent::PointerAxis { dx, dy })
+            }
+            PeerAction::Text => {
+                let text = arguments
+                    .get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|text| !text.is_empty())
+                    .ok_or_else(|| "`text` is no text".to_string())?;
+                self.send(&InputEvent::Text {
+                    text: text.to_owned(),
+                })
+            }
             PeerAction::Keyframe => {
                 self.request_keyframe(self.last_seq, true);
                 Ok(ActionOutput::default())
@@ -904,6 +935,33 @@ fn key_action() -> ActionSpec {
             ActionParam::required("pressed", ParamType::Boolean, "down or up"),
             ActionParam::required("modifiers", ParamType::Integer, "held modifiers"),
         ],
+    )
+}
+
+fn scroll_action() -> ActionSpec {
+    operation(
+        SCROLL,
+        "Scroll",
+        "How far",
+        SCROLL_OPERATION,
+        vec![
+            ActionParam::required("dx", ParamType::Number, "across, in the window's pixels"),
+            ActionParam::required("dy", ParamType::Number, "down, in the window's pixels"),
+        ],
+    )
+}
+
+fn text_action() -> ActionSpec {
+    operation(
+        TEXT,
+        "Type text",
+        "What to type",
+        TEXT_OPERATION,
+        vec![ActionParam::required(
+            "text",
+            ParamType::Text,
+            "what goes in the focused field",
+        )],
     )
 }
 
@@ -1195,161 +1253,6 @@ impl PeerView {
     ) -> bool {
         self.state.borrow_mut().act(action, arguments).is_ok()
     }
-
-    /// Where a point in the tile is in the sender's own pixels, so a click on a scaled picture
-    /// lands where the person pointed.
-    fn stream_point(&self, point: Point) -> (f64, f64) {
-        let state = self.state.borrow();
-        if self.rect.width() <= 0.0
-            || self.rect.height() <= 0.0
-            || state.width == 0
-            || state.height == 0
-        {
-            return (point.x, point.y);
-        }
-        (
-            (point.x - self.rect.x0) / self.rect.width() * f64::from(state.width),
-            (point.y - self.rect.y0) / self.rect.height() * f64::from(state.height),
-        )
-    }
-}
-
-/// One key of the keyboard as the wire names it: a Linux evdev key code, which the owner translates
-/// into its own keyboard.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one arm per key: the wire's code for each key of the keyboard"
-)]
-fn evdev_keycode(code: winit::keyboard::KeyCode) -> Option<u32> {
-    use winit::keyboard::KeyCode as K;
-    let code = match code {
-        K::KeyA => 30,
-        K::KeyB => 48,
-        K::KeyC => 46,
-        K::KeyD => 32,
-        K::KeyE => 18,
-        K::KeyF => 33,
-        K::KeyG => 34,
-        K::KeyH => 35,
-        K::KeyI => 23,
-        K::KeyJ => 36,
-        K::KeyK => 37,
-        K::KeyL => 38,
-        K::KeyM => 50,
-        K::KeyN => 49,
-        K::KeyO => 24,
-        K::KeyP => 25,
-        K::KeyQ => 16,
-        K::KeyR => 19,
-        K::KeyS => 31,
-        K::KeyT => 20,
-        K::KeyU => 22,
-        K::KeyV => 47,
-        K::KeyW => 17,
-        K::KeyX => 45,
-        K::KeyY => 21,
-        K::KeyZ => 44,
-        K::Digit0 => 11,
-        K::Digit1 => 2,
-        K::Digit2 => 3,
-        K::Digit3 => 4,
-        K::Digit4 => 5,
-        K::Digit5 => 6,
-        K::Digit6 => 7,
-        K::Digit7 => 8,
-        K::Digit8 => 9,
-        K::Digit9 => 10,
-        K::Escape => 1,
-        K::Minus => 12,
-        K::Equal => 13,
-        K::Backspace => 14,
-        K::Tab => 15,
-        K::BracketLeft => 26,
-        K::BracketRight => 27,
-        K::Enter => 28,
-        K::ControlLeft => 29,
-        K::Semicolon => 39,
-        K::Quote => 40,
-        K::Backquote => 41,
-        K::ShiftLeft => 42,
-        K::Backslash => 43,
-        K::Comma => 51,
-        K::Period => 52,
-        K::Slash => 53,
-        K::ShiftRight => 54,
-        K::NumpadMultiply => 55,
-        K::AltLeft => 56,
-        K::Space => 57,
-        K::CapsLock => 58,
-        K::F1 => 59,
-        K::F2 => 60,
-        K::F3 => 61,
-        K::F4 => 62,
-        K::F5 => 63,
-        K::F6 => 64,
-        K::F7 => 65,
-        K::F8 => 66,
-        K::F9 => 67,
-        K::F10 => 68,
-        K::NumLock => 69,
-        K::ScrollLock => 70,
-        K::Numpad7 => 71,
-        K::Numpad8 => 72,
-        K::Numpad9 => 73,
-        K::NumpadSubtract => 74,
-        K::Numpad4 => 75,
-        K::Numpad5 => 76,
-        K::Numpad6 => 77,
-        K::NumpadAdd => 78,
-        K::Numpad1 => 79,
-        K::Numpad2 => 80,
-        K::Numpad3 => 81,
-        K::Numpad0 => 82,
-        K::NumpadDecimal => 83,
-        K::F11 => 87,
-        K::F12 => 88,
-        K::NumpadEnter => 96,
-        K::ControlRight => 97,
-        K::NumpadDivide => 98,
-        K::PrintScreen => 99,
-        K::AltRight => 100,
-        K::Home => 102,
-        K::ArrowUp => 103,
-        K::PageUp => 104,
-        K::ArrowLeft => 105,
-        K::ArrowRight => 106,
-        K::End => 107,
-        K::ArrowDown => 108,
-        K::PageDown => 109,
-        K::Insert => 110,
-        K::Delete => 111,
-        K::SuperLeft => 125,
-        K::SuperRight => 126,
-        _ => return None,
-    };
-    Some(code)
-}
-
-/// The wire's name for a pointer button: the libinput code the owner's compositor replays.
-fn evdev_button(button: winit::event::MouseButton) -> u32 {
-    use winit::event::MouseButton;
-    match button {
-        MouseButton::Left => 272,
-        MouseButton::Right => 273,
-        MouseButton::Middle => 274,
-        MouseButton::Back => 275,
-        MouseButton::Forward => 276,
-        MouseButton::Other(other) => u32::from(other),
-    }
-}
-
-/// What the held modifiers are, in the xkb bitfield the wire carries: shift,
-/// control, alt and super, at the bits the owner reads.
-fn modifier_bits(modifiers: winit::keyboard::ModifiersState) -> u32 {
-    u32::from(modifiers.shift_key())
-        | (u32::from(modifiers.control_key()) << 2)
-        | (u32::from(modifiers.alt_key()) << 3)
-        | (u32::from(modifiers.super_key()) << 6)
 }
 
 impl Widget for PeerView {
@@ -1432,63 +1335,55 @@ impl Widget for PeerView {
     /// A person's pointer and keys are the tile's own actions, asked exactly as anything else
     /// driving the tile asks them: the share's rule refuses them the same way for both.
     fn handle_event(&mut self, event: &winit::event::WindowEvent, ctx: &mut EventCtx<'_>) {
-        use winit::event::{ElementState, WindowEvent};
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                let point =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                if !self.rect.contains(point) {
-                    return;
-                }
-                let (x, y) = self.stream_point(point);
-                let mut arguments = serde_json::Map::new();
-                arguments.insert("x".into(), serde_json::Value::from(x));
-                arguments.insert("y".into(), serde_json::Value::from(y));
-                if self.ask(PeerAction::PointerMotion, &arguments) {
-                    *ctx.handled = true;
-                }
+        let size = {
+            let state = self.state.borrow();
+            (state.width, state.height)
+        };
+        let Some(input) = crate::window_input::translate(
+            event,
+            self.rect,
+            size,
+            ctx.scale_factor,
+            ctx.modifiers.state(),
+        ) else {
+            return;
+        };
+        let (action, arguments) = match input {
+            InputEvent::PointerMotion { x, y } => (
+                PeerAction::PointerMotion,
+                serde_json::json!({ "x": x, "y": y }),
+            ),
+            InputEvent::PointerButton { button, pressed } => (
+                PeerAction::PointerButton,
+                serde_json::json!({ "button": button, "pressed": pressed }),
+            ),
+            InputEvent::Key {
+                keysym,
+                pressed,
+                modifiers,
+            } => (
+                PeerAction::Key,
+                serde_json::json!({ "keysym": keysym, "pressed": pressed, "modifiers": modifiers }),
+            ),
+            InputEvent::PointerAxis { dx, dy } => (
+                PeerAction::Scroll,
+                serde_json::json!({ "dx": dx, "dy": dy }),
+            ),
+            InputEvent::Text { ref text } => {
+                (PeerAction::Text, serde_json::json!({ "text": text }))
             }
-            WindowEvent::MouseInput { state, button, .. } => {
-                let mut arguments = serde_json::Map::new();
-                arguments.insert(
-                    "button".into(),
-                    serde_json::Value::from(evdev_button(*button)),
-                );
-                arguments.insert(
-                    "pressed".into(),
-                    serde_json::Value::from(*state == ElementState::Pressed),
-                );
-                if self.ask(PeerAction::PointerButton, &arguments) {
-                    *ctx.handled = true;
-                    if *state == ElementState::Pressed {
-                        // Clicking a window puts the keyboard on it: the keys that follow are meant
-                        // for the shared one.
-                        *ctx.focus_target = Some(ctx.node_id);
-                    }
-                }
+            _ => return,
+        };
+        let serde_json::Value::Object(arguments) = arguments else {
+            return;
+        };
+        if self.ask(action, &arguments) {
+            *ctx.handled = true;
+            if matches!(input, InputEvent::PointerButton { pressed: true, .. }) {
+                // Clicking a window puts the keyboard on it: the keys that follow are meant for the
+                // shared one.
+                *ctx.focus_target = Some(ctx.node_id);
             }
-            WindowEvent::KeyboardInput { event, .. } => {
-                let ui::winit::keyboard::PhysicalKey::Code(code) = event.physical_key else {
-                    return;
-                };
-                let Some(keysym) = evdev_keycode(code) else {
-                    return;
-                };
-                let mut arguments = serde_json::Map::new();
-                arguments.insert("keysym".into(), serde_json::Value::from(keysym));
-                arguments.insert(
-                    "pressed".into(),
-                    serde_json::Value::from(event.state == ElementState::Pressed),
-                );
-                arguments.insert(
-                    "modifiers".into(),
-                    serde_json::Value::from(modifier_bits(ctx.modifiers.state())),
-                );
-                if self.ask(PeerAction::Key, &arguments) {
-                    *ctx.handled = true;
-                }
-            }
-            _ => {}
         }
     }
 
@@ -1553,6 +1448,8 @@ impl ResourceOperations for PeerView {
             POINTER_MOTION_OPERATION,
             POINTER_BUTTON_OPERATION,
             KEY_OPERATION,
+            SCROLL_OPERATION,
+            TEXT_OPERATION,
             KEYFRAME_OPERATION,
             END_OPERATION,
         ]
@@ -1665,23 +1562,17 @@ impl super::DesktopHandle {
         tab
     }
 
-    /// One encoded unit of a shared stream ([`NeighbourMsg::SurfaceFrame`]) goes to the decoder of
-    /// the tile showing that surface. `None` for a stream this desktop shows nowhere.
-    pub fn peer_surface_frame(&self, message: &NeighbourMsg) -> Option<PeerOutcome> {
-        let NeighbourMsg::SurfaceFrame {
-            surface,
-            source_peer,
-            encoded_h264,
-            seq,
-            ..
-        } = message
-        else {
-            return None;
-        };
+    /// One encoded picture of `peer`'s shared `surface`, `seq` in its stream, goes to the decoder
+    /// of the tile showing that surface. `None` for a stream this desktop shows nowhere.
+    pub fn peer_surface_picture(
+        &self,
+        peer: PeerId,
+        surface: SurfaceId,
+        seq: u64,
+        unit: &[u8],
+    ) -> Option<PeerOutcome> {
         let peers = Rc::clone(&self.shared.borrow().peers);
-        peers
-            .borrow_mut()
-            .push(*source_peer, *surface, *seq, encoded_h264)
+        peers.borrow_mut().push(peer, surface, seq, unit)
     }
 
     /// One object of the page of `surface`'s window: the display list its publisher's engine sent,
@@ -1696,7 +1587,7 @@ impl super::DesktopHandle {
         peers.borrow_mut().push_page(peer, surface, payload)
     }
 
-    /// The share of `surface` ended ([`NeighbourMsg::SurfaceStreamEnd`]), and why: its tile goes,
+    /// The share of `surface` ended, and why: its tile goes,
     /// and the tab shows what this desktop holds for it again.
     pub fn end_peer_surface(&self, peer: PeerId, surface: SurfaceId, why: &str) -> Option<TabId> {
         let peers = Rc::clone(&self.shared.borrow().peers);

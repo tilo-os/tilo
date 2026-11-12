@@ -214,6 +214,10 @@ pub(super) fn sheet(shown: &Shown, parts: &Parts) -> Element {
         .with_foot_sheet();
     let cancel = parts.clone();
     sheet = sheet.secondary_action(dialog.cancel_label.clone(), move || cancel.cancel());
+    if let Some(label) = &dialog.alternate_label {
+        let alternate = parts.clone();
+        sheet = sheet.tertiary_action(label.clone(), move || alternate.answer(1));
+    }
     if let Some((page, _)) = dialog.page.filter(|(page, _)| *page > 0) {
         let back = parts.clone();
         let _ = page;

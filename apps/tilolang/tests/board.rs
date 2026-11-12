@@ -10,8 +10,6 @@
     reason = "test assertions"
 )]
 
-mod support;
-
 use tilolang_app::app::TlApp;
 use ui::framework::testing::TestApp;
 use ui::headless::InspectionNode;
@@ -20,7 +18,7 @@ const DESKTOP: (u32, u32) = (1280, 800);
 
 /// The board with its release scenario staged: three columns with cards in each.
 fn staged() -> TestApp<TlApp> {
-    support::installed("board");
+    crate::support::installed("board");
     let mut app = TestApp::<TlApp>::capture_at(Some("a release board"), DESKTOP)
         .expect("the scenario stages");
     settle(&mut app);

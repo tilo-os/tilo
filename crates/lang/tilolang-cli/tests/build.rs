@@ -100,6 +100,20 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
         Manifest::from_toml_str(&std::fs::read_to_string(&today.manifest).unwrap()).unwrap();
     assert_eq!(today_manifest.package.name.as_deref(), Some("Today"));
     assert_eq!(today_manifest.package.category.as_deref(), Some("Office"));
+    // What the app is called where it is not English: its catalogue's own word for its name, so
+    // every surface that names it — a launcher, a search row, a change it made — reads "Heute".
+    assert_eq!(
+        today_manifest
+            .package
+            .names
+            .get("de-DE")
+            .map(String::as_str),
+        Some("Heute"),
+    );
+    assert!(
+        !today_manifest.package.names.contains_key("en-US"),
+        "the name its declaration gives needs no table of its own"
+    );
     let installed = today_reads_notes(today, notes);
     declared_actions(&apps, &today_manifest);
     every_payload_carries_the_standard_library(&apps, &installed);

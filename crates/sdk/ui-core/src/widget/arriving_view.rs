@@ -857,6 +857,13 @@ impl ArrivingView {
         self.respoken && reveal.showing == Showing::Failure && !reveal.speaks
     }
 
+    /// Whether the inner view stands here as the one child: the tree, the walk a route reads
+    /// and the list handed out to change all ask this, so a failure that moved away leaves it
+    /// out of each of them at once.
+    fn inner_stands(&self) -> bool {
+        !self.failure_moved_away()
+    }
+
     /// Move a shared read's failure to the box that shows it now. True when
     /// it moved.
     fn respeak(&self) -> bool {
@@ -1082,14 +1089,15 @@ impl Widget for ArrivingView {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        if self.failure_moved_away() {
-            return Vec::new();
+        if self.inner_stands() {
+            vec![&self.inner]
+        } else {
+            Vec::new()
         }
-        vec![&self.inner]
     }
 
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        if !self.failure_moved_away() {
+        if self.inner_stands() {
             visitor(&self.inner);
         }
     }
@@ -1101,7 +1109,11 @@ impl Widget for ArrivingView {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![&mut self.inner]
+        if self.inner_stands() {
+            vec![&mut self.inner]
+        } else {
+            Vec::new()
+        }
     }
 
     fn name(&self) -> &'static str {

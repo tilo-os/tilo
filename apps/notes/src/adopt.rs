@@ -137,9 +137,7 @@ fn adopt_images(
         }
         let bytes = match stored.inline() {
             Some(bytes) => Some(bytes.to_vec()),
-            None => content
-                .and_then(|content| content.read(digest))
-                .filter(|bytes| tilo_content::verify(digest, bytes)),
+            None => content.and_then(|content| stored.read(content)),
         };
         let Some(bytes) = bytes else {
             tracing::warn!(%digest, "notes: an adopted picture is not on this device");

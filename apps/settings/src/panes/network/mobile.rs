@@ -80,21 +80,21 @@ const METERED: &[(&str, &str)] = &[
 #[effect(operation = "settings.effect")]
 pub enum MobileEffect {
     /// Read the modems, SIMs and the mobile data connection this section shows.
-    #[effect(view, returns, kind = "read", label = "Inspect mobile state")]
+    #[effect(view, returns, kind = "read")]
     InspectMobileState,
     /// Read the modems and the mobile data connection again.
-    #[effect(job, idempotent, label = "Refresh mobile data")]
+    #[effect(job, idempotent)]
     RefreshMobile,
     /// Use mobile data, or stop.
-    #[effect(job, idempotent, label = "Mobile data")]
+    #[effect(job, idempotent, label = "net-mobile-data")]
     SetMobileBroadband { on: bool },
     /// Use mobile data on other operators' networks, or only on the home
     /// network.
-    #[effect(job, idempotent, label = "Data roaming")]
+    #[effect(job, idempotent, label = "net-mobile-roaming-setting")]
     SetDataRoaming { on: bool },
     /// Set the access point mobile data connects through; what is omitted is
     /// what the APN editor holds.
-    #[effect(job, label = "Access point (APN)")]
+    #[effect(job)]
     SetMobileApn {
         #[param("Choose the APN from the operator database")]
         automatic: Option<bool>,
@@ -102,19 +102,19 @@ pub enum MobileEffect {
         apn: Option<ui::tilo_resource::NonBlank>,
     },
     /// Count mobile data against a limit, or let the network say.
-    #[effect(job, idempotent, label = "Metered connection")]
+    #[effect(job, idempotent, label = "net-metered-connection")]
     SetMobileMetered {
         #[param("automatic, metered or unmetered", choices = METERED.iter().map(|(key, _)| *key))]
         metered: String,
     },
     /// Choose the network types the modem may use.
-    #[effect(job, idempotent, label = "Preferred network type")]
+    #[effect(job, idempotent, label = "net-mobile-network-type")]
     SetPreferredNetwork {
         #[param("The network types, as listed: 4g-3g-2g, 5g-4g-prefer-5g, 4g …")]
         network: String,
     },
     /// Unlock a SIM with its PIN; without it, the PIN is asked for.
-    #[effect(job, label = "Unlock SIM")]
+    #[effect(job, label = "net-unlock-sim")]
     UnlockSim {
         #[param("The SIM, as listed; the locked one when omitted")]
         sim: Option<String>,
@@ -123,7 +123,7 @@ pub enum MobileEffect {
     },
     /// Unlock a SIM blocked after too many wrong PINs with its PUK, choosing
     /// a new PIN; without both, they are asked for.
-    #[effect(job, label = "Unblock SIM")]
+    #[effect(job, label = "net-mobile-unblock")]
     UnblockSim {
         #[param("The SIM, as listed; the blocked one when omitted")]
         sim: Option<String>,
@@ -134,7 +134,7 @@ pub enum MobileEffect {
     },
     /// Ask for the SIM's PIN when the device starts, or stop asking; without
     /// the PIN, it is asked for.
-    #[effect(job, label = "SIM PIN lock")]
+    #[effect(job)]
     SetSimPinLock {
         #[param("The SIM, as listed; the one in use when omitted")]
         sim: Option<String>,
@@ -143,7 +143,7 @@ pub enum MobileEffect {
         pin: Option<String>,
     },
     /// Change the SIM's PIN; without both PINs, they are asked for.
-    #[effect(job, label = "Change SIM PIN")]
+    #[effect(job)]
     ChangeSimPin {
         #[param("The SIM, as listed; the one in use when omitted")]
         sim: Option<String>,
@@ -153,16 +153,16 @@ pub enum MobileEffect {
         new_pin: Option<String>,
     },
     /// Use this SIM for mobile data, on a modem with several.
-    #[effect(job, row, label = "Use SIM")]
+    #[effect(job, row)]
     UseSim {
         #[param("The SIM, as listed")]
         sim: String,
     },
     /// Open or close the APN editor.
-    #[effect(view, label = "Edit APN…")]
+    #[effect(view)]
     ShowApnEditor,
     /// Close the APN editor, forgetting what was typed.
-    #[effect(view, label = "Cancel")]
+    #[effect(view)]
     CancelMobileForm,
 }
 

@@ -21,10 +21,17 @@ fi
 case $1 in
     */deps/* | */rustdoctest*/*)
         tools=$(dirname -- "${BASH_SOURCE[0]}")
-        # The build directory's tmp (CARGO_TARGET_TMPDIR), which tests write
-        # into, is the test user's too: cargo made it as whoever built.
         dir=$(dirname -- "$1")
         while [ "$dir" != / ] && [ "$dir" != . ] && [ ! -e "$dir/.rustc_info.json" ]; do dir=$(dirname -- "$dir"); done
+        # The build tree ($dir, which holds the profile directories) and the
+        # build directory's tmp (CARGO_TARGET_TMPDIR) that tests write into are
+        # the test user's too: cargo made them as whoever built. A test that
+        # writes beside the build's output — review images, fixture caches,
+        # prepared catalogs — lands in the tree, and root's mode 0755
+        # directories there would refuse it.
+        if [ -e "$dir/.rustc_info.json" ]; then
+            bash "$tools/as-test-user.sh" --own-tree "$dir"
+        fi
         [ ! -d "$dir/tmp" ] || bash "$tools/as-test-user.sh" --own "$dir/tmp"
         exec bash "$tools/with-test-environment.sh" bash "$tools/as-test-user.sh" "$@"
         ;;

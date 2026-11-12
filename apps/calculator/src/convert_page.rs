@@ -469,7 +469,8 @@ impl ConvertPage {
         // Money: the one quantity that needs a rate, and the page says so
         // where the units would be rather than converting with numbers it
         // would have had to invent.
-        let currency = ButtonFace::new(self.currency_chip, "Currency")
+        let currency_label = CATALOG.t("calculator-currency");
+        let currency = ButtonFace::new(self.currency_chip, &currency_label)
             .control_size(ControlSize::Small)
             .role(ButtonRole::Secondary)
             .toggled(self.currency);

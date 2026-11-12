@@ -20,6 +20,7 @@ pub mod colorimetry;
 /// pieces: what every participant of a workspace speaks, host or page.
 pub mod content;
 pub mod hdr_metadata;
+pub mod input;
 /// Work one device offers another: the question, and what each answers.
 pub mod offer;
 pub mod retention;

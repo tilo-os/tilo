@@ -60,7 +60,7 @@ class ScopedTestsTests(unittest.TestCase):
         # build, and --test names it: without the wrapper's features (here the
         # tilo-ui's, tools/ci/package_features.py) every run selecting such a
         # test failed to build it.
-        ui = {"package": "tilo-ui", "test": "it", "filter": "binary(it) and test(desktop_smoke::)"}
+        ui = {"package": "tilo-ui", "test": "it", "filter": "binary(it) and test(/^audit::/)"}
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for name in ("run_scoped_tests.py", "nextest.sh", "package_features.py"):

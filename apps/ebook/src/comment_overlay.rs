@@ -418,7 +418,10 @@ impl CommentOverlay {
             ctx,
             cursor,
             delete,
-            (Icon::Trash2, "Delete highlight"),
+            (
+                Icon::Trash2,
+                &crate::resource::CATALOG.t("ebook-action-delete-highlight"),
+            ),
             CommentAction::DeleteHighlight(group),
         );
         let y = y + line + layout.gap;
@@ -497,7 +500,10 @@ impl CommentOverlay {
                     ctx,
                     cursor,
                     edit,
-                    (Icon::Pencil, "Edit comment"),
+                    (
+                        Icon::Pencil,
+                        &crate::resource::CATALOG.t("ebook-action-edit-comment"),
+                    ),
                     CommentAction::Edit(annotation.id),
                 );
             }
@@ -505,7 +511,10 @@ impl CommentOverlay {
                 ctx,
                 cursor,
                 delete,
-                (Icon::Trash2, "Delete comment"),
+                (
+                    Icon::Trash2,
+                    &crate::resource::CATALOG.t("ebook-action-delete-comment"),
+                ),
                 CommentAction::Delete(annotation.id),
             );
             y += height;

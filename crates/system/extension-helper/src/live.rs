@@ -39,7 +39,7 @@
 //!    (`tilo-session` restarts the compositor on SIGUSR1; the login stays and
 //!    its windows reopen). The desktop asks for it only when the person is
 //!    idle or the screen is locked, and at most as often as it asks for
-//!    restarts (`shell::system_update`).
+//!    restarts (`tilo_system_service::update`).
 //!    A newer image staged over one already applied this boot is compared
 //!    with what is live too ([`Plan::settle`]): a component whose files are
 //!    already live as the newer image has them does not restart again, and
@@ -674,7 +674,7 @@ pub enum Class {
 /// One difference between the booted and the staged `/usr`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Change {
-    /// Absolute, e.g. `/usr/bin/shell`.
+    /// Absolute, e.g. `/usr/bin/tilo-session`.
     pub path: String,
     pub kind: ChangeKind,
 }
@@ -1238,7 +1238,7 @@ fn prune_layers(layout: &Layout, keep: &Path) {
 // State
 // ---------------------------------------------------------------------------
 
-/// What the desktop reads (`shell::system_update`).
+/// What the desktop reads (`tilo_system_service::update`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct State {
     /// The staged image this describes; empty when nothing is staged.

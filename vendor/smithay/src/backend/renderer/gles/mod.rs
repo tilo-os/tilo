@@ -1297,6 +1297,9 @@ impl ExportMem for GlesRenderer {
         fourcc: Fourcc,
     ) -> Result<Self::TextureMapping, Self::Error> {
         target.0.make_current(&self.gl, &self.egl)?;
+        // A mapping dropped since is freed now, not at the next frame: a compositor that reads
+        // back while it draws nothing would otherwise keep every read-back's buffer.
+        self.cleanup();
 
         let (_, has_alpha) = target.0.format().ok_or(GlesError::UnknownPixelFormat)?;
         let (_, format, layout) = fourcc_to_gl_formats(fourcc).ok_or(GlesError::UnknownPixelFormat)?;
@@ -1361,6 +1364,8 @@ impl ExportMem for GlesRenderer {
         let mut pbo = 0;
         let target = self.bind_texture(texture)?;
         target.0.make_current(&self.gl, &self.egl)?;
+        // As in `copy_framebuffer`: free the read-backs dropped since.
+        self.cleanup();
 
         let (_, format, layout) = fourcc_to_gl_formats(fourcc).ok_or(GlesError::UnknownPixelFormat)?;
         let bpp = gl_bpp(format, layout).expect("We check the format before") / 8;

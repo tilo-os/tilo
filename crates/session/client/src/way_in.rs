@@ -114,9 +114,6 @@ pub enum Way {
     NoPairing,
     /// No access: the same for a missing workspace and a private one.
     NoAccess,
-    /// Every key this device could get in with is held elsewhere on it (other tabs of the same
-    /// browser): nothing the host said.
-    Busy,
 }
 
 /// How a way that was taken failed.
@@ -125,12 +122,8 @@ pub enum Way {
 pub enum Failed {
     /// Connecting as the member was refused, or the member's device key did not open.
     Member,
-    /// The member's device keys are all held elsewhere on this device.
-    MemberBusy,
     /// Coming back with the root got no one in.
     Reconnect,
-    /// Every key the root could come back with is held elsewhere on this device.
-    ReconnectBusy,
 }
 
 /// The first way into the workspace `link` names, from what the device knows `here`.
@@ -185,13 +178,7 @@ fn without_account(here: &Here) -> Way {
 #[must_use]
 pub fn after(failed: Failed, here: &Here) -> Way {
     match failed {
-        // A tab is a device of its own: it gets in as a new device of the person, as one
-        // without the account would.
-        Failed::MemberBusy => without_account(here),
         Failed::Reconnect if here.door => Way::Door,
-        // Reached with an account only when its keys were all held elsewhere: that is what to say.
-        Failed::ReconnectBusy => Way::Busy,
-        Failed::Reconnect if here.accounts.unwrap_or(0) > 0 => Way::Busy,
         // A host's refusal, or a key that did not open, are no access alike.
         Failed::Member | Failed::Reconnect => Way::NoAccess,
     }
@@ -363,26 +350,12 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_way_ends_in_the_door_no_access_or_the_tabs_that_hold_the_keys() {
+    fn a_failed_way_ends_in_the_door_or_no_access() {
         assert_eq!(after(Failed::Member, &here(true, false, 1)), Way::NoAccess);
-        assert_eq!(
-            after(Failed::MemberBusy, &here(false, false, 1)),
-            Way::Reconnect
-        );
-        assert_eq!(after(Failed::MemberBusy, &here(true, false, 1)), Way::Door);
         assert_eq!(after(Failed::Reconnect, &here(true, true, 0)), Way::Door);
         assert_eq!(
             after(Failed::Reconnect, &here(false, false, 0)),
             Way::NoAccess
-        );
-        assert_eq!(
-            after(Failed::Reconnect, &here(false, false, 1)),
-            Way::Busy,
-            "the member's keys were held"
-        );
-        assert_eq!(
-            after(Failed::ReconnectBusy, &here(true, false, 0)),
-            Way::Busy
         );
     }
 

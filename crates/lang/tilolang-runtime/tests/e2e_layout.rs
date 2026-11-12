@@ -1,12 +1,8 @@
 //! The layout examples: trees with unit-tagged props, tokens, flags and `space` reads.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::{AmStore, Patch, Runtime, SimpleAuthority, Space, UiNode, Value};
 
     const SOURCE: &str = "app so.tilo.library \"Library\"\n\

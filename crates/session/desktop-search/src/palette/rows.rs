@@ -187,6 +187,13 @@ pub(super) fn entry_for(hit: &Hit, id: String) -> CommandEntry {
                     }
                     entry
                 }
+                // An item a row opens opens in a window of its own beside, as an app does.
+                None if invoke.address.action == crate::model::OPEN_ACTION => {
+                    CommandEntry::new(id, hit.title.clone()).alternate(
+                        ui::search::ActivationModifier::Ctrl,
+                        crate::i18n::t("search-open-beside"),
+                    )
+                }
                 None => CommandEntry::new(id, hit.title.clone()),
             },
             hit.icon

@@ -87,7 +87,25 @@ pub struct AddressBook {
     pub profiles: Keyed<AddressProfile>,
 }
 
-#[resource(kind = "browser.address-book", label = "Address book")]
+impl AddressBook {
+    /// What the record holds: whether autofill is on and the profiles it fills forms from.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "browser.address-book",
+    read_content = AddressBook::read_document
+)]
 impl AddressBook {}
 
 impl AddressBook {

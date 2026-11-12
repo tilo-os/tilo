@@ -19,8 +19,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -53,9 +51,9 @@ const KEY_LEFT_META: u32 = 125;
 /// A session as a development one starts: the tilolang shell as the whole screen, the seeded apps
 /// published, and the appearance section beside them.
 fn session() -> Session {
-    let apps = common::seeded_apps();
+    let apps = crate::common::seeded_apps();
     crate::common::headless(Options {
-        person: common::PERSON.to_owned(),
+        person: crate::common::PERSON.to_owned(),
         shell: false,
         collab: false,
         // The apps installed on this device, as a real session reads them: the launcher opens

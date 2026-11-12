@@ -1895,3 +1895,109 @@ fn a_share_signed_late_never_holds_the_loop_that_asked() {
     let shared = landed(share).expect("the workspace's owner shares what they hold");
     assert_eq!(shared["grants"], 4, "one grant per role below the owner");
 }
+
+/// "Always allow" on the sheet an app asked on is a grant in the workspace's governance, given by
+/// the person at this device, and in force for the broker once the desk the loop publishes
+/// carries it: the call it was given for waits for exactly that. "Allow once" is taken back the
+/// same way once spent.
+#[test]
+fn a_grant_the_person_gives_an_app_is_in_force_once_the_desk_carries_it() {
+    use tilo_action_broker::services::AppActionGrants as _;
+    let (engine, mut workspace, _, _state) = workspace_here("ada");
+    let engine = std::sync::Arc::new(engine);
+    let person = engine
+        .owner_of(WORKSPACE)
+        .expect("the workspace's owner here");
+    let tree = |workspace: &Workspace| tilo_desktop_model::DesktopTree {
+        workspaces: vec![workspace.clone()],
+        ..tilo_desktop_model::DesktopTree::default()
+    };
+    let desk = std::sync::Arc::new(crate::plane::DeskAuthority::new(
+        tree(&workspace),
+        crate::engine::revocations_of(None),
+        None,
+        crate::plane::Names {
+            person: person.clone(),
+            earlier: Vec::new(),
+        },
+    ));
+    let grants = crate::plane::SessionGrants::new(
+        std::sync::Arc::clone(&engine),
+        std::sync::Arc::clone(&desk),
+    );
+    assert!(grants.may_grant(WORKSPACE, &person));
+    assert!(!grants.may_grant(WORKSPACE, "someone else"));
+    assert!(!grants.may_grant("00000000-0000-4000-8000-00000000beef", &person));
+
+    let today = "so.tilo.lang.today";
+    let grant = Grant::new(
+        "app-action:clear",
+        Subject::App(today.to_owned()),
+        tilo_action_policy::TreePath::workspace(WORKSPACE.to_owned()),
+        tilo_action_policy::KindSet::ALL,
+        tilo_action_policy::Answer::Allow,
+        Subject::person(&person),
+    );
+    let request = tilo_action_broker::app_actions::AppActionConsentRequest {
+        handle: "app-action:i1".into(),
+        workspace: WORKSPACE.into(),
+        person,
+        app_id: today.into(),
+        target_app: "so.tilo.lang.tasks".into(),
+        resource: "tasks".into(),
+        action: "clear_done".into(),
+        resource_label: "Tasks".into(),
+        action_label: "Delete finished tasks".into(),
+        risk: tilo_actions::RiskLevel::Destructive,
+        needs_confirmation: true,
+        confirming: false,
+        moderation: None,
+        scope: None,
+        draft: None,
+        preview: None,
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime");
+    let recorded = runtime.block_on(async {
+        let mut recording = grants.record(
+            &request,
+            grant,
+            tilo_action_broker::app_actions::AppActionConsent::Always,
+        );
+        // Written into the governance, the grant is not yet in force: the desk does not carry it.
+        let held = |engine: &crate::engine::Engine| {
+            engine.policy(WORKSPACE).is_ok_and(|policy| {
+                policy
+                    .grants
+                    .iter()
+                    .any(|grant| grant.id.as_str() == "app-action:clear")
+            })
+        };
+        while !held(&engine) {
+            tokio::select! {
+                recorded = &mut recording => panic!("in force before the desk carries it: {recorded:?}"),
+                () = tokio::task::yield_now() => {}
+            }
+        }
+        // The loop's pass: the governance projected into the desk, and the desk published.
+        let policy = engine.policy(WORKSPACE).expect("the workspace's governance here");
+        assert!(project(&mut workspace, &policy), "the desk takes the app's grant");
+        desk.publish(tree(&workspace));
+        recording.await
+    });
+    assert_eq!(recorded.as_deref(), Ok("app-action:clear"));
+
+    runtime.block_on(async {
+        grants.revoke(WORKSPACE, "app-action:clear");
+        while engine.policy(WORKSPACE).is_ok_and(|policy| {
+            policy
+                .grants
+                .iter()
+                .any(|grant| grant.id.as_str() == "app-action:clear")
+        }) {
+            tokio::task::yield_now().await;
+        }
+    });
+}

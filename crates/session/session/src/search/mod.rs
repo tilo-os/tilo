@@ -82,6 +82,21 @@ pub trait AppActions {
         target: RemoteActionTarget,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<(), DoorError>;
+    /// Open `item`, what the `open` `target` shows when run with `arguments`, in a window of the
+    /// app's own beside the one it has: what the person asked by the modifier they held over its
+    /// row. A host that starts no windows opens it where `open` does.
+    ///
+    /// # Errors
+    /// The host's refusal.
+    fn open_beside(
+        &self,
+        target: RemoteActionTarget,
+        arguments: serde_json::Map<String, serde_json::Value>,
+        item: &str,
+    ) -> Result<(), DoorError> {
+        let _ = item;
+        self.invoke(target, arguments)
+    }
     /// Ask the invocation `invocation` of `app` in `workspace` to stop.
     ///
     /// # Errors
@@ -705,15 +720,23 @@ impl SessionSearch {
             }
             Target::Invoke(invoke) if invoke.app == DESKTOP_APP => own(&invoke),
             Target::Invoke(invoke) => self.with_apps(|apps| {
-                apps.invoke(
-                    application_action_target(
-                        &invoke.workspace,
-                        &invoke.app,
-                        invoke.address.resource.as_str(),
-                        invoke.address.action.as_str(),
-                    ),
-                    invoke.arguments,
-                )
+                let target = application_action_target(
+                    &invoke.workspace,
+                    &invoke.app,
+                    invoke.address.resource.as_str(),
+                    invoke.address.action.as_str(),
+                );
+                if invoke.place != LaunchPlace::Beside {
+                    return apps.invoke(target, invoke.arguments);
+                }
+                // The item an `open` shows: the one it is told, else the resource it is of.
+                let item = invoke
+                    .arguments
+                    .get(tilo_desktop_search::OPEN_ANCHOR)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(invoke.address.resource.as_str())
+                    .to_owned();
+                apps.open_beside(target, invoke.arguments, &item)
             }),
             Target::Launch { app, place } => self.with_apps(|apps| {
                 // A record this workspace holds opens as a link to it does: its app's `open` on
@@ -1027,11 +1050,19 @@ pub(crate) fn found_all(
 /// the machine's own app).
 fn found_of(hit: &tilo_desktop_search::Hit) -> Option<Found> {
     let (resource, open, arguments) = match &hit.target {
-        Target::Invoke(invoke) => (
-            invoke.address.resource.as_str().to_owned(),
-            Some(invoke.address.action.clone()),
-            invoke.arguments.clone(),
-        ),
+        // An item opened through its record's `open` is the item: it opens through its own.
+        Target::Invoke(invoke) => match invoke.arguments.get(tilo_desktop_search::OPEN_ANCHOR) {
+            Some(serde_json::Value::String(item)) if *item != invoke.address.resource => (
+                item.clone(),
+                Some(invoke.address.action.clone()),
+                serde_json::Map::new(),
+            ),
+            _ => (
+                invoke.address.resource.as_str().to_owned(),
+                Some(invoke.address.action.clone()),
+                invoke.arguments.clone(),
+            ),
+        },
         Target::Action(action) => (
             action.resource.as_str().to_owned(),
             Some(action.spec.id.clone()),
@@ -1167,6 +1198,7 @@ mod tests {
                         description: None,
                     })
                     .collect(),
+                named: Vec::new(),
                 host_apps: text
                     .lines()
                     .map(|name| HostAppEntry {

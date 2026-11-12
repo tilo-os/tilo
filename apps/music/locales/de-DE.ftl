@@ -193,3 +193,60 @@ music-show-in-player = Im Player anzeigen
 ## Die Plätze der Fensterleiste
 music-back = Zurück
 music-new-playlist = Neue Wiedergabeliste
+
+## Home before there is music
+music-home-empty-title = Musik hinzufügen
+music-home-empty-message = Wähle Audiodatei öffnen, um eine Datei von diesem Gerät abzuspielen, oder verbinde Spotify oder YouTube Music.
+music-home-empty-action = Quelle verbinden
+music-first-run-online = Finde einen Titel, ein Album oder eine Künstlerin oder öffne eine Audiodatei.
+music-first-run-offline = Diese Version findet Musik noch nicht online. Wähle Audiodatei öffnen, um eine Datei von diesem Gerät abzuspielen.
+
+## Actions
+
+music-effects-sources = Quelle wählen
+music-effects-connect-spotify-library = Spotify-Bibliothek nutzen
+music-effects-connect-spotify-playback = Spotify-Wiedergabe erlauben
+music-effects-spotify-account-status = Spotify-Konto ansehen
+music-effects-spotify-devices = Spotify-Geräte aktualisieren
+music-effects-spotify-queue = Spotify-Warteschlange anzeigen
+music-effects-spotify-library-more = Weitere Spotify-Sammlungen laden
+music-effects-new-spotify-playlist = Neue Wiedergabeliste benennen
+music-effects-spotify-create-playlist = Private Wiedergabeliste erstellen
+music-effects-spotify-transfer = Spotify-Wiedergabe übertragen
+music-effects-spotify-remote-play = Auf einem Spotify-Gerät abspielen
+music-effects-spotify-remote-pause = Ein Spotify-Gerät pausieren
+music-effects-spotify-save = In der Spotify-Bibliothek speichern
+music-effects-spotify-unsave = Aus der Spotify-Bibliothek entfernen
+music-effects-spotify-rename-playlist = Spotify-Wiedergabeliste umbenennen
+music-effects-spotify-playlist-add = Zur Spotify-Wiedergabeliste hinzufügen
+music-effects-spotify-playlist-remove = Aus der Spotify-Wiedergabeliste entfernen
+music-effects-browse-you-tube = YouTube Music durchsuchen
+music-effects-search = Katalog durchsuchen
+music-effects-playback-status = Wiedergabe ansehen
+music-effects-open = Öffnen
+music-effects-open-album = Album öffnen
+music-effects-open-artist = Künstler öffnen
+music-effects-browse-genre = Genre durchsuchen
+music-effects-toggle-like = Gefällt mir umschalten
+music-effects-toggle-like-playing = Gefällt mir des laufenden Titels umschalten
+music-effects-add-to-queue = Zur Warteschlange hinzufügen
+music-effects-play-next = Als Nächstes abspielen
+music-effects-keep-offline = Offline verfügbar halten
+music-effects-remove-offline = Aus dem Offline-Speicher entfernen
+music-effects-play-pause = Abspielen und anhalten
+music-effects-previous = Vorheriger Titel
+music-effects-next = Nächster Titel
+music-effects-toggle-mute = Stummschaltung umschalten
+music-effects-toggle-shuffle = Zufallswiedergabe umschalten
+music-effects-cycle-repeat = Wiederholung umschalten
+music-effects-remove = Aus der Warteschlange entfernen
+music-effects-move-up = In der Warteschlange nach oben
+music-effects-move-down = In der Warteschlange nach unten
+music-effects-seek = Spulen
+music-effects-set-volume = Lautstärke einstellen
+music-effects-queue-add = Titel zur Warteschlange hinzufügen
+music-effects-queue-remove = Titel aus der Warteschlange entfernen
+music-library = Musik
+music-library-create-playlist = Neue Wiedergabeliste erstellen
+music-library-delete-playlist = Wiedergabeliste löschen
+music-library-import-track = Titel zur Bibliothek hinzufügen

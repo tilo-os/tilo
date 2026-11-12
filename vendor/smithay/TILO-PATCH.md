@@ -301,3 +301,15 @@ remembers the focus the keyboard last left for no one and that leave's serial;
 `src/wayland/seat/keyboard.rs` `client_of_object_may_set_selection` also takes
 a selection from that client for an event serial before the leave, and both
 `SetSelection` requests ask it.
+
+## A read-back frees the read-backs dropped before it (GLES)
+
+A dropped `GlesMapping` only queues its pixel buffer for deletion, and the
+queue was drained when a frame finished. A compositor that reads its display
+back while it draws nothing (a capture, a screenshot of a still desktop) kept
+every read-back's buffer, a whole display of pixels each.
+`src/backend/renderer/gles/mod.rs` `copy_framebuffer` and `copy_texture` drain
+the queue (`cleanup`) before they read, so at most the mappings still held
+stand.
+
+Remove this once upstream frees dropped mappings outside a frame.

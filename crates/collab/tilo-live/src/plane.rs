@@ -10,11 +10,12 @@
 //! does not name is refused before it is decrypted.
 //!
 //! Presence, audio and the activity note are tracks every plane publishes.
-//! Pictures and a window's page are not: a camera layer, a screen layer or a
-//! page track exists only while a peer asks for it ([`Plane::show`]), and a
-//! device encodes a layer or captures a page only while it is asked for
-//! ([`Plane::wanted_pictures`], [`Plane::wanted_pages`]), so a picture or a
-//! page nobody watches costs no bitrate and no capture.
+//! Pictures, a shared window and a window's page are not: a camera layer, a
+//! screen layer, a window or a page track exists only while a peer asks for it
+//! ([`Plane::show`]), and a device encodes a layer or a window, or captures a
+//! page, only while it is asked for ([`Plane::wanted_pictures`],
+//! [`Plane::wanted_windows`], [`Plane::wanted_pages`]), so a picture, a window
+//! or a page nobody watches costs no bitrate and no capture.
 //!
 //! The carrier is whatever [`Dial`] this device has: iroh to the device that
 //! serves the workspace ([`crate::native::Iroh`]). This module does not name
@@ -784,15 +785,20 @@ impl Plane {
     }
 
     /// Show `tracks` of `sender` here, and stop showing those left out: this
-    /// plane asks the peer for exactly these picture layers and window pages,
-    /// and its session encodes a layer, or captures a page, only while a peer
-    /// asks for it. A track is read from the peer's own broadcast, so what
+    /// plane asks the peer for exactly these picture layers, windows and
+    /// window pages, and its session encodes a layer or a window, or captures
+    /// a page, only while a peer asks for it. A track is read from the peer's own broadcast, so what
     /// arrives is [`Shared::deliver`]ed as that peer's objects.
     pub fn show(&self, sender: [u8; 32], tracks: &[Track]) {
         let wanted: BTreeSet<Track> = tracks
             .iter()
             .copied()
-            .filter(|track| matches!(track, Track::Camera(_) | Track::Screen(_) | Track::Page(_)))
+            .filter(|track| {
+                matches!(
+                    track,
+                    Track::Camera(_) | Track::Screen(_) | Track::Window(..) | Track::Page(_)
+                )
+            })
             .collect();
         let mut shown = self.shown.lock_recover();
         let stale: Vec<([u8; 32], Track)> = shown
@@ -840,6 +846,22 @@ impl Plane {
             .out
             .keys()
             .filter_map(|name| page::parse_track(name))
+            .collect()
+    }
+
+    /// The shared windows someone shows of this device now, by tab: exactly
+    /// what it encodes. Changes with [`Self::demand_revision`].
+    #[must_use]
+    pub fn wanted_windows(&self) -> Vec<u64> {
+        self.shared
+            .demands
+            .lock_recover()
+            .out
+            .keys()
+            .filter_map(|name| match live::parse_track(name) {
+                Some(Track::Window(tab, Layer::High)) => Some(tab),
+                _ => None,
+            })
             .collect()
     }
 
@@ -893,9 +915,29 @@ impl Plane {
         pages
     }
 
+    /// The shared windows that need a keyframe now: their tracks were asked
+    /// for afresh, or a picture could not join its group. A still window sends
+    /// its new reader nothing until asked.
+    #[must_use]
+    pub fn take_window_keyframes(&self) -> Vec<u64> {
+        let mut demands = self.shared.demands.lock_recover();
+        let windows = demands
+            .keyframes
+            .iter()
+            .filter_map(|track| match track {
+                Track::Window(tab, _) => Some(*tab),
+                _ => None,
+            })
+            .collect();
+        demands
+            .keyframes
+            .retain(|track| !matches!(track, Track::Window(..)));
+        windows
+    }
+
     /// Advances whenever a demanded track is asked for or ends, or an object
     /// could not join its group: what a publisher reads to encode a picture or
-    /// capture a page.
+    /// a window, or capture a page.
     #[must_use]
     pub fn demand_revision(&self) -> u64 {
         self.shared.demand_revision.load(Ordering::Relaxed)
@@ -935,6 +977,39 @@ impl Plane {
                     .encode()
                     .map_err(|_| PlaneError::Invalid)
                 }
+            },
+        )
+    }
+
+    /// Send one picture of the shared window `tab` on its track, to everyone
+    /// who shows it. A window starts with a keyframe
+    /// ([`Self::take_window_keyframes`]), and each keyframe starts a group.
+    ///
+    /// Only the payload is sealed, as a call's picture's is.
+    ///
+    /// # Errors
+    ///
+    /// [`PlaneError::Unwanted`] when nobody shows this window,
+    /// [`PlaneError::Unkeyed`] for a picture before its first keyframe or a
+    /// group past [`video::MAX_GROUP_OBJECTS`] (send a keyframe), and
+    /// otherwise as [`Self::publish`].
+    pub fn send_window(&self, tab: u64, object: &VideoObject) -> Result<(), PlaneError> {
+        let object = VideoObject {
+            layer: Layer::High,
+            ..object.clone()
+        };
+        self.send_keyed(
+            Track::Window(tab, Layer::High),
+            object.keyframe,
+            object.timestamp_us,
+            &object.payload,
+            move |body| {
+                VideoObject {
+                    payload: body,
+                    ..object
+                }
+                .encode()
+                .map_err(|_| PlaneError::Invalid)
             },
         )
     }
@@ -1085,7 +1160,8 @@ fn track_info(track: Track) -> moq_net::track::Info {
 }
 
 /// Serve the peers' requests for this device's demanded tracks: a request for
-/// a camera layer, a screen layer or a window's page is accepted and published
+/// a camera layer, a screen layer, a shared window or a window's page is
+/// accepted and published
 /// from then on, a track
 /// nobody reads past its grace is ended
 /// ([`watch_unused`]), and anything else is refused.
@@ -1095,10 +1171,13 @@ async fn accept_demands(shared: Arc<Shared>, mut requests: moq_net::broadcast::D
             request.reject(moq_net::Error::NotFound);
             continue;
         };
-        // Only a track someone can ask this device for: its own pictures and
-        // the pages of the windows it shows.
+        // Only a track someone can ask this device for: its own pictures, the
+        // windows it shares and the pages of the windows it shows.
         let accepted = match track {
-            Track::Camera(_) | Track::Screen(_) | Track::Page(_) => track,
+            Track::Camera(_)
+            | Track::Screen(_)
+            | Track::Window(_, Layer::High)
+            | Track::Page(_) => track,
             Track::Presence
             | Track::Audio
             | Track::Window(..)
@@ -1362,7 +1441,10 @@ async fn read(
                         }
                         continue;
                     }
-                    if matches!(track, Track::Camera(_) | Track::Screen(_)) {
+                    if matches!(
+                        track,
+                        Track::Camera(_) | Track::Screen(_) | Track::Window(..)
+                    ) {
                         // A picture keeps the header the relay validated.
                         if let Some((sequence, body)) =
                             open_picture(shared, device, track, &frame.payload)

@@ -240,3 +240,41 @@ mail-new-message = Neue Nachricht
 mail-cancel-sending = Senden abbrechen
 mail-bar-discard-draft = Entwurf verwerfen
 mail-close-keep-draft = Schließen und im Entwurf behalten
+
+## Eine Datei anhängen und einen empfangenen Anhang speichern
+mail-compose-attach-file = Datei anhängen
+mail-save-attachment = Anhang speichern
+
+## Actions
+
+mail-effects-compose = Nachricht verfassen
+mail-effects-contact-recipients = Empfänger wählen
+mail-effects-account-settings = Kontoeinstellungen
+mail-effects-prepare-contact-draft = Entwurf an einen Kontakt
+mail-effects-refresh = Ordner aktualisieren
+mail-effects-prepare-calendar-invitation = Kalendereinladung vorbereiten
+mail-effects-open = Öffnen
+mail-effects-read-message = Nachricht lesen
+mail-effects-load-remote-content = Entfernte Bilder laden
+mail-effects-always-load-remote-content = Entfernte Bilder immer laden
+mail-effects-search-messages = Nachrichten suchen
+mail-effects-draft-reply = Antwort entwerfen
+mail-effects-open-attachment = Anhang öffnen
+mail-effects-content = Inhalt abrufen
+mail-effects-export-content = Inhalt exportieren
+mail-mailbox = E-Mail
+mail-mailbox-mark-read = Als gelesen markieren
+mail-mailbox-trash = In den Papierkorb
+mail-mailbox-move-messages = Nachrichten verschieben
+mail-mailbox-ingest = Abgerufene Nachrichten übernehmen
+mail-mailbox-server-applied = Server hat die Änderung übernommen
+mail-mailbox-start-draft-body = Entwurfstext beginnen
+mail-mailbox-create-draft = Neuer Entwurf
+mail-mailbox-show-draft = Entwurf anzeigen
+mail-mailbox-attach = An Entwurf anhängen
+mail-mailbox-send-message = Nachricht senden
+mail-mailbox-deliver-message = Nachricht zustellen
+mail-mailbox-draft-message = Nachricht entwerfen
+mail-trusted-senders = Vertrauenswürdige Absender
+mail-trusted-senders-trust = Diesem Absender vertrauen
+mail-trusted-senders-distrust = Diesem Absender nicht mehr vertrauen

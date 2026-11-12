@@ -40,6 +40,36 @@ enum Role {
     OverLock,
 }
 
+std::thread_local! {
+    /// Every sheet mounted on this thread's session, to be drawn in the theme the person chooses.
+    static MOUNTED: std::cell::RefCell<Vec<std::rc::Weak<std::cell::RefCell<dyn Themed>>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A sheet as the person's appearance reaches it.
+trait Themed {
+    fn set_theme(&mut self, theme: ui::Theme);
+}
+
+impl<S: Seat> Themed for Sheet<S> {
+    fn set_theme(&mut self, theme: ui::Theme) {
+        self.host.app_mut().set_theme(theme);
+    }
+}
+
+/// Draw every mounted sheet in `theme`: the person changed their appearance, and a sheet comes up
+/// in it as the desk around it does.
+pub(crate) fn set_theme(theme: &ui::Theme) {
+    MOUNTED.with_borrow_mut(|mounted| {
+        mounted.retain(|sheet| {
+            sheet.upgrade().is_some_and(|sheet| {
+                sheet.borrow_mut().set_theme(theme.clone());
+                true
+            })
+        });
+    });
+}
+
 /// One sheet's app on its layer.
 pub(crate) struct Sheet<S: Seat> {
     host: AppHost,
@@ -78,6 +108,17 @@ impl<S: Seat> Sheet<S> {
             outputs: Vec::new(),
             role: Role::Presented,
         })
+    }
+
+    /// The sheet as a layer of the session, following the person's appearance from now on.
+    pub(crate) fn layer(self) -> std::rc::Rc<std::cell::RefCell<Self>>
+    where
+        S: 'static,
+    {
+        let sheet = std::rc::Rc::new(std::cell::RefCell::new(self));
+        let themed: std::rc::Rc<std::cell::RefCell<dyn Themed>> = sheet.clone();
+        MOUNTED.with_borrow_mut(|mounted| mounted.push(std::rc::Rc::downgrade(&themed)));
+        sheet
     }
 
     /// The app keeps running while the sheet is down, and its actions stay offered: what it takes

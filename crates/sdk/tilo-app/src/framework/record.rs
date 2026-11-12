@@ -295,6 +295,15 @@ pub(crate) fn not_by_app<P: Resource>(action: &P::Action) -> Result<(), String> 
     Ok(())
 }
 
+/// Who a change made now is by: the invoker the host delivered the
+/// invocation being carried out for (an agent, a Shortcut, an app, or a
+/// person over the broker), else `me`, the person at this window. Every write
+/// path reads it, so an agent's change is the agent's in whichever record
+/// it lands, and names the person it acts for.
+pub(crate) fn acting(me: &str) -> ActionInvoker {
+    ui_core::invocation_scope::current_invoker().unwrap_or_else(|| ActionInvoker::actor(me))
+}
+
 /// Answer one published action of a record: apply it to the record it
 /// names, for the person whose record it is.
 pub(crate) fn answer(
@@ -309,8 +318,7 @@ pub(crate) fn answer(
         .find(|door| door.id() == request.record)
         .ok_or_else(|| format!("no record `{}` is open here", request.record))?;
     let me = me.ok_or("this window changes no record of anyone's")?;
-    let invoker =
-        ui_core::invocation_scope::current_invoker().unwrap_or_else(|| ActionInvoker::actor(me));
+    let invoker = acting(me);
     let theirs = invoker.actor == me || invoker.on_behalf_of.as_deref() == Some(me);
     if !theirs {
         return Err(format!(
@@ -735,6 +743,6 @@ fn record_dispatch<R: Resource, P: Resource>(
         let me = me
             .as_deref()
             .ok_or_else(|| ActionError::Refused("nobody edits a past version".into()))?;
-        held.apply(action, &ActionInvoker::actor(me))
+        held.apply(action, &acting(me))
     })
 }

@@ -311,10 +311,16 @@ pub fn parse_entry_id(id: &str) -> Option<(SlotKey, &str)> {
 }
 
 /// What running `entry` of `slot` invokes: the entry's own action, else
-/// the app's `open` at the entry's resource.
+/// the app's `open` at the entry's resource. An `open` of another resource
+/// (the record holding the entry's item) is told the entry's resource as
+/// the item to show, which no window of the app may show yet.
 #[must_use]
 pub fn opening(slot: &SlotKey, entry: &IndexEntry) -> InvokeTarget {
     match &entry.action {
+        Some(action) if action.action == OPEN_ACTION && action.resource != entry.resource => {
+            InvokeTarget::action(&slot.app, &slot.workspace, &action.resource, &action.action)
+                .with_argument(OPEN_ANCHOR, entry.resource.clone())
+        }
         Some(action) => {
             InvokeTarget::action(&slot.app, &slot.workspace, &action.resource, &action.action)
         }
@@ -853,7 +859,7 @@ impl Source for IndexedContent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::search::index_publication::{IndexState, Publisher};
+    use ui::search::index_publication::{IndexAction, IndexState, Publisher};
 
     fn note(key: &str, title: &str, secret: bool) -> IndexEntry {
         IndexEntry {
@@ -923,6 +929,30 @@ mod tests {
             1,
             "the whole index still finds it"
         );
+    }
+
+    /// An item's entry names the `open` of the record holding it, which every window showing
+    /// anything of the record publishes, and the hit tells that `open` the item: one no window
+    /// shows still opens.
+    #[test]
+    fn a_hit_on_an_item_asks_its_record_to_open_it() {
+        let index = Arc::new(AppContentIndex::in_memory());
+        let mut task = note("tl:tasks:doc/t1", "Book the ferry", false);
+        task.action = Some(IndexAction {
+            resource: "tl:tasks:doc".into(),
+            action: OPEN_ACTION.into(),
+        });
+        publish(&index, "tasks", None, vec![task]);
+        let content = IndexedContent::new(Arc::clone(&index), str::to_owned, "");
+        let hits = content.query("ferry");
+        let Target::Invoke(target) = &hits[0].target else {
+            panic!("an entry runs its record's open");
+        };
+        assert_eq!(
+            target.address,
+            tilo_actions::ActionAddress::new("tl:tasks:doc", OPEN_ACTION)
+        );
+        assert_eq!(target.arguments[OPEN_ANCHOR], "tl:tasks:doc/t1");
     }
 
     #[test]

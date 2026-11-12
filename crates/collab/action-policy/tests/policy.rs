@@ -1579,6 +1579,10 @@ impl Labels for Names {
             _ => None,
         }
     }
+
+    fn everything(&self) -> String {
+        "Everything".to_owned()
+    }
 }
 
 #[test]

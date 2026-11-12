@@ -99,9 +99,9 @@ use ui::tilo_resource::{self, AbsolutePath, ActionRef, Binds, Effect};
 
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::{
-    AppModel, Avatar, AvatarSize, Button, ButtonRole, Card, Checkbox, Container, Field, IconWidget,
-    LabelPlacement, ListRow, ModelPath, NumberInput, Row, Scrollable, Spacer, Text, TextInput,
-    TextInputKind, Widget,
+    AppModel, Avatar, AvatarSize, Button, ButtonRole, Card, Checkbox, Container, DrawChild as _,
+    Field, IconWidget, LabelPlacement, ListRow, ModelPath, NumberInput, Row, Scrollable, Spacer,
+    Text, TextInput, TextInputKind, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -215,6 +215,7 @@ pub enum InstallerPreviewEffect {
     StartExistingDevicePairing,
     /// Stop local pairing; this does not revoke remotely approved enrollment.
     #[effect(returns)]
+    #[effect(label = "installer-pairing-cancel")]
     CancelExistingDevicePairing,
     /// Choose an option on this page.
     #[effect(returns)]
@@ -251,6 +252,7 @@ pub enum InstallerPreviewEffect {
     },
     /// Choose the hardware report produced on the other computer.
     #[effect(attended, returns)]
+    #[effect(label = "installer-preview-target-file-title")]
     ChooseTargetHardwareReport,
     /// Read a hardware report produced on the other computer from this exact file.
     #[effect(returns)]
@@ -373,6 +375,7 @@ pub enum InstallerPreviewEffect {
     ToggleFlatpakAccessDetails,
     /// Perform a decision in the account connection flow.
     #[effect(returns)]
+    #[effect(label = "installer-accounts-add")]
     AccountStep {
         step: String,
         selection: Option<String>,
@@ -686,6 +689,8 @@ pub struct InstallerPreview {
     composed: Option<Box<dyn Widget>>,
     // Native handoffs replace the tree before layout, independently of page composition.
     composition_replaced: bool,
+    /// The page composes again at its next layout: what it shows changed
+    /// shape. Paint alone never sets it; children report their own redraw.
     dirty: bool,
     rect: Rect,
     /// The last pointer position in logical coordinates. A page rebuilt
@@ -3561,7 +3566,6 @@ impl InstallerPreview {
     /// category stays the stored authority; this only stops the parent checkbox
     /// and its children from telling different stories.
     fn sync_files_category(&mut self) -> bool {
-        self.dirty = true;
         if self.belongings.windows.is_some() || !self.belongings.source_selection.ready() {
             return false;
         }
@@ -3570,6 +3574,7 @@ impl InstallerPreview {
             return false;
         }
         self.journey.categories[0] = any;
+        self.dirty = true;
         true
     }
 
@@ -5549,7 +5554,6 @@ impl Widget for InstallerPreview {
         Some(self)
     }
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.dirty = true;
         self.follow_document();
         let staged = self.published.borrow_mut().take_staged();
         if let Some(crate::window_view::Staged(scenario)) = staged {
@@ -5714,7 +5718,7 @@ impl Widget for InstallerPreview {
         }
         let mut current = Scene::new();
         if let Some(child) = &mut self.composed {
-            child.draw(&mut current, Affine::IDENTITY, text, theme, presence);
+            child.draw_child(&mut current, Affine::IDENTITY, text, theme, presence);
         }
         scene.push_layer(
             vello::peniko::Fill::NonZero,
@@ -5743,7 +5747,6 @@ impl Widget for InstallerPreview {
         self.last_frame = Some(current);
     }
     fn handle_event(&mut self, event: &WindowEvent, cx: &mut ui::widget::EventCtx<'_>) {
-        self.dirty = true;
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = cx.logical(position);
         }
@@ -5782,7 +5785,6 @@ impl Widget for InstallerPreview {
         ui::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
-        self.dirty = false;
         ui::widget::Widget::mark_children_drawn(self);
     }
     fn name(&self) -> &'static str {
@@ -11029,7 +11031,7 @@ mod tests {
     fn page_motion_tracks_navigation_and_respects_reduced_motion() {
         let mut app = fixture();
         let paint = |preview: &mut InstallerPreview, theme: &Theme| {
-            preview.draw(
+            preview.draw_child(
                 &mut Scene::new(),
                 Affine::IDENTITY,
                 &mut TextRenderer::new(),

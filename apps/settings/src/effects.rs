@@ -670,14 +670,14 @@ pub const SETTING_ANCHOR: &str = "settings.setting:";
 #[effect(operation = "settings.effect")]
 pub enum NavigationEffect {
     /// Open a pane of Settings.
-    #[effect(view, label = "Open settings pane")]
+    #[effect(view)]
     OpenPane {
         #[param("The pane: its id, such as `appearance` or `network`")]
         pane: String,
     },
     /// Open the pane a setting is on, scrolled to it, with the keyboard on
     /// its control.
-    #[effect(view, label = "Show a setting")]
+    #[effect(view)]
     ShowSetting {
         #[param("The setting: its id, such as `keyboard.layout` or `appearance.style`")]
         setting: String,

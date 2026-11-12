@@ -3,10 +3,9 @@
 use super::{
     AcceptedCheckpoint, ActionKind, AdmissionError, AdmissionReport, ArtifactKind, AutoCommit,
     BTreeMap, ChannelState, Document, DocumentAdmission, DocumentMutation, DroppedInput, Duration,
-    Ed25519PublicKey, Held, InputDisposition, MAX_SEALED_BYTES, MAX_SEALED_OPS, MemberAuthority,
-    MissingPrerequisite, NeighbourMsg, OpKind, ReceiveOutcome, Route, SignedOp, StatePeer,
-    SystemTime, backend, empty_genesis, empty_genesis_op, err, peer_handle, sealed_compaction,
-    sealed_history, workspace,
+    Ed25519PublicKey, Held, InputDisposition, MemberAuthority, MissingPrerequisite, NeighbourMsg,
+    OpKind, ReceiveOutcome, Route, SignedOp, StatePeer, SystemTime, backend, empty_genesis,
+    empty_genesis_op, err, peer_handle, sealed_compaction, sealed_history, workspace,
 };
 use crate::document;
 
@@ -111,6 +110,20 @@ impl StatePeer {
         {
             return Err("transport author or document workspace mismatch".into());
         }
+        // A piece of a compaction that spans several ops changes nothing on its
+        // own: it is gathered, and the compaction is admitted once it is whole.
+        let envelope = if collab_types::is_compaction_piece(&envelope)
+            && !self
+                .publication()
+                .holds_sealed(&app_id, &record_id, &envelope)
+        {
+            match self.gather_compaction_piece((&app_id, &record_id), *envelope)? {
+                Some(head) => Box::new(head),
+                None => return Ok(AdmissionReport::metadata(ReceiveOutcome::default())),
+            }
+        } else {
+            envelope
+        };
         if strict_report
             && let Some(admitted) = self.lookup_exact_document_parts(
                 source,
@@ -646,7 +659,9 @@ impl StatePeer {
         let folded = (envelope.kind == OpKind::Compaction)
             .then(|| sealed_compaction::covered(&envelope))
             .transpose()?;
-        Self::retain_sealed(&mut candidate, envelope)?;
+        let segments = self.compaction_segments(&route, &envelope)?;
+        let gathered = !segments.is_empty();
+        Self::retain_sealed(&mut candidate, envelope, segments)?;
         let primary = if self.core.admission_v5 {
             self.core.exact_admissions.insert(&admitted)?;
             // The writes the compaction folded are in its snapshot now:
@@ -662,6 +677,9 @@ impl StatePeer {
         };
         candidate.channel = validated;
         candidate.encryption_required = true;
+        if gathered {
+            self.forget_gathered(&route);
+        }
         self.core.documents.insert(route, candidate);
         Ok(AdmissionReport::new(
             primary,
@@ -672,7 +690,11 @@ impl StatePeer {
             },
         ))
     }
-    fn retain_sealed(candidate: &mut Document, envelope: SignedOp) -> Result<(), AdmissionError> {
+    fn retain_sealed(
+        candidate: &mut Document,
+        envelope: SignedOp,
+        segments: Vec<SignedOp>,
+    ) -> Result<(), AdmissionError> {
         let full = || -> AdmissionError {
             "sealed record history is full; a key holder must compact it (PeerPublication::draft_sealed_compaction)"
                 .into()
@@ -682,25 +704,43 @@ impl StatePeer {
                 &candidate.sealed.to_vec(),
                 &candidate.channel.last_seq_per_author,
                 &envelope,
+                segments,
             )?
             .into();
-            if history.len() > MAX_SEALED_OPS || history.bytes() > MAX_SEALED_BYTES {
+            if !history.within_bounds() {
                 return Err(full());
             }
             candidate.sealed = history;
         } else {
-            if candidate.sealed.len() >= MAX_SEALED_OPS
-                || candidate
-                    .sealed
-                    .bytes()
-                    .saturating_add(envelope.payload.len())
-                    > MAX_SEALED_BYTES
-            {
+            if !Self::has_room(&candidate.sealed, &envelope) {
                 return Err(full());
             }
             candidate.sealed.push(envelope);
         }
         Ok(())
+    }
+
+    /// Whether `sealed`, a record's sealed history, has room for `envelope`, a write after it.
+    fn has_room(sealed: &backend::SealedLog, envelope: &SignedOp) -> bool {
+        sealed.takes(envelope.payload.len())
+    }
+
+    /// Whether the sealed history of `record` of `app` has room for `envelope`, a sealed write of
+    /// this device: a write past it is refused until a key holder compacts the history
+    /// ([`crate::PeerPublication::draft_sealed_compaction`]). A write in the clear keeps no sealed history.
+    #[must_use]
+    pub fn sealed_history_takes(&self, app: &str, record: &str, envelope: &SignedOp) -> bool {
+        if envelope.encryption.is_none() || envelope.kind == OpKind::Compaction {
+            return true;
+        }
+        let route = Route {
+            app: app.into(),
+            record: record.into(),
+        };
+        self.core
+            .documents
+            .get(&route)
+            .is_none_or(|document| Self::has_room(&document.sealed, envelope))
     }
     /// Reinstall `route`'s stored sealed history, checking every write as it
     /// was admitted: sealed for this exact route, signed by its author, with

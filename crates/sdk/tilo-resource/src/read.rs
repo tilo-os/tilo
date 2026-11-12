@@ -6,6 +6,8 @@
 //! Every app publishes the same `read`: a framework app's root, and a tilolang
 //! host for each of its instances.
 
+use crate::{Id, Model};
+
 /// The operation type of `read`.
 pub const TYPE: &str = "tilo.resource.read";
 
@@ -59,4 +61,35 @@ pub fn spec(item: Option<&str>) -> tilo_actions::ActionSpec {
         schema: serde_json::json!({"type": "object"}),
     };
     spec.reads_document()
+}
+
+/// What a record holds, as the record's own model's JSON
+/// ([`Model::to_json`]): every field it keeps, in the shape its own type
+/// gives them. This is the body of the `read_content` of a record whose
+/// fields are all it holds, so a caller with no window open — an agent, a
+/// script, the SDK — reads it through the framework's `read`, as it reads
+/// any app's record:
+///
+/// ```ignore
+/// impl Calculator {
+///     pub fn read_document(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
+///         tilo_resource::read::fields(self, item)
+///     }
+/// }
+/// ```
+///
+/// # Errors
+/// A named `item` is not this read's to answer: the record reads whole, and
+/// whatever its table reads of an item is answered from the table after this
+/// read declines it ([`Resource::read_content`](crate::Resource::read_content)).
+/// A record whose items it answers itself says so in a read of its own.
+pub fn fields<M: Model>(record: &M, item: Option<&Id>) -> Result<serde_json::Value, String> {
+    if item.is_some() {
+        return Err(
+            "this record reads whole; its items are read from its table, or by the read its own \
+             type gives them"
+                .into(),
+        );
+    }
+    Ok(record.to_json())
 }

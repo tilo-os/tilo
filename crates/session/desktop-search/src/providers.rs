@@ -511,6 +511,7 @@ impl Published {
                 address: action.address.clone(),
                 arguments,
                 descriptor: Some(action.clone()),
+                place: crate::model::LaunchPlace::Focus,
             })),
         }
     }

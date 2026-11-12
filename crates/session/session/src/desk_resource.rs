@@ -21,7 +21,6 @@ use tilo_session_core::shell::DESK_RESOURCE;
 use tilo_session_core::shell::{self, DeskReading};
 
 use crate::desk_windows::{reaching, windows};
-use crate::i18n::t;
 use crate::notifications::NoticeSignals;
 
 /// What the desk's reading is made from ([`Desk::key`]): equal when the shell's views need not run
@@ -76,14 +75,14 @@ pub(crate) enum DeskEffect {
         workspace: String,
     },
     /// Answer the question waiting on the person's avatar
-    #[effect(row, label = "Answer")]
+    #[effect(row, label = "session-desk-answer-ask")]
     AnswerAsk,
     /// Put the question waiting on the person's avatar off for now
-    #[effect(row, label = "Ask me later")]
+    #[effect(row, label = "session-desk-ask-later")]
     PutOffAsk,
     /// Open or close the running application's tray item `key`: its window, or its menu when the
     /// item is one
-    #[effect(row, label = "Open")]
+    #[effect(row, label = "session-desk-open")]
     OpenTrayItem { key: String },
     /// The invitations this device's person made into a workspace that can still be
     /// redeemed, in the words the workspace's host lists them by
@@ -143,7 +142,7 @@ pub(crate) enum DeskEffect {
     },
     /// End the agent `agent`'s work here: the connection the person admitted closes and its
     /// presence leaves the bar
-    #[effect(label = "Stop")]
+    #[effect(label = "session-desk-stop-agent")]
     StopAgent {
         #[param("The agent, by the key its presence names it")]
         agent: String,
@@ -288,7 +287,16 @@ impl Surfaces {
     pub(crate) fn beside_up(&self) -> bool {
         tilo_desktop::overlays::Slot::ALL
             .into_iter()
+            .filter(|slot| !self.drawn_by_the_shell(*slot))
             .any(|slot| slot.stands_beside() && self.panel.is_open(slot))
+    }
+
+    /// Whether the shell's own view draws `slot` instead of the desk, so what the desk keeps in
+    /// that slot stands over nothing: the shell's launcher is the search under the shell's screen,
+    /// as the quick settings are the shell's view of them. A popover nobody draws is not a surface
+    /// the person is looking at, so it neither takes the shell's surface down nor keeps its keys.
+    fn drawn_by_the_shell(&self, slot: tilo_desktop::overlays::Slot) -> bool {
+        self.shell && slot == tilo_desktop::overlays::Slot::Search
     }
 
     /// Close `surface` (`close-surface`), when it is the one up.
@@ -329,9 +337,9 @@ impl Surfaces {
 pub(crate) struct Styles {
     pub(crate) revision: u64,
     pub(crate) list: Vec<shell::DeskStyleReading>,
-    /// The store's fingerprint the list was read at: a store that reads the same is not read
-    /// again.
-    pub(crate) fingerprint: Option<String>,
+    /// The store's registry the list was read at: a store that reads the same is not read again,
+    /// and what the log says of it is said only when it changes.
+    pub(crate) registry: Option<crate::desk_styles::Registry>,
 }
 
 /// The desk as the session reads it. See the module docs.
@@ -483,13 +491,15 @@ impl Desk {
         let instant = std::time::Instant::now();
         let people = self.handle.read(|tree| {
             self.sync.as_ref().map_or_else(Vec::new, |sync| {
-                sync.people(tree, &self.notes.records(), &|_: &str| None)
-                    .into_iter()
-                    .map(|person| shell::PersonReading {
-                        key: person.id,
-                        name: person.label,
-                    })
-                    .collect()
+                sync.people(tree, &self.notes, &|app: &str| {
+                    Some(crate::app_names::app_name(app))
+                })
+                .into_iter()
+                .map(|person| shell::PersonReading {
+                    key: person.id,
+                    name: person.label,
+                })
+                .collect()
             })
         });
         self.handle.read(|tree| DeskReading {
@@ -950,20 +960,7 @@ impl Desk {
 /// The desk's resource, named `label`: what it publishes, and what the session's package describes
 /// of it ([`crate::session_package`]).
 pub(crate) fn desk_spec(label: String) -> ResourceSpec {
-    let mut resource = offer::<DeskEffect>(ResourceSpec::new(DESK_RESOURCE, DESK_KIND, label));
-    // The desk answers in the person's language: the question on their avatar, the tray item, and
-    // stopping an agent.
-    for spec in &mut resource.actions {
-        let label = match spec.id.as_str() {
-            "answer-ask" => t("session-desk-answer-ask"),
-            "put-off-ask" => t("session-desk-ask-later"),
-            "open-tray-item" => t("session-desk-open"),
-            "stop-agent" => t("session-desk-stop-agent"),
-            _ => continue,
-        };
-        spec.type_mut().label = label;
-    }
-    resource
+    offer::<DeskEffect>(ResourceSpec::new(DESK_RESOURCE, DESK_KIND, label))
 }
 
 impl Service for Desk {

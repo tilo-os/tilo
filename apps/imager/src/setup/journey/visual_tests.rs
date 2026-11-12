@@ -101,7 +101,7 @@ fn viewport_growth_keeps_logical_type_and_controls_and_pointer_mapping() {
     fn heading_font(root: &mut dyn Widget, theme: &Theme) -> Option<f32> {
         if root.test_id() == Some("installer.heading") {
             let mut scene = Scene::new();
-            root.draw(
+            root.draw_child(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut ui::TextRenderer::new(),

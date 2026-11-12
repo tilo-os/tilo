@@ -17,8 +17,6 @@
     reason = "a rectangle the test measured in the output it drew is within that output"
 )]
 
-mod common;
-
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
@@ -37,7 +35,7 @@ use tilo_session::shell::state::WINDOW_MENU;
 use tilo_session::{Options, Session};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use common::{CANVAS_ENTRY, HEIGHT, PERSON, WIDTH, control as ask, private_home, reached};
+use crate::common::{CANVAS_ENTRY, HEIGHT, PERSON, WIDTH, control as ask, private_home, reached};
 
 /// Click the shell's control `name` through the test-control socket, as the person does: the
 /// socket takes the click, and what it presses is what stands there.
@@ -170,7 +168,7 @@ fn the_seeded_apps_publish_their_records_to_the_session() {
             walk(&resource.children, kinds);
         }
     }
-    let apps = common::seeded_apps();
+    let apps = crate::common::seeded_apps();
     let resources = apps.resources();
     let mut kinds = std::collections::BTreeSet::new();
     walk(&resources, &mut kinds);
@@ -488,7 +486,7 @@ fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let socket = root.path().join("test-control.sock");
-    let apps = common::seeded_apps();
+    let apps = crate::common::seeded_apps();
     let note = apps
         .resources()
         .iter()

@@ -868,16 +868,10 @@ impl PresenceCtx {
             &style.clone().with_weight(TextWeight::Medium),
         );
 
-        // What it is doing and where; the phase is the mark's fade, not words.
-        let mut detail = format!(
-            "{} · {}",
-            doing_phrase(&interaction.action.label),
-            interaction.resource.label
-        );
-        if placement.additional > 0 {
-            use std::fmt::Write as _;
-            let _ = write!(detail, " · +{} more", placement.additional);
-        }
+        // What it is doing, in the words presence says beside its face: the
+        // record is the window this card stands in, never named twice. The
+        // phase is the mark's fade, not words.
+        let detail = card_detail(&interaction.action.label, placement.additional);
         let detail = tr.elide_to_width_style(&detail, (rect.width() - 24.0) as f32, &style);
         tr.draw_style(
             scene,
@@ -1052,52 +1046,14 @@ const fn phase_priority(phase: &InteractionPhase) -> u8 {
 
 /// What an actor is doing, in the app's own words: its action's label as a
 /// present-tense verb — "checking off", "writing" — because a mark reads as
-/// something happening now, not as a state printed beside a name.
+/// something happening now, not as a state printed beside a name. The words
+/// are [`tilo_actions::wording`]'s, the same line presence says beside the
+/// actor's face.
 fn doing_phrase(label: &str) -> String {
-    let mut words = label.split_whitespace();
-    let Some(first) = words.next() else {
-        return crate::i18n::widget_format("interaction-working", &[]);
-    };
-    // "New note" names what the action makes, not a verb: the actor is creating it, never
-    // "newing" it.
-    let start = participle(if first.eq_ignore_ascii_case("new") {
-        "create"
-    } else {
-        first
-    });
-    words.fold(start, |mut phrase, word| {
-        phrase.push(' ');
-        phrase.push_str(word);
-        phrase
-    })
-}
-
-/// The -ing form of a verb as an app words it. Verbs that double their last
-/// consonant are listed: no rule derives "setting" from "set" without also
-/// turning "visit" into "visitting".
-fn participle(verb: &str) -> String {
-    const DOUBLING: &[&str] = &[
-        "begin", "commit", "cut", "drop", "embed", "fit", "forget", "get", "hit", "log", "map",
-        "permit", "pin", "plan", "prefer", "put", "quit", "refer", "run", "scan", "set", "ship",
-        "shop", "sit", "skip", "stop", "submit", "tag", "trim", "wrap",
-    ];
-    let verb = verb.trim_end_matches(['.', ',', ':', ';', '!', '?']);
-    let lower = verb.to_lowercase();
-    if let Some(stem) = lower.strip_suffix("ie") {
-        return format!("{stem}ying");
-    }
-    if let Some(stem) = lower.strip_suffix('e')
-        && !stem.is_empty()
-        && !stem.ends_with(['e', 'y', 'o'])
-    {
-        return format!("{stem}ing");
-    }
-    if let Some(last) = lower.chars().last()
-        && DOUBLING.contains(&lower.as_str())
-    {
-        return format!("{lower}{last}ing");
-    }
-    format!("{lower}ing")
+    tilo_actions::wording::doing_phrase(
+        label,
+        &crate::i18n::widget_format("interaction-working", &[]),
+    )
 }
 
 fn phase_label(phase: &InteractionPhase) -> String {
@@ -1128,13 +1084,29 @@ fn phase_label(phase: &InteractionPhase) -> String {
     }
 }
 
+/// What the card says under its actor's name: the action in
+/// [`tilo_actions::wording`]'s words, the same line presence says beside the
+/// actor's face, and how many other steps of it the one card stands for. The
+/// card already stands in the record's own window, so the record is never
+/// named twice.
+fn card_detail(label: &str, additional: usize) -> String {
+    let mut detail = tilo_actions::wording::step_line(label, None);
+    if additional > 0 {
+        use std::fmt::Write as _;
+        let _ = write!(detail, " · +{additional} more");
+    }
+    detail
+}
+
 fn phase_color(phase: &InteractionPhase, theme: &Theme, actor: Color) -> Color {
     match phase {
         InteractionPhase::Waiting { .. } => theme.tokens.colors.semantic.warning,
-        InteractionPhase::Committed => theme.tokens.colors.semantic.success,
         InteractionPhase::Failed { .. } => theme.tokens.colors.semantic.danger,
         InteractionPhase::Cancelled { .. } => theme.tokens.colors.text_dim,
-        InteractionPhase::Locating
+        // A step that went through wears the actor's own colour: the card reads
+        // as whoever took it, never in a second colour beside their face.
+        InteractionPhase::Committed
+        | InteractionPhase::Locating
         | InteractionPhase::Applying
         | InteractionPhase::Progress { .. } => actor,
     }
@@ -1807,6 +1779,34 @@ mod tests {
         assert_eq!(
             presence.interaction_next_wake_deadline(at),
             Some(at + ACTIVE_INTERACTION_EXPIRY + EXPIRY_EPSILON)
+        );
+    }
+
+    /// A card reads as its actor: one colour from its face through its border
+    /// and bar, and the words presence says beside that face.
+    #[test]
+    fn a_card_wears_its_actors_colour_and_words() {
+        let theme = Theme::light();
+        let actor = Color::from_rgb8(0x12, 0x9f, 0x8a);
+        for phase in [
+            InteractionPhase::Locating,
+            InteractionPhase::Applying,
+            InteractionPhase::Progress {
+                label: "halfway".into(),
+                completed: Some(1),
+                total: Some(2),
+            },
+            InteractionPhase::Committed,
+        ] {
+            assert_eq!(phase_color(&phase, &theme, actor), actor, "{phase:?}");
+        }
+        assert_eq!(
+            card_detail("Create note from Markdown", 0),
+            "Creating note from Markdown"
+        );
+        assert_eq!(
+            card_detail("Create note from Markdown", 2),
+            "Creating note from Markdown · +2 more"
         );
     }
 

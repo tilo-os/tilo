@@ -23,9 +23,10 @@ use std::time::Duration;
 
 use legacy_agent_protocol::link::AgentLink;
 
-use super::browser::{self, Browser, Launcher, Life, Limits, UP_PATIENCE};
+use super::browser::{self, Browser, Kind, Launcher, Life, Limits, UP_PATIENCE};
 use super::control::{
-    ENVIRONMENT, FRAMING, HostLoad, OpenBrowser, Reply, Request, ShareRequest, VmRequest, VmStatus,
+    ENVIRONMENT, FRAMING, HostLoad, OpenApp, OpenBrowser, Reply, Request, ShareRequest, VmRequest,
+    VmStatus,
 };
 use super::files::Served;
 use super::firecracker::VmFiles;
@@ -109,6 +110,9 @@ struct Entry {
     vm: Mutex<HostedVm>,
     /// The browser session in this VM, once a browser action started one.
     browser: Mutex<Option<Arc<Browser>>>,
+    /// The Linux apps session in this VM, once a Linux app was opened: the
+    /// tenant's own, never the browser's.
+    apps: Mutex<Option<Arc<Browser>>>,
     /// What the VM takes of the host's memory, as the kernel last measured it.
     memory: Mutex<Measured>,
 }
@@ -170,6 +174,8 @@ pub enum BrowserError {
     /// relay's endpoint, so no session in its VMs could join a workspace.
     NotOffered,
     Invalid(String),
+    /// The account's plan does not allow it: a Linux app is a Linux action.
+    Refused(host_account::Refusal),
     /// Not now: every machine is full ([`BUSY`]). The caller waits for
     /// room and asks again.
     Full(String),
@@ -184,7 +190,8 @@ impl From<EnsureError> for BrowserError {
             EnsureError::HostFull => Self::Full(BUSY.to_owned()),
             EnsureError::Vm(error) => Self::Vm(error),
             EnsureError::Invalid(message) => Self::Invalid(message),
-            other => Self::Session(other.to_string()),
+            EnsureError::Refused(refusal) => Self::Refused(refusal),
+            EnsureError::Moving => Self::Session(EnsureError::Moving.to_string()),
         }
     }
 }
@@ -196,6 +203,7 @@ impl std::fmt::Display for BrowserError {
                 "this host serves no Browser: it was started without the relay's endpoint",
             ),
             Self::Invalid(message) => f.write_str(message),
+            Self::Refused(refusal) => f.write_str(&refusal.message),
             Self::Full(words) => f.write_str(words),
             Self::Session(message) => write!(f, "Browser did not open: {message}"),
             Self::Vm(error) => write!(f, "the workspace's VM could not start: {error}"),
@@ -309,6 +317,7 @@ impl Service {
                 Arc::clone(&self.clock),
             )?),
             browser: Mutex::new(None),
+            apps: Mutex::new(None),
             memory: Mutex::new(Measured::default()),
         });
         lock(&self.vms).insert(entry.id(), Arc::clone(&entry));
@@ -635,7 +644,7 @@ impl Service {
             })
             .transpose()?;
         let entry = self.admit(&vm, false)?;
-        let browser = self.browser_in(&entry, request.size, store)?;
+        let browser = self.session_in(&entry, Kind::Browser, request.size, store)?;
         match browser.open(&material, UP_PATIENCE) {
             Ok(opened_ms) => {
                 let provider = browser.life().provider().ok_or_else(|| {
@@ -650,7 +659,7 @@ impl Service {
                 Ok((opened_ms, provider))
             }
             Err(message) => {
-                end_browser(&entry, BROWSER_GRACE);
+                end_session(&entry, Kind::Browser, BROWSER_GRACE);
                 Err(BrowserError::Session(message))
             }
         }
@@ -664,12 +673,62 @@ impl Service {
         browser::hand_off(material, relay.guest()).map_err(BrowserError::Invalid)
     }
 
-    /// The browser session in `entry`'s VM, woken at `size` with `store`
-    /// (where the session keeps its profile) mounted: the one running, or one
-    /// that starts when the workspace's material is handed to it.
-    fn browser_in(
+    /// Start the Linux app `request` names in its workspace's VM: in the
+    /// apps session running there, or in one started now with the
+    /// workspace's material, the VM woken for it if it sleeps. A Linux app is
+    /// a Linux action, admitted as a command is: the account's plan must
+    /// allow it, and a host that sells its VMs needs a card on file.
+    /// `Some(ms)` when this request started the session.
+    pub fn open_app(&self, request: &OpenApp) -> Result<Option<u64>, BrowserError> {
+        let material = self.hand_off(&request.material)?;
+        let vm = VmRequest {
+            workspace: request.workspace.clone(),
+            environment: ENVIRONMENT.to_owned(),
+            account: request.account.clone(),
+            size: request.size,
+        };
+        for (what, name) in [("workspace", &vm.workspace), ("account", &vm.account)] {
+            if !valid_name(name) {
+                return Err(BrowserError::Invalid(format!(
+                    "{name:?} is not a {what} id"
+                )));
+            }
+        }
+        let entry = self.admit(&vm, true)?;
+        let apps = self.session_in(&entry, Kind::Apps, request.size, None)?;
+        let opened = match apps.open(&material, UP_PATIENCE) {
+            Ok(opened) => opened,
+            Err(message) => {
+                end_session(&entry, Kind::Apps, BROWSER_GRACE);
+                return Err(BrowserError::Session(message));
+            }
+        };
+        apps.tell(&request.launch.line())
+            .map_err(BrowserError::Session)?;
+        eprintln!(
+            "tilo-legacy hosted: {}: Linux app {} asked of its apps session{}",
+            entry.id(),
+            request.launch.desktop_id,
+            opened.map_or_else(String::new, |ms| format!(", up {ms}ms after hand-off")),
+        );
+        Ok(opened)
+    }
+
+    /// End the apps session in `workspace`'s VM now, and every app in it.
+    pub fn stop_apps(&self, workspace: &str) {
+        if let Some(entry) = self.entry(workspace, ENVIRONMENT) {
+            end_session(&entry, Kind::Apps, BROWSER_GRACE);
+        }
+    }
+
+    /// `kind`'s session in `entry`'s VM, woken at `size` with `store` (where
+    /// a browser session keeps its profile) mounted: the one running, or one
+    /// that starts when the workspace's material is handed to it. A Linux
+    /// apps session bills the VM's time as a Linux action does.
+    fn session_in(
         &self,
         entry: &Entry,
+        kind: Kind,
         size: VmSize,
         store: Option<PathBuf>,
     ) -> Result<Arc<Browser>, BrowserError> {
@@ -684,7 +743,7 @@ impl Service {
         let woke = (|| {
             vm.resize(size)?;
             *lock(&entry.size) = size;
-            vm.ensure(&shares, false)
+            vm.ensure(&shares, kind == Kind::Apps)
         })();
         entry.awake.store(vm.awake(), Ordering::SeqCst);
         drop(vm);
@@ -693,16 +752,22 @@ impl Service {
             .config
             .files(&entry.workspace, &entry.environment)
             .state
-            .join("browser.log");
-        let mut held = lock(&entry.browser);
+            .join(kind.log());
+        let mut held = lock(session_slot(entry, kind));
         let running = held
             .as_ref()
             .filter(|browser| browser.life().ended_because().is_none())
             .cloned();
         let browser = running.unwrap_or_else(|| {
             let life = Arc::new(Life::new((self.clock)()));
-            let starts =
-                Launcher::new(link, store, Arc::clone(&life), log, Arc::clone(&self.clock));
+            let starts = Launcher::new(
+                link,
+                kind,
+                store,
+                Arc::clone(&life),
+                log,
+                Arc::clone(&self.clock),
+            );
             let browser = Arc::new(Browser::booted(life, Box::new(starts)));
             *held = Some(Arc::clone(&browser));
             browser
@@ -715,7 +780,7 @@ impl Service {
     /// any idle VM.
     pub fn stop_browser(&self, workspace: &str) {
         if let Some(entry) = self.entry(workspace, ENVIRONMENT) {
-            end_browser(&entry, BROWSER_GRACE);
+            end_session(&entry, Kind::Browser, BROWSER_GRACE);
         }
     }
 
@@ -731,12 +796,18 @@ impl Service {
             self.keep_template(size, now);
         }
         for entry in entries {
-            let end = lock(&entry.browser)
-                .as_ref()
-                .and_then(|browser| browser.expired(now, self.browser_limits));
-            if let Some(end) = end {
-                eprintln!("tilo-legacy hosted: {}: Browser ended ({end})", entry.id());
-                std::thread::spawn(move || end_browser(&entry, BROWSER_GRACE));
+            for kind in [Kind::Browser, Kind::Apps] {
+                let end = lock(session_slot(&entry, kind))
+                    .as_ref()
+                    .and_then(|session| session.expired(now, self.browser_limits));
+                if let Some(end) = end {
+                    eprintln!(
+                        "tilo-legacy hosted: {}: {kind:?} session ended ({end})",
+                        entry.id()
+                    );
+                    let entry = Arc::clone(&entry);
+                    std::thread::spawn(move || end_session(&entry, kind, BROWSER_GRACE));
+                }
             }
         }
     }
@@ -827,7 +898,7 @@ impl Service {
         let Some(entry) = self.entry(workspace, environment) else {
             return Ok(());
         };
-        end_browser(&entry, BROWSER_GRACE);
+        end_sessions(&entry, BROWSER_GRACE);
         let mut vm = lock(&entry.vm);
         let result = vm.suspend();
         entry.awake.store(vm.awake(), Ordering::SeqCst);
@@ -838,7 +909,7 @@ impl Service {
         let Some(entry) = self.entry(workspace, environment) else {
             return Ok(());
         };
-        end_browser(&entry, BROWSER_GRACE);
+        end_sessions(&entry, BROWSER_GRACE);
         let mut vm = lock(&entry.vm);
         let result = vm.stop();
         entry.awake.store(vm.awake(), Ordering::SeqCst);
@@ -849,7 +920,7 @@ impl Service {
     pub fn suspend_all(&self) {
         let entries: Vec<Arc<Entry>> = lock(&self.vms).values().cloned().collect();
         for entry in entries {
-            end_browser(&entry, BROWSER_GRACE);
+            end_sessions(&entry, BROWSER_GRACE);
             let mut vm = lock(&entry.vm);
             if vm.awake() && vm.suspend().is_err() {
                 let _ = vm.stop();
@@ -872,7 +943,7 @@ impl Service {
             for entry in &entries {
                 scope.spawn(move || {
                     // A short grace: the notice is about 30 seconds.
-                    end_browser(entry, Duration::from_secs(2));
+                    end_sessions(entry, Duration::from_secs(2));
                     let mut vm = lock(&entry.vm);
                     if vm.awake()
                         && let Err(error) = vm.suspend()
@@ -967,6 +1038,19 @@ impl Service {
                 self.stop_browser(&workspace);
                 Reply::Done
             }
+            Request::OpenApp { app } => match self.open_app(&app) {
+                Ok(opened_ms) => Reply::Opened {
+                    opened_ms,
+                    provider: tilo_actions::remote::linux_apps::UP_PROVIDER.to_owned(),
+                },
+                Err(BrowserError::Refused(refusal)) => Reply::Refused(refusal),
+                Err(BrowserError::Full(words)) => Reply::Busy(words),
+                Err(error) => Reply::Error(error.to_string()),
+            },
+            Request::StopApps { workspace } => {
+                self.stop_apps(&workspace);
+                Reply::Done
+            }
             Request::Place { .. } => {
                 Reply::Error("a host runs VMs; a placer answers where".to_owned())
             }
@@ -1055,11 +1139,25 @@ impl Service {
     }
 }
 
-/// End the browser session in `entry`'s VM, if one runs, giving it `grace`
-/// to write its profile to the VM's disk.
-fn end_browser(entry: &Entry, grace: Duration) {
-    let browser = lock(&entry.browser).take();
-    if let Some(browser) = browser {
+/// End the sessions in `entry`'s VM, Browser's and the Linux apps', if they
+/// run, giving each `grace` (Browser writes its profile to the VM's disk).
+fn end_sessions(entry: &Entry, grace: Duration) {
+    end_session(entry, Kind::Apps, grace);
+    end_session(entry, Kind::Browser, grace);
+}
+
+/// Where `entry` holds its `kind` session.
+fn session_slot(entry: &Entry, kind: Kind) -> &Mutex<Option<Arc<Browser>>> {
+    match kind {
+        Kind::Browser => &entry.browser,
+        Kind::Apps => &entry.apps,
+    }
+}
+
+/// End `entry`'s `kind` session, if one runs, giving it `grace`.
+fn end_session(entry: &Entry, kind: Kind, grace: Duration) {
+    let session = lock(session_slot(entry, kind)).take();
+    if let Some(browser) = session {
         browser.end(grace);
     }
 }
@@ -1636,6 +1734,47 @@ mod tests {
         service
             .admit(&request("ws2", "acct-card", VmSize::Small), true)
             .unwrap();
+    }
+
+    /// A Linux app is a Linux action: an account without a card is refused
+    /// the open in the plans' own words, before a VM wakes or a session
+    /// starts, while the same workspace's Browser still opens.
+    #[test]
+    fn a_linux_app_without_a_card_is_refused_before_anything_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = config(dir.path());
+        config.settings.relay =
+            Some(super::super::network::Endpoint::parse("127.0.0.1:7704").unwrap());
+        std::fs::write(
+            &config.plans,
+            r#"{"accounts":{},"sells":{"host":"tilo.sh","plans":[],
+                "add_payment_method":"https://tilo.sh/card","browser_free_actions":300}}"#,
+        )
+        .unwrap();
+        let service = open_at(&config, 0);
+        let Reply::Refused(refusal) = service.handle(Request::OpenApp {
+            app: OpenApp {
+                workspace: "ws1".into(),
+                account: "acct-free".into(),
+                size: VmSize::Small,
+                material: browser::test_material("127.0.0.1:7704"),
+                launch: tilo_actions::remote::linux_apps::AppLaunch::new("xterm").unwrap(),
+            },
+        }) else {
+            panic!("a Linux app without a card is refused");
+        };
+        assert_eq!(refusal.reason, host_account::Reason::NoPaymentMethod);
+        assert!(
+            refusal
+                .next
+                .iter()
+                .any(|next| next.kind == host_account::NextStepKind::AddPaymentMethod),
+            "the refusal says what lets it through: {refusal:?}"
+        );
+        assert!(
+            service.status().iter().all(|vm| vm.phase != "Running"),
+            "nothing woke for it"
+        );
     }
 
     #[test]

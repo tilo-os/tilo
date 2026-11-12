@@ -17,8 +17,6 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
-mod common;
-
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
@@ -27,7 +25,7 @@ use tilo_session::{ActionPlane, Options, Session};
 use tilo_sheets::portal::PortalEffect;
 use tilolang_tilo::records_service::RecordService;
 
-use common::{
+use crate::common::{
     CANVAS_ENTRY, MAIL, NOTE_TITLE, NOTES, PERSON, Repl, SUBJECT, control, on_screen,
     place_the_inbox, placed, placed_resources, press_sheet, private_home, repl_session,
     seeded_session, show_preset, until,
@@ -36,7 +34,7 @@ use common::{
 /// A notebook kept by the notes app, published as the session publishes a workspace's records,
 /// and one note in it titled [`NOTE_TITLE`], made through the app's own actions.
 fn notebook() -> (RecordService, String) {
-    let (service, notes) = common::notebook(&[NOTE_TITLE]);
+    let (service, notes) = crate::common::notebook(&[NOTE_TITLE]);
     (service, notes.into_iter().next().expect("a note"))
 }
 
@@ -274,7 +272,7 @@ fn a_record_the_sessions_services_publish_is_found_through_the_door() {
     let root = private_home();
     let questions = Questions::new();
     let program = std::env::current_exe().expect("this test's program");
-    let apps = common::seeded_apps();
+    let apps = crate::common::seeded_apps();
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
         shell: true,
@@ -482,7 +480,7 @@ fn a_seeded_apps_catalogue_gives_a_german_session_its_words() {
         &mut session,
         "the notebook placed by its German name",
         |session| {
-            common::places(session)
+            crate::common::places(session)
                 .iter()
                 .any(|place| place.record.contains(NOTES))
         },
@@ -502,7 +500,7 @@ fn a_seeded_apps_catalogue_gives_a_german_session_its_words() {
         placed_by_german,
         "the English word finds no notebook on a German desk"
     );
-    let sent = common::wait_for(&mut session, "the ask to be sent", |session| {
+    let sent = crate::common::wait_for(&mut session, "the ask to be sent", |session| {
         session.settle_services();
         session
             .read("session:send-to")
@@ -611,7 +609,7 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
     let root = private_home();
     let questions = Questions::new();
     let program = std::env::current_exe().expect("this test's program");
-    let apps = common::seeded_apps();
+    let apps = crate::common::seeded_apps();
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
         shell: true,
@@ -686,7 +684,7 @@ fn my_mails_on_the_canvas_places_mails_root() {
     let root = private_home();
     let questions = Questions::new();
     let program = std::env::current_exe().expect("this test's program");
-    let apps = common::seeded_apps();
+    let apps = crate::common::seeded_apps();
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
         shell: true,
@@ -826,9 +824,9 @@ fn an_app_no_place_shows_is_unloaded() {
     let mut session = seeded_session(root.path());
     place_the_inbox(&mut session, root.path());
     assert_eq!(session.shell_apps(), vec![MAIL.to_owned()]);
-    let places: Vec<u64> = common::places(&session)
+    let places: Vec<u64> = crate::common::places(&session)
         .iter()
-        .map(|place| common::number(&place.key))
+        .map(|place| crate::common::number(&place.key))
         .collect();
     for place in places {
         session
@@ -1076,7 +1074,7 @@ impl tilo_service::Service for Withholding {
 fn a_place_whose_reading_never_arrives_leaves_the_rest_of_the_screen_working() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
-    let apps = common::seeded_apps();
+    let apps = crate::common::seeded_apps();
     let program = std::env::current_exe().expect("this test's program");
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
@@ -1166,7 +1164,7 @@ fn the_repl_finds_what_place_found_places() {
     let root = private_home();
     let questions = Questions::new();
     let program = std::env::current_exe().expect("this test's program");
-    let apps = common::seeded_apps();
+    let apps = crate::common::seeded_apps();
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
         shell: true,
@@ -1268,7 +1266,7 @@ fn the_repl_finds_what_place_found_places() {
 #[test]
 fn an_installed_apps_actions_and_root_are_named_as_it_declares_them() {
     let _settled = ui::motion::testing::settled();
-    common::app_store();
+    crate::common::app_store();
     let root = private_home();
     let program = std::env::current_exe().expect("this test's program");
     let mut session = crate::common::headless(Options {

@@ -46,7 +46,7 @@ const REBIND: &str = "rebind";
 pub enum ShortcutEffect {
     /// Choose an app with the shell's app chooser, to set how the shell
     /// pastes in it.
-    #[effect(job, label = "Choose an app to set how it pastes")]
+    #[effect(job)]
     ChoosePasteApp,
 }
 

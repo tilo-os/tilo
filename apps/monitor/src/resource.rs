@@ -32,7 +32,26 @@ pub struct Monitor {
     pub flat: bool,
 }
 
-#[resource(kind = "monitor.processes", label = "Processes")]
+impl Monitor {
+    /// What the record holds: the shared table layout — the column sorted by, its direction, and
+    /// tree or flat.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "monitor.processes",
+    read_content = Monitor::read_document
+)]
 impl Monitor {}
 
 /// What Monitor does on this machine: work with no document delta, invoked
@@ -44,7 +63,7 @@ impl Monitor {}
 #[effect(operation = "monitor.effect")]
 pub enum MonitorEffect {
     /// Refresh processes.
-    #[effect(kind = "read")]
+    #[effect(kind = "read", label = "monitor-effect-refresh")]
     Refresh,
     /// Show tab.
     #[effect(kind = "read")]

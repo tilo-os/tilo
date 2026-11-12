@@ -682,10 +682,47 @@ pub fn spoken_name(name: &str, resolved: bool) -> Option<String> {
 /// A resource's name in the language this thread reads: the catalogue entry
 /// for its kind ([`tilo_resource::label::message_key`]) when one is loaded,
 /// and nothing when none is, so the resource keeps the name it declares.
-fn resource_label(key: &str) -> Option<String> {
+fn resource_label(
+    catalogue: Option<&'static tilo_resource::label::Catalogue>,
+    key: &str,
+) -> Option<String> {
+    if let Some(catalogue) = catalogue {
+        declared_catalogue(catalogue).ensure();
+    }
     manager_id()?;
     let said = I18nManager::lookup(key, None);
     (said != key).then_some(said)
+}
+
+/// The catalogue a declaration names its words in, loaded as any crate's
+/// embedded one: its words ride along in the window's language
+/// ([`EmbeddedCatalog::as_shared`]), its other languages read from the
+/// language packs. One per crate for the process's life.
+fn declared_catalogue(
+    catalogue: &'static tilo_resource::label::Catalogue,
+) -> &'static EmbeddedCatalog {
+    static LOADED: std::sync::Mutex<Vec<(&'static str, &'static EmbeddedCatalog)>> =
+        std::sync::Mutex::new(Vec::new());
+    let mut loaded = LOADED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((_, held)) = loaded.iter().find(|(id, _)| *id == catalogue.id) {
+        return held;
+    }
+    let sources: &'static [(&'static str, &'static str)] =
+        Box::leak(Box::new([("en-US", catalogue.source)]));
+    let held: &'static EmbeddedCatalog = Box::leak(Box::new(
+        EmbeddedCatalog::new("en-US", sources)
+            .with_language_pack(LanguagePack {
+                id: catalogue.id,
+                locales: catalogue.locales,
+                source_dir: catalogue.dir,
+            })
+            .with_system_locale()
+            .as_shared(),
+    ));
+    loaded.push((catalogue.id, held));
+    held
 }
 
 /// [`resource_label`] of a kind's noun, formatted with the count `1` (one of
@@ -749,7 +786,7 @@ impl I18nManager {
         // From here on every resource this thread publishes is named in the
         // language it just selected, and named again when that moves; so are
         // the nouns search names it by.
-        tilo_resource::label::install(resource_label);
+        tilo_resource::label::install(resource_label, Self::revision);
         tilo_resource::label::install_noun(resource_noun);
     }
 
@@ -936,7 +973,7 @@ impl I18nManager {
             if let (Some(mgr), Some(lang_id)) = (m.borrow_mut().as_mut(), lang_id)
                 && mgr.current_locale != lang_id
             {
-                mgr.current_locale = lang_id;
+                mgr.current_locale = lang_id.clone();
                 mgr.parse_shown();
                 mgr.revision = mgr.revision.wrapping_add(1);
             }

@@ -29,7 +29,7 @@ pub enum RemoteEffect {
     #[effect(view, idempotent)]
     ShowConnections,
     /// New connection.
-    #[effect(view)]
+    #[effect(view, label = "remote-new-connection")]
     New,
     /// Open connection settings.
     #[effect(view, row)]
@@ -38,13 +38,13 @@ pub enum RemoteEffect {
         connection: ConnectionId,
     },
     /// Connect.
-    #[effect(row, job, privileged, kind = "read")]
+    #[effect(row, job, privileged, kind = "read", label = "remote-connect-confirm")]
     Connect {
         #[param("The saved connection's id")]
         connection: ConnectionId,
     },
     /// Disconnect session.
-    #[effect(row, idempotent)]
+    #[effect(row, idempotent, label = "remote-disconnect")]
     Disconnect {
         #[param("The saved connection's id")]
         connection: ConnectionId,
@@ -121,10 +121,9 @@ pub(crate) fn connect_spec(connection: &Connection) -> ActionSpec {
         spec.unavailable(
             readiness.code(),
             if readiness == crate::session::TransportReadiness::InvalidProfile {
-                connection.profile_issue().map_or_else(
-                    || CATALOG.t(readiness.detail_message(connection.kind)),
-                    str::to_owned,
-                )
+                CATALOG.t(connection
+                    .profile_issue()
+                    .unwrap_or_else(|| readiness.detail_message(connection.kind)))
             } else {
                 CATALOG.t(readiness.detail_message(connection.kind))
             },
@@ -276,7 +275,7 @@ mod tests {
                 &spec.contract.availability,
                 tilo_actions::Availability::Unavailable { code, reason }
                     if code == "invalid_connection_profile"
-                        && reason.contains("exact certified endpoint")
+                        && reason.contains("exact endpoint id")
             ));
         }
 

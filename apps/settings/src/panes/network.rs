@@ -87,28 +87,28 @@ mod tests;
 #[effect(operation = "settings.effect")]
 pub enum NetworkEffect {
     /// Read the adopted network state, pending work and labels this pane shows.
-    #[effect(view, returns, kind = "read", label = "Inspect network state")]
+    #[effect(view, returns, kind = "read")]
     InspectNetworkState,
     /// Scan for Wi-Fi networks and read this device's connections again.
-    #[effect(job, idempotent, label = "Refresh networks")]
+    #[effect(job, idempotent)]
     RefreshNetworks,
     /// Turn Wi-Fi on or off.
-    #[effect(job, idempotent, label = "Wi-Fi")]
+    #[effect(job, idempotent)]
     SetWifi { on: bool },
     /// Turn the wired connection on or off.
-    #[effect(job, idempotent, label = "Wired connection")]
+    #[effect(job, idempotent)]
     SetWired { on: bool },
     /// Turn every radio off, or back on.
-    #[effect(job, idempotent, label = "Airplane mode")]
+    #[effect(job, idempotent, label = "net-airplane")]
     SetAirplaneMode { on: bool },
     /// Share this device's connection as a Wi-Fi hotspot, or stop.
-    #[effect(job, idempotent, label = "Hotspot")]
+    #[effect(job, idempotent)]
     #[effect(keywords = "tethering, share internet, personal hotspot")]
     SetHotspot { on: bool },
     /// Connect to a Wi-Fi network. Without a password a secure network uses
     /// one the person's devices share, else asks for it with the password
     /// prompt.
-    #[effect(job, row, label = "Connect")]
+    #[effect(job, row)]
     ConnectNetwork {
         #[param("The network's name (SSID)")]
         ssid: String,
@@ -116,41 +116,41 @@ pub enum NetworkEffect {
         password: Option<String>,
     },
     /// Close a network's password prompt.
-    #[effect(view, row, label = "Cancel")]
+    #[effect(view, row)]
     CancelConnect {
         #[param("The network's name (SSID)")]
         ssid: String,
     },
     /// Open a network's page: how it stands and its settings.
-    #[effect(view, row, label = "Network settings")]
+    #[effect(view, row, label = "net-network-settings")]
     OpenNetworkPage {
         #[param("The network's name (SSID)")]
         ssid: String,
     },
     /// Show every network in range.
-    #[effect(view, label = "Show all networks")]
+    #[effect(view)]
     ShowAllNetworks,
     /// Show every network this device knows, in range or not.
-    #[effect(view, label = "Known networks")]
+    #[effect(view, label = "net-known")]
     ShowKnownNetworks,
     /// Show mobile data and the SIM: the modem's whole page.
-    #[effect(view, label = "Mobile")]
+    #[effect(view)]
     ShowMobile,
     /// Show the wired connection's page: how it stands, its addresses and
     /// waking this machine over it.
-    #[effect(view, label = "Wired connection settings")]
+    #[effect(view)]
     ShowWired,
     /// Show the data each connection used, day by day.
-    #[effect(view, label = "Data usage")]
+    #[effect(view, label = "net-usage")]
     #[effect(keywords = "data usage, traffic, bandwidth, network statistics")]
     ShowDataUsage,
     /// Ask for the name and password of a network that does not broadcast
     /// its name, to join it.
-    #[effect(view, label = "Other network")]
+    #[effect(view, label = "net-hidden-title")]
     ShowHiddenNetwork,
     /// Join a network that does not broadcast its name; without its name,
     /// ask for it with the password prompt.
-    #[effect(job, label = "Join other network")]
+    #[effect(job)]
     JoinHiddenNetwork {
         #[param("The network's name (SSID)")]
         ssid: Option<String>,
@@ -158,7 +158,7 @@ pub enum NetworkEffect {
         password: Option<String>,
     },
     /// Join a saved network by itself whenever it is in range, or not.
-    #[effect(job, row, idempotent, label = "Connect automatically")]
+    #[effect(job, row, idempotent)]
     SetAutoconnect {
         #[param("The saved network's id")]
         profile: String,
@@ -166,7 +166,7 @@ pub enum NetworkEffect {
     },
     /// Which of several known networks in range is joined first: the
     /// higher.
-    #[effect(job, row, idempotent, label = "Priority")]
+    #[effect(job, row, idempotent)]
     SetPriority {
         #[param("The saved network's id")]
         profile: String,
@@ -175,7 +175,7 @@ pub enum NetworkEffect {
     },
     /// Count a saved network's data against a limit, never, or as the
     /// network says.
-    #[effect(job, row, idempotent, label = "Metered connection")]
+    #[effect(job, row, idempotent, label = "net-metered-connection")]
     SetMeteredPolicy {
         #[param("The saved network's id")]
         profile: String,
@@ -183,7 +183,7 @@ pub enum NetworkEffect {
         policy: String,
     },
     /// Which hardware address this device shows a saved Wi-Fi network.
-    #[effect(job, row, idempotent, label = "Hardware address")]
+    #[effect(job, row, idempotent, label = "net-hardware-address")]
     SetMacAddress {
         #[param("The saved network's id")]
         profile: String,
@@ -191,7 +191,7 @@ pub enum NetworkEffect {
         policy: String,
     },
     /// Join a saved network even when it does not broadcast its name.
-    #[effect(job, row, idempotent, label = "Hidden network")]
+    #[effect(job, row, idempotent, label = "net-hidden-network")]
     SetHiddenNetwork {
         #[param("The saved network's id")]
         profile: String,
@@ -199,7 +199,7 @@ pub enum NetworkEffect {
     },
     /// Set a profile's IPv4 settings; what is omitted is what its form
     /// holds.
-    #[effect(job, label = "Apply IP settings")]
+    #[effect(job, label = "net-apply-ip")]
     SetIpv4 {
         #[param("The saved profile's id")]
         profile: String,
@@ -213,7 +213,7 @@ pub enum NetworkEffect {
     },
     /// Set a profile's IPv6 settings; what is omitted is what its form
     /// holds.
-    #[effect(job, row, label = "Apply IPv6 settings")]
+    #[effect(job, row, label = "net-apply-ipv6")]
     SetIpv6 {
         #[param("The saved profile's id")]
         profile: String,
@@ -224,7 +224,7 @@ pub enum NetworkEffect {
         gateway: Option<String>,
     },
     /// Give a profile name servers of its own; none takes the network's.
-    #[effect(job, row, idempotent, label = "DNS servers")]
+    #[effect(job, row, idempotent, label = "net-dns-servers")]
     SetDns {
         #[param("The saved profile's id")]
         profile: String,
@@ -233,7 +233,7 @@ pub enum NetworkEffect {
     },
     /// Send a profile's connections through a proxy, or not; what is
     /// omitted is what its form holds.
-    #[effect(job, row, label = "Apply proxy")]
+    #[effect(job, row, label = "net-apply-proxy")]
     SetProxy {
         #[param("The saved profile's id")]
         profile: String,
@@ -244,7 +244,7 @@ pub enum NetworkEffect {
     },
     /// Change who a work or school network knows this device as; what is
     /// omitted is what its form holds.
-    #[effect(job, row, label = "Apply identity")]
+    #[effect(job, row, label = "net-apply-identity")]
     SetEnterpriseIdentity {
         #[param("The saved network's id")]
         profile: String,
@@ -254,14 +254,14 @@ pub enum NetworkEffect {
     },
     /// Show a saved network's password on its page, asking to authenticate
     /// first; or hide it.
-    #[effect(job, row, label = "Show password")]
+    #[effect(job, row, label = "net-show-password")]
     ShowNetworkPassword {
         #[param("The saved network's id")]
         profile: String,
     },
     /// Change a saved network's password; without one, ask for it with the
     /// password prompt.
-    #[effect(job, row, label = "Change password")]
+    #[effect(job, row, label = "net-change-password")]
     SetNetworkPassword {
         #[param("The saved network's id")]
         profile: String,
@@ -269,20 +269,20 @@ pub enum NetworkEffect {
         password: Option<String>,
     },
     /// Show or hide the QR code a phone scans to join a network.
-    #[effect(job, row, label = "Share network")]
+    #[effect(job, row)]
     ShowNetworkCode {
         #[param("The network's name (SSID)")]
         ssid: String,
     },
     /// Persist magic-packet wake for this saved connection. Enabled does not certify physical resume.
-    #[effect(job, row, idempotent, label = "Wake over network")]
+    #[effect(job, row, idempotent)]
     SetNetworkWake {
         #[param("The saved network's id")]
         profile: String,
         on: bool,
     },
     /// Forget a saved network and its password.
-    #[effect(job, row, destructive, label = "Forget network")]
+    #[effect(job, row, destructive)]
     #[effect(keywords = "remove network, forget wifi, delete network")]
     ForgetNetwork {
         #[param("The saved network's id")]
@@ -290,19 +290,19 @@ pub enum NetworkEffect {
     },
     /// Seal a saved Wi-Fi network's password for the person's other
     /// devices, so they join it too.
-    #[effect(job, row, label = "Share with my devices")]
+    #[effect(job, row, label = "net-share-devices")]
     ShareNetwork {
         #[param("The saved network's id")]
         profile: String,
     },
     /// Check the connection, its address, gateway and name servers.
-    #[effect(job, idempotent, label = "Run network diagnostics")]
+    #[effect(job, idempotent)]
     RunDiagnostics,
     /// Open the sign-in page of a network that asks for one.
-    #[effect(job, label = "Open network sign-in")]
+    #[effect(job)]
     OpenNetworkSignIn,
     /// Start the hotspot; what is omitted is what the hotspot form holds.
-    #[effect(job, label = "Start hotspot")]
+    #[effect(job)]
     StartHotspot {
         #[param("The hotspot's network name")]
         name: Option<String>,
@@ -312,28 +312,27 @@ pub enum NetworkEffect {
         band: Option<String>,
     },
     /// Show or hide the QR code others scan to join the hotspot.
-    #[effect(view, label = "Share hotspot QR code")]
+    #[effect(view)]
     ShowHotspotCode,
     /// Show the hotspot's setup: its name, password and band.
-    #[effect(view, label = "Hotspot setup")]
+    #[effect(view)]
     ShowHotspotSetup,
     /// Ask for the hotspot's password with the password prompt.
-    #[effect(view, label = "Hotspot password")]
+    #[effect(view)]
     AskHotspotPassword,
     /// Show the advanced network settings: work or school networks,
     /// diagnostics.
-    #[effect(view, label = "Advanced network settings")]
+    #[effect(view)]
     ShowAdvancedNetworkSettings,
     /// Show or hide the enterprise (802.1X) network setup.
-    #[effect(view, label = "Enterprise network setup")]
+    #[effect(view)]
     ShowEnterpriseSetup,
     /// Choose the organization's CA certificate file.
-    #[effect(label = "Choose CA certificate")]
     ChooseCaCertificate,
     /// Save an enterprise (802.1X) Wi-Fi network and connect; what is
     /// omitted is what the setup form holds, and a password omitted is asked
     /// for with the password prompt.
-    #[effect(job, label = "Save and connect")]
+    #[effect(job, label = "net-save-connect")]
     ConnectEnterpriseNetwork {
         #[param("The profile's name")]
         profile: Option<String>,

@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use iroh::{EndpointAddr, EndpointId};
 use tilo_endpoint_reachability::Reachability;
-use tilo_network_actor::{HostIdentity, NetCmd, NetEvent, WorkspaceControlRoute};
+use tilo_network_actor::{HostIdentity, NetCmd, NetEvent};
 use tilo_session_client::Cmd;
 use tilo_session_client::plane::Event;
 
@@ -767,19 +767,11 @@ async fn carry_out(
             .is_ok(),
         Cmd::Leave(ws) => plane.send(NetCmd::LeaveWorkspace { ws }).await.is_ok(),
         Cmd::Publish { ws, msg } => plane.send(NetCmd::Publish { ws, msg: *msg }).await.is_ok(),
-        Cmd::PublishSurfaceTo { ws, msg, viewers } => plane
-            .send(NetCmd::PublishSurfaceTo {
-                ws,
-                msg: *msg,
-                viewers,
-            })
-            .await
-            .is_ok(),
         Cmd::SendControl { ws, msg, target } => plane
             .send(NetCmd::PublishWorkspaceControl {
                 ws,
                 msg: *msg,
-                route: WorkspaceControlRoute::Direct { target },
+                target,
             })
             .await
             .is_ok(),

@@ -1,12 +1,8 @@
 //! A bound text field: edits are attributed changes, spliced into the CRDT text.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::{EditOutcome, InvokeOutcome, Patch, Value};
 
     fn world() -> (World, tilolang_runtime::ResourceRef) {

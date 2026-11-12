@@ -889,7 +889,7 @@ impl ChatApp {
             self.author_name(&message.author)
         };
         let agent = self.is_provider_output(message)
-            || self.agent_authors.contains_key(&message.author)
+            || self.is_agent_author(&message.author)
             || message
                 .author
                 .starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX);

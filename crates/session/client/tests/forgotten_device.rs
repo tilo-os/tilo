@@ -13,12 +13,10 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-mod support;
-
 use tilo_session_client::TransportPhase;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{HostSettings, enrol, restart_host, start_host_serving, start_peer, wait_for};
+use crate::support::{HostSettings, enrol, restart_host, start_host_serving, start_peer, wait_for};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_reset_host_refuses_its_forgotten_guest() {

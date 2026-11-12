@@ -92,7 +92,10 @@ impl ResourceApp for NotesShell {
             Notebook::IMPORT_MARKDOWN.with(crate::notebook::notebook::ImportMarkdown {
                 title,
                 markdown,
-                images: assets.into_iter().map(|(_, bytes)| bytes).collect(),
+                images: assets
+                    .into_iter()
+                    .map(|(_, bytes)| ui::tilo_resource::Bytes::to_keep(bytes))
+                    .collect(),
                 note: Some(crate::notebook::page_id(page)),
             }),
         ]

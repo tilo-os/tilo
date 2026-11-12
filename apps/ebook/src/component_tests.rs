@@ -337,8 +337,9 @@ fn a_handed_epub_opens_into_the_library_and_a_second_mount_shows_it_and_its_high
         .find(|entry| entry.id == book_id)
         .unwrap_or_else(|| panic!("the handed book joins the shelf: {shelf:?}"));
     assert_eq!(handed.content_hash().as_deref(), Some(hash.as_str()));
-    assert!(
-        content.has(&hash),
+    assert_eq!(
+        handed.content.read(&content),
+        Some(bytes),
         "the bytes live in the host's content store"
     );
 

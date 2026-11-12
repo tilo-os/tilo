@@ -595,8 +595,9 @@ impl ShortcutLibraryServices for ShortcutLibrary {
 pub struct DeskAuthority {
     tree: Mutex<tilo_desktop_model::DesktopTree>,
     /// Counts the desk's publications, so a reader that only cares whether
-    /// the desk changed since it last looked asks one atomic.
-    generation: std::sync::atomic::AtomicU64,
+    /// the desk changed since it last looked asks one number, and one that
+    /// waits for a change hears it ([`Self::until`]).
+    generation: tokio::sync::watch::Sender<u64>,
     revocations: crate::engine::Revocations,
     journal: Option<std::path::PathBuf>,
     /// The person at this device, and the ids they went by before it had an identity: a workspace
@@ -628,7 +629,7 @@ impl DeskAuthority {
         claim_earlier_owners(&mut tree, &names);
         Self {
             tree: Mutex::new(tree),
-            generation: std::sync::atomic::AtomicU64::new(0),
+            generation: tokio::sync::watch::Sender::new(0),
             revocations,
             journal,
             names,
@@ -641,14 +642,30 @@ impl DeskAuthority {
         claim_earlier_owners(&mut tree, &self.names);
         *self.tree.lock_recover() = tree;
         self.generation
-            .fetch_add(1, std::sync::atomic::Ordering::Release);
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
         tilo_identity_host::policy_change::announce();
+    }
+
+    /// Wait until the desk, as the loop publishes it, satisfies `held`: a
+    /// change written where the loop takes it from, such as a workspace's
+    /// governance, is in force for the broker from then on.
+    pub async fn until(&self, held: impl Fn(&tilo_desktop_model::DesktopTree) -> bool) {
+        let mut published = self.generation.subscribe();
+        while !self.holds(&held) {
+            if published.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
+    fn holds(&self, held: &impl Fn(&tilo_desktop_model::DesktopTree) -> bool) -> bool {
+        held(&self.tree.lock_recover())
     }
 
     /// How many times the desk was published; equal values mean the desk
     /// did not change between the two reads.
     pub fn generation(&self) -> u64 {
-        self.generation.load(std::sync::atomic::Ordering::Acquire)
+        *self.generation.borrow()
     }
 }
 
@@ -723,6 +740,14 @@ impl WorkspaceAuthority for DeskAuthority {
     fn announces_policy_changes(&self) -> bool {
         true
     }
+
+    /// What each app installed here is called, as this session's app lists last read it: what
+    /// the windows it serves name another app's changes by.
+    fn installed_apps(&self) -> Vec<collab_types::history::NamedApp> {
+        crate::app_icons::app_lists()
+            .map(|lists| lists.named.clone())
+            .unwrap_or_default()
+    }
 }
 
 /// A workspace's people as this session's engine writes them: the change goes
@@ -782,6 +807,114 @@ impl WorkspaceMemberships for SessionMemberships {
                 )
                 .await
         })
+    }
+}
+
+/// The grants a person gives an app for another app's action, written into
+/// the workspace's governance by this session's engine, as every other change
+/// of its people is: signed with this device's key and admitted by every
+/// device of the workspace. A grant is in force once the desk the broker
+/// decides against carries it.
+pub(crate) struct SessionGrants {
+    engine: std::sync::Arc<crate::engine::Engine>,
+    desk: std::sync::Arc<DeskAuthority>,
+}
+
+impl SessionGrants {
+    pub(crate) const fn new(
+        engine: std::sync::Arc<crate::engine::Engine>,
+        desk: std::sync::Arc<DeskAuthority>,
+    ) -> Self {
+        Self { engine, desk }
+    }
+
+    /// Write `change` into `workspace`'s governance as this device.
+    fn commit(
+        &self,
+        workspace: &str,
+        change: tilo_action_policy::Change,
+    ) -> tilo_peer_state::owner_commit::CommitFuture {
+        use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+        let engine = std::sync::Arc::clone(&self.engine);
+        let request = OwnerCommitRequest {
+            workspace: workspace.to_owned(),
+            operation: CommitOperation::WorkspaceMembershipCommand {
+                invocation: uuid::Uuid::new_v4(),
+                caller: engine.identity().device_cert.clone(),
+                command:
+                    tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
+                        change,
+                    },
+            },
+        };
+        Box::pin(async move {
+            let identity = engine.identity();
+            engine
+                .owner()
+                .commit_workspace_membership_command(
+                    request,
+                    identity.signer.as_ref(),
+                    std::time::SystemTime::now(),
+                )
+                .await
+        })
+    }
+
+    /// Whether the desk the broker decides against shows `grant` in
+    /// `workspace`.
+    fn shown(
+        tree: &tilo_desktop_model::DesktopTree,
+        workspace: &str,
+        grant: &tilo_action_policy::GrantId,
+    ) -> bool {
+        tilo_broker_core::services::workspace_in(tree, workspace)
+            .is_some_and(|held| held.policy.grants.iter().any(|kept| &kept.id == grant))
+    }
+}
+
+impl tilo_action_broker::services::AppActionGrants for SessionGrants {
+    /// The person at this device grants where its engine holds the
+    /// workspace's governance and the workspace lets this device administer it.
+    fn may_grant(&self, workspace: &str, person: &str) -> bool {
+        let names = &self.desk.names;
+        (names.person == person || names.earlier.iter().any(|earlier| earlier == person))
+            && tilo_desktop_model::WorkspaceId::parse(workspace)
+                .is_some_and(|id| self.engine.holds(id))
+            && self.engine.administers(workspace)
+    }
+
+    fn record(
+        &self,
+        request: &tilo_action_broker::app_actions::AppActionConsentRequest,
+        grant: tilo_action_policy::Grant,
+        _answer: tilo_action_broker::app_actions::AppActionConsent,
+    ) -> tilo_action_broker::services::GrantRecording {
+        let workspace = request.workspace.clone();
+        let id = grant.id.clone();
+        let committed = self.commit(&workspace, tilo_action_policy::Change::Grant(grant));
+        let desk = std::sync::Arc::clone(&self.desk);
+        Box::pin(async move {
+            committed.await?;
+            desk.until(|tree| Self::shown(tree, &workspace, &id)).await;
+            Ok(id.as_str().to_owned())
+        })
+    }
+
+    fn revoke(&self, workspace: &str, grant: &str) {
+        let committed = self.commit(
+            workspace,
+            tilo_action_policy::Change::Revoke(tilo_action_policy::GrantId::new(grant)),
+        );
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            tracing::warn!(grant, "no runtime to take back a grant given once on");
+            return;
+        };
+        let grant = grant.to_owned();
+        runtime.spawn(async move {
+            if let Err(error) = committed.await {
+                tracing::warn!(grant, %error, "a grant given once could not be taken back");
+            }
+        });
     }
 }
 
@@ -855,6 +988,7 @@ fn seams(
     // The desk decides who may administer a workspace's identity, and the
     // fabric is where pairing reaches the person's other devices.
     let desk_authority = std::sync::Arc::clone(&desk);
+    let grants_desk = std::sync::Arc::clone(&desk);
     let steps_fabric = fabric.clone();
     // The certificate checks this session's broker decides a join and a
     // retained action against: the session's own, or one of the tests'.
@@ -1049,10 +1183,15 @@ fn seams(
         // A grant for an app to take another app's action is kept in a
         // workspace's own record, which this session's engine commits; the
         // host records none of them for the door to ask.
-        app_action_grants: Seam::unserved(
-            "an app's grant for another app's actions is recorded in the workspace's own \
-             governance, which no app reaches here",
-        ),
+        // A grant the person gives an app for another app's action, on the
+        // sheet that asked them, is recorded in the workspace's own
+        // governance, which this session's engine writes.
+        app_action_grants: Seam::when(engine.clone().map(|engine| {
+            std::sync::Arc::new(SessionGrants::new(
+                engine,
+                std::sync::Arc::clone(&grants_desk),
+            )) as std::sync::Arc<dyn tilo_action_broker::services::AppActionGrants>
+        })),
         launchable_catalogue: Seam::when(launchable_catalogue),
         record_content: Seam::when(record_content.map(|content| content.route())),
         // This session's channel keys, when it holds workspaces: a route's keys

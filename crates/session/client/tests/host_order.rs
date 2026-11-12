@@ -13,26 +13,19 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-#[path = "support/participant.rs"]
-mod participant;
-mod support;
-
-// Placing the workspace has the host build its governance in an automerge worker.
-tilo_automerge_isolate::test_worker!();
-
 use automerge::AutoCommit;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_session_client::{Link, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{enrol, holds, ready, route, say, start_host, start_peer};
+use crate::support::{enrol, holds, ready, route, say, start_host, start_peer};
 
 const EACH: usize = 12;
 
 /// Wait until everything `peer` published is durable, and answer the host's acknowledgement of
 /// its writes to the note: how many it kept, and its order of the last.
 async fn durable(peer: &Link) -> (u64, u64) {
-    support::durable(peer).await;
+    crate::support::durable(peer).await;
     let note = peer
         .snapshot()
         .health
@@ -61,7 +54,7 @@ async fn https_and_iroh_commits_share_one_host_order() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&host.relay, &root).await;
 
     let browser_peer = start_peer(
         host.iroh(),
@@ -69,8 +62,8 @@ async fn https_and_iroh_commits_share_one_host_order() {
         host_device.cert.clone(),
         browser.key.clone(),
     );
-    support::place(&host.relay, &laptop.cert).await;
-    support::place(&host.relay, &observer.cert).await;
+    crate::support::place(&host.relay, &laptop.cert).await;
+    crate::support::place(&host.relay, &observer.cert).await;
     let laptop_peer = start_peer(
         host.iroh(),
         laptop.cert.clone(),
@@ -84,7 +77,8 @@ async fn https_and_iroh_commits_share_one_host_order() {
         observer.key.clone(),
     );
     for peer in [&browser_peer, &laptop_peer, &observer_peer] {
-        peer.join_placed(support::WORKSPACE, "Workspace").unwrap();
+        peer.join_placed(crate::support::WORKSPACE, "Workspace")
+            .unwrap();
     }
     ready(&[&browser_peer, &laptop_peer, &observer_peer]).await;
 

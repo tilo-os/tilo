@@ -359,7 +359,7 @@
   "tilo-segment": {"libraries": 1154143, "tests": 3081920},
   "tilo-selector": {"libraries": 780842, "tests": 3157088},
   "tilo-service": {"libraries": 4236897, "tests": 17326744},
-  "tilo-session": {"libraries": 312305491, "tests": 154584985432},
+  "tilo-session": {"libraries": 278808495, "tests": 6084041992},
   "tilo-session-client": {"libraries": 47287096, "tests": 63411888688},
   "tilo-session-core": {"libraries": 13082547, "tests": 143314952},
   "tilo-session-logging": {"libraries": 544638, "tests": 117860064},

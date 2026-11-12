@@ -39,10 +39,12 @@ root.setAttribute('data-first-run',step==='opening'?'connected':step);
 // step at the first frame; first-run.mjs takes over and asks the host.
 globalThis.__tiloSetupPaint=function(){
  var $=function(id){return document.getElementById(id);},screen=$('first-run'),shown=setup.shown||{};
+ // The prompt breaks only between its words, as first-run.mjs `showPrompt` writes it.
+ var put=function(id,text){var at=$(id);at.textContent='';String(text||'').split(/( +)/).forEach(function(part){if(!part)return;if(/^ +$/.test(part)){at.appendChild(document.createTextNode(part));return;}var word=document.createElement('span');word.className='fr-word';word.textContent=part;at.appendChild(word);});};
  if(!screen)return;
  var fresh=offer&&offer.expiresAt-now>60000&&shown.offer?shown.offer:'';
  screen.dataset.mode=shown.mode==='sign-in'?'sign-in':'setup';
- if(step===''){if(fresh){$('first-run-offer').textContent=fresh;$('first-run-offer-note').textContent='';}return;}
+ if(step===''){if(fresh){put('first-run-offer',fresh);$('first-run-offer-note').textContent='';}return;}
  if(step==='connected'||step==='opening'){
   screen.dataset.skipped=String(!shown.heading);
   $('first-run-connected').textContent=shown.heading||'Opening your workspace';
@@ -50,8 +52,8 @@ globalThis.__tiloSetupPaint=function(){
   return;
  }
  screen.dataset.manual=String(setup.manual===true);
- if(step==='expired'){$('first-run-prompt').textContent=fresh;return;}
- $('first-run-prompt').textContent=shown.prompt||'';
+ if(step==='expired'){put('first-run-prompt',fresh);return;}
+ put('first-run-prompt',shown.prompt);
  screen.dataset.copied=String(setup.copied===true);
  var lines=shown.lines||[],list=$('first-run-steps');
  for(var i=0;i<lines.length;i++){

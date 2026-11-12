@@ -93,7 +93,7 @@ impl Core {
         if let Some(hit) = self.retry_rect {
             children.push(
                 AccessNode::new(Role::Button)
-                    .with_name(RETRY)
+                    .with_name(crate::i18n::t(RETRY))
                     .with_description(crate::i18n::t("weather-refresh"))
                     .with_hashed_key(RETRY_KEY)
                     .with_bounds(hit),
@@ -224,7 +224,7 @@ impl Core {
                 return;
             }
             ctx.text_role(
-                "Loading the forecast",
+                &t("weather-loading-forecast"),
                 TextRole::Body,
                 ctx.theme.text_dim,
                 Point::new(x, y),
@@ -585,8 +585,8 @@ struct Notice {
     height: f64,
 }
 
-/// The label of the action that fetches the forecast again.
-const RETRY: &str = "Retry";
+/// The catalogue message naming the action that fetches the forecast again.
+const RETRY: &str = "weather-retry";
 
 /// The Retry action's key among the forecast's accessible children.
 pub const RETRY_KEY: &str = "weather.retry";
@@ -599,16 +599,17 @@ pub const DAYS_KEY: &str = "weather.days";
 
 impl Notice {
     fn new(ctx: &mut PaintCtx<'_>, kind: ForecastNotice, width: f64) -> Self {
-        let height = Banner::height(&Self::content_for(kind), width, ctx.text, ctx.theme);
+        let retry = crate::i18n::t(RETRY);
+        let height = Banner::height(&Self::content_for(kind, &retry), width, ctx.text, ctx.theme);
         Self { kind, height }
     }
 
-    fn content_for(kind: ForecastNotice) -> BannerContent<'static> {
+    fn content_for(kind: ForecastNotice, retry: &str) -> BannerContent<'_> {
         match kind {
             ForecastNotice::UpdateFailed => {
                 BannerContent::new(BannerKind::Error, "Couldn't update the forecast")
                     .with_message(Some(crate::i18n::t("weather-notice-retry-message")))
-                    .action(RETRY)
+                    .action(retry)
             }
             ForecastNotice::Offline => BannerContent::new(BannerKind::Warning, "You're offline")
                 .with_message(Some(crate::i18n::t("weather-notice-offline-message"))),
@@ -618,7 +619,8 @@ impl Notice {
     /// Paint the banner into `r`. Returns where its Retry action takes a
     /// pointer, when it offers one.
     fn paint(&self, ctx: &mut PaintCtx<'_>, r: Rect, pointer: Point) -> Option<Rect> {
-        Banner::paint(ctx, r, &Self::content_for(self.kind), pointer).action
+        let retry = crate::i18n::t(RETRY);
+        Banner::paint(ctx, r, &Self::content_for(self.kind, &retry), pointer).action
     }
 }
 

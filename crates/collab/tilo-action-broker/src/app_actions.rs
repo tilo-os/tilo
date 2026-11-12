@@ -164,10 +164,6 @@ pub enum AppActionConsent {
 }
 
 impl AppActionConsent {
-    /// The allowing answers, in the order the sheet offers them: the
-    /// narrowest first, and selected by default.
-    pub const ALLOWING: [Self; 3] = [Self::Once, Self::Session, Self::Always];
-
     /// How long the grant this answer records lives; `None` records
     /// nothing.
     #[must_use]
@@ -388,6 +384,5 @@ mod tests {
             Some(Lifetime::UntilRevoked)
         );
         assert_eq!(AppActionConsent::Deny.grant_lifetime(), None);
-        assert_eq!(AppActionConsent::ALLOWING[0], AppActionConsent::Once);
     }
 }

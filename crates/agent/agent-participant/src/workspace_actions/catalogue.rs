@@ -6,8 +6,8 @@ use tilo_actions::remote::{CatalogueProvider, workspace_provider};
 
 use super::{
     ActionHostError, ActionKind, Caller, CataloguePage, CatalogueQuery, CatalogueRow,
-    DEFAULT_ROWS_RECORDS, DocumentRoute, Worker, catalogue_keys, provider_workspace, record_of,
-    record_provider, room_workspace_id,
+    DEFAULT_ROWS_RECORDS, DocumentRoute, Worker, WorkspaceState, catalogue_keys,
+    provider_workspace, record_of, record_provider, room_workspace_id,
 };
 
 impl Worker {
@@ -81,18 +81,7 @@ impl Worker {
             Vec::new()
         };
         let mut page = if query.view_resource.is_some() {
-            let mut rows = Vec::new();
-            for route in &wanted {
-                let provider = record_provider(route);
-                match self.listed(workspace_id, bounded.as_ref(), route, &state) {
-                    Ok(descriptors) => rows.extend(descriptors.into_iter().map(|descriptor| {
-                        CatalogueRow::for_action(provider.clone(), route.app_id.clone(), descriptor)
-                    })),
-                    Err(error) => {
-                        tracing::warn!(%error, record = %route.record, "workspace actions: a record did not mount");
-                    }
-                }
-            }
+            let mut rows = self.listed_rows(workspace_id, bounded.as_ref(), &wanted, &state);
             rows.extend(own_rows);
             CataloguePage::from_rows(revision, rows, query)
         } else if !query.cursor.is_empty() && query.revision.as_deref() != Some(revision.as_str()) {
@@ -130,6 +119,35 @@ impl Worker {
                 .collect();
         }
         Ok(page)
+    }
+
+    /// The rows a listing shows for `wanted`: what each record offers, and,
+    /// where one does not mount, why it did not, named so the line says which
+    /// record and not only that one failed.
+    fn listed_rows(
+        &mut self,
+        workspace_id: u64,
+        bounded: Option<&super::bounded::Bounded>,
+        wanted: &[DocumentRoute],
+        state: &WorkspaceState,
+    ) -> Vec<CatalogueRow> {
+        let mut rows = Vec::new();
+        for route in wanted {
+            let provider = record_provider(route);
+            match self.listed(workspace_id, bounded, route, state) {
+                Ok(descriptors) => rows.extend(descriptors.into_iter().map(|descriptor| {
+                    CatalogueRow::for_action(provider.clone(), route.app_id.clone(), descriptor)
+                })),
+                Err(error) => tracing::warn!(
+                    %error,
+                    app = %route.app_id,
+                    record = %route.record,
+                    "workspace actions: {} did not mount",
+                    super::named(route)
+                ),
+            }
+        }
+        rows
     }
 
     fn open_rows(&self, workspace: &str) -> Vec<CatalogueRow> {

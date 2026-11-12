@@ -1904,8 +1904,7 @@ impl ImportApp {
                         *operation = *saved;
                         self.status = operation
                             .failure()
-                            .map(str::to_owned)
-                            .unwrap_or_else(|| state_summary(operation.state()));
+                            .map_or_else(|| state_summary(operation.state()), str::to_owned);
                         self.status_is_error = !matches!(
                             operation.state(),
                             OperationState::Complete | OperationState::Cancelled
@@ -2593,7 +2592,7 @@ impl ImportApp {
                     Text::new(&error).with_live(Politeness::Assertive),
                 )])
                 .with_header(SectionHeader::heading(
-                    &CATALOG.t("imager-import-section-unavailable"),
+                    CATALOG.t("imager-import-section-unavailable"),
                 )),
             ));
         }

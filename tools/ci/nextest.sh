@@ -121,24 +121,25 @@ fi
 # An agent's host answers video renders in the `tilo-video-render` helper, which no
 # package depends on; named explicitly, it is found also where an archive of
 # test binaries runs away from the build directory.
+# A run handed the program already (t builds it once in the family's build, t.toml's `starts`, and
+# names it to every shard as NEXTEST_BIN_EXE_<bin>) builds nothing: built here, every shard of the
+# package compiled its ~1,030 units again.
 if tests tilo-agent-participant; then
-    cargo build --locked -p tilo-video-render --bin tilo-video-render
-    export TILO_VIDEO_RENDER="${CARGO_TARGET_DIR:-$root/target}/debug/tilo-video-render"
-fi
-
-# The shell's sandbox and desktop tests drive a Wayland client from its own
-# package, so a shell edit does not rebuild it; cargo only hands a test its own
-# package's binaries. It resolves as a narrowed test build does (with workspace-unify beside it),
-# so its units are the ones that build already made.
-if (( nextest )) && tests shell; then
-    cargo build --locked -p click-test-client -p workspace-unify --bin click_test_client
-    export TILO_CLICK_TEST_CLIENT="${CARGO_TARGET_DIR:-$root/target}/debug/click_test_client"
+    handed=$(printenv NEXTEST_BIN_EXE_tilo-video-render || true)
+    if [[ -n $handed && -x $handed ]]; then
+        export TILO_VIDEO_RENDER=$handed
+    else
+        cargo build --locked -p tilo-video-render --bin tilo-video-render
+        export TILO_VIDEO_RENDER="${CARGO_TARGET_DIR:-$root/target}/debug/tilo-video-render"
+    fi
 fi
 
 # The app-cli and app-host trust tests execute the installer, which no package
-# depends on.
+# depends on. A run handed it already (t's `starts`, NEXTEST_BIN_EXE_tilo-install) has it where the
+# build left it, beside the tests' own build, and builds nothing.
 if tests app-cli app-host; then
-    cargo build --locked -p install --bin tilo-install
+    handed=$(printenv NEXTEST_BIN_EXE_tilo-install || true)
+    [[ -n $handed && -x $handed ]] || cargo build --locked -p install --bin tilo-install
 fi
 
 # The sign-in and rollback tests observe an emulated TPM, which the builder has

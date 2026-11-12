@@ -81,6 +81,7 @@ impl TabItemProps {
             icon: None,
             attention: self.attention,
             named: false,
+            app_name: None,
         }
     }
 

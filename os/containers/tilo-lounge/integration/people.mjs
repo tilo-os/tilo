@@ -204,6 +204,8 @@ const until = async (tab, expression, what, timeout = stepLimit(3)) => {
     progress: document.documentElement.dataset.arrivalProgress ?? null,
     status: document.getElementById('status')?.textContent ?? null,
     waited: ${JSON.stringify(what)},
+    search: (() => { const s = globalThis.tiloMount?.state?.(); return s?.searchOpen ? {query: s.searchCard?.query ?? null,
+      searching: s.searchSearching ?? null, rows: (s.searchCard?.rows ?? []).slice(0, 3).map(row => row.title)} : 'closed'; })(),
     framesWhenTheWaitBegan: globalThis.__tiloWaitFrames ?? null,
     framesNow: globalThis.tiloMount?.state()?.frames ?? null,
   })`).catch(() => 'unreadable');

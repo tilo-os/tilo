@@ -18,7 +18,10 @@ use std::time::Duration;
 use iroh::{EndpointAddr, EndpointId};
 #[cfg(target_os = "linux")]
 use neighbour_wire::NeighbourMsg;
-use tilo_desktop::here::{Here, LiveMember, Person};
+#[cfg(target_os = "linux")]
+use tilo_desktop::here::Person;
+use tilo_desktop::here::{Here, LiveMember};
+#[cfg(target_os = "linux")]
 use tilo_desktop_model::DesktopTree;
 #[cfg(target_os = "linux")]
 use tilo_desktop_surface::DesktopHandle;
@@ -332,10 +335,10 @@ pub(crate) struct Seat {
     /// workspace it was heard in: what the calls playing there draw
     /// ([`Self::take_call_pictures`]).
     call_pictures: RefCell<Vec<(String, Heard)>>,
-    /// The window pages the workspaces' live planes heard since the last call, each with the
-    /// workspace it was heard in: what the desks showing those windows draw
-    /// ([`Self::take_page_objects`]).
-    page_objects: RefCell<Vec<(String, Heard)>>,
+    /// The shared windows' pictures and pages the workspaces' live planes heard since the last
+    /// call, each with the workspace it was heard in: what the desks showing those windows draw
+    /// ([`Self::take_window_objects`]).
+    window_objects: RefCell<Vec<(String, Heard)>>,
     /// The workspaces whose host said their owner deleted them since the last call: what the
     /// session takes off the desk and out of this device's record ([`Self::take_deleted`]).
     deleted: RefCell<Vec<tilo_desktop_model::WorkspaceId>>,
@@ -369,6 +372,12 @@ pub(crate) struct Seat {
     reachability: RefCell<Reachability>,
     /// The workspaces' live plane: their relays and this device's sessions in them.
     live: RefCell<Option<crate::live::Live>>,
+    /// Planes a test joined this session to, by workspace, in place of the live plane's, and the
+    /// runtime they run on.
+    #[cfg(test)]
+    test_planes: RefCell<std::collections::BTreeMap<String, Arc<tilo_live::plane::Plane>>>,
+    #[cfg(test)]
+    test_runtime: RefCell<Option<tokio::runtime::Handle>>,
 }
 
 #[cfg(target_os = "linux")]
@@ -585,12 +594,61 @@ impl Seat {
         std::mem::take(&mut *self.call_pictures.borrow_mut())
     }
 
-    /// Take the window pages the workspaces' live planes heard since the last call, each with the
-    /// workspace it was heard in and already opened: what the desk showing that window draws.
+    /// Take the shared windows' pictures and pages the workspaces' live planes heard since the last
+    /// call, each with the workspace it was heard in and already opened: what the desk showing that
+    /// window draws.
     #[must_use]
     #[cfg(target_os = "linux")]
-    pub(crate) fn take_page_objects(&self) -> Vec<(String, Heard)> {
-        std::mem::take(&mut *self.page_objects.borrow_mut())
+    pub(crate) fn take_window_objects(&self) -> Vec<(String, Heard)> {
+        #[cfg(test)]
+        for (workspace, plane) in self.test_planes.borrow().iter() {
+            while let Some(heard) = plane.try_recv() {
+                if matches!(heard.track, Track::Page(_) | Track::Window(..)) {
+                    self.window_objects
+                        .borrow_mut()
+                        .push((workspace.clone(), heard));
+                }
+            }
+        }
+        std::mem::take(&mut *self.window_objects.borrow_mut())
+    }
+
+    /// The workspaces' live planes this session is in now, by workspace.
+    #[must_use]
+    #[cfg(target_os = "linux")]
+    pub(crate) fn planes(
+        &self,
+    ) -> std::collections::BTreeMap<String, Arc<tilo_live::plane::Plane>> {
+        #[cfg(test)]
+        if !self.test_planes.borrow().is_empty() {
+            return self.test_planes.borrow().clone();
+        }
+        self.live()
+            .map(|live| {
+                live.planes()
+                    .into_iter()
+                    .map(|(workspace, plane)| (workspace.to_string(), plane))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Show `tracks` of `sender` on `plane`, and no other of its tracks: the plane's readers start
+    /// on the runtime the planes run on, not on the session's own thread.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn show_tracks(
+        &self,
+        plane: &tilo_live::plane::Plane,
+        sender: [u8; 32],
+        tracks: &[Track],
+    ) {
+        #[cfg(test)]
+        let runtime = self.test_runtime.borrow().clone();
+        #[cfg(not(test))]
+        let runtime = None;
+        let runtime = runtime.or_else(|| self.live().and_then(|live| live.runtime()));
+        let _entered = runtime.as_ref().map(tokio::runtime::Handle::enter);
+        plane.show(sender, tracks);
     }
 
     /// Send one message of `surface`'s stream on the topic of the workspace it is shared in, to
@@ -803,9 +861,10 @@ impl Seat {
                         .push((workspace.clone(), object));
                     continue;
                 }
-                if matches!(object.track, Track::Page(_)) {
-                    // A window's page, already opened: the desk showing that window draws it.
-                    self.page_objects
+                if matches!(object.track, Track::Page(_) | Track::Window(..)) {
+                    // A shared window's pictures or page, already opened: the desk showing that
+                    // window draws them.
+                    self.window_objects
                         .borrow_mut()
                         .push((workspace.clone(), object));
                     continue;
@@ -867,6 +926,7 @@ impl Roster {
         }
     }
 
+    #[cfg(target_os = "linux")]
     /// Who is here, as the desktop lists them: `tree` places them where their focused record is
     /// shown — `records` (what each window shows, by tab) names the window each person works in —
     /// and `app_name` names an app.
@@ -874,25 +934,26 @@ impl Roster {
     pub(crate) fn people(
         &self,
         tree: &DesktopTree,
-        records: &std::collections::BTreeMap<tilo_desktop_model::TabId, String>,
+        notes: &crate::continuations::Continuations,
         app_name: &dyn Fn(&str) -> Option<String>,
     ) -> Vec<Person> {
         self.here.borrow().people(
             tree,
-            &crate::sync::layout::bindings(tree, records),
+            &crate::sync::layout::bindings_of(tree, &notes.windows()),
             app_name,
         )
     }
 
+    #[cfg(target_os = "linux")]
     /// Who is here, written into `tree`'s active workspace as its collaborators: the roster every
     /// surface that lists people reads.
     pub(crate) fn show(
         &self,
         tree: &mut DesktopTree,
-        records: &std::collections::BTreeMap<tilo_desktop_model::TabId, String>,
+        notes: &crate::continuations::Continuations,
         app_name: &dyn Fn(&str) -> Option<String>,
     ) -> Vec<Person> {
-        let people = self.people(tree, records, app_name);
+        let people = self.people(tree, notes, app_name);
         // Whose view this person follows, so the bar keeps that face when it has room for only one.
         let following = self.here.borrow().following().map(str::to_owned);
         tilo_desktop::here::overlay_collaborators(tree, &people, following.as_deref());
@@ -1400,29 +1461,51 @@ impl Client {
         self.hosting.seat.take_call_pictures()
     }
 
-    /// Take the window pages the workspaces' live planes heard since the last call, already opened.
+    /// Take the shared windows' pictures and pages the workspaces' live planes heard since the last
+    /// call, already opened.
     #[must_use]
     #[cfg(target_os = "linux")]
-    pub(crate) fn take_page_objects(&self) -> Vec<(String, Heard)> {
-        self.hosting.seat.take_page_objects()
+    pub(crate) fn take_window_objects(&self) -> Vec<(String, Heard)> {
+        self.hosting.seat.take_window_objects()
     }
 
-    /// Send one message of `surface`'s stream on the topic of the workspace it is shared in.
+    /// The workspaces' live planes this session is in now, by workspace: what a call's voice and
+    /// pictures and a shared window's pictures and pages travel.
+    #[must_use]
     #[cfg(target_os = "linux")]
-    pub(crate) fn publish_surface(
+    pub(crate) fn planes(
         &self,
-        ws: Topic,
-        msg: NeighbourMsg,
-        viewers: &[neighbour_wire::PeerId],
-    ) {
-        self.inner.say(Cmd::PublishSurfaceTo {
-            ws,
-            msg: Box::new(msg),
-            viewers: viewers.to_vec(),
-        });
+    ) -> std::collections::BTreeMap<String, Arc<tilo_live::plane::Plane>> {
+        self.hosting.seat.planes()
     }
 
-    /// Say `msg` to `target` alone, as a workspace-control message on `ws`'s topic.
+    /// Join this session to `planes`, by workspace, running on `runtime`, in place of a live plane
+    /// of its own: what a test's sessions meet on.
+    #[cfg(test)]
+    #[cfg(target_os = "linux")]
+    pub(crate) fn on_planes(
+        self,
+        planes: std::collections::BTreeMap<String, Arc<tilo_live::plane::Plane>>,
+        runtime: tokio::runtime::Handle,
+    ) -> Self {
+        *self.hosting.seat.test_planes.borrow_mut() = planes;
+        *self.hosting.seat.test_runtime.borrow_mut() = Some(runtime);
+        self
+    }
+
+    /// Show `tracks` of `sender` on `plane`, and no other of its tracks ([`Seat::show_tracks`]).
+    #[cfg(target_os = "linux")]
+    pub(crate) fn show_tracks(
+        &self,
+        plane: &tilo_live::plane::Plane,
+        sender: [u8; 32],
+        tracks: &[Track],
+    ) {
+        self.hosting.seat.show_tracks(plane, sender, tracks);
+    }
+
+    /// Say `msg` to `target` alone, as a workspace-control message on `ws`'s topic: a shared
+    /// window's control, directly or through the workspace's host.
     #[cfg(target_os = "linux")]
     pub(crate) fn publish_control(&self, ws: Topic, msg: NeighbourMsg, target: EndpointId) {
         self.inner.say(Cmd::SendControl {
@@ -1430,13 +1513,6 @@ impl Client {
             msg: Box::new(msg),
             target,
         });
-    }
-
-    /// The workspaces' live plane: what this session says into and hears from each of them.
-    #[must_use]
-    #[cfg(target_os = "linux")]
-    pub(crate) fn live(&self) -> Option<std::cell::Ref<'_, crate::live::Live>> {
-        self.hosting.seat.live()
     }
 
     /// Give this session's Nearby Send the fabric it runs on.
@@ -1629,25 +1705,27 @@ impl Client {
         tilo_network_actor::behaviour::peer_liveness_handle(&self.publisher())
     }
 
+    #[cfg(target_os = "linux")]
     /// Who is here, as the desktop lists them.
     #[must_use]
-    pub fn people(
+    pub(crate) fn people(
         &self,
         tree: &DesktopTree,
-        records: &std::collections::BTreeMap<tilo_desktop_model::TabId, String>,
+        notes: &crate::continuations::Continuations,
         app_name: &dyn Fn(&str) -> Option<String>,
     ) -> Vec<Person> {
-        self.hosting.roster.people(tree, records, app_name)
+        self.hosting.roster.people(tree, notes, app_name)
     }
 
+    #[cfg(target_os = "linux")]
     /// Who is here, written into `tree`'s active workspace as its collaborators.
-    pub fn show(
+    pub(crate) fn show(
         &self,
         tree: &mut DesktopTree,
-        records: &std::collections::BTreeMap<tilo_desktop_model::TabId, String>,
+        notes: &crate::continuations::Continuations,
         app_name: &dyn Fn(&str) -> Option<String>,
     ) -> Vec<Person> {
-        self.hosting.roster.show(tree, records, app_name)
+        self.hosting.roster.show(tree, notes, app_name)
     }
 
     /// The waves at this person since the last call, as the bar says them.
@@ -1704,7 +1782,7 @@ impl Seat {
                 surfaces: RefCell::new(Vec::new()),
                 call_audio: RefCell::new(Vec::new()),
                 call_pictures: RefCell::new(Vec::new()),
-                page_objects: RefCell::new(Vec::new()),
+                window_objects: RefCell::new(Vec::new()),
                 deleted: RefCell::new(Vec::new()),
                 engine,
                 link,
@@ -1717,6 +1795,10 @@ impl Seat {
                 device_actions,
                 reachability: RefCell::new(reachability),
                 live: RefCell::new(live),
+                #[cfg(test)]
+                test_planes: RefCell::default(),
+                #[cfg(test)]
+                test_runtime: RefCell::default(),
             }),
         })
     }
@@ -1735,7 +1817,7 @@ impl Seat {
             surfaces: RefCell::new(Vec::new()),
             call_audio: RefCell::new(Vec::new()),
             call_pictures: RefCell::new(Vec::new()),
-            page_objects: RefCell::new(Vec::new()),
+            window_objects: RefCell::new(Vec::new()),
             deleted: RefCell::new(Vec::new()),
             engine: None,
             link: None,
@@ -1748,6 +1830,10 @@ impl Seat {
             device_actions: Arc::new(std::sync::OnceLock::new()),
             reachability: RefCell::new(Reachability::default()),
             live: RefCell::new(None),
+            #[cfg(test)]
+            test_planes: RefCell::default(),
+            #[cfg(test)]
+            test_runtime: RefCell::default(),
         }
     }
 }

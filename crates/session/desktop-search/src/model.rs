@@ -93,6 +93,31 @@ pub enum Target {
     Prefer { source: String, enabled: bool },
 }
 
+impl Target {
+    /// The place the person asked the window to go with the modifier
+    /// `held` as they chose: the row said what it would be. An app opens
+    /// as a tab here or a window beside; an item a row opens, in a window
+    /// of its own beside the app's.
+    pub(crate) fn place_by(&mut self, held: Option<ui::search::ActivationModifier>) {
+        use ui::search::ActivationModifier;
+        match (self, held) {
+            (Self::Launch { place, .. }, Some(asked)) => {
+                *place = match asked {
+                    ActivationModifier::Shift => LaunchPlace::TabHere,
+                    ActivationModifier::Ctrl => LaunchPlace::Beside,
+                    ActivationModifier::Alt => LaunchPlace::Focus,
+                };
+            }
+            (Self::Invoke(invoke), Some(ActivationModifier::Ctrl))
+                if invoke.descriptor.is_none() && invoke.address.action == OPEN_ACTION =>
+            {
+                invoke.place = LaunchPlace::Beside;
+            }
+            _ => {}
+        }
+    }
+}
+
 /// A line as the palette compares it: folded, and without the sentence
 /// punctuation that ends it, so a description that repeats its own name up
 /// to a full stop is still the same line said twice.
@@ -204,6 +229,10 @@ pub struct InvokeTarget {
     /// The published action, when the row is the action itself rather than
     /// something it opens: what the row shows and asks for.
     pub descriptor: Option<ActionDescriptor>,
+    /// Where an `open` shows what it opens: [`LaunchPlace::Beside`] is a
+    /// window of its own beside the app's, as the person asked by the
+    /// modifier they held.
+    pub place: LaunchPlace,
 }
 
 impl InvokeTarget {
@@ -227,6 +256,7 @@ impl InvokeTarget {
             address: ActionAddress::new(anchor, OPEN_ACTION),
             arguments,
             descriptor: None,
+            place: LaunchPlace::Focus,
         }
     }
 
@@ -245,6 +275,7 @@ impl InvokeTarget {
             address: ActionAddress::new(resource, action),
             arguments: serde_json::Map::new(),
             descriptor: None,
+            place: LaunchPlace::Focus,
         }
     }
 

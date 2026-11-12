@@ -1,9 +1,8 @@
 //! Two sessions in one workspace: one shares a window of its desk, the other shows it and reaches
-//! into it, and the bar on the sharing device says so. The two planes have no transport between
-//! them, so the test carries what one plane would have said to the other, to the members each
-//! message was for.
-//! The last tests add a third session: two members show the one window at the same time, each a
-//! viewer of its own.
+//! into it, and the bar on the sharing device says so. The window's pictures travel the
+//! workspace's live plane, on an in-process relay both sessions' planes meet on; the state plane
+//! has no transport between them, so the test carries what one would have said to the other, to
+//! the members each control message was for.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -25,7 +24,14 @@ use std::collections::BTreeMap;
 use std::io::{Read as _, Write as _};
 use std::os::fd::AsFd as _;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+use channel_crypto::{ChannelGroup, MemberKey};
+use tilo_live::plane::{Join, Plane};
+use tilo_live::relay::{Admission, Denied, Peer, Relay, RelayAuthority};
+use tilo_live::roster::Roster as LiveRoster;
+use tilo_live::scope::Scope;
 
 use crate::sync::Event;
 use iroh::EndpointId;
@@ -64,7 +70,7 @@ use wayland_protocols_misc::zwp_input_method_v2::client::{
     zwp_input_method_manager_v2::ZwpInputMethodManagerV2, zwp_input_method_v2::ZwpInputMethodV2,
 };
 
-use super::{SHARES_RESOURCE, VIEW_AGAIN, VIEW_EXPIRY};
+use super::SHARES_RESOURCE;
 use crate::sync::Cmd;
 use crate::sync::{Client, OwnPresence};
 use crate::{Options, Session};
@@ -76,6 +82,81 @@ const APP: &str = "so.tilo.notes";
 const PHOTOS: &str = "so.tilo.photos";
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
+/// What the test's live planes run on: one runtime, one in-process relay and the workspace's keys,
+/// and the planes joined so far by device, for the whole test process.
+struct LivePlanes {
+    runtime: tokio::runtime::Runtime,
+    relay: Arc<Relay>,
+    keys: channel_crypto::ChannelContentKeys,
+    joined: Mutex<Vec<([u8; 32], Arc<Plane>)>>,
+}
+
+/// The relay the test's planes meet on: in-process, with no one to admit, since a local plane is
+/// its own relay's participant.
+fn live_planes() -> &'static LivePlanes {
+    static PLANES: OnceLock<LivePlanes> = OnceLock::new();
+    PLANES.get_or_init(|| {
+        struct Nobody;
+        impl RelayAuthority for Nobody {
+            fn admit<'a>(&'a self, _peer: Peer, _proof: &'a [u8]) -> Admission<'a> {
+                Box::pin(std::future::ready(Err(Denied)))
+            }
+        }
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("the live planes' runtime");
+        let relay = {
+            let _entered = runtime.enter();
+            Arc::new(Relay::new(Arc::new(Nobody)))
+        };
+        let channel = Scope::workspace(WORKSPACE.to_owned()).channel_id();
+        let keys =
+            ChannelGroup::create(channel, MemberKey::generate("owner").expect("a member key"))
+                .expect("the workspace's channel")
+                .content_keys()
+                .expect("the workspace's keys");
+        LivePlanes {
+            runtime,
+            relay,
+            keys,
+            joined: Mutex::new(Vec::new()),
+        }
+    })
+}
+
+/// `device` 's plane in the test workspace, with every plane joined before it hearing it, and it
+/// hearing them.
+fn live_plane(device: EndpointId) -> BTreeMap<String, Arc<Plane>> {
+    let live = live_planes();
+    let _entered = live.runtime.enter();
+    let mut joined = live.joined.lock().expect("the joined planes");
+    let devices: Vec<[u8; 32]> = joined
+        .iter()
+        .map(|(device, _)| *device)
+        .chain([*device.as_bytes()])
+        .collect();
+    let plane = Arc::new(
+        Plane::local(
+            &live.relay,
+            &Join {
+                scope: Scope::workspace(WORKSPACE.to_owned()),
+                device: *device.as_bytes(),
+                keys: live.keys.clone(),
+                roster: LiveRoster::new(devices.iter().copied()),
+                publish: true,
+            },
+        )
+        .expect("a local plane"),
+    );
+    for (_, other) in joined.iter() {
+        other.set_roster(LiveRoster::new(devices.iter().copied()));
+    }
+    joined.push((*device.as_bytes(), Arc::clone(&plane)));
+    BTreeMap::from([(WORKSPACE.to_owned(), plane)])
+}
+
 fn device(seed: u8) -> EndpointId {
     iroh::SecretKey::from_bytes(&[seed; 32]).public()
 }
@@ -232,6 +313,10 @@ fn member_on(
         },
         Vec::new(),
     );
+    let sync = sync.on_planes(
+        live_plane(device(seed)),
+        live_planes().runtime.handle().clone(),
+    );
     let sync = Rc::new(match person {
         Some(person) => sync.taking_part_as(&person),
         None => sync,
@@ -276,17 +361,11 @@ fn said(from: &Member, ws: Topic, msg: NeighbourMsg) -> Event {
     }
 }
 
-/// Hand what `from` would have sent on the plane to `to`: a window's stream
-/// to the members it was for, and a control message to the device it named,
-/// and nothing to anyone else.
+/// Hand what `from` would have sent on the state plane to `to`: a control message to the device it
+/// named, and nothing to anyone else. The window's pictures travel the live plane.
 fn carry(from: &mut Member, to: &Member) {
     while let Ok(outgoing) = from.said.try_recv() {
         match outgoing {
-            Cmd::PublishSurfaceTo { ws, msg, viewers } => {
-                if viewers.contains(&to.sync.peer()) {
-                    to.sync.hear(said(from, ws, *msg));
-                }
-            }
             Cmd::SendControl { ws, msg, target } if target == to.sync.publisher() => {
                 to.sync.hear(said(from, ws, *msg));
             }
@@ -475,17 +554,6 @@ fn stream_start(from: &Member, surface: u64, tab: u64) -> NeighbourMsg {
         bit_depth: 8,
         app_id: APP.to_owned(),
         tab,
-    }
-}
-
-/// One encoded unit of `from` 's stream of `surface` .
-fn stream_frame(from: &Member, surface: u64, seq: u64) -> NeighbourMsg {
-    NeighbourMsg::SurfaceFrame {
-        surface,
-        source_peer: from.sync.peer(),
-        encoded_h264: vec![0, 0, 0, 1, 0x65, 1],
-        ts: 0,
-        seq,
     }
 }
 
@@ -1060,6 +1128,13 @@ fn a_shared_window_reaches_the_member_showing_it() {
         "the stream says how big the window is: {reading}"
     );
 
+    // The member says it views the window, which is how the bar names it.
+    until(&mut host, &mut window, &mut viewer, |host, _, _| {
+        rows(&shares(&host.session), "sharing")
+            .first()
+            .and_then(|shared| shared["viewers"].as_array())
+            .is_some_and(|viewers| !viewers.is_empty())
+    });
     let reading = shares(&host.session);
     let shared = rows(&reading, "sharing")
         .first()
@@ -1139,6 +1214,8 @@ fn a_shared_window_is_pictured_where_it_is_shown_and_the_pointer_reaches_it() {
         width > 0 && height > 0,
         "the picture keeps the sender's size"
     );
+    // The member also says it views the window: the person lets the members viewing it in.
+    viewing(&mut host, &mut window, &mut viewer, tab);
     assert_eq!(
         bytes,
         usize::try_from(width).unwrap() * usize::try_from(height).unwrap() * 4,
@@ -1324,6 +1401,7 @@ fn closing_the_shared_window_ends_its_stream() {
             .peer_surface_read(tab)
             .is_some_and(|read| read.pictured())
     });
+    viewing(&mut host, &mut window, &mut viewer, tab);
 
     window.as_mut().expect("client").close_window();
     until(&mut host, &mut window, &mut viewer, |host, viewer, _| {
@@ -1654,7 +1732,6 @@ fn a_member_narrowed_to_reading_sends_no_frames_and_no_input() {
     // What it sends to change anything is refused, however well formed: a stream of its own never
     // reaches the host's desk.
     tell(&host, &viewer, stream_start(&viewer, 991, 4));
-    tell(&host, &viewer, stream_frame(&viewer, 991, 1));
     settle(&mut host, &mut window, &mut viewer);
     assert!(
         rows(&shares(&host.session), "received").is_empty(),
@@ -1720,7 +1797,6 @@ fn a_member_the_workspace_lets_edit_shares_and_reaches_input() {
     // Its own stream reaches the host's desk: the window it shares is recorded there, waiting for
     // the tab the sender names. The host's desk shows no tab 4, so nothing decodes it here.
     tell(&host, &member, stream_start(&member, 991, 4));
-    tell(&host, &member, stream_frame(&member, 991, 1));
     until(&mut host, &mut window, &mut member, |host, _, _| {
         rows(&shares(&host.session), "received")
             .first()
@@ -1776,6 +1852,9 @@ mod menu;
 /// A window's share written into the workspace's own governance, and read from it on another
 /// device of the workspace.
 mod governed;
+
+/// Two members showing the one shared window at the same time, each a viewer of its own.
+mod viewers;
 
 /// A window one device shares shows on another device's desk because the workspace's governance
 /// says it is shared there: nobody names the tab on the other device.
@@ -2164,681 +2243,162 @@ fn heard(viewer: &Member, seed: u8, label: &str) {
     });
 }
 
-/// What of a shared window's stream the plane carried to one member: how often its start, how many
-/// of its encoded units, and how often its end.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct Streamed {
-    starts: usize,
-    frames: usize,
-    ends: usize,
+/// The wall clock in microseconds since the Unix epoch: the clock a picture's capture is told on.
+fn wall_us() -> u64 {
+    u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_micros(),
+    )
+    .unwrap()
 }
 
-impl Streamed {
-    /// Count `msg` if it is one of a window's stream.
-    fn count(&mut self, msg: &NeighbourMsg) {
-        match msg {
-            NeighbourMsg::SurfaceStreamStart { .. } => self.starts += 1,
-            NeighbourMsg::SurfaceFrame { .. } => self.frames += 1,
-            NeighbourMsg::SurfaceStreamEnd { .. } => self.ends += 1,
-            _ => {}
-        }
+/// The median and the 95th percentile of `samples` (microseconds), in milliseconds.
+fn percentiles(samples: &mut [u64]) -> (f64, f64) {
+    samples.sort_unstable();
+    let at = |share: usize| samples[(samples.len() - 1) * share / 100] as f64 / 1000.0;
+    (at(50), at(95))
+}
+
+/// How long a shared window's picture takes from its capture to a viewer's decoded picture, over
+/// the workspace's live plane: the window is captured, encoded as a share encodes it, sealed and
+/// sent on its track, opened by the viewer's plane and decoded by the tile that shows it, on a
+/// thread of its own as a viewer's desk is another device's. The object's header carries the
+/// capture time on the sender's clock, which is this process's here.
+#[test]
+fn a_shared_windows_pictures_reach_a_viewer_within_a_few_frames() {
+    use tilo_live::live::Track;
+    use tilo_live::video::{Layer, VideoObject};
+    use tilo_window_share::flatpak_share::SharedFlatpakSession;
+    const TAB: u64 = 0x5EED_0000_0000_0031;
+    const PICTURES: usize = 90;
+    let (w, h) = (1280_u32, 800_u32);
+    tilo_window_share::flatpak_share::read_encoders();
+    let host = device(0x61);
+    let viewer = device(0x62);
+    let sharing = Arc::clone(&live_plane(host)[WORKSPACE]);
+    let watching = Arc::clone(&live_plane(viewer)[WORKSPACE]);
+    let live = live_planes();
+    let _entered = live.runtime.enter();
+    let share = SharedFlatpakSession::start(
+        1,
+        APP,
+        TAB,
+        w,
+        h,
+        &tilo_window_share::config::FlatpakShareConfig::default(),
+    )
+    .expect("a share of the window");
+    watching.show(*host.as_bytes(), &[Track::Window(TAB, Layer::High)]);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while sharing.wanted_windows() != [TAB] {
+        assert!(Instant::now() < deadline, "the window's track is asked for");
+        std::thread::sleep(Duration::from_millis(5));
     }
-}
+    assert_eq!(
+        sharing.take_window_keyframes(),
+        [TAB],
+        "a new viewer starts at a keyframe"
+    );
 
-/// Hand what `from` would have sent on the plane to each of `to` it was for, as [`carry`] does for
-/// one member: a window's stream to the members among them it names as its viewers, a control
-/// message to the device it names, and nothing to anyone else. Answers what of a window's stream
-/// each of `to` was handed, in their order.
-fn carry_to_each(from: &mut Member, to: &[&Member]) -> Vec<Streamed> {
-    let mut streamed = vec![Streamed::default(); to.len()];
-    while let Ok(outgoing) = from.said.try_recv() {
-        match outgoing {
-            Cmd::PublishSurfaceTo { ws, msg, viewers } => {
-                for (member, handed) in to.iter().zip(&mut streamed) {
-                    if viewers.contains(&member.sync.peer()) {
-                        handed.count(&msg);
-                        member.sync.hear(said(from, ws, (*msg).clone()));
+    // The viewer: what its plane opened, and when each picture was decoded.
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let viewing = {
+        let done = Arc::clone(&done);
+        std::thread::spawn(move || {
+            let tree = showing(host, APP, TAB);
+            let mut tiles = tilo_desktop_surface::PeerSurfaces::default();
+            let peer = neighbour_wire::peer_handle(host.as_bytes());
+            let mut captured: BTreeMap<u64, u64> = BTreeMap::new();
+            let (mut heard, mut decoded) = (Vec::new(), Vec::new());
+            let mut last_seq = None;
+            let deadline = Instant::now() + Duration::from_secs(120);
+            while decoded.len() < PICTURES && Instant::now() < deadline {
+                while let Some(object) = watching.try_recv() {
+                    if object.track != Track::Window(TAB, Layer::High) {
+                        continue;
+                    }
+                    let object = VideoObject::decode(&object.body).expect("a picture");
+                    heard.push(wall_us().saturating_sub(object.timestamp_us));
+                    if object.keyframe && tiles.read(TAB).is_none() {
+                        let start = super::picture_start(&tree, 7, peer, TAB, &object)
+                            .expect("a codec this build decodes");
+                        tiles
+                            .start(&tree, &start)
+                            .expect("the tab shows the window");
+                    }
+                    captured.insert(object.sequence, object.timestamp_us);
+                    tiles.push(peer, TAB, object.sequence, &object.payload);
+                }
+                tiles.collect_pictures();
+                if let Some(read) = tiles
+                    .read(TAB)
+                    .filter(tilo_desktop_surface::PeerRead::pictured)
+                    && last_seq != Some(read.picture_seq)
+                {
+                    // The desk paints what the tile holds, which lets it take the next picture.
+                    if let Some(tile) = tiles.tile(TAB) {
+                        tile.borrow_mut().mark_drawn();
+                    }
+                    last_seq = Some(read.picture_seq);
+                    if let Some(at) = captured.get(&read.picture_seq) {
+                        decoded.push(wall_us().saturating_sub(*at));
                     }
                 }
+                std::thread::sleep(Duration::from_millis(1));
             }
-            Cmd::SendControl { ws, msg, target } => {
-                for member in to {
-                    if target == member.sync.publisher() {
-                        member.sync.hear(said(from, ws, (*msg).clone()));
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    streamed
-}
-
-/// Three devices of one workspace: one shares a window of its desk, and the two others show it. No
-/// transport runs between the three planes either, so every pass carries what each of them said to
-/// the members it was for. Each member is kept on the heap: three sessions side by side are more
-/// than a test's stack holds.
-struct Three {
-    /// The two members showing the window.
-    viewers: [Box<Member>; 2],
-    /// The client whose window the host shares.
-    window: Option<TestClient>,
-    host: Box<Member>,
-    /// What of the host's stream was carried to each viewer, in their order.
-    streamed: [Streamed; 2],
-    /// The tab the shared window stands in, on all three desks.
-    tab: u64,
-}
-
-impl Three {
-    /// The device of the first seed shares the window of its desk, and the devices of the two
-    /// others ask to view it at the same time: both have asked before any of the three takes
-    /// another pass.
-    fn sharing(seeds: [u8; 3]) -> Self {
-        tilo_window_share::flatpak_share::read_encoders();
-        let mut host = Box::new(member(seeds[0], own_desk()));
-        let window = Some(mapped(&mut host.session, APP));
-        let tab = tab_of(&host.session, APP);
-        share(&mut host, APP, tab);
-        let mut viewers = [seeds[1], seeds[2]]
-            .map(|seed| Box::new(member(seed, showing(host.sync.publisher(), APP, tab))));
-        for viewer in &mut viewers {
-            watch(viewer, tab);
-        }
-        Self {
-            viewers,
-            window,
-            host,
-            streamed: [Streamed::default(); 2],
-            tab,
-        }
-    }
-
-    /// One pass of the client and of each of the three sessions, with what their planes said
-    /// carried after it.
-    fn pass(&mut self) {
-        if let Some(client) = self.window.as_mut() {
-            client.exchange();
-        }
-        self.host
-            .session
-            .step(Duration::from_millis(2))
-            .expect("step");
-        if let Some(client) = self.window.as_mut() {
-            client.exchange();
-        }
-        for viewer in &mut self.viewers {
-            viewer.session.step(Duration::from_millis(2)).expect("step");
-        }
-        self.carry();
-    }
-
-    /// Carry what each of the three said to the members it was for, counting what of the host's
-    /// stream went to each viewer.
-    fn carry(&mut self) {
-        let [first, second] = &mut self.viewers;
-        let carried = carry_to_each(&mut self.host, &[&**first, &**second]);
-        for (kept, carried) in self.streamed.iter_mut().zip(carried) {
-            kept.starts += carried.starts;
-            kept.frames += carried.frames;
-            kept.ends += carried.ends;
-        }
-        carry_to_each(first, &[&*self.host, &**second]);
-        carry_to_each(second, &[&*self.host, &**first]);
-    }
-
-    /// Pass until `done` holds of the three, as [`until`] does of two.
-    #[track_caller]
-    fn until(&mut self, done: impl FnMut(&Self) -> bool) {
-        // A window is captured, encoded and decoded twice over here: on a machine busy with the
-        // rest of the suite that takes far longer than it does alone.
-        self.within(Duration::from_secs(300), done);
-    }
-
-    /// Pass until `done` holds of the three, which it must within `limit` .
-    #[track_caller]
-    fn within(&mut self, limit: Duration, mut done: impl FnMut(&Self) -> bool) {
-        let deadline = Instant::now() + limit;
-        loop {
-            self.pass();
-            if done(self) {
-                return;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "not reached in time:\n  host: {}\n  first: {}\n  second: {}\n  carried: {:?}",
-                shares(&self.host.session),
-                shares(&self.viewers[0].session),
-                shares(&self.viewers[1].session),
-                self.streamed
-            );
-        }
-    }
-
-    /// Pass for `time` : what the three do of their own accord while it goes by.
-    fn pass_for(&mut self, time: Duration) {
-        let end = Instant::now() + time;
-        while Instant::now() < end {
-            self.pass();
-        }
-    }
-
-    /// Pass a few times without asking for anything.
-    fn settle(&mut self) {
-        for _ in 0..8 {
-            self.pass();
-        }
-    }
-
-    /// Both members picture the window where they show it, and the sharing device names both as
-    /// viewing it.
-    #[track_caller]
-    fn shown_to_both(&mut self) {
-        let tab = self.tab;
-        self.until(|three| {
-            three.viewers.iter().all(|viewer| pictured(viewer, tab))
-                && watchers(&three.host).len() == 2
-        });
-    }
-
-    /// The person sharing the window lets the members viewing it control it, and the sharing
-    /// device says both may.
-    #[track_caller]
-    fn let_both_in(&mut self) {
-        allow_input(&mut self.host, self.tab, true);
-        self.until(|three| {
-            let watching = watchers(&three.host);
-            watching.len() == 2 && watching.iter().all(|(_, can_control)| *can_control)
-        });
-    }
-
-    /// What the shared window's client saw.
-    #[track_caller]
-    fn seen(&self) -> &Seen {
-        &self
-            .window
-            .as_ref()
-            .expect("the shared window's client")
-            .seen
-    }
-}
-
-/// Whether `viewer` 's tile of the window shown in `tab` holds a picture decoded from its stream.
-fn pictured(viewer: &Member, tab: u64) -> bool {
-    viewer
-        .session
-        .handle()
-        .peer_surface_read(tab)
-        .is_some_and(|read| read.pictured())
-}
-
-/// Who the sharing device's own account says views its one shared window, each with whether it may
-/// control it, in the order the account names them: nobody while it shares nothing.
-fn watchers(host: &Member) -> Vec<(u64, bool)> {
-    let reading = shares(&host.session);
-    rows(&reading, "sharing")
-        .first()
-        .and_then(|shared| shared["viewers"].as_array())
-        .map(|viewers| {
-            viewers
-                .iter()
-                .filter_map(|viewer| {
-                    Some((viewer["peer"].as_u64()?, viewer["can_control"].as_bool()?))
-                })
-                .collect()
+            done.store(true, std::sync::atomic::Ordering::Release);
+            (heard, decoded)
         })
-        .unwrap_or_default()
-}
+    };
 
-/// `members` in the order the shares keep them: by handle.
-fn in_order<T: Ord>(mut members: Vec<T>) -> Vec<T> {
-    members.sort_unstable();
-    members
-}
-
-/// The seats the members controlling `host` 's shared windows act at, by member and window: how the
-/// shares key the seat they open for a viewer.
-fn seats(
-    host: &Member,
-) -> BTreeMap<(neighbour_wire::PeerId, neighbour_wire::SurfaceId), tilo_compositor::Seat> {
-    host.session.shared.window_shares.borrow().seats.clone()
-}
-
-/// Stop showing the window another member shares, in `tab` of the workspace.
-fn unwatch(member: &mut Member, tab: u64) {
-    member
-        .session
-        .invoke(
-            SHARES_RESOURCE,
-            "unwatch",
-            &arguments(serde_json::json!({ "tab": tab.to_string(), "room": WORKSPACE })),
-        )
-        .expect("the window is no longer asked for");
-}
-
-/// One session shares a window of its desk and two others ask to view it at the same time: each is
-/// sent the stream as a viewer of its own, each tab holds the picture decoded from it, and the
-/// sharing device's account and its bar name both.
-#[test]
-fn a_shared_window_reaches_both_members_showing_it() {
-    let mut three = Three::sharing([0x51, 0x52, 0x53]);
-    let tab = three.tab;
-    three.shown_to_both();
-
-    let sharer = neighbour_wire::peer_handle(three.host.sync.publisher().as_bytes());
-    let [first, second] = [0, 1].map(|at| three.viewers[at].sync.peer());
-    assert_ne!(
-        first, second,
-        "the two members are two viewers, each with a handle of its own"
-    );
-    for (viewer, streamed) in three.viewers.iter().zip(three.streamed) {
-        // The plane carries a stream only to the members it names: what was counted here was
-        // addressed to this member by its own handle.
-        assert!(
-            streamed.starts > 0 && streamed.frames > 0,
-            "the stream's start and its frames were sent to the member as a viewer of its own: \
-             {streamed:?}"
-        );
-
-        let reading = shares(&viewer.session);
-        let received = rows(&reading, "received");
-        assert_eq!(
-            received.len(),
-            1,
-            "the one shared window arrived: {reading}"
-        );
-        let stream = &received[0];
-        assert_eq!(
-            stream["app_id"].as_str(),
-            Some(APP),
-            "what arrived: {reading}"
-        );
-        assert_eq!(
-            stream["from"].as_u64(),
-            Some(sharer),
-            "the member that shares it: {reading}"
-        );
-        assert!(
-            stream["codec"]
-                .as_str()
-                .is_some_and(|codec| !codec.is_empty()),
-            "the stream says how it is encoded: {reading}"
-        );
-        assert!(
-            stream["pictured"].as_bool() == Some(true),
-            "the tab shows the picture it decoded: {reading}"
-        );
-        assert!(
-            stream["width"].as_u64().unwrap_or(0) > 0 && stream["height"].as_u64().unwrap_or(0) > 0,
-            "the stream says how big the window is: {reading}"
-        );
-
-        // The tile of the tab the window stands in decodes what its sender streams, on each of the
-        // two desks.
-        let read = viewer
-            .session
-            .handle()
-            .peer_surface_read(tab)
-            .expect("the shared window has a tile");
-        assert_eq!(read.tab, tab, "the tab it stands in");
-        assert_eq!(read.surface, tab, "the surface its sender names");
-        assert_eq!(read.app_id, APP, "the window it shows");
-        assert_eq!(read.peer, sharer, "the device sharing it");
-        assert_eq!(
-            read.standing,
-            tilo_desktop_surface::Standing::Pictured,
-            "the tile reads as a picture of the window"
-        );
-        let (width, height, bytes) = read.picture.expect("the picture the tile decoded");
-        assert!(
-            width > 0 && height > 0,
-            "the picture keeps the sender's size"
-        );
-        assert_eq!(
-            bytes,
-            usize::try_from(width).unwrap() * usize::try_from(height).unwrap() * 4,
-            "the picture is RGBA at that size"
-        );
-    }
-
-    // The sharing device's own account names both members, each read only until the person lets
-    // it in.
-    let reading = shares(&three.host.session);
-    let sharing = rows(&reading, "sharing");
-    assert_eq!(sharing.len(), 1, "the one window is shared: {reading}");
-    assert_eq!(
-        sharing[0]["tab"].as_str(),
-        Some(tab.to_string().as_str()),
-        "which window: {reading}"
-    );
-    let both = in_order(vec![(first, false), (second, false)]);
-    assert_eq!(
-        watchers(&three.host),
-        both,
-        "both members watch it, read only until the person allows control: {reading}"
-    );
-    assert_eq!(
-        sharing[0]["input_allowed"].as_bool(),
-        Some(false),
-        "nobody was let in: {reading}"
-    );
-    let exposures = three.host.session.shared.window_shares.borrow().exposures();
-    assert_eq!(
-        exposures,
-        both.iter()
-            .map(|(peer, can_control)| tilo_desktop::chrome::ActiveExposure {
-                peer: *peer,
-                surface: tab,
-                can_control: *can_control,
-            })
-            .collect::<Vec<_>>(),
-        "the bar's sharing indicator says both are watching the window"
-    );
-}
-
-/// Two members control a window a third device shares: each one's pointer and keys reach the
-/// window, and each acts at a seat of its own, with its own pointer, beside the other's.
-#[test]
-fn two_members_reach_the_shared_window_each_through_a_seat_of_its_own() {
-    let mut three = Three::sharing([0x61, 0x62, 0x63]);
-    let tab = three.tab;
-    three.shown_to_both();
-    let [first, second] = [0, 1].map(|at| three.viewers[at].sync.peer());
-    // Each member's pointer is in the stream's own pixels: the first up and left of the middle of
-    // the picture the host sends, the second down and right of it.
-    let centre = received_centre(&three.viewers[0]);
-    let places = [
-        (centre.0 - 40.0, centre.1 - 40.0),
-        (centre.0 + 40.0, centre.1 + 40.0),
-    ];
-
-    for (viewer, place) in three.viewers.iter().zip(places) {
-        move_pointer(viewer, &three.host, tab, place.0, place.1);
-    }
-    three.settle();
-    assert!(
-        !three.seen().pointer_inside && three.seen().enters == 0 && three.seen().motions.is_empty(),
-        "members the person did not let in move nothing"
-    );
-    assert!(
-        seats(&three.host).is_empty(),
-        "no seat is opened for a member the person did not let in"
-    );
-
-    three.let_both_in();
-
-    // The first member's pointer comes over the window: it acts at a seat, and the member that has
-    // not acted yet has none.
-    move_pointer(
-        &three.viewers[0],
-        &three.host,
-        tab,
-        places[0].0,
-        places[0].1,
-    );
-    three.until(|three| three.seen().enters > 0);
-    let opened = seats(&three.host);
-    assert_eq!(
-        opened.keys().copied().collect::<Vec<_>>(),
-        vec![(first, tab)],
-        "the seat is the one of the member that moved, in the window it controls"
-    );
-    let first_seat = opened[&(first, tab)];
-    let first_at = three
-        .host
-        .session
-        .compositor()
-        .seat_pointer(first_seat)
-        .expect("the seat's pointer is where its member put it");
-
-    // The second member's pointer comes over the window too: it is given a seat of its own, and
-    // the first member's is left as it was.
-    let entered = three.seen().enters;
-    move_pointer(
-        &three.viewers[1],
-        &three.host,
-        tab,
-        places[1].0,
-        places[1].1,
-    );
-    three.until(|three| three.seen().enters > entered);
-    let opened = seats(&three.host);
-    assert_eq!(
-        opened.keys().copied().collect::<Vec<_>>(),
-        in_order(vec![(first, tab), (second, tab)]),
-        "each member has a seat under its own handle"
-    );
-    assert_eq!(
-        opened[&(first, tab)],
-        first_seat,
-        "the first member's seat is still its own: the second took none of it"
-    );
-    let second_seat = opened[&(second, tab)];
-    assert_ne!(
-        first_seat, second_seat,
-        "the two members do not act at one seat"
-    );
-    let shared = identifier_of(three.host.session.compositor(), APP);
-    for seat in [first_seat, second_seat] {
-        let aim = three
-            .host
-            .session
-            .compositor()
-            .seat_view(seat)
-            .expect("the seat is open");
-        assert_eq!(
-            aim.window.map(|window| window.identifier),
-            Some(shared.clone()),
-            "each seat acts in the shared window"
-        );
-    }
-    let second_at = three
-        .host
-        .session
-        .compositor()
-        .seat_pointer(second_seat)
-        .expect("the seat's pointer is where its member put it");
-    assert_eq!(
-        three.host.session.compositor().seat_pointer(first_seat),
-        Some(first_at),
-        "the first member's pointer stays where it left it while the second moves its own"
-    );
-    assert!(
-        second_at.0 > first_at.0 && second_at.1 > first_at.1,
-        "each seat's pointer is where its own member put it: {first_at:?} and {second_at:?}"
-    );
-
-    // Once over the window, each member's move moves the window's own pointer, from where that
-    // member left it to where that member put it.
-    let moved = three.seen().motions.len();
-    move_pointer(
-        &three.viewers[0],
-        &three.host,
-        tab,
-        places[0].0 + 10.0,
-        places[0].1 + 10.0,
-    );
-    three.until(|three| three.seen().motions.len() > moved);
-    let first_moved = *three.seen().motions.last().expect("the pointer moved");
-    let moved = three.seen().motions.len();
-    move_pointer(
-        &three.viewers[1],
-        &three.host,
-        tab,
-        places[1].0 + 10.0,
-        places[1].1 + 10.0,
-    );
-    three.until(|three| three.seen().motions.len() > moved);
-    let second_moved = *three.seen().motions.last().expect("the pointer moved");
-    assert!(
-        second_moved.0 > first_moved.0 && second_moved.1 > first_moved.1,
-        "the window's pointer went where each member moved its own: {first_moved:?} and \
-         {second_moved:?}"
-    );
-
-    // Each member's keyboard reaches the window through its seat: one press and its release from
-    // each, in the order they typed.
-    let heard = three.seen().keys.len();
-    for (viewer, key) in three.viewers.iter().zip([30, 31]) {
-        for pressed in [true, false] {
-            send_input(
-                viewer,
-                &three.host,
-                tab,
-                &SharedInput::Key {
-                    keysym: key,
-                    pressed,
-                    modifiers: 0,
-                },
-            );
+    // The host: a window that changes every frame, drawn ahead so drawing it costs nothing,
+    // captured at sixty frames a second and encoded as a share encodes it.
+    let frames: Vec<Vec<u8>> = (0..8_usize)
+        .map(|step| {
+            let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+            for y in 0..h {
+                for x in 0..w {
+                    let tone = ((x as usize + y as usize + step * 31) % 256) as u8;
+                    rgba.extend_from_slice(&[tone, 255 - tone, (step * 29 % 256) as u8, 255]);
+                }
+            }
+            rgba
+        })
+        .collect();
+    let mut encoding: Vec<u64> = Vec::new();
+    let interval = Duration::from_micros(16_667);
+    let mut step = 0_usize;
+    let mut next = Instant::now();
+    while !done.load(std::sync::atomic::Ordering::Acquire) {
+        if Instant::now() >= next {
+            share.deposit_captured_rgba(frames[step % frames.len()].clone());
+            step += 1;
+            next += interval;
         }
+        for encoded in share.pump(Instant::now()) {
+            encoding.push(wall_us().saturating_sub(share.captured_at_us(&encoded)));
+            let _ = super::send_picture(&sharing, TAB, &share, encoded);
+        }
+        std::thread::sleep(Duration::from_millis(1));
     }
-    three.until(|three| three.seen().keys.len() >= heard + 4);
-    assert_eq!(
-        three.seen().keys[heard..],
-        [(30, true), (30, false), (31, true), (31, false)],
-        "each member's keystroke reached the window as one press and its release"
-    );
-
-    assert_eq!(
-        seats(&three.host),
-        opened,
-        "each member kept the one seat it opened: none was opened again, and none taken over"
-    );
-}
-
-/// Of two members showing a window a third device shares, one stops: the sharing device ends that
-/// member's stream alone and names only the other, which goes on being sent the window's frames.
-#[test]
-fn a_member_that_stops_showing_a_shared_window_ends_its_own_stream_only() {
-    let mut three = Three::sharing([0x81, 0x82, 0x83]);
-    let tab = three.tab;
-    three.shown_to_both();
-    let [staying, leaving] = [0, 1].map(|at| three.viewers[at].sync.peer());
-    assert_eq!(
-        watchers(&three.host),
-        in_order(vec![(staying, false), (leaving, false)]),
-        "the sharing device names both members while both show the window"
-    );
-
-    // The second member stops showing the window. Nothing tells the sharing device so: the member
-    // only stops asking for it, as a device that went away does, and a viewer's ask keeps its
-    // stream up for no longer than the expiry.
-    unwatch(&mut three.viewers[1], tab);
-    three.within(VIEW_EXPIRY * 10, |three| {
-        watchers(&three.host) == [(staying, false)]
-    });
+    let (mut heard, mut decoded) = viewing.join().expect("the viewer");
     assert!(
-        rows(&shares(&three.viewers[1].session), "watching").is_empty(),
-        "the member that stopped asks for nothing"
+        decoded.len() >= PICTURES,
+        "only {} pictures were decoded",
+        decoded.len()
     );
-    let exposures = three.host.session.shared.window_shares.borrow().exposures();
-    assert_eq!(
-        exposures,
-        vec![tilo_desktop::chrome::ActiveExposure {
-            peer: staying,
-            surface: tab,
-            can_control: false,
-        }],
-        "the bar's sharing indicator names the one member still watching"
+    let (encoded_p50, encoded_p95) = percentiles(&mut encoding);
+    let (heard_p50, heard_p95) = percentiles(&mut heard);
+    let (p50, p95) = percentiles(&mut decoded);
+    println!(
+        "a shared {w}x{h} window over the live plane, {} pictures: capture to encoded p50 {encoded_p50:.1} ms p95 {encoded_p95:.1} ms; to the viewer's plane p50 {heard_p50:.1} ms p95 {heard_p95:.1} ms; to decoded p50 {p50:.1} ms p95 {p95:.1} ms",
+        decoded.len()
     );
-
-    // The member still showing the window says so again every few seconds. Two of those asks go
-    // by, so whatever the sharing device makes of the other's leaving it has made by now; then the
-    // window's frames are still coming to the member that stayed, and its tab still pictures it.
-    let left = three.streamed;
-    three.pass_for(VIEW_AGAIN * 2);
-    let later = three.streamed[0].frames;
-    three.until(|three| three.streamed[0].frames >= later + 10 && pictured(&three.viewers[0], tab));
-    assert_eq!(
-        three.streamed[1], left[1],
-        "nothing more of the stream is sent to the member that stopped showing it"
-    );
-    assert_eq!(
-        watchers(&three.host),
-        [(staying, false)],
-        "the sharing device goes on naming the one member that shows the window"
-    );
-    assert_eq!(
-        three.streamed[0].ends, left[0].ends,
-        "the stream of the member still showing the window was not ended with the other's"
-    );
-}
-
-/// A member that controlled a shared window and stopped showing it has no hand left in it: what
-/// it still sends moves nothing and its seat closes with its stream, while the member still
-/// showing the window keeps its own seat and its reach.
-#[test]
-fn a_member_that_stopped_showing_a_shared_window_no_longer_reaches_it() {
-    let mut three = Three::sharing([0x91, 0x92, 0x93]);
-    let tab = three.tab;
-    three.shown_to_both();
-    let [staying, leaving] = [0, 1].map(|at| three.viewers[at].sync.peer());
-    three.let_both_in();
-    let centre = received_centre(&three.viewers[0]);
-    let places = [
-        (centre.0 - 40.0, centre.1 - 40.0),
-        (centre.0 + 40.0, centre.1 + 40.0),
-    ];
-
-    // Both members act in the window, so each holds a seat there.
-    for (viewer, place) in [0, 1].into_iter().zip(places) {
-        let entered = three.seen().enters;
-        move_pointer(&three.viewers[viewer], &three.host, tab, place.0, place.1);
-        three.until(|three| three.seen().enters > entered);
-    }
-    let opened = seats(&three.host);
-    assert_eq!(
-        opened.keys().copied().collect::<Vec<_>>(),
-        in_order(vec![(staying, tab), (leaving, tab)]),
-        "each member has a seat under its own handle"
-    );
-
-    // The second member stops showing the window, and the sharing device stops hearing it ask.
-    unwatch(&mut three.viewers[1], tab);
-    three.within(VIEW_EXPIRY * 10, |three| {
-        watchers(&three.host) == [(staying, true)]
-    });
-
-    // What the member that left still sends reaches nothing: the person let it in while it showed
-    // the window, and the sharing device no longer names it as showing it.
-    let (entered, moved) = (three.seen().enters, three.seen().motions.len());
-    move_pointer(
-        &three.viewers[1],
-        &three.host,
-        tab,
-        places[1].0 + 10.0,
-        places[1].1 + 10.0,
-    );
-    three.settle();
-    assert_eq!(
-        (three.seen().enters, three.seen().motions.len()),
-        (entered, moved),
-        "a member that stopped showing the window moves nothing in it"
-    );
-    // Its seat closed with its stream and none was opened for it again, and the other member's
-    // seat is its own still.
-    let kept = BTreeMap::from([((staying, tab), opened[&(staying, tab)])]);
-    assert_eq!(
-        seats(&three.host),
-        kept,
-        "the one seat left is the one of the member still showing the window"
-    );
-
-    // The member still showing it reaches the window as before, at the seat it had.
-    three.until(|three| watchers(&three.host) == [(staying, true)]);
-    let entered = three.seen().enters;
-    move_pointer(
-        &three.viewers[0],
-        &three.host,
-        tab,
-        places[0].0 + 10.0,
-        places[0].1 + 10.0,
-    );
-    three.until(|three| three.seen().enters > entered);
-    assert_eq!(
-        seats(&three.host),
-        kept,
-        "the member still showing the window acts at the seat it had"
+    // What the plane adds besides the encode and the decode is small next to a frame.
+    assert!(
+        heard_p50 - encoded_p50 < 16.7,
+        "the plane carries a picture within a frame: encoded p50 {encoded_p50:.1} ms, heard p50 {heard_p50:.1} ms"
     );
 }

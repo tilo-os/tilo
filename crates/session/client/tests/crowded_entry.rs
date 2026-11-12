@@ -39,10 +39,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-mod support;
-
-tilo_automerge_isolate::test_worker!();
-
 use std::time::{Duration, Instant};
 use tilo_session_client::{Cmd, Event, Link, Outbox, TransportPhase};
 
@@ -55,7 +51,7 @@ use tilo_session_client::MemoryPeerStore;
 use tilo_session_client::device::{Entering, door_entry};
 use tilo_user_identity::UserIdentity;
 
-use support::{enrol, enter_page, keyed, start_workspace_host_relaying};
+use crate::support::{enrol, enter_page, keyed, start_workspace_host_relaying};
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))
@@ -426,7 +422,7 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
         "lounge-host",
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let host = start_workspace_host_relaying(&owner, &host_device, state.path(), false, true).await;
     let workspaces = host.relay.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
@@ -536,6 +532,15 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
         online.min(members),
         seeded.elapsed()
     );
+    // The host folds the crowd's parts of the desktop into its checkpoint once the crowd is
+    // quiet, as the Lounge's host does between the people who come over a day: wait until it
+    // did. A guest that comes in the moment the last of 300 members wrote meets their parts
+    // one by one; that is not the entry this measures.
+    let compactor = host.relay.compactor();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while compactor.rounds() == 0 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     // What the workspace's governance weighs as a newcomer is sent it: its
     // base and the changes since.
     if let Some(peer) = workspaces.state(&lounge.workspace).await
@@ -851,7 +856,7 @@ impl Way {
 ///   entry's binding as it answers, so the hello waits for nothing more;
 /// - the hello, which carries the entry with its proof and the guest's first
 ///   requests, and the host's answer with the Welcome first: 1;
-/// - the replay of governance and the desktop, about 0.55 MB for a crowd of
+/// - the replay of governance and the desktop, about 0.65 MB for a crowd of
 ///   300 that all hold the keys (see [`MAX_BYTES`]), from a 256 KiB initial
 ///   window, paced over the round trip: 1.5 to 2.
 ///
@@ -898,7 +903,7 @@ const COMPUTE: Duration = Duration::from_millis(1_300);
 ///   connection, so no challenge of the host's comes first) and has the
 ///   guest's first requests right behind it: 0.5;
 /// - the host's answer and the replay of governance and the desktop behind
-///   it, about 0.7 MB for a crowd of 300 that all hold the keys (see
+///   it, about 0.65 MB for a crowd of 300 that all hold the keys (see
 ///   [`MAX_BYTES`]), from a 256 KiB initial window rather than QUIC's 14 KB:
 ///   2.
 ///
@@ -909,7 +914,7 @@ const COMPUTE: Duration = Duration::from_millis(1_300);
 /// about three and a half; at 400 ms the desktop shows in about 2.7 s.
 const RELAYED_ROUND_TRIPS: f64 = 3.5;
 
-/// What a fresh guest may receive before its desktop shows, 0.54 to 0.56 MB
+/// What a fresh guest may receive before its desktop shows, 0.62 to 0.64 MB
 /// for 300 members who all hold the keys: its Welcome first, once (about
 /// 65 KB, the group's ratchet tree of 300), then the workspace's bootstrap
 /// (under 1 KB: its roster names only the guest and the host, as the
@@ -921,8 +926,8 @@ const RELAYED_ROUND_TRIPS: f64 = 3.5;
 /// over once they weigh half the base, so between one and one and a half times
 /// the base: how many changes a guest meets depends on how the crowd's
 /// admissions fell into changes, which is what moves the total from run to
-/// run) and the shared desktop, whose members' parts are compacted into its
-/// checkpoint as they come (about 0.14 MB). No member device's identity hello
+/// run) and the shared desktop with each of the 300 members' parts, compacted
+/// into its checkpoint once the crowd is quiet (about 0.3 MB). No member device's identity hello
 /// comes: the governance carries what each says. The Lounge is public, so the
 /// members' records (3.5 MB here) and its chat (0.3 MB in its newest part)
 /// come only when the guest opens them, and a page, which admits no one to a
@@ -930,7 +935,7 @@ const RELAYED_ROUND_TRIPS: f64 = 3.5;
 /// Governance sent twice or uncompressed, the members' certificates or hellos
 /// sent again beside it, any of those records or the chat sent with the
 /// desktop, or the Welcome sent again crosses this.
-const MAX_BYTES: u64 = 650_000;
+const MAX_BYTES: u64 = 750_000;
 
 /// One guest's entry, as it went.
 struct Entry {

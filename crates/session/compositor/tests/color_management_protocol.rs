@@ -12,16 +12,9 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-#[path = "headless/harness.rs"]
-#[allow(
-    dead_code,
-    reason = "the harness is shared with the other headless tests; this one drives part of it"
-)]
-mod harness;
-
 use std::time::Duration;
 
-use harness::{TestClient, headless, mapped_client, pump};
+use crate::harness::{TestClient, headless, mapped_client, pump};
 use tilo_compositor::StackPolicy;
 
 use neighbour_wire::colorimetry::{ColorPrimaries, TransferCharacteristics};

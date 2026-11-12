@@ -242,9 +242,17 @@ impl Shown {
     /// Whether the roster stands kept at an edge of the desk, drawn and pressed where it waits: a
     /// pin waiting away with nobody else here does not.
     fn standing(&self) -> bool {
-        self.pinned
-            .as_ref()
-            .is_some_and(|pin| pin.rest != Rest::Waiting)
+        !self.sheet()
+            && self
+                .pinned
+                .as_ref()
+                .is_some_and(|pin| pin.rest != Rest::Waiting)
+    }
+
+    /// Whether the desk is a phone's: the roster opens as a sheet at its foot and is never kept on
+    /// screen, where it would stand over the one window there is ([`tilo_desktop::collaborators::is_sheet`]).
+    fn sheet(&self) -> bool {
+        tilo_desktop::collaborators::is_sheet(self.area)
     }
 }
 
@@ -514,6 +522,10 @@ impl Published for People {
     }
 }
 
+/// What each window of the desk shows, by its tab: the app it runs, and the
+/// record it holds (a window whose app keeps no single record names its kind).
+pub type WindowRecords = Rc<dyn Fn() -> Vec<(u64, Option<String>, String)>>;
+
 /// What the roster reads and asks of the session, beside the surfaces it is placed on.
 pub struct Given {
     /// Where the panel stands and how finely it draws.
@@ -522,7 +534,7 @@ pub struct Given {
     pub seated: String,
     /// What each window of the desk shows, by its tab: the record it holds, as
     /// the host that runs the windows reads them.
-    pub notes: Rc<dyn Fn() -> std::collections::BTreeMap<u64, String>>,
+    pub notes: WindowRecords,
     /// The apps this host has, as a card offers to write to the person.
     pub apps: Option<std::sync::Arc<dyn crate::platform::apps::Apps>>,
     /// The desk the roster is drawn over.
@@ -627,7 +639,7 @@ struct Panel {
     here: Rc<dyn Fn(&mut DesktopTree)>,
     /// What each window of the desk shows, by its tab: where a person's record stands, so the
     /// roster places them in the window they work in.
-    notes: Rc<dyn Fn() -> std::collections::BTreeMap<u64, String>>,
+    notes: WindowRecords,
     /// The apps this host has: whether Chat stands here decides whether a card offers to write to
     /// the person.
     apps: Option<std::sync::Arc<dyn crate::platform::apps::Apps>>,
@@ -809,7 +821,16 @@ impl Panel {
             other: Some(OtherPerson {
                 id: row.id.clone(),
                 status: row.status.clone(),
-                place: row.activity.clone(),
+                // A person's card says which record they look at; an agent's, the app it works
+                // in beside the record its line names.
+                place: if row.is_agent {
+                    row.working_app
+                        .as_deref()
+                        .map(|app| self.app_called(app))
+                        .map(|app| tilo_desktop::collaborators::in_app(&app))
+                } else {
+                    row.activity.clone()
+                },
                 presence: (!row.is_agent).then_some(row.availability),
                 following: sync.own().following.as_deref() == Some(row.id.as_str()),
                 can_follow: row.followable,
@@ -916,6 +937,22 @@ impl Panel {
         }
     }
 
+    /// What this host calls the app `app`: the name the app lists of the machine or the page
+    /// carry for it, and none where it lists no name for it.
+    fn host_name(&self, app: &str) -> Option<String> {
+        self.apps
+            .as_deref()
+            .map(|apps| apps.name(app))
+            .filter(|name| !name.trim().is_empty())
+    }
+
+    /// What the app `app` is called to the person: as this host names it, else the session's own
+    /// naming, so a card never shows an id.
+    fn app_called(&self, app: &str) -> String {
+        self.host_name(app)
+            .unwrap_or_else(|| crate::app_names::app_name(app))
+    }
+
     /// Whether this device has the app that holds a person's conversations.
     fn chat_installed(&self) -> bool {
         self.apps
@@ -1012,7 +1049,7 @@ impl Panel {
             .sync
             .as_ref()
             .map_or_else(String::new, |sync| sync.publisher().to_string());
-        let records = (self.notes)();
+        let windows = (self.notes)();
         let mut tree = self.handle.read(Clone::clone);
         (self.here)(&mut tree);
         let (rows, _) = collaborator_roster_rows_named(&tree, &own, None);
@@ -1025,26 +1062,22 @@ impl Panel {
             .map(|workspace| workspace.id().to_string());
         // What each window here shows, by the digest presence names it with: what a person's window
         // on the same record is called here.
-        let titled: BTreeMap<String, String> = crate::sync::layout::bindings(&tree, &records)
+        let titled: BTreeMap<String, String> = crate::sync::layout::bindings_of(&tree, &windows)
             .into_iter()
-            .filter_map(|(tab, digest)| {
+            .filter_map(|(tab, _app, digest)| {
                 let title = tree.tab(tab)?.title.trim().to_owned();
                 (!title.is_empty()).then_some((digest, title))
             })
             .collect();
         // Each person's screen, its windows named with what they show where this desk holds that
         // record, else with the app's name.
-        let apps = self.apps.as_deref();
         let screens = match (self.sync.as_ref(), front) {
             (Some(sync), Some(workspace)) => sync
                 .members(&workspace)
                 .into_iter()
                 .map(|member| {
                     let name_of = |app: &str, record: &str| {
-                        titled.get(record).cloned().or_else(|| {
-                            let name = apps.map_or_else(String::new, |apps| apps.name(app));
-                            (!name.trim().is_empty()).then_some(name)
-                        })
+                        titled.get(record).cloned().or_else(|| self.host_name(app))
                     };
                     let screen = member
                         .layout
@@ -1358,7 +1391,7 @@ impl Panel {
         let motion = theme.motion();
         // The roster is the panel's only while it is up or kept at an edge: closed, it draws
         // nothing, so the surface stands transparent and a press under the bar reaches the bar.
-        if shown.pinned.is_none() && !self.open.get() {
+        if (shown.pinned.is_none() || shown.sheet()) && !self.open.get() {
             return;
         }
         // The bar's faces open the roster where they stand, kept on screen or not.
@@ -1461,7 +1494,8 @@ impl Panel {
             return;
         }
         shown.card_open = None;
-        let pinned = shown.pinned.is_some();
+        let pinned = shown.pinned.is_some() && !shown.sheet();
+        let sheet = shown.sheet();
         let own_id = self
             .sync
             .as_ref()
@@ -1496,7 +1530,7 @@ impl Panel {
             workspace: &workspace,
             rows: &rows,
             may_invite: self.invitable.get(),
-            may_pin: !pinned,
+            may_pin: !pinned && !sheet,
             pinned,
             panel,
             screens: &screens,
@@ -1575,6 +1609,24 @@ impl Panel {
         pin.remeasured = false;
     }
 
+    /// Whether `event` is the pointer's away from the kept roster: neither on the panel where it
+    /// stands nor dragging it.
+    fn away_from_kept(&self, event: &WindowEvent) -> bool {
+        if !matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. }
+        ) {
+            return false;
+        }
+        let shown = self.shown.borrow();
+        let Some(pin) = shown.pinned.as_ref() else {
+            return false;
+        };
+        pin.drag.is_none() && shown.cursor.is_none_or(|point| !pin.panel.contains(point))
+    }
+
     /// What a drag of the pinned roster asks: the pointer moved, a press started on it, or it was
     /// let go at an edge.
     fn handle_pinned(&self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
@@ -1582,6 +1634,10 @@ impl Panel {
         let mut shown = roster.borrow_mut();
         let cursor = shown.cursor;
         let mut handled = false;
+        if shown.sheet() {
+            // A phone's roster is never kept on screen: there is no panel of it to drag.
+            return false;
+        }
         {
             let Some(pin) = shown.pinned.as_mut() else {
                 return false;
@@ -1864,6 +1920,13 @@ impl Widget for Panel {
         // where it stands, and never takes the keyboard.
         let kept = self.shown.borrow().standing();
         if !self.open.get() && !kept {
+            self.handle_pinned(event, ctx);
+            return;
+        }
+        // Kept on screen, it answers only where it stands: the pointer away from it is the desk's.
+        // The layer covers the whole desk where the host has one canvas (the page), so claiming a
+        // press there would take it from the window under it, its Maximize among them.
+        if !self.open.get() && self.away_from_kept(event) {
             self.handle_pinned(event, ctx);
             return;
         }

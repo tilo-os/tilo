@@ -337,7 +337,7 @@ pub struct AgentOptions {
 /// A placer is named, but its members or account are not usable.
 pub fn host_shells(state: PathBuf) -> Result<Arc<HostShells>, String> {
     Ok(Arc::new(
-        match crate::placed_shells::PlacedShells::from_env()? {
+        match crate::placed_shells::PlacedShells::shared_from_env()? {
             Some(placed) => HostShells::Placed(placed),
             None => HostShells::Here(ush::workspace_shell::WorkspaceShells::from_env(state)),
         },
@@ -358,7 +358,7 @@ pub enum HostShells {
     /// Here: ush's workspace shells, in this process.
     Here(ush::workspace_shell::WorkspaceShells),
     /// On the member device holding the workspace's VM.
-    Placed(crate::placed_shells::PlacedShells),
+    Placed(Arc<crate::placed_shells::PlacedShells>),
 }
 
 impl HostShells {
@@ -585,6 +585,38 @@ fn serve_with_browser(
     ) -> Option<Pending<tilo_actions::remote::RemoteActionMessage>>,
 ) -> Option<Pending<tilo_actions::remote::RemoteActionMessage>> {
     use tilo_actions::remote::RemoteActionMessage;
+    // A Linux app opens in the workspace's VM the way Browser does: the open
+    // makes its record, and the app is started in the workspace's apps
+    // session on it.
+    if let RemoteActionMessage::Invoke(request) = &message
+        && let Some(launch) = crate::hosted_browser::opens_linux_app(request)
+    {
+        let invocation = request.invocation;
+        let launch = match (launch, browsers) {
+            (Ok(launch), Some(_)) => launch,
+            (Err(reason), _) => {
+                return Some(Pending::ready(crate::hosted_browser::refused(
+                    invocation, reason,
+                )));
+            }
+            (Ok(_), None) => {
+                return Some(Pending::ready(crate::hosted_browser::refused(
+                    invocation,
+                    crate::hosted_browser::unplaced_linux_apps(),
+                )));
+            }
+        };
+        let browsers = Arc::clone(browsers?);
+        return Some(serve(message)?.map(move |message| {
+            crate::hosted_browser::placed_linux_app(
+                &browsers,
+                workspace_id,
+                invocation,
+                &launch,
+                message,
+            )
+        }));
+    }
     let opens = match &message {
         RemoteActionMessage::Invoke(request) if crate::hosted_browser::opens_browser(request) => {
             Some(request.invocation)
@@ -801,7 +833,8 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
 }
 
 /// The apps this host's workspaces offer: `catalogue` (this machine's
-/// registry when `None`), and Browser when this host places its windows
+/// registry when `None`), and Browser and the workspace's Linux apps when
+/// this host places their windows
 /// ([`HostedBrowsers`](crate::hosted_browser::HostedBrowsers)). A workspace
 /// lists Browser and opens a record for it like any app, though no worker of
 /// this host mounts it: the window runs in the workspace's VM.
@@ -814,7 +847,8 @@ fn app_catalogue(
         return catalogue;
     }
     let placed = crate::hosted_browser::placed_app();
-    Arc::new(move || catalogue().placing(placed))
+    let linux = crate::hosted_browser::placed_linux_apps();
+    Arc::new(move || catalogue().placing(placed).placing(linux))
 }
 
 /// Start `cfg`'s relay serving its workspaces' records to pages, without agents:

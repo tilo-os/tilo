@@ -69,7 +69,14 @@
 //! often `row`: offered only bound, never on the resource with an id for
 //! the caller to type.
 //!
-//! Variant options: `label = "…"` (else the first doc line), `view` (changes
+//! An effect's label is a key of the catalogue beside its crate
+//! (`locales/en-US.ftl`): `<operation>-<id>` with the operation's separators
+//! as dashes (`notes-effect-export` for `export` of `notes.effect`), or the
+//! key `label = "…"` names where the crate already says the same thing. Its
+//! doc comment is for developers and describes it to agents; it is never the
+//! label.
+//!
+//! Variant options: `label = "key"`, `view` (changes
 //! only what is shown; answers at once), `row` (offered only bound to the
 //! items it acts on), `job` (runs in the background and reports progress,
 //! then its result), `cancellable` (a job the caller may cancel), `returns`
@@ -445,7 +452,7 @@ fn kept_specs<E: Effect>(
         static KEPT: std::cell::RefCell<Kept> =
             std::cell::RefCell::new((0, std::collections::HashMap::new()));
     }
-    let epoch = crate::resource::type_epoch();
+    let epoch = crate::resource::words_epoch();
     let found = KEPT.with(|kept| {
         let kept = kept.borrow();
         if kept.0 == epoch {
@@ -586,7 +593,8 @@ fn kept_type(key: TypeKey, build: impl FnOnce() -> Arc<ActionType>) -> Arc<Actio
 )]
 pub struct EffectRow {
     pub id: &'static str,
-    pub label: &'static str,
+    /// What a person reads it by: a key of its crate's catalogue.
+    pub label: crate::label::Word,
     /// The other words people use for it (`keywords = "…"`), comma
     /// separated: search finds it by them as by its label.
     pub keywords: &'static [&'static str],
@@ -687,7 +695,9 @@ pub struct EffectResult {
 )]
 pub struct EffectDecl {
     pub id: &'static str,
-    pub label: &'static str,
+    /// What a person reads it by, read in their language when it is
+    /// published.
+    pub label: crate::label::Word,
     /// The other words people use for it (`keywords = "…"`), comma
     /// separated: search finds it by them as by its label.
     pub keywords: &'static [&'static str],
@@ -893,10 +903,11 @@ impl EffectDecl {
         build: impl Fn(&Target, &tilo_actions::ActionArgs) -> EncodedAction + Send + Sync + 'static,
     ) -> ActionSpec {
         let view = self.kind == OperationKind::View;
+        let label = self.label.read();
         let mut spec = ActionSpec::typed_operation_on(
             self.id,
-            self.label,
-            self.label,
+            label.clone(),
+            label,
             if view {
                 OperationKind::View
             } else {

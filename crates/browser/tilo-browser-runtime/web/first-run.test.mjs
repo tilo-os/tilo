@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
-import {ASK_MS, codeWait, CONNECTED_MS, QUIET_MS, createFirstRun, FOLLOW_MS, MAKE_MS, manualCommands, MCP_URL, OFFER_MS, PASSKEY_WAIT_MS, RENEW_MS,
+import {ASK_MS, codeWait, showPrompt, CONNECTED_MS, QUIET_MS, createFirstRun, FOLLOW_MS, MAKE_MS, manualCommands, MCP_URL, OFFER_MS, PASSKEY_WAIT_MS, RENEW_MS,
   readSetup, SETUP, setupFailure, setupPrompt, signInPrompt, stepLines, minutesLeft} from './first-run.mjs';
 
 const here = name => new URL(name, import.meta.url);
@@ -747,4 +747,17 @@ test('reloaded on the start, the kept prompt stays when the page can follow code
   await settle();
   assert.equal(made.made.length, 0);
   assert.equal(last('offer')[2].code, CODE);
+});
+
+test('the prompt breaks only between its words: a flag and a URL each stay whole', () => {
+  const node = (kind, text = '') => ({kind, className: '', textContent: text});
+  const document = {createTextNode: text => node('text', text), createElement: () => node('span')};
+  const element = {ownerDocument: document, children: [], replaceChildren(...children) { this.children = children; },
+    get textContent() { return this.children.map(child => child.textContent).join(''); }};
+  const prompt = 'Set up Tilo for me: run curl -fsSL https://tilo.example | sh && tilo login D9B-X4GK --site https://tilo.example, then do what it tells you.';
+  showPrompt(element, prompt);
+  assert.equal(element.textContent, prompt, 'what is copied from the box is the prompt itself');
+  const words = element.children.filter(child => child.className === 'fr-word').map(child => child.textContent);
+  for (const whole of ['-fsSL', 'https://tilo.example', '--site', 'D9B-X4GK']) assert.ok(words.includes(whole), `${whole} stays one unbreakable word`);
+  assert.ok(element.children.filter(child => child.kind === 'text').every(child => /^ +$/.test(child.textContent)), 'it breaks only at spaces');
 });

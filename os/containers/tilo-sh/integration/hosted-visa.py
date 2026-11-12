@@ -26,8 +26,10 @@ agent take there, with the person's answering device held by the check
   h. a key minted with the scope unticked is asked about the page actions
      that act on the page, which is what the scope answers for;
   i. past the plans file's free page actions the next one is refused with
-     `no_payment_method` and a step to add a card; adding the account to the
-     plans file lets the next one through.
+     `no_payment_method` and a step to add a card. The card is the account's,
+     so the step after this one adds it (integration/plans.py) and holds what
+     it releases: this window's next page action, and a Linux command in the
+     same workspace's VM.
 
 usage: hosted-visa.py DOOR SERVER_KEY OUT_DIR FORM_URL [--open|--fill]
 
@@ -38,9 +40,7 @@ names the stack's reviewer helper (integration/reviewer.py); the person is
 answered for by HOSTED_VISA_APPROVER (`tilo-approve`), in the identity root
 HOSTED_VISA_ROOT, through the host HOSTED_VISA_RELAY names as
 `KEY@HOST:PORT`; HOSTED_VISA_UNSCOPED_KEY is a key of the same person that may
-not operate web pages in Browser; HOSTED_VISA_PLANS is the plans file the
-relay counts page actions by, and HOSTED_VISA_ACCOUNT the account it counts
-them for.
+not operate web pages in Browser.
 
 Prints one JSON line with the timings and what it asserted.
 """
@@ -56,14 +56,13 @@ import time
 import urllib.parse
 import urllib.request
 
+from approver import Person
 from tilo import AsyncTilo, ProtocolError, Refused, Run
 
 DOOR, SERVER_KEY, OUT, FORM_URL = sys.argv[1:5]
 
 RUN_TITLE = "Fill Jane Doe's visa application"
 REVIEWER_EMAIL = "rosa@example.com"
-PLANS = os.environ.get("HOSTED_VISA_PLANS", "")
-ACCOUNT = os.environ.get("HOSTED_VISA_ACCOUNT", "")
 APPROVER = os.environ.get("HOSTED_VISA_APPROVER", "")
 UNSCOPED_KEY = os.environ.get("HOSTED_VISA_UNSCOPED_KEY", "")
 PERSON_ROOT = os.environ.get("HOSTED_VISA_ROOT", "")
@@ -171,63 +170,6 @@ def check_leaves(question: dict, what: str) -> None:
     check(page.get("picture"), f"the question about {what} shows the filled page ({page})")
 
 
-class Person:
-    """The person the page made, answering for themselves: `tilo-approve`
-    connects as one of their approving devices and answers what the host
-    asks them, printing the question it saw."""
-
-    def __init__(self) -> None:
-        check(APPROVER and os.path.isfile(APPROVER), f"the check holds its approver ({APPROVER})")
-        check(PERSON_ROOT and os.path.isdir(PERSON_ROOT), f"the person's root is held ({PERSON_ROOT})")
-        check(HOST, f"the host's address is named ({HOST})")
-        self.asked: list[dict] = []
-
-    def begin(self, answer: str, within: int = 180) -> "asyncio.Future[asyncio.subprocess.Process]":
-        """Start answering the next question, before the call that asks it:
-        the call waits for the person, so they answer beside it."""
-        return asyncio.ensure_future(self._start(answer, within))
-
-    async def _start(self, answer: str, within: int) -> asyncio.subprocess.Process:
-        return await asyncio.create_subprocess_exec(
-            APPROVER, "next", "--root", PERSON_ROOT, "--relay", HOST,
-            "--answer", answer, "--within", str(within),
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-
-    async def settle(self, started: "asyncio.Future[asyncio.subprocess.Process]", within: int = 180) -> list[dict]:
-        """The questions the process saw, once it answered or gave up."""
-        process = await started
-        try:
-            out, err = await asyncio.wait_for(process.communicate(), timeout=within + 30)
-        except TimeoutError:
-            process.kill()
-            out, err = await process.communicate()
-        questions = []
-        for line in out.decode().splitlines():
-            line = line.strip()
-            if not line.startswith("{"):
-                continue
-            seen = json.loads(line)
-            if seen.get("question"):
-                questions.append(seen["question"])
-            if "watched" in seen and seen["watched"]:
-                raise AssertionError(f"the person was asked {seen['watched']} unexpected questions")
-        if process.returncode not in (0, 1, 3):
-            raise AssertionError(f"the approver stopped ({process.returncode}): {err.decode()[-800:]}")
-        self.asked.extend(questions)
-        return questions
-
-    async def asked_nothing(self) -> None:
-        """Say that the host has no question for the person: a question left
-        waiting is still there to be seen, and the window answers nothing
-        until the person decides."""
-        questions = await self.settle(self.begin("none", within=2), within=2)
-        check(not questions, f"the person was asked nothing ({questions})")
-
-    def answered(self) -> int:
-        return len(self.asked)
-
-
 class Page:
     """One Browser window of the workspace, by the provider its open answered."""
 
@@ -313,24 +255,6 @@ def post_invitee(link: str) -> dict:
         return json.load(answer)
 
 
-def add_account_to_plans() -> None:
-    """The provider adds the account to the plans file: the relay reads it
-    again for the next page action."""
-    check(PLANS and os.path.isfile(PLANS), f"the plans file is where the relay reads it ({PLANS})")
-    with open(PLANS) as plans:
-        document = json.load(plans)
-    document.setdefault("accounts", {})[ACCOUNT] = {
-        "plan": "local",
-        "max_running": 2,
-        "max_vms": 5,
-        "sizes": ["small", "default"],
-        "card": {"brand": "visa", "last4": "4242"},
-    }
-    with open(PLANS, "w") as plans:
-        json.dump(document, plans, indent=2)
-    say("   the provider added", f"{ACCOUNT} to {PLANS} with a card on file")
-
-
 async def open_phase(report: dict[str, object]) -> int:
     """The workspace, its agent's key, and Browser opened in its VM."""
     backend = AsyncTilo(key=SERVER_KEY, door=DOOR)
@@ -376,7 +300,7 @@ async def fill_phase(report: dict[str, object]) -> int:
     agent = AsyncTilo(key=state["key"], door=DOOR)
     aws = agent.workspace(workspace)
     page = Page(aws, str(state["window"]))
-    person = Person()
+    person = Person(APPROVER, PERSON_ROOT, HOST, check=check)
     reviewer = None
 
     say("b. the agent fills the visa form through page actions, and the person is asked nothing")
@@ -497,7 +421,7 @@ async def fill_phase(report: dict[str, object]) -> int:
     report["unscoped_questions"] = 2
     await unscoped.aclose()
 
-    say("i. metering: the plans file's free page actions, then a card")
+    say("i. metering: the plans file's free page actions are used up")
     refused = "allowed"
     for _ in range(600):
         refused = await refusal_of(page.do("read-page"))
@@ -512,9 +436,9 @@ async def fill_phase(report: dict[str, object]) -> int:
         f"the refusal says a card continues, and how ({refused})",
     )
     report["metered_refusal"] = refused
-    add_account_to_plans()
-    allowed = await refusal_of(page.do("read-page"))
-    check(allowed == "allowed", f"with the account on file the next page action runs ({allowed})")
+    # The provider's card is added next, and the step that adds it holds what
+    # it releases: this window's next page action and a Linux command in the
+    # workspace's VM (integration/hosted-terminal.py).
 
     report["questions_asked"] = person.answered()
     write_json("questions.json", person.asked)

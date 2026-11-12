@@ -944,6 +944,7 @@ fn picture(
     let (width, height) = layer.size(source);
     tilo_live::video::VideoObject {
         keyframe,
+        hdr: false,
         codec: tilo_live::video::Codec::H264,
         layer,
         sequence,
@@ -1282,6 +1283,86 @@ async fn a_windows_page_travels_only_while_a_member_shows_it() {
     });
     assert_eq!(
         a.send_page(TAB, &page_object(sequence, false)),
+        Err(PlaneError::Unwanted)
+    );
+}
+
+/// A shared window travels as its own sealed track: published only while a
+/// member shows it, starting at a keyframe whose header says what a decoder
+/// starts from, and a member that joins while it is up asks for a keyframe of
+/// its own.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shared_window_travels_only_while_a_member_shows_it() {
+    use tilo_live::video::{Layer, Source};
+    /// The window the test shares.
+    const TAB: u64 = 0x5EED_0000_0000_0009;
+    let authority = Authority::new();
+    let (relay_endpoint, a_endpoint, b_endpoint) =
+        (endpoint().await, endpoint().await, endpoint().await);
+    let (a_key, b_key) = (*a_endpoint.id().as_bytes(), *b_endpoint.id().as_bytes());
+    let (a_cert, b_cert) = (authority.admit_device(a_key), authority.admit_device(b_key));
+    let roster = authority.roster();
+    let relay = Relay::new(authority.clone());
+    let _router = serve(&relay, &relay_endpoint);
+    let keys = keys();
+    let a = Plane::join(
+        Arc::new(native::Iroh::new(a_endpoint.clone(), addr(&relay_endpoint))),
+        &grant_for(&a_cert),
+        join(a_key, roster.clone(), keys.clone()),
+    )
+    .await
+    .unwrap();
+    let b = Plane::join(
+        Arc::new(native::Iroh::new(b_endpoint.clone(), addr(&relay_endpoint))),
+        &grant_for(&b_cert),
+        join(b_key, roster, keys),
+    )
+    .await
+    .unwrap();
+    wait_until("both sessions admitted", || relay.counters().accepted == 2);
+    let window = |sequence: u64, keyframe: bool| tilo_live::video::VideoObject {
+        width: 1000,
+        height: 700,
+        ..picture(Layer::High, Source::Screen, sequence, keyframe)
+    };
+    assert_eq!(
+        a.send_window(TAB, &window(0, true)),
+        Err(PlaneError::Unwanted),
+        "nobody shows the window: nothing of it is sent"
+    );
+
+    b.show(a_key, &[Track::Window(TAB, Layer::High)]);
+    wait_until("the window is asked for", || a.wanted_windows() == [TAB]);
+    assert_eq!(
+        a.take_window_keyframes(),
+        [TAB],
+        "a new viewer starts at a keyframe"
+    );
+    let mut received = Vec::new();
+    let mut sequence = 0_u64;
+    wait_until("the window reaches the viewer", || {
+        let _ = a.send_window(TAB, &window(sequence, sequence == 0));
+        sequence = sequence.saturating_add(1);
+        received.extend(pictures(&b, Track::Window(TAB, Layer::High)));
+        received.len() >= 2
+    });
+    assert!(received[0].keyframe, "the viewer starts at the keyframe");
+    assert_eq!(
+        (received[0].width, received[0].height, received[0].codec),
+        (1000, 700, tilo_live::video::Codec::H264),
+        "the keyframe says the window's own size and codec"
+    );
+    assert!(
+        a.wanted_pictures().is_empty(),
+        "a window is no call picture"
+    );
+
+    b.show(a_key, &[]);
+    wait_until("the window is no longer shown", || {
+        a.wanted_windows().is_empty()
+    });
+    assert_eq!(
+        a.send_window(TAB, &window(sequence, true)),
         Err(PlaneError::Unwanted)
     );
 }

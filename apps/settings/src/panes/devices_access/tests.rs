@@ -103,6 +103,8 @@ fn the_published_rows_offer_what_can_be_done() {
 #[derive(Default)]
 struct RecordingHost {
     asked: std::sync::Mutex<Vec<ui::tilo_actions::remote::InvokeRequest>>,
+    /// The devices it lists, when not this laptop and a phone.
+    listed: Option<serde_json::Value>,
 }
 
 const THIS_DEVICE: &str = "1111111111111111111111111111111111111111111111111111111111111111";
@@ -134,6 +136,7 @@ impl ui::tilo_actions::remote::ActionHost for RecordingHost {
         use ui::tilo_actions::remote::identity_admin;
         let invocation = request.invocation;
         let value = match request.target.address.action.as_str() {
+            identity_admin::DEVICES if self.listed.is_some() => self.listed.clone().unwrap(),
             identity_admin::DEVICES => serde_json::json!([
                 {"label": "This laptop", "key_hex": THIS_DEVICE, "fingerprint": "11 11 11 11 11 11",
                  "current": true, "revoked": false, "can_host": true},
@@ -259,6 +262,7 @@ fn an_agents_key_is_listed_with_the_agents_not_the_devices() {
         revoked,
         can_host: false,
         kind: KeyKind::Agent,
+        browser: None,
     };
     sample.devices.push(key(7, "Claude Code on job", false));
     sample.devices.push(key(8, "Old export", true));
@@ -272,4 +276,135 @@ fn an_agents_key_is_listed_with_the_agents_not_the_devices() {
     );
     let keys: Vec<&str> = model.agent_keys().map(|key| key.label.as_str()).collect();
     assert_eq!(keys, ["Claude Code on job"]);
+}
+
+const BROWSER: &str = "0123456789abcdef0123456789abcdef";
+
+/// One browser's tab device `n`, as the list names it.
+fn tab(n: u8, current: bool) -> DeviceView {
+    DeviceView {
+        label: "Firefox on Linux".into(),
+        key: [n; 32],
+        fingerprint: format!("{n:02X} {n:02X} {n:02X} {n:02X} {n:02X} {n:02X}"),
+        current,
+        revoked: false,
+        can_host: false,
+        kind: KeyKind::Device,
+        browser: Some(BROWSER.into()),
+    }
+}
+
+/// A browser keeps a key per tab: its three tab devices are one entry,
+/// saying "3 tabs" and their keys. Opened in one of those tabs, it is
+/// "This browser", which can't revoke itself: no revoke, and no row.
+#[test]
+fn a_browsers_tab_devices_are_one_entry() {
+    en();
+    let mut sample = sample();
+    sample.devices.retain(|device| !device.current);
+    sample
+        .devices
+        .extend([tab(0x31, false), tab(0x32, true), tab(0x33, false)]);
+    let model = AccessModel::shown(sample.clone());
+    let entries = model.entries();
+    let browsers: Vec<&BrowserEntry<'_>> = entries
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::Browser(browser) => Some(browser),
+            Entry::Device(_) => None,
+        })
+        .collect();
+    assert_eq!(browsers.len(), 1, "one entry for the browser");
+    let browser = browsers[0];
+    assert!(
+        matches!(entries[0], Entry::Browser(_)),
+        "this browser comes first"
+    );
+    assert_eq!(browser.label(), "This browser");
+    let lines: Vec<String> = browser_lines(browser)
+        .into_iter()
+        .map(|line| line.replace(['\u{2068}', '\u{2069}'], ""))
+        .collect();
+    assert_eq!(lines, ["3 tabs", "Keys 31 31 31, 32 32 32, 33 33 33"]);
+    assert!(!browser.revocable(), "a tab can't revoke its own browser");
+    assert!(
+        model.browser_keys(BROWSER).is_err(),
+        "nor revoke it by its effect"
+    );
+
+    // Seen from another device, it is named by its newest key and revoked.
+    for device in &mut sample.devices {
+        device.current = false;
+    }
+    sample.devices[0].current = true;
+    let model = AccessModel::shown(sample);
+    let entries = model.entries();
+    let Some(Entry::Browser(browser)) = entries
+        .iter()
+        .find(|entry| matches!(entry, Entry::Browser(_)))
+    else {
+        panic!("the browser is listed");
+    };
+    assert_eq!(browser.label(), "Firefox on Linux");
+    assert!(browser.revocable());
+    let row = browser_row(browser).into_resource();
+    assert_eq!(row.actions.len(), REVOKE_REASONS.len());
+}
+
+/// From another device, revoking the browser revokes every tab's key on the
+/// host, and the list is read again once all of them settled.
+#[test]
+fn revoking_a_browser_revokes_each_of_its_tabs() {
+    use ui::tilo_actions::remote::{Caller, identity_admin};
+    en();
+    let key = |n: u8| hex::encode([n; 32]);
+    let tab = |n: u8, revoked: bool| {
+        serde_json::json!({"label": "Firefox on Linux", "key_hex": key(n),
+            "fingerprint": "", "current": false, "revoked": revoked, "can_host": false,
+            "browser": BROWSER})
+    };
+    let host = std::sync::Arc::new(RecordingHost {
+        listed: Some(serde_json::json!([
+            {"label": "This laptop", "key_hex": THIS_DEVICE, "fingerprint": "",
+             "current": true, "revoked": false, "can_host": true},
+            tab(0x31, false), tab(0x32, false), tab(0x33, false), tab(0x34, true),
+        ])),
+        ..RecordingHost::default()
+    });
+    let remote = ui::RemoteActions::with_host(host.clone(), Caller::local_person("owner"));
+    let mut model = AccessModel::asking(&remote);
+    model.poll(&remote);
+    assert_eq!(model.entries().len(), 2, "this laptop, and the browser");
+    model
+        .act(
+            &remote,
+            &DevicesAccessEffect::RevokeBrowser {
+                browser: BROWSER.into(),
+                reason: "stolen".into(),
+            },
+            None,
+        )
+        .unwrap();
+    let before = host.asked.lock().unwrap().len();
+    model.poll(&remote);
+    let asked = host.asked.lock().unwrap().clone();
+    let revoked: Vec<serde_json::Value> = asked
+        .iter()
+        .filter(|request| request.target == identity_admin::target(identity_admin::REVOKE))
+        .map(|request| match &request.argument {
+            InvokeArgument::Json(argument) => argument["device"].clone(),
+            other => panic!("a revoke names its device: {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        revoked,
+        [key(0x31), key(0x32), key(0x33)],
+        "every tab whose access has not ended"
+    );
+    assert!(
+        asked[before..]
+            .iter()
+            .any(|request| request.target == identity_admin::target(identity_admin::DEVICES)),
+        "the list is read again after the revocations"
+    );
 }

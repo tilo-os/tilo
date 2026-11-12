@@ -628,7 +628,10 @@ pub fn rsa_public_key_info(public_key_pem: &str) -> Result<(u32, String), String
     let der = key
         .to_public_key_der()
         .map_err(|_| "cannot canonicalize RSA public key")?;
-    Ok((key.n().bits(), hex::encode(Sha256::digest(der.as_bytes()))))
+    Ok((
+        key.n().bit_width(),
+        hex::encode(Sha256::digest(der.as_bytes())),
+    ))
 }
 
 /// Validate a P-256 `SubjectPublicKeyInfo` PEM and return its canonical DER

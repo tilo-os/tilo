@@ -4769,6 +4769,7 @@ async fn spawn_context_stream(
                     .send_durable(CollabEvent::Context {
                         collaborators: context.collaborators,
                         permissions: context.permissions,
+                        apps: context.apps,
                     })
                     .await
                 {
@@ -4781,6 +4782,7 @@ async fn spawn_context_stream(
                 .send_durable(CollabEvent::Context {
                     collaborators: Vec::new(),
                     permissions: Vec::new(),
+                    apps: Vec::new(),
                 })
                 .await;
         });

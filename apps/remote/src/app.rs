@@ -1327,7 +1327,7 @@ impl Store {
             connection.host.0,
             connection.port,
             connection.user.0,
-            connection.auth.label()
+            connection.auth.label_message()
         )
     }
 
@@ -1500,7 +1500,7 @@ impl Store {
             .map(|c| {
                 let meta = match connection_readiness(c) {
                     readiness @ (TransportReadiness::BackendUnavailable
-                    | TransportReadiness::InvalidProfile) => readiness.label().to_owned(),
+                    | TransportReadiness::InvalidProfile) => CATALOG.t(readiness.label_message()),
                     TransportReadiness::Ready | TransportReadiness::NeedsLiveSessionCapability => {
                         // Another device's clock may run ahead of this one.
                         c.last_used_ms.map_or_else(
@@ -1517,7 +1517,7 @@ impl Store {
                     name: c.name.clone(),
                     kind: c.kind,
                     address: if c.kind == ConnectionKind::Tilo {
-                        c.kind.label().to_owned()
+                        CATALOG.t(c.kind.label_message())
                     } else {
                         c.address()
                     },

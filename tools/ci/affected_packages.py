@@ -8,13 +8,19 @@ dev-depends on one of those (a dev-dependency reaches only the dependent's own
 test, example and bench targets, not the library its dependents link).  Root
 Cargo.toml and Cargo.lock changes are attributed to the packages they reach
 when the difference can be proved, lockfile edges by the same kinds;
-other repository-wide build inputs fall back to the complete workspace.
+other repository-wide build inputs fall back to the complete workspace. A
+test-run configuration change (.config/nextest*.toml) is attributed to the
+packages its filters name, and .config/hakari.toml to workspace-hack, whose
+features every member builds with.
 Ordinary feedback checks the closure on x86 and tests changed packages, their
 direct dependants (within one shard's cost) and contract suites; --full
 qualifies both native architectures.
 The hermetic suites outside Cargo declared in tools/ci/suites.toml are selected
 by the paths they read, as are the packages it declares to read repository files
-outside their own directory.
+outside their own directory. A workspace path that no Cargo package owns is
+attributed by those reader declarations, so a change to sources shipped without
+a package of their own (the tilolang apps under apps/tl) selects the packages
+that read them; only a path no package reads keeps the complete workspace.
 The emitted matrix is consumed directly by Forgejo Actions.
 """
 
@@ -46,16 +52,67 @@ from ci import suites as path_suites
 # tilo-app-package/tests/{app_manifests,verify_attest} and tilo-doc-codecs/tests/{convergence,office_roundtrip}.
 # These catch repository contracts outside a changed crate's dependency edges.
 ALWAYS_PACKAGES = {"collab-types", "tilo-app-package", "tilo-doc", "tilo-doc-codecs"}
-# The desktop smoke (crates/session/session/tests/desktop_smoke.rs) drives a real
-# headless compositor through a whole session and fails when its main loop stops
-# turning. Whatever the change, if it can alter the desktop (the package is in
-# the checked closure), the smoke runs: with the package's whole test run when
-# that is scheduled anyway, otherwise as just this filter. The shell test target
-# is already built for the former, so the gate costs a build only for changes
-# that reach the shell through a foundation crate.
-DESKTOP_GATE = {
-    "shell": path_suites.ReaderScope((), "it", "binary(it) and test(desktop_smoke::)"),
-}
+# The desk, and the crates the session composes it from. A change to any of them
+# reaches tilo-session, so the desktop gate keys on the session: whatever the
+# change, if it can alter the desk and the session's whole test suite is not
+# scheduled anyway, the desk's own integration tests run instead — a window
+# becomes a tab of the strip, an app opens where the desk puts it, the owner's
+# door answers. When the suite is scheduled they come with it and the gate adds
+# nothing.
+DESK_PACKAGES = (
+    "crates/session/desktop",
+    "crates/session/desktop-model",
+    "crates/session/desktop-policy",
+    "crates/session/desktop-surface",
+    "crates/session/core",
+)
+DESKTOP_GATE_PACKAGE = "tilo-session"
+DESKTOP_GATE_MANIFEST = "crates/session/session/Cargo.toml"
+# The desk's integration tests, by the file each is written in. They are modules
+# of the package's one test binary (`tests/it.rs` includes each file), so the
+# gate names that binary once and picks the modules out by the name each test
+# gained from it.
+DESKTOP_GATE_TESTS = ("hosted_windows", "launch", "owner_door")
+DESKTOP_GATE_BINARY = "it"
+
+
+def desktop_gate(root: Path) -> dict[tuple[str, str], path_suites.ReaderScope]:
+    """The desk's integration tests, refused when the tree lacks what they name.
+
+    The gate keys on a package name, so a renamed or deleted crate would be in
+    no plan's selection: it would select nothing and run nothing, silently. A
+    test target that went away fails a job only once the gate fires, and a desk
+    crate the session no longer depends on takes the gate's reason with it. All
+    three fail here instead, where every plan is computed.
+    """
+    session = root / DESKTOP_GATE_MANIFEST
+    manifest = tomllib.loads(session.read_text(encoding="utf-8")) if session.is_file() else {}
+    if manifest.get("package", {}).get("name") != DESKTOP_GATE_PACKAGE:
+        raise ValueError(f"the desktop gate names {DESKTOP_GATE_PACKAGE!r}, "
+                         f"which {DESKTOP_GATE_MANIFEST} does not declare")
+    targets = {target.get("name") for target in manifest.get("test", [])}
+    if DESKTOP_GATE_BINARY not in targets:
+        raise ValueError(f"the desktop gate names test binary {DESKTOP_GATE_BINARY!r}, "
+                         f"which {DESKTOP_GATE_MANIFEST} does not declare")
+    missing = [test for test in DESKTOP_GATE_TESTS
+               if not (session.parent / "tests" / f"{test}.rs").is_file()]
+    if missing:
+        raise ValueError(f"the desktop gate names test files {missing} "
+                         f"that {session.parent / 'tests'} does not hold")
+    linked = {(session.parent / entry["path"]).resolve()
+              for entry in manifest.get("dependencies", {}).values()
+              if isinstance(entry, dict) and "path" in entry}
+    unreached = [desk for desk in DESK_PACKAGES if (root / desk).resolve() not in linked]
+    if unreached:
+        raise ValueError(f"the desktop gate names desk crates {unreached} that {DESKTOP_GATE_PACKAGE} "
+                         "does not depend on: a change to one no longer reaches the desk's tests")
+    # One entry: the modules share the binary, so a run of it covers them all.
+    modules = " or ".join(f"test({test}::)" for test in DESKTOP_GATE_TESTS)
+    return {(DESKTOP_GATE_PACKAGE, DESKTOP_GATE_BINARY): path_suites.ReaderScope(
+        (), DESKTOP_GATE_BINARY, f"binary({DESKTOP_GATE_BINARY}) and ({modules})")}
+
+
+DESKTOP_GATE = desktop_gate(TOOLS.parent)
 EXTERNAL_ASSET_MANIFEST = "os/external-assets/github-assets.tsv"
 # Snapshot pins CI publishes and signs (kernel only; RPM snapshots resolve by
 # fingerprint). A pull request that changes only these changes no code:
@@ -69,9 +126,6 @@ PIN_FILES = ("os/kernel-snapshot.env",)
 # Security, layout and workflow policy checks remain mandatory outside Rust.
 NON_COMPILING_DOCS = {
     "AGENTS.md",
-    "DEVELOPMENT.md",
-    "docs/ci-performance.md",
-    "docs/ci-emergency-relief.md",
     "docs/headless-testing.md",
     "docs/policies.md",
 }
@@ -147,33 +201,19 @@ QUALITY_ONLY_CONTROL_INPUTS = {
     # observe their request gate, paths, architecture selection and delegation.
     "os/dev/rpm-snapshot-fingerprint.py": (
         "os/tests/test_rpm_snapshot_fingerprint.py",
-        "tools/tests/test_rpm_pin_contract.py",
     ),
     "os/dev/resolve-rpm-snapshot.sh": (
         "os/tests/test_rpm_snapshot_fingerprint.py",
-        "tools/tests/test_rpm_pin_contract.py",
     ),
     ".forgejo/workflows/build-ci-builder.yml": (
         "os/tests/test_builder_candidate_workflow.py",
         "os/tests/workflow_dependency_invariants.sh",
-        "tools/tests/test_cargo_download_cache_action.py",
         "tools/tests/test_ci_native_mold.py",
-        "tools/tests/test_cosign_install_action.py",
     ),
     ".forgejo/workflows/check.yml": (
-        "tools/tests/test_ci_check_aggregate.py",
-        "tools/tests/test_ci_queue_relief.py",
         "tools/tests/test_ci_receipt.sh",
         "tools/tests/test_ci_test_shard_environment.py",
         "tools/tests/test_resolve_ci_builder.py",
-    ),
-    ".forgejo/workflows/ci-legacy-apps.yml": (
-        "tools/tests/test_ci_queue_relief.py",
-        "os/tests/test_builder_candidate_workflow.py",
-    ),
-    ".forgejo/workflows/release-relay.yml": (
-        "tools/tests/test_workflow_package_paths.py",
-        "os/tests/workflow_dependency_invariants.sh",
     ),
 }
 NATIVE_RUNNERS = runner_labels.NATIVE
@@ -189,9 +229,19 @@ GLOBAL_FILES = {
 }
 GLOBAL_PREFIXES = (
     ".cargo/",
-    ".config/",
     "vendor/",
 )
+# Test-run configuration: which tests run, in which environment, under which
+# limits. A change here is attributed to the packages its filters name; a file
+# in CONFIG_DIRECTORY that is not listed keeps the complete workspace.
+CONFIG_DIRECTORY = ".config/"
+FILTER_CONFIG_FILES = (
+    ".config/nextest.toml",
+    ".config/nextest-filters.toml",
+    ".config/nextest-capabilities.toml",
+)
+# The feature selection of crates/workspace-hack, which every member depends on.
+FEATURE_CONFIG_FILE = ".config/hakari.toml"
 # Vendored crates that carry Tilo patches, with the paths their own tests read.
 # The workspace builds them only as path dependencies, so Cargo selection never
 # runs their tests; check.yml's `vendored` job does
@@ -267,11 +317,11 @@ DEDICATED_TEST_WEIGHT = 1_000
 # the structural cost one shard should hold (SHARD_COST_BUDGET). A shard of a
 # whole-workspace run carries about twice that and was killed by the kernel
 # mid-build (exit 137) on every shard above 3,400 cost; those shards ask for
-# the large class (40 GiB) instead, the way the shell shard always did: its own
-# test binaries are the tree's largest link (Cargo.toml declares 48 GiB for
-# them), so a shard that carries it asks for the large class at any size.
+# the large class (40 GiB) instead. The session's test binaries are the tree's
+# largest link, so a shard that carries them asks for the large class at any
+# size, whatever its recorded build bytes say.
 LARGE_TEST_SHARD_COST = 2 * SHARD_COST_BUDGET
-LARGE_TEST_PACKAGES = frozenset({"shell"})
+LARGE_TEST_PACKAGES = frozenset({"tilo-session"})
 # What one test job may write and use, measured on the large class (36 GiB
 # cgroup limit, about 105 GiB of free store): a whole-workspace shard of 113
 # packages reached memory.peak = memory.max (213k max events) and filled its
@@ -710,12 +760,155 @@ def resolve_root_manifest(
                          "Cargo.toml changes " + " and ".join(details))
 
 
+FILTER_PACKAGE = re.compile(r"package\(\s*=?\s*([A-Za-z0-9_.-]+)\s*\)")
+
+
+def filter_packages(expression: str) -> set[str] | None:
+    """The packages a nextest filter expression names, or None when it names none.
+
+    A filter that names no package (`all()`, a bare test or binary filter)
+    selects across every package, so a change to it is a repository-wide input.
+    """
+    names = set(FILTER_PACKAGE.findall(expression))
+    return names or None
+
+
+def config_units(path: str, document: dict) -> dict[tuple, tuple[str, ...] | None] | None:
+    """Each value a test run reads, with the filter expressions it decides.
+
+    A unit's key carries both what it is and what it says, so two documents
+    that mean the same thing have equal units. Its value is the filters whose
+    tests it decides: an entry's own filter, the filters of the entries that
+    name a setup, a capability group's tests. An empty tuple decides no test
+    run (a setup nothing names), and None decides every test's (`[profile.ci]`
+    timeouts, `all()`, an unknown table). None is also the answer when the
+    document is not this file's shape.
+    """
+    units: dict[tuple, tuple[str, ...] | None] = {}
+    if path == ".config/nextest-filters.toml":
+        for key, value in document.items():
+            if not isinstance(value, str):
+                return None
+            units[("filters", key, value)] = (value,)
+        return units
+    if path == ".config/nextest-capabilities.toml":
+        capabilities = document.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return None
+        for group, table in capabilities.items():
+            if not isinstance(table, dict):
+                return None
+            tests = table.get("tests", [])
+            if not isinstance(tests, list) or not all(
+                    isinstance(entry, dict) and isinstance(entry.get("filter"), str) for entry in tests):
+                return None
+            # A group that maps no test decides every run that reads its variable.
+            filters = tuple(entry["filter"] for entry in tests) or None
+            for key, value in table.items():
+                if key != "tests":
+                    units[("capability", group, key, json.dumps(value, sort_keys=True))] = filters
+            for entry in tests:
+                units[("capability-test", group, json.dumps(entry, sort_keys=True))] = (entry["filter"],)
+        return units
+    # .config/nextest.toml: profiles, the setups they register and their overrides.
+    profile = document.get("profile")
+    scripts = document.get("scripts", {})
+    if not isinstance(profile, dict) or not isinstance(scripts, dict):
+        return None
+    setups = scripts.get("setup", {})
+    if not isinstance(setups, dict):
+        return None
+    for key, value in scripts.items():
+        if key != "setup":
+            units[("scripts", key, json.dumps(value, sort_keys=True))] = None
+    # A setup's own change reaches the entries that name it.
+    name_setups: dict[str, list[tuple[str, ...]]] = {}
+    for profile_name, table in profile.items():
+        if not isinstance(table, dict):
+            return None
+        for key, value in table.items():
+            if key not in ("scripts", "overrides"):
+                units[("profile", profile_name, key, json.dumps(value, sort_keys=True))] = None
+                continue
+            if not isinstance(value, list) or not all(
+                    isinstance(entry, dict) and isinstance(entry.get("filter"), str) for entry in value):
+                return None
+            for entry in value:
+                units[("entry", profile_name, key, json.dumps(entry, sort_keys=True))] = (entry["filter"],)
+                named = entry.get("setup")
+                for setup in named if isinstance(named, list) else [named]:
+                    if isinstance(setup, str):
+                        name_setups.setdefault(setup, []).append((entry["filter"],))
+    for name, value in setups.items():
+        units[("setup", name, json.dumps(value, sort_keys=True))] = tuple(
+            filters for entry in name_setups.get(name, ()) for filters in entry)
+    for key, value in document.items():
+        if key not in ("profile", "scripts"):
+            units[("document", key, json.dumps(value, sort_keys=True))] = None
+    return units
+
+
+def resolve_config_file(
+    path: str, before: bytes | None, after: bytes | None, metadata: dict
+) -> ResolvedInput | None:
+    """Attribute a test-run or feature configuration change to its packages.
+
+    The configuration changes no code: it changes which of a package's tests
+    run and in what environment. Those packages are checked and tested without
+    their dependants, as a changed dev-dependency reaches only its own test,
+    example and bench targets. A unit that decides every test's run (`all()`,
+    a profile's timeouts, a setup command, an unknown table) or a file that was
+    added or removed keeps the complete workspace.
+    """
+    if before is None or after is None:
+        return None
+    try:
+        old = tomllib.loads(before.decode("utf-8"))
+        new = tomllib.loads(after.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return None
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        return None
+    member_names = {package["name"] for package in metadata["packages"]}
+    if path == FEATURE_CONFIG_FILE:
+        if old == new:
+            return ResolvedInput(frozenset(), frozenset(), f"{path} says the same thing")
+        if HAKARI_PACKAGE not in member_names:
+            return None
+        return ResolvedInput(frozenset({HAKARI_PACKAGE}), frozenset(),
+                             f"{path} selects the features every member builds with")
+    old_units, new_units = config_units(path, old), config_units(path, new)
+    if old_units is None or new_units is None:
+        return None
+    absent = object()
+    changed = ([filters for key, filters in old_units.items() if new_units.get(key, absent) != filters]
+               + [filters for key, filters in new_units.items() if old_units.get(key, absent) != filters])
+    if not changed:
+        return ResolvedInput(frozenset(), frozenset(), f"{path} changes comments only")
+    names: set[str] = set()
+    for filters in changed:
+        if filters is None:
+            return None
+        for expression in filters:
+            found = filter_packages(expression)
+            if found is None:
+                return None
+            names |= found
+    if not names <= member_names:
+        return None
+    return ResolvedInput(frozenset(), frozenset(),
+                         f"{path} changes the test run of {len(names)} packages",
+                         frozenset(names))
+
+
 def resolve_manifest_inputs(
     root: Path, base: str | None, head: str, metadata: dict, changes: list[str]
 ) -> dict[str, ResolvedInput]:
-    """Return the root manifest/lockfile changes that can be attributed exactly."""
+    """Return the build inputs that can be attributed to specific packages."""
     resolvers = {"Cargo.lock": resolve_lockfile,
                  "Cargo.toml": lambda old, new, meta: resolve_root_manifest(old, new, meta, root)}
+    for path in (*FILTER_CONFIG_FILES, FEATURE_CONFIG_FILE):
+        resolvers[path] = lambda old, new, meta, path=path: resolve_config_file(path, old, new, meta)
     wanted = [path for path in resolvers if path in changes]
     if not wanted:
         return {}
@@ -1076,13 +1269,22 @@ def make_plan(
         (path in GLOBAL_FILES and path not in projected_quality_paths
          and path not in resolved_inputs)
         or path.startswith(GLOBAL_PREFIXES)
+        or (path.startswith(CONFIG_DIRECTORY) and path not in resolved_inputs)
         for path in changes
     )
     workspace_source_roots = ("apps/", "crates/")
-    unmapped_workspace_change = any(
-        path.startswith(workspace_source_roots) and owner_for(path, by_dir) is None
-        for path in changes
-    )
+    # A workspace path no Cargo package owns is still accounted for when the
+    # suite manifest declares a package that reads it from outside its own
+    # directory: those are the readers selected below, and their tests or build
+    # compile the file. Only a path no package reads keeps the complete
+    # workspace.
+    declared = (path_suites.read_paths(suite_manifest, changes)
+                if suite_manifest is not None else set())
+    unowned = sorted(
+        path for path in changes
+        if path.startswith(workspace_source_roots) and owner_for(path, by_dir) is None
+        and path not in declared)
+    unmapped_workspace_change = bool(unowned)
     # Only audited developer/CI and design prose is non-compiling. Other docs can contain
     # generated contracts, fixtures or embedded Rust inputs and retain coverage.
     def prose(path: str) -> bool:
@@ -1153,7 +1355,9 @@ def make_plan(
     elif force_full or global_change or unmapped_workspace_change:
         selected = set(packages)
         reason = ("full workspace explicitly requested" if force_full else
-                  "repository-wide build input changed" if global_change else "workspace path has no package owner")
+                  "repository-wide build input changed" if global_change else
+                  "workspace path has no package owner and no declared reader: "
+                  + ", ".join(unowned[:3]) + (f" and {len(unowned) - 3} more" if len(unowned) > 3 else ""))
         full = True
     else:
         # Normal/build edges propagate; a dev edge adds one dependant whose
@@ -1172,7 +1376,7 @@ def make_plan(
     # Ordinary feedback type-checks the entire reverse-dependency closure once
     # on x86, but links tests only for changed crates, the crates that read the
     # changed files, their direct dependants within REVERSE_TEST_COST_BUDGET and
-    # the existing contract suites. Global/unowned workspace inputs retain
+    # the existing contract suites. Global or undeclared workspace inputs retain
     # complete test coverage.
     deferred_dependants: list[str] = []
     if full:
@@ -1189,20 +1393,20 @@ def make_plan(
         selected &= set(only["packages"])
         tested &= selected
         reason += "; re-check limited to what the base branch changed since the last green run"
-    scoped_tests = {name: scope for name, scope in reader_scopes.items()
+    # Scoped tests by (package, test target): a package's reading scope and the
+    # desk's gate can name different targets of the same package, and each target
+    # is its own run.
+    scoped_tests = {(name, scope.test): scope for name, scope in reader_scopes.items()
                     if scope is not None and name in selected and name not in tested}
-    for name, gate in DESKTOP_GATE.items():
-        if name not in selected or name in tested:
+    for key, gate in DESKTOP_GATE.items():
+        if key[0] not in selected or key[0] in tested:
             continue
-        reading = scoped_tests.get(name)
+        reading = scoped_tests.get(key)
         if reading is None:
-            scoped_tests[name] = gate
-        elif reading.test == gate.test:
-            scoped_tests[name] = path_suites.ReaderScope(
-                reading.inputs, reading.test, f"({reading.filter}) or ({gate.filter})")
+            scoped_tests[key] = gate
         else:
-            raise ValueError(f"{name}: a scope on test target {reading.test!r} cannot be "
-                             f"combined with the desktop gate on {gate.test!r}")
+            scoped_tests[key] = path_suites.ReaderScope(
+                reading.inputs, reading.test, f"({reading.filter}) or ({gate.filter})")
     shard_limit = (shard_count if force_full else
                    min(shard_count, MAX_DEVELOPER_SHARDS) if full else 1)
     effective_shards = useful_shard_count(selected, packages, shard_limit)
@@ -1219,7 +1423,7 @@ def make_plan(
     # too heavy to share a job get their own shards, which start first; the
     # rest balance around them. Arm shards are balanced as one set
     # (MAX_TEST_SHARDS_ARM).
-    test_units = (tested | scoped_tests.keys()) & selected
+    test_units = (tested | {package for package, _ in scoped_tests}) & selected
     build_edges = dependency_edges(packages)
 
     def shard_bytes(names: set[str]) -> int | None:
@@ -1251,9 +1455,8 @@ def make_plan(
     def test_row(shard: dict, arch: str) -> dict:
         shard_names = set(shard["packages"].split()[1::2])
         test_names = sorted(tested & shard_names)
-        scoped_names = sorted(scoped_tests.keys() & shard_names)
-        scoped = [{"package": name, "test": scoped_tests[name].test,
-                   "filter": scoped_tests[name].filter} for name in scoped_names]
+        scoped = [{"package": package, "test": scope.test, "filter": scope.filter}
+                  for (package, _), scope in sorted(scoped_tests.items()) if package in shard_names]
         # check_runner: a pull request runs its own check.yml against this
         # planner from the merged tree; older branches' check.yml reads it.
         # Older PR workflows still evaluate optional qualification fields.
@@ -1328,10 +1531,10 @@ def make_plan(
         "near": sorted(selected if full else
                        (seeds | checked | dev_only | readers | tested
                         | {name for seed in seeds for name in reverse.get(seed, ())}) & selected),
-        # Packages that only read a changed file through a scoped input; the
-        # test job runs just the tests that read it.
-        "scoped_tests": {name: f"--test {scope.test} -E '{scope.filter}'"
-                         for name, scope in sorted(scoped_tests.items())},
+        # Packages that only read a changed file through a scoped input, or that
+        # the desk's gate reads, and the target of each the test job runs.
+        "scoped_tests": {f"{package}:{test}": f"--test {scope.test} -E '{scope.filter}'"
+                         for (package, test), scope in sorted(scoped_tests.items())},
         # Changed packages whose direct dependants are only type-checked here
         # (and tested nightly) because testing them exceeds the budget.
         "dependants_tested_nightly": deferred_dependants,

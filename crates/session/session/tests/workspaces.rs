@@ -14,8 +14,6 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-mod common;
-
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;

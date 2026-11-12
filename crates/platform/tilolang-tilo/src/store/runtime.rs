@@ -179,9 +179,9 @@ impl Store for TiloStore {
             placed,
         } = planned;
         let seed = format!("{}:{}", txn.0, inner.counter).into_bytes();
-        let summary = touched.clone();
         let collections = collections_by_doc(items.iter().map(|(key, _)| key));
-        let listings = inner.write(&app, dyn_edits.clone(), &seed, &touched, (items, placed))?;
+        let (listings, reached) =
+            inner.write(&app, dyn_edits.clone(), &seed, &touched, (items, placed))?;
         let kind = lookup(&ty).map(|schema| format!("tl.{app}.{}", schema.name));
         let state = inner
             .txns
@@ -215,8 +215,13 @@ impl Store for TiloStore {
         for change in listings.into_values().flatten() {
             record_splices(&mut state.listings, &change.key, change.splices);
         }
-        let touched = state.touched.entry(at.doc.clone()).or_default();
-        touched.extend(summary);
+        for key in reached {
+            state
+                .touched
+                .entry(key.doc().to_owned())
+                .or_default()
+                .insert(key);
+        }
         for (doc, keys) in collections {
             state.collections.entry(doc).or_default().extend(keys);
         }
@@ -303,7 +308,7 @@ impl Store for TiloStore {
         // The change records, with what it did, that a migration or a trigger ran on its
         // resource.
         if !marked && let Some((doc, edit)) = mark_of(migration.as_ref(), triggering.as_ref()) {
-            inner.mark(&mut state, txn, &doc, edit)?;
+            marked = inner.mark(&mut state, txn, &doc, edit)?;
         }
         // A keystroke of a bound field names the gesture of the burst it belongs to, so the
         // changes of one burst are one step of the person's: one history entry, one undo. A
@@ -316,8 +321,7 @@ impl Store for TiloStore {
         // A change is one app's, and the record stores each edit under the app its resource is
         // of: what the change wrote of another — a notice of the host's, riding in the change
         // that told its person — is addressed to that app, as the store that wrote it read it.
-        let edits: Vec<DynEdit> = state
-            .edits
+        let edits: Vec<DynEdit> = std::mem::take(&mut state.edits)
             .into_iter()
             .map(|edit| match inner.index.get(edit.resource()) {
                 Some((held, _)) if *held != app => edit.in_app(held),
@@ -344,20 +348,12 @@ impl Store for TiloStore {
         };
         let made = action.made();
         inner.enqueue(action);
-        let mut touched = state.touched;
         let writes = inner.local.len();
         for (doc, keys) in inner.provisional_versions(&versioned, state.start, writes, note, &made)
         {
-            touched.entry(doc).or_default().extend(keys);
+            state.touched.entry(doc).or_default().extend(keys);
         }
-        // What changed is told to those who read the mirror once, when the record brings the
-        // change back and the indexes hold what it derives ([`TiloStore::sync`]): told
-        // here, it would be a second note of the same step, and one lacking what the record's
-        // derivation adds. Until then the write is the mirror's open transaction, read through
-        // the overlay like any other.
-        for doc in touched.into_keys() {
-            inner.notes.entry(doc).or_default().push(note.clone());
-        }
+        unsaved::tell_saved(&mut inner, &mut state, note, writes, marked);
         Ok(())
     }
 

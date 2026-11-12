@@ -25,8 +25,9 @@ use automerge::{
 };
 use tilo_automerge::ApplyIncoming;
 
-mod upstream;
-use upstream::{History, Replica, Rng, agrees_with_upstream, refuses_only_what_upstream_corrupts};
+use crate::upstream::{
+    History, Replica, Rng, agrees_with_upstream, refuses_only_what_upstream_corrupts,
+};
 
 /// A list `[1]` by actor `aa`: the list is op 1, its item op 2.
 const LIST_BASE: &str = "856f4a83ae6ec86200760101aa0127bb838ff217b4f57fe5bfffa75af586b3da7e148ef1e872591780a55722fcc2060102030213022302400256020b01040204130415052102230234024203560357018001027f007f017f027f007f007f0700017f0000017f0100017f007f016c00010200020101017e02017e001401020000";

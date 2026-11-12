@@ -281,3 +281,43 @@ pdf-drawn-signed = Signiert am { $date }
 ## What the window shows
 pdf-viewer-untitled = Unbenanntes Dokument
 pdf-viewer-page-unreadable = Seite { $page } lässt sich nicht lesen: { $detail }
+
+## The sample document's own note
+pdf-viewer-sample-comment = Sollten wir die Art der Weihe hier nennen, wie es die späteren Abschnitte tun?
+
+## Actions
+
+pdf-viewer-effects-toggle-sidebar = Seitenleiste
+pdf-viewer-effects-toggle-pages = Seitenminiaturen
+pdf-viewer-effects-find = Suchen
+pdf-viewer-effects-use-tool = Werkzeug verwenden
+pdf-viewer-effects-mark-strikeout = Durchstreichen
+pdf-viewer-effects-go-to = Zu Seite springen
+pdf-viewer-effects-go-to-match = Zum Treffer springen
+pdf-viewer-effects-read-text = Text lesen
+pdf-viewer-effects-read-form-fields = Formularfelder lesen
+pdf-viewer-effects-look-page = Seite anzeigen
+pdf-viewer-effects-import-pdf-content = PDF aus Inhalt öffnen
+pdf-viewer-effects-select-text = Text auswählen
+pdf-viewer-effects-select-all = Alles auswählen
+pdf-viewer-effects-copy-selection = Auswahl kopieren
+pdf-viewer-effects-insert-pages = Seiten einfügen
+pdf-document = PDF
+pdf-document-record-reading-position = Leseposition merken
+pdf-document-start-page-plan = Seitenplan beginnen
+pdf-document-pin-source = Quelle anheften
+pdf-document-adopt-existing = Vorhandene Markierungen übernehmen
+pdf-document-import-pages = Seiten importieren
+pdf-document-duplicate-page = Seite duplizieren
+pdf-document-delete-page = Seite löschen
+pdf-document-move-page = Seite verschieben
+pdf-document-rotate-page = Seite drehen
+pdf-document-add-annotation = Anmerkung hinzufügen
+pdf-document-delete-annotation = Anmerkung löschen
+pdf-document-create-note = Notiz hinzufügen
+pdf-document-add-note = Notiz oben auf der Seite
+pdf-document-add-comment = Kommentar hinzufügen
+pdf-document-add-typed-signature = Mit getipptem Namen unterschreiben
+pdf-signature-profile = Unterschrift
+pdf-signature-profile-set-signer = Unterschreiben als
+pdf-signature-profile-set-strokes = Unterschrift zeichnen

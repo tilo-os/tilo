@@ -394,13 +394,13 @@ async fn both_routes_decide_every_callers_actions_alike() {
     let all_key = enrol(&guest, "visa-backend", DeviceCapabilities::member());
     let one_key = enrol(&guest, "applicant-7", DeviceCapabilities::member());
     let agent_device = enrol(&guest, "assistant-box", DeviceCapabilities::member());
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     // A workspace's shell works in a directory an environment may be
     // granted: not one below /dev, where the scratch state is.
     let shell_state = tempfile::tempdir().unwrap();
     let shells = shell_state.path().join("shells");
     let hosted = start(&root, &host, state.path()).await;
-    let _participant = participant::Participant::start(&hosted.relay, &root).await;
+    let _participant = crate::participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let records: Vec<DocumentRoute> = [NOTES, PDF, WRITER, TERMINAL]
         .into_iter()
@@ -431,7 +431,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
         content: tilo_content::ContentStore::in_dir(state.path().join("member-content")),
         shell: tilo_relay::agents::host_shells(shells.clone()).unwrap(),
     });
-    let actions = tilo_agent_participant::WorkspaceActions::new(Arc::new(common::catalogue));
+    let actions = tilo_agent_participant::WorkspaceActions::new(Arc::new(crate::common::catalogue));
     actions.attach(member.clone()).unwrap();
     let workspace = browser.workspace;
     let themselves =
@@ -789,9 +789,9 @@ async fn an_agent_through_tilo_mcp_is_seen_once_as_the_hosts_run() {
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let computer = enrol(&root, "Codex on build-box", DeviceCapabilities::member());
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _participant = participant::Participant::start(&hosted.relay, &root).await;
+    let _participant = crate::participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     browser.create(NOTES);
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
@@ -884,7 +884,7 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
         "Claude Code on laptop",
         DeviceCapabilities::member(),
     );
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let hosted = start(&operator, &host, state.path()).await;
     let workspaces = hosted.relay.workspaces().unwrap().clone();
     let workspace = workspaces.create("Grace's workspace").await.unwrap();

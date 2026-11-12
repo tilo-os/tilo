@@ -1,12 +1,8 @@
 //! The counter fixture, compiled by tilolang and run on two replicas.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::{AmStore, InvokeOutcome, Patch, Runtime, SimpleAuthority, Value};
 
     const SOURCE: &str = include_str!("../../tilolang/tests/fixtures/counter.tl");

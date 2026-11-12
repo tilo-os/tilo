@@ -16,11 +16,6 @@
     reason = "in a test these are the assertion, not a hazard; one test is one transcript between a native participant and a page"
 )]
 
-mod support;
-
-// Placing the workspace has the host build its governance in an automerge worker.
-tilo_automerge_isolate::test_worker!();
-
 use std::collections::BTreeSet;
 use std::time::SystemTime;
 use tilo_session_client::Outbox;
@@ -35,7 +30,7 @@ use neighbour_wire::NeighbourMsg;
 use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
-use support::{Device, WORKSPACE, enrol, ready, route, start_host, start_peer, workspace};
+use crate::support::{Device, WORKSPACE, enrol, ready, route, start_host, start_peer, workspace};
 
 /// The surface the laptop's write names: a version of the app this page does
 /// not run, whose `surface.toml` is not here.
@@ -125,7 +120,7 @@ async fn a_page_takes_the_record_keys_though_every_write_it_received_is_held() {
             },
         );
     }
-    let frame = support::say(&mut automerge::AutoCommit::new(), WRITTEN)
+    let frame = crate::support::say(&mut automerge::AutoCommit::new(), WRITTEN)
         .encode()
         .unwrap();
     let (metadata, sealed) = laptop_peer
@@ -181,7 +176,7 @@ async fn a_page_takes_the_record_keys_though_every_write_it_received_is_held() {
         let Inbound::Delta { author, data } = inbound else {
             continue;
         };
-        if support::is_host(&author) {
+        if crate::support::is_host(&author) {
             continue;
         }
         match postcard::from_bytes::<NeighbourMsg>(&data) {
@@ -208,12 +203,12 @@ async fn a_page_takes_the_record_keys_though_every_write_it_received_is_held() {
             _ => {}
         }
     }
-    support::admitted(&page).await;
+    crate::support::admitted(&page).await;
 
     // The keys are the page's; the write itself still waits for its surface,
     // which is a version of the app the page does not run.
     assert!(
-        !support::said(&page, &note).contains(WRITTEN),
+        !crate::support::said(&page, &note).contains(WRITTEN),
         "the write is held for its app surface, not opened"
     );
 }
@@ -224,7 +219,7 @@ async fn connect(
     root: &ed25519_dalek::SigningKey,
     device: &Device,
 ) -> RelayCoeditSession {
-    support::place(host, &device.cert).await;
+    crate::support::place(host, &device.cert).await;
     let endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .bind()
         .await

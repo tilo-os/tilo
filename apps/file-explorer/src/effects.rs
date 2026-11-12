@@ -27,6 +27,7 @@ pub enum FilesEffect {
     #[effect(kind = "read", idempotent)]
     #[effect(keywords = "reload, update folder")]
     #[effect(icon = "refresh")]
+    #[effect(label = "files-shortcuts-refresh")]
     Refresh,
     /// Select entries.
     ///
@@ -41,6 +42,7 @@ pub enum FilesEffect {
     /// Select all.
     #[effect(view, returns)]
     #[effect(icon = "list-checks")]
+    #[effect(label = "files-shortcuts-select-all")]
     SelectAll,
     /// Clear selection.
     #[effect(view, returns)]
@@ -114,6 +116,7 @@ pub enum FilesEffect {
     /// shown, and finishes once the files are there.
     #[effect(job, cancellable)]
     #[effect(icon = "clipboard-paste")]
+    #[effect(label = "files-menu-paste")]
     Paste {
         #[param(
             "For names the folder already has: keep both (the default), skip them, replace them (the existing items go to Trash), or ask the person in the window",
@@ -183,10 +186,12 @@ pub enum FilesEffect {
     /// Back.
     #[effect(view)]
     #[effect(icon = "arrow-left")]
+    #[effect(label = "files-back")]
     Back,
     /// Forward.
     #[effect(view)]
     #[effect(icon = "arrow-right")]
+    #[effect(label = "files-forward")]
     Forward,
     /// Show recent files.
     #[effect(view)]
@@ -197,6 +202,7 @@ pub enum FilesEffect {
     #[effect(view)]
     #[effect(keywords = "show hidden files, hidden files, dotfiles")]
     #[effect(icon = "eye")]
+    #[effect(label = "files-shortcuts-hidden")]
     ToggleHidden,
     /// Use list view.
     #[effect(view)]
@@ -211,14 +217,17 @@ pub enum FilesEffect {
     /// Sort by name.
     #[effect(view)]
     #[effect(icon = "arrow-up-down")]
+    #[effect(label = "files-menu-sort-name")]
     SortName,
     /// Sort by size.
     #[effect(view)]
     #[effect(icon = "arrow-up-down")]
+    #[effect(label = "files-menu-sort-size")]
     SortSize,
     /// Sort by type.
     #[effect(view)]
     #[effect(icon = "arrow-up-down")]
+    #[effect(label = "files-menu-sort-type")]
     SortType,
     /// Sort by modified date.
     #[effect(view)]
@@ -243,11 +252,13 @@ pub enum FilesEffect {
     /// Keyboard shortcuts.
     #[effect(view)]
     #[effect(icon = "keyboard")]
+    #[effect(label = "files-shortcuts-title")]
     KeyboardShortcuts,
     /// Open terminal here.
     #[effect(kind = "read")]
     #[effect(keywords = "command line, shell, console")]
     #[effect(icon = "square-terminal")]
+    #[effect(label = "files-menu-open-terminal")]
     OpenTerminal,
     /// Empty Trash.
     ///
@@ -255,10 +266,12 @@ pub enum FilesEffect {
     #[effect(destructive)]
     #[effect(keywords = "empty bin, empty recycle bin, clear trash")]
     #[effect(icon = "trash-2")]
+    #[effect(label = "files-empty-trash-confirm")]
     EmptyTrash,
     /// Open.
     #[effect(view, row)]
     #[effect(icon = "external-link")]
+    #[effect(label = "files-shortcuts-open")]
     OpenItem {
         #[param("The row: an entry, a place or a found record")]
         item: String,
@@ -287,6 +300,7 @@ pub enum FilesEffect {
     },
     /// Open containing folder.
     #[effect(view, row)]
+    #[effect(label = "files-recent-reveal")]
     RevealRecent {
         #[param("The Recent entry's published row id")]
         entry: String,
@@ -295,6 +309,7 @@ pub enum FilesEffect {
     ///
     /// Forgets this device's recent-use entry. The file remains untouched.
     #[effect(view, row)]
+    #[effect(label = "files-recent-forget")]
     ForgetRecent {
         #[param("The Recent entry's published row id")]
         entry: String,
@@ -319,7 +334,7 @@ pub enum FilesEffect {
         app: String,
     },
     /// Browse a provider folder without mounting it.
-    #[effect(label = "Browse account", view)]
+    #[effect(view)]
     #[effect(icon = "cloud")]
     #[effect(audience = "agents")]
     BrowseCloud {
@@ -327,7 +342,7 @@ pub enum FilesEffect {
         folder: Option<String>,
     },
     /// Load the next page of cloud entries.
-    #[effect(label = "Show more", view)]
+    #[effect(view)]
     #[effect(icon = "more-horizontal")]
     MoreCloud,
     /// Toggle a cloud entry in the selection.
@@ -336,28 +351,28 @@ pub enum FilesEffect {
     #[effect(audience = "agents")]
     SelectCloud { entry: String },
     /// Import selected files and folders to an explicit folder, or choose one.
-    #[effect(label = "Import selection", view)]
+    #[effect(view)]
     #[effect(icon = "cloud-download")]
     ImportCloud { folder: Option<String> },
     /// Observe enumeration, export and copy progress.
-    #[effect(label = "Import progress", kind = "read", returns)]
+    #[effect(kind = "read", returns)]
     #[effect(icon = "hourglass")]
     #[effect(audience = "agents")]
     CloudProgress,
     /// Cancel the current transfer, retaining completed independent copies.
-    #[effect(label = "Cancel import", view)]
+    #[effect(label = "files-cloud-cancel", view)]
     #[effect(icon = "x")]
     CancelCloud,
     /// Retry only unsuccessful top-level entries.
-    #[effect(label = "Retry failed", view)]
+    #[effect(label = "files-cloud-retry", view)]
     #[effect(icon = "refresh")]
     RetryCloud,
     /// Show the destination folder.
-    #[effect(label = "Show imported files", view)]
+    #[effect(view)]
     #[effect(icon = "folder-open")]
     RevealCloud,
     /// Create an independent editable copy of a converted native document.
-    #[effect(label = "Make editable copy", row)]
+    #[effect(row)]
     ImportConverted {
         #[param("The converted entry's published row id")]
         entry: String,
@@ -367,6 +382,7 @@ pub enum FilesEffect {
     /// Copies the mounted entry's bytes into a local folder. Supported native
     /// documents are converted; the copy has no sync relationship.
     #[effect(row, job)]
+    #[effect(label = "files-import-once")]
     ImportOnce {
         #[param("The cloud entry's published row id")]
         entry: String,
@@ -376,6 +392,7 @@ pub enum FilesEffect {
     /// Copy to folder…
     #[effect(row, job)]
     #[effect(icon = "copy")]
+    #[effect(label = "files-action-copy-to-folder")]
     CopyTo {
         #[param("The entry's row id")]
         entry: String,
@@ -385,6 +402,7 @@ pub enum FilesEffect {
     /// Copy.
     #[effect(row, kind = "read", job)]
     #[effect(icon = "copy")]
+    #[effect(label = "files-menu-copy")]
     Copy {
         #[param("The entry's row id")]
         entry: String,
@@ -392,6 +410,7 @@ pub enum FilesEffect {
     /// Cut.
     #[effect(row, job)]
     #[effect(icon = "scissors")]
+    #[effect(label = "files-menu-cut")]
     Cut {
         #[param("The entry's row id")]
         entry: String,
@@ -399,6 +418,7 @@ pub enum FilesEffect {
     /// Restore.
     #[effect(row, job, cancellable)]
     #[effect(icon = "rotate-ccw")]
+    #[effect(label = "files-menu-restore")]
     Restore {
         #[param("The Trash entry's row id")]
         entry: String,
@@ -407,6 +427,7 @@ pub enum FilesEffect {
     #[effect(row, destructive)]
     #[effect(keywords = "delete forever, remove permanently, shred")]
     #[effect(icon = "trash-2")]
+    #[effect(label = "files-permanent-delete-confirm")]
     DeletePermanently {
         #[param("The Trash entry's row id")]
         entry: String,
@@ -422,6 +443,7 @@ pub enum FilesEffect {
     /// Version history.
     #[effect(view, row)]
     #[effect(icon = "history")]
+    #[effect(label = "files-version-history")]
     History {
         #[param("The entry's row id")]
         entry: String,
@@ -434,24 +456,28 @@ pub enum FilesEffect {
     },
     /// Keep offline.
     #[effect(row)]
+    #[effect(label = "files-keep-offline")]
     KeepOffline {
         #[param("The entry's row id")]
         entry: String,
     },
     /// Use automatic storage.
     #[effect(row)]
+    #[effect(label = "files-use-automatic-storage")]
     AutomaticStorage {
         #[param("The entry's row id")]
         entry: String,
     },
     /// Free up local space.
     #[effect(row)]
+    #[effect(label = "files-free-local-space")]
     FreeLocalSpace {
         #[param("The entry's row id")]
         entry: String,
     },
     /// Retry download.
     #[effect(row)]
+    #[effect(label = "files-retry-download")]
     RetryDownload {
         #[param("The entry's row id")]
         entry: String,
@@ -551,6 +577,7 @@ pub enum FilesEffect {
     /// they chose to remember the drive.
     #[effect(view, row)]
     #[effect(icon = "hard-drive")]
+    #[effect(label = "files-drive-open-action")]
     OpenDrive {
         #[param("The drive's id, as its row names it")]
         drive: String,
@@ -561,6 +588,7 @@ pub enum FilesEffect {
     /// the system, removes it from the person's apps. The shell asks the
     /// person first, in its own sheet, and does nothing unless they agree.
     #[effect(row)]
+    #[effect(label = "files-menu-uninstall")]
     UninstallApp {
         #[param("The app's row in the Applications place")]
         app: String,

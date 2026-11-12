@@ -962,7 +962,7 @@ impl PdfApp {
         match scenario {
             Some("edit-comment") => self.begin_edit(
                 EditTarget::CommentBody(crate::scenarios::NOTE_COMMENT.to_string()),
-                crate::scenarios::NOTE_COMMENT_BODY,
+                &crate::t(crate::scenarios::NOTE_COMMENT_BODY),
             ),
             Some("selection-hud") => self.arm_shots_selection(),
             Some("page-bubble") => self.arm_shots_page_bubble(),

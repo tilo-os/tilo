@@ -172,6 +172,7 @@ fn app_row(
             address,
             arguments: serde_json::Map::new(),
             descriptor,
+            place: crate::model::LaunchPlace::Focus,
         }))
     };
     let field = vec![
@@ -216,6 +217,7 @@ fn app_action_rows(workspace: &str, app: &DownloadedApp) -> [(Vec<(String, Field
         address: ActionAddress::new(APPS_RESOURCE, ASK_UNINSTALL),
         arguments: ask,
         descriptor: None,
+        place: crate::model::LaunchPlace::Focus,
     }));
     // Taking it off the apps moves nothing and asks nothing, so its row is
     // the registry's own action.
@@ -225,6 +227,7 @@ fn app_action_rows(workspace: &str, app: &DownloadedApp) -> [(Vec<(String, Field
         address: ActionAddress::new(wire::app(&app.desktop_id), wire::REMOVE),
         arguments: serde_json::Map::new(),
         descriptor: None,
+        place: crate::model::LaunchPlace::Focus,
     }));
     [
         action_row(
@@ -323,6 +326,7 @@ fn offer_row(workspace: &str, offer: &wire::DownloadedOffer) -> (Vec<(String, Fi
             address: ActionAddress::new(wire::RESOURCE, wire::ADD),
             arguments,
             descriptor: None,
+            place: crate::model::LaunchPlace::Focus,
         })),
     };
     (field, hit)

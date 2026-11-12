@@ -1803,7 +1803,8 @@ fn add_artifact_protects_work_and_stays_inside_the_app() {
 /// add locale registers immediately and protects app-owned setup; the Fluent contract reports
 /// missing and stale entries; an invalid source is rejected before publishing; locale sync
 /// preserves translations and can resolve drift, validates every catalog before publishing any;
-/// an app-owned registry is never rewritten.
+/// a catalog that is already there is registered without replacing its text; an app-owned
+/// registry is never rewritten.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -2106,6 +2107,39 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         );
     }
 
+    // Phase: an_existing_catalog_is_registered_without_replacing_its_text.
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("reading-list");
+        create_app(request(app.clone())).unwrap();
+        // A translation that arrived without `tilo-app add locale`: registering
+        // it must not be a choice between hand-editing the generated registry
+        // and overwriting the translator's work with the source copy.
+        let catalog = app.join("locales/de-DE.ftl");
+        let translated = "### Deutsch.\n\nstarter-title = Meine Tilo-App\n";
+        std::fs::write(&catalog, translated).unwrap();
+        let outcome = add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Locale {
+                locale: "de-DE".into(),
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+        assert_eq!(
+            outcome.files.as_slice(),
+            std::slice::from_ref(&app.join("src/locales.rs")),
+            "a catalog that is already there is registered, not rewritten"
+        );
+        assert_eq!(std::fs::read_to_string(&catalog).unwrap(), translated);
+        let registry = std::fs::read_to_string(app.join("src/locales.rs")).unwrap();
+        assert!(
+            registry.contains(r#"ui::embedded_catalog!(pub static CATALOG, ["de-DE", "en-US"]);"#),
+            "the existing translation is registered: {registry}"
+        );
+    }
+
     // Phase: add_locale_refuses_an_app_without_the_generated_registry.
     {
         let temp = tempfile::tempdir().unwrap();
@@ -2190,6 +2224,26 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
             .expect("the registry is inspected");
         assert_eq!(locale_check.status, DoctorStatus::Fail, "{locale_check:?}");
         assert!(locale_check.detail.contains("stale"), "{locale_check:?}");
+        assert!(
+            locale_check.detail.contains("`tilo-app locale sync`"),
+            "the failure names the command that refreshes it: {locale_check:?}"
+        );
+
+        // A dry run reports the registry it would rewrite, and writes nothing.
+        let preview = sync_locale_catalogs(&LocaleSyncRequest {
+            start: app.clone(),
+            locale: None,
+            prune: false,
+            reset_variables: false,
+            dry_run: true,
+        })
+        .unwrap();
+        assert_eq!(
+            preview.files.as_slice(),
+            std::slice::from_ref(&registry_path),
+            "a stale registry is a file the sync would write"
+        );
+        assert_eq!(std::fs::read_to_string(&registry_path).unwrap(), current);
 
         sync_locale_catalogs(&LocaleSyncRequest {
             start: app.clone(),
@@ -2213,6 +2267,32 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         assert_eq!(locale_check.status, DoctorStatus::Pass, "{locale_check:?}");
         assert_ne!(refreshed, current);
         syn::parse_file(&refreshed).expect("the refreshed registry is Rust");
+    }
+
+    // Phase: a_registry_without_label_keys_names_the_command_that_writes_them.
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("reading-list");
+        create_app(request(app.clone())).unwrap();
+        let registry_path = app.join("src/locales.rs");
+        let registry = std::fs::read_to_string(&registry_path).unwrap();
+        // The registry a `tilo-app` older than the keys wrote: its catalogs
+        // registered, no label keys.
+        let declared = registry.split("pub mod keys").next().unwrap().to_owned();
+        std::fs::write(&registry_path, declared).unwrap();
+        let report = doctor_app(&app).unwrap();
+        let locale_check = report
+            .checks
+            .iter()
+            .find(|check| check.label == "locale registry")
+            .expect("the registry is inspected");
+        assert_eq!(locale_check.status, DoctorStatus::Fail, "{locale_check:?}");
+        assert!(
+            locale_check
+                .detail
+                .contains("label keys are not generated; run `tilo-app locale sync`"),
+            "the failure names the command that generates them: {locale_check:?}"
+        );
     }
 }
 

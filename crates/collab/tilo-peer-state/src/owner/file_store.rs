@@ -288,7 +288,7 @@ fn drop_recovery_projections(record: &mut NativeAuthorityStorage) {
 
 /// Compact JSON of one workspace's record, within its file's cap.
 fn part_bytes(stored: &StoredWorkspace) -> Result<Vec<u8>, String> {
-    crate::owner::limits::preflight(stored, MAX_AUTHORITY_BYTES)
+    crate::owner::limits::preflight_record(stored, MAX_AUTHORITY_BYTES)
         .map_err(|error| error.to_string())?;
     let mut bytes = LimitedWriter::new(Vec::new(), MAX_AUTHORITY_BYTES);
     serde_json::to_writer(&mut bytes, stored).map_err(|error| error.to_string())?;

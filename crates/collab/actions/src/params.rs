@@ -1329,11 +1329,19 @@ fn schema_alternative_of(param: &ActionParam, value: &ArgValue) -> bool {
     param
         .schema
         .as_deref()
-        .and_then(|schema| schema.get("oneOf"))
+        .is_some_and(|schema| has_alternative(schema, json_type))
+}
+
+/// Whether one of `schema`'s alternatives, or theirs (an optional value's
+/// alternatives), is of `json_type`.
+fn has_alternative(schema: &serde_json::Value, json_type: &str) -> bool {
+    schema
+        .get("oneOf")
         .and_then(serde_json::Value::as_array)
         .is_some_and(|alternatives| {
             alternatives.iter().any(|alternative| {
                 alternative.get("type").and_then(serde_json::Value::as_str) == Some(json_type)
+                    || has_alternative(alternative, json_type)
             })
         })
 }

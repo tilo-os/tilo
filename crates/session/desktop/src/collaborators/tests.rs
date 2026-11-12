@@ -25,6 +25,7 @@ fn row(id: &str, label: &str) -> RosterRow {
         invited: false,
         activity: Some(format!("Viewing {label}'s notes")),
         working_in: None,
+        working_app: None,
         status: None,
         recent: Vec::new(),
         followable: true,

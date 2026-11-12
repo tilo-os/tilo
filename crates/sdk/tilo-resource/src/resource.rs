@@ -57,6 +57,10 @@ pub trait Resource: Sized + 'static {
     /// language the declaration is written in. What a person reads is
     /// [`label`](Self::label), which a host's catalogue translates.
     const LABEL: &'static str;
+    /// The catalogue beside the crate that declares it, whose entry under
+    /// the kind's [`message_key`](crate::label::message_key) names it in
+    /// each language: `None` reads only the catalogues the host loaded.
+    const CATALOGUE: Option<&'static crate::label::Catalogue> = None;
     /// The app that publishes records of this kind, e.g. `"so.tilo.notes"`:
     /// the framework app's id, or for a resource that names its app in its
     /// `#[resource(app = "…")]` declaration, that. It is part of the
@@ -71,7 +75,7 @@ pub trait Resource: Sized + 'static {
     /// host installed ([`crate::label`]), so every kind is named in the
     /// language of the desktop it is published on.
     fn label() -> String {
-        crate::label::localized(Self::KIND, Self::LABEL)
+        crate::label::localized(Self::KIND, Self::LABEL, Self::CATALOGUE)
     }
 
     /// What views render. For a record resource this is the record itself.
@@ -1456,7 +1460,9 @@ impl<R: Resource> ActionDecl<R> {
 
     /// The action it builds from `args` at `now_ms`.
     pub fn build_action(&self, args: &ActionArgs, now_ms: i64) -> Result<R::Action, String> {
-        typed::<R>((self.decl.build)(args, now_ms)?)
+        typed::<R>(crate::content::invoking(|| {
+            (self.decl.build)(args, now_ms)
+        })?)
     }
 
     /// Mark a bound edit as refining the resource's declared action of the
@@ -1763,8 +1769,11 @@ pub(crate) fn spec_of_declaration_on(
     build: impl Fn(&Target, &ActionArgs, i64) -> Result<Built, String> + Send + Sync + 'static,
 ) -> ActionSpec {
     let build = Arc::new(build);
+    let label = decl.shown_label();
     let encoded = move |target: &Target, args: &tilo_actions::ActionArgs| {
-        encode_built(build(target, args, origin_now_ms()))
+        encode_built(crate::content::invoking(|| {
+            build(target, args, origin_now_ms())
+        }))
     };
     let spec = if let Some(prompt) = &decl.content {
         let param = ActionParam::required_owned(
@@ -1774,7 +1783,7 @@ pub(crate) fn spec_of_declaration_on(
         );
         ActionSpec::prompted_content_on(
             decl.id,
-            decl.label.clone(),
+            label,
             prompt.clone(),
             "content hash",
             ExecutionLocus::ClientLocal,
@@ -1797,7 +1806,7 @@ pub(crate) fn spec_of_declaration_on(
         let action_type = decl.action_type;
         ActionSpec::deferred_on(
             decl.id,
-            decl.label.clone(),
+            label,
             ExecutionLocus::ClientLocal,
             action_type,
             move |target| encoded(target, &tilo_actions::ActionArgs::none()),
@@ -1820,8 +1829,8 @@ pub(crate) fn spec_of_declaration_on(
     } else {
         ActionSpec::typed_on(
             decl.id,
-            decl.label.clone(),
-            decl.label.clone(),
+            label.clone(),
+            label,
             ExecutionLocus::ClientLocal,
             decl.params.clone(),
             encoded,
@@ -1935,6 +1944,13 @@ pub fn reset_type_schemas() {
 /// types: it changes when [`reset_type_schemas`] forgets them.
 pub(crate) fn type_epoch() -> u64 {
     SCHEMAS.get().map_or(0, |cache| cache.lock_recover().epoch)
+}
+
+/// [`type_epoch`] and the language the words resolve in on this thread: what
+/// a cache of published actions, whose labels are read in that language, is
+/// kept for.
+pub(crate) fn words_epoch() -> u64 {
+    type_epoch() ^ crate::label::revision().rotate_left(32)
 }
 
 /// `build`'s schema for the resource `vocabulary`, retained for this
@@ -2124,7 +2140,7 @@ pub(crate) fn apply_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
         "Action as JSON",
         ExecutionLocus::ClientLocal,
         vec![apply_param(vocabulary)],
-        move |args| match read(args) {
+        move |args| match crate::content::invoking(|| read(args)) {
             Ok(mut action) => {
                 action.stamp(origin_now_ms());
                 encoded(&action)
@@ -2373,7 +2389,7 @@ pub fn unreadable_parts<R: Resource>(
     label: &str,
     reason: &str,
 ) -> tilo_actions::ResourceSpec {
-    let label = crate::label::published(R::KIND, label, R::LABEL);
+    let label = crate::label::published(R::KIND, label, R::LABEL, R::CATALOGUE);
     crate::unreadable::parts::<R>(id, &label, reason)
 }
 
@@ -2400,7 +2416,12 @@ fn publish_own(
 ) -> tilo_actions::ResourceSpec {
     // The name the person reads, in their language: the kind's catalogue
     // entry while the publisher kept the name the declaration gave it.
-    let label = crate::label::published(vocabulary.kind, label, vocabulary.label);
+    let label = crate::label::published(
+        vocabulary.kind,
+        label,
+        vocabulary.label,
+        vocabulary.catalogue,
+    );
     let mut resource = tilo_actions::ResourceSpec::new(id, vocabulary.kind, &label);
     // Describe the declared domain ID before any host dispatch alias projection.
     resource.semantic_identity = tilo_actions::ResourceSemanticIdentity::new(vocabulary.kind, id);
@@ -2457,8 +2478,18 @@ pub fn build_action<R: Resource>(
     typed::<R>(build_action_of(vocabulary::<R>(), id, arguments, now_ms)?)
 }
 
-/// [`build_action`] of the resource `vocabulary`.
+/// [`build_action`] of the resource `vocabulary`, on the side invoking it
+/// ([`crate::content::invoking`]).
 pub(crate) fn build_action_of(
+    vocabulary: &Vocabulary,
+    id: &str,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+    now_ms: i64,
+) -> Result<Built, String> {
+    crate::content::invoking(|| build_invoked(vocabulary, id, arguments, now_ms))
+}
+
+fn build_invoked(
     vocabulary: &Vocabulary,
     id: &str,
     arguments: &serde_json::Map<String, serde_json::Value>,

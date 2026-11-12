@@ -186,7 +186,7 @@ reqwest = { version = "0.13", default-features = false, features = ["blocking", 
 resvg = { version = "0.47" }
 ring = { version = "0.17" }
 rusqlite = { version = "0.41", default-features = false, features = ["bundled", "hooks"] }
-russh = { version = "0.63", default-features = false, features = ["flate2", "ring"] }
+russh = { version = "0.65", default-features = false, features = ["flate2", "ring"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["fs", "mm"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["event", "fs", "mm", "mount", "net", "pipe", "process", "system", "termios", "thread", "time"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
@@ -439,7 +439,7 @@ reqwest = { version = "0.13", default-features = false, features = ["blocking", 
 resvg = { version = "0.47" }
 ring = { version = "0.17" }
 rusqlite = { version = "0.41", default-features = false, features = ["bundled", "hooks"] }
-russh = { version = "0.63", default-features = false, features = ["flate2", "ring"] }
+russh = { version = "0.65", default-features = false, features = ["flate2", "ring"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["fs", "mm"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["event", "fs", "mm", "mount", "net", "pipe", "process", "system", "termios", "thread", "time"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }

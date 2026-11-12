@@ -13,8 +13,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::fs;
 
 use std::io::{BufRead as _, Write as _};
@@ -98,7 +96,7 @@ fn host_lists() -> Lists {
 
 /// Run frames until `done` holds.
 fn until(session: &mut Session, what: &str, mut done: impl FnMut(&Session) -> bool) {
-    common::wait_for(session, what, |session| done(session).then_some(()));
+    crate::common::wait_for(session, what, |session| done(session).then_some(()));
 }
 
 /// The first resource `accepts`, searching each resource before its children.
@@ -1533,7 +1531,7 @@ fn the_answer_to_the_device_shell_question_reaches_the_app() {
     // The answer reaches the app on a turn of the session's; a counted number of turns is not the
     // answer arriving, so the wait is for the answer itself.
     let mut seen = Vec::new();
-    let heard = common::wait_maybe(&mut session, |session| {
+    let heard = crate::common::wait_maybe(&mut session, |session| {
         session.step(Duration::from_millis(1)).unwrap();
         let mut chunk = [0u8; 512];
         match std::io::Read::read(&mut asking, &mut chunk) {

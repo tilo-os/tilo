@@ -33,7 +33,7 @@ pub(crate) fn message(report: &FeedbackReport) -> Option<crate::record::Message>
         .as_ref()
         .map(|picture| tilo_reference::Attached::Image {
             name: ui::feedback_read_out::PICTURE_NAME.into(),
-            blob: picture.hash.to_ascii_lowercase(),
+            blob: picture.hash.clone(),
             w: picture.width,
             h: picture.height,
         })

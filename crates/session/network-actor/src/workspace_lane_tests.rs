@@ -198,7 +198,7 @@ async fn a_workspace_whose_device_stalls_holds_up_no_other_workspace() {
                 surface: 7,
                 event: vec![1],
             },
-            route: WorkspaceControlRoute::Direct { target: b_id },
+            target: b_id,
         })
         .await
         .unwrap();

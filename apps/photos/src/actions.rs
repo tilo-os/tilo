@@ -37,22 +37,26 @@ pub enum PhotosEffect {
     /// shows is its own view state; opening one here changes nothing for a
     /// collaborator.
     #[effect(view, item = photos)]
+    #[effect(label = "photos-a11y-open-photo")]
     View {
         #[param("Id of the photograph")]
         photo_id: String,
     },
     /// View photo library: browse and manage photographs in Photos.
     #[effect(view)]
+    #[effect(label = "photos-search-library")]
     ViewLibrary,
     /// Open the chronological timeline, optionally at one canonical calendar
     /// boundary. Capture metadata remains untouched.
     #[effect(view, row)]
+    #[effect(label = "photos-timeline")]
     ViewTimeline {
         #[param("A month or day of the timeline; omit for its start")]
         anchor: Option<TimelineAnchor>,
     },
     /// Open People: the People collection and this device's review.
     #[effect(view, row)]
+    #[effect(label = "photos-people")]
     ViewPeople,
     /// Read people
     ///
@@ -61,7 +65,7 @@ pub enum PhotosEffect {
     /// device has not had approved stay on it. It is the People place's
     /// read: what discloses it, so recognition, a scan and each person's
     /// verbs are offered to whoever may read it, an agent too.
-    #[effect(view, row, returns, idempotent, label = "Read people", tag = tilo_actions::DOCUMENT_READ_TAG)]
+    #[effect(view, row, returns, idempotent, tag = tilo_actions::DOCUMENT_READ_TAG)]
     ReadPeople,
     /// Read person
     ///
@@ -69,7 +73,7 @@ pub enum PhotosEffect {
     /// is the person's read: what discloses them, so renaming them, naming
     /// them on a photograph and taking them off every one are offered to
     /// whoever may read it, an agent too.
-    #[effect(view, row, returns, idempotent, label = "Read person", tag = tilo_actions::DOCUMENT_READ_TAG)]
+    #[effect(view, row, returns, idempotent, tag = tilo_actions::DOCUMENT_READ_TAG)]
     ReadPerson {
         #[param("The person's name")]
         person: String,
@@ -89,6 +93,7 @@ pub enum PhotosEffect {
     /// Open photo analysis: local model availability, library coverage,
     /// progress and failures.
     #[effect(view, row)]
+    #[effect(label = "photos-analysis-label")]
     ViewLibraryAnalysis,
     /// Read photo analysis
     ///
@@ -99,11 +104,12 @@ pub enum PhotosEffect {
     /// analysis place's read: what discloses it, so starting, pausing,
     /// resuming and retrying it are offered to whoever may read it, an
     /// agent too.
-    #[effect(view, row, returns, idempotent, label = "Read photo analysis", tag = tilo_actions::DOCUMENT_READ_TAG)]
+    #[effect(view, row, returns, idempotent, tag = tilo_actions::DOCUMENT_READ_TAG)]
     ReadLibraryAnalysis,
     /// Analyze unprocessed photographs on this device. Pixels stay local;
     /// each bounded result is shared with `SetImageAnalysis`.
     #[effect(row, job, cancellable, sensitive)]
+    #[effect(label = "photos-analysis-start")]
     AnalyzeLibrary,
     /// Pause photo analysis after the photograph in progress.
     #[effect(row, returns)]
@@ -113,15 +119,19 @@ pub enum PhotosEffect {
     ResumeLibraryAnalysis,
     /// Retry failed photographs from the bounded failure report.
     #[effect(row, job, cancellable, sensitive)]
+    #[effect(label = "photos-analysis-retry")]
     RetryLibraryAnalysisFailures,
     /// View favorites: photographs marked as favorites in the shared library.
     #[effect(view, row)]
+    #[effect(label = "photos-favorites")]
     ViewFavorites,
     /// View albums: the shared library's durable albums.
     #[effect(view, row)]
+    #[effect(label = "photos-albums")]
     ViewAlbums,
     /// View places: explicitly shared locations on an offline-first map.
     #[effect(view, row)]
+    #[effect(label = "photos-places")]
     ViewPlaces,
     /// View place: one shared place cluster, without sending its location
     /// anywhere.
@@ -155,6 +165,7 @@ pub enum PhotosEffect {
     /// real-file reads. Paths never enter collaboration and EXIF GPS is never
     /// uploaded.
     #[effect(job, cancellable, tag = tilo_actions::REQUIRES_NATIVE_PATHS_TAG)]
+    #[effect(label = "photos-import-pick-accept")]
     ImportDirectory {
         #[param("Absolute authorised folder path; omit to use the system folder picker")]
         path: Option<ui::tilo_resource::AbsolutePath>,
@@ -220,11 +231,14 @@ pub enum PhotosEffect {
     AnalyzeImage { resource_id: String },
     /// Rotate left: turn the photograph this window shows a quarter turn
     /// anticlockwise.
+    #[effect(label = "photos-command-rotate-left")]
     RotateShownLeft,
     /// Rotate right: turn the photograph this window shows a quarter turn
     /// clockwise.
+    #[effect(label = "photos-command-rotate-right")]
     RotateShownRight,
     /// Crop to view: keep what this window frames of its photograph.
+    #[effect(label = "photos-command-crop")]
     CropShownToView,
     /// Reset edits of the photograph this window shows.
     ResetShownEdits,
@@ -232,9 +246,11 @@ pub enum PhotosEffect {
     ShareShown,
     /// New album: start naming one and choosing its photographs.
     #[effect(view)]
+    #[effect(label = "photos-new-album")]
     NewAlbum,
     /// Edit album: the album this window browses.
     #[effect(view)]
+    #[effect(label = "photos-edit-album")]
     EditAlbum,
     /// Previous page of the library shown.
     #[effect(view)]
@@ -243,12 +259,15 @@ pub enum PhotosEffect {
     #[effect(view)]
     NextLibraryPage,
     /// Save album: the name and photographs being edited.
+    #[effect(label = "photos-a11y-save-album")]
     SaveAlbumDraft,
     /// Cancel album editing.
     #[effect(view)]
+    #[effect(label = "photos-a11y-cancel-album")]
     CancelAlbumDraft,
     /// Delete album: ask to confirm deleting the album being edited.
     #[effect(view)]
+    #[effect(label = "photos-delete-album")]
     DeleteAlbumDraft,
     /// Confirm deleting the album being edited. Its photographs stay.
     #[effect(destructive)]
@@ -260,24 +279,31 @@ pub enum PhotosEffect {
     CancelDetails,
     /// Organize: the folder, people and tags of the details being edited.
     #[effect(view)]
+    #[effect(label = "photos-organize")]
     ShowDetailsOrganize,
     /// Time & place of the details being edited.
     #[effect(view)]
+    #[effect(label = "photos-time-and-place")]
     ShowDetailsTimeAndPlace,
     /// Clear folder of the details being edited.
     #[effect(view)]
+    #[effect(label = "photos-clear-folder")]
     ClearDraftFolder,
     /// Clear people of the details being edited.
     #[effect(view)]
+    #[effect(label = "photos-clear-people")]
     ClearDraftPeople,
     /// Clear tags of the details being edited.
     #[effect(view)]
+    #[effect(label = "photos-clear-tags")]
     ClearDraftTags,
     /// Clear capture time of the details being edited.
     #[effect(view)]
+    #[effect(label = "photos-clear-captured")]
     ClearDraftCapturedAt,
     /// Clear location of the details being edited.
     #[effect(view)]
+    #[effect(label = "photos-clear-location")]
     ClearDraftLocation,
     /// Set location from offline map: the centre of the map in the details
     /// being edited.
@@ -332,6 +358,7 @@ pub enum PhotosEffect {
     #[effect(view)]
     BrowseApprovedPeople,
     /// Save the name typed for the person reviewed.
+    #[effect(label = "photos-people-save-name")]
     SavePersonName,
     /// Merge: choose a person to merge the one shown into.
     #[effect(view)]

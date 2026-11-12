@@ -2489,7 +2489,7 @@ impl App {
         };
         next.push(format!("tilo-vm vm status {name}"));
         next.push(format!("tilo-vm vm use {name}"));
-        next.push("tilo-vm swap --slot device shell --from sha:<commit>".into());
+        next.push("tilo-vm swap --slot device tilo-session --from sha:<commit>".into());
         self.warnings.clear();
         Ok(Outcome {
             next,
@@ -8208,7 +8208,7 @@ mod tests {
                 added
                     .next
                     .iter()
-                    .any(|n| n.starts_with("tilo-vm swap --slot device shell")),
+                    .any(|n| n.starts_with("tilo-vm swap --slot device tilo-session")),
                 "{:?}",
                 added.next
             );

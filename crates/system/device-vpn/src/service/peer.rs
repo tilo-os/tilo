@@ -29,13 +29,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("seat0"), "ACTIVE_UID=1000\n").unwrap();
         let seat = Seat {
-            trusted_ui: PathBuf::from("/usr/bin/shell"),
+            trusted_ui: PathBuf::from("/usr/bin/tilo-session"),
             seat: dir.path().join("seat0"),
             users: dir.path().join("users"),
         };
         let shell = PeerFacts {
             uid: 1000,
-            exe: Some(PathBuf::from("/usr/bin/shell")),
+            exe: Some(PathBuf::from("/usr/bin/tilo-session")),
             host_namespaces: true,
         };
         assert_eq!(decide(&seat, &shell), Ok(Caller { uid: 1000 }));

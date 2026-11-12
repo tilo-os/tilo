@@ -236,6 +236,7 @@ pub enum MusicEffect {
     ///
     /// Requests profile and saved-library read access, without editing or remote control.
     #[effect(attended, job)]
+    #[effect(label = "music-connect-spotify")]
     ConnectSpotify,
     /// Authorize Spotify playback
     ///
@@ -329,9 +330,11 @@ pub enum MusicEffect {
     ///
     /// Forgets the local grant. Revoke Tilo in Spotify account settings to remove provider-side access.
     #[effect(job)]
+    #[effect(label = "music-disconnect-spotify")]
     DisconnectSpotify,
     /// Browse Spotify
     #[effect(job)]
+    #[effect(label = "music-browse-spotify")]
     BrowseSpotify,
     /// Browse `YouTube` Music
     #[effect(job)]
@@ -349,6 +352,7 @@ pub enum MusicEffect {
     ///
     /// Plays a local audio file the person chooses on this device.
     #[effect(attended, job, returns)]
+    #[effect(label = "music-open-audio-file")]
     OpenFile,
     /// Open
     #[effect(view, row)]
@@ -372,6 +376,7 @@ pub enum MusicEffect {
     /// Plays a track on its own, or (with `queued`) this exact occurrence of
     /// it in the queue, which a stale queue result cannot select.
     #[effect(row, job, returns)]
+    #[effect(label = "music-recommendations-play")]
     Play {
         track: String,
         queued: Option<usize>,
@@ -1367,8 +1372,8 @@ mod tests {
                 .iter()
                 .map(|f| f.action.label.as_str())
                 .collect();
-            assert!(flat.contains(&"Create a new playlist"), "{flat:?}");
-            assert!(flat.contains(&"Delete a playlist"), "{flat:?}");
+            assert!(flat.contains(&"Create playlist"), "{flat:?}");
+            assert!(flat.contains(&"Delete playlist"), "{flat:?}");
             assert!(flat.contains(&"Open in playlist"), "{flat:?}");
         }
 

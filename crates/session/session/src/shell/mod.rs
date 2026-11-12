@@ -425,7 +425,7 @@ impl Shell {
             });
             self.link.publish_packages(packages);
             // The verbs of the apps the shell's runtime does not load — Chat's channel and its
-            // `post`, which the session's own service answers — so a place's view sends its
+            // `send`, which the session's own service answers — so a place's view sends its
             // action to the app publishing it, as it sends any package's to that package's door.
             self.link
                 .publish_published_actions(tilolang_tilo::published::from_resources(
@@ -513,33 +513,46 @@ impl Shell {
             styles.revision = styles.revision.saturating_add(1);
             return;
         };
-        let moved = crate::desk_styles::fingerprint(&catalog);
-        let moved = {
+        let now = crate::desk_styles::registry(&catalog);
+        {
             let mut styles = self.desk.styles.borrow_mut();
-            if styles.fingerprint == Some(moved.clone()) {
+            let former = styles.registry.as_ref();
+            if former == Some(&now) {
                 return;
             }
-            styles.fingerprint = Some(moved);
-            true
-        };
+            // The store is read on every frame, so what the log says of it is said to the frame
+            // that found it changed: the warning when it starts, and the line that it reads again
+            // when it recovers, rather than the same line thousands of times a second.
+            match crate::desk_styles::news(former, &now) {
+                Some(crate::desk_styles::News::Unreadable(why)) => {
+                    tracing::warn!(
+                        error = %why,
+                        "the app store's registry does not read; its styles wait"
+                    );
+                }
+                Some(crate::desk_styles::News::ReadsAgain) => {
+                    tracing::info!("the app store's registry reads again; its styles are read");
+                }
+                None => {}
+            }
+            styles.registry = Some(now);
+        }
         // A package installed or taken away is published again, so a style that failed and was
         // reinstalled fixed draws again with no restart (`shell.md` §6). The failure it had is
         // cleared too: the desk must draw it again for its view to run and tell whether it is
         // fixed, and a store that moved is the only news the session gets of a reinstall.
-        if moved {
-            self.republish = true;
-            for style in crate::desk_styles::installed(&catalog) {
-                // The shell's own package is the one the part already runs, never one loaded
-                // beside itself.
-                if style.package != tilo_session_core::shell::SHELL_APP {
-                    self.needed.insert(style.package.clone());
-                }
+        self.republish = true;
+        for style in crate::desk_styles::installed(&catalog) {
+            // The shell's own package is the one the part already runs, never one loaded
+            // beside itself.
+            if style.package != tilo_session_core::shell::SHELL_APP {
+                self.needed.insert(style.package.clone());
             }
-            for entry in &mut self.desk.styles.borrow_mut().list {
-                if !entry.loads {
-                    entry.loads = true;
-                    entry.reason.clear();
-                }
+        }
+        for entry in &mut self.desk.styles.borrow_mut().list {
+            if !entry.loads {
+                entry.loads = true;
+                entry.reason.clear();
             }
         }
         // The store's styles, the shell's own among them when the store holds the shell: each
@@ -714,9 +727,10 @@ impl Shell {
     }
 
     /// Run what the shell asked through `invoke` (the session's door).
-    /// The shell's calls of the session's actions (`session.close_place(place: 3)`) reach the door
-    /// with every argument as text, so each is typed here by the type the action itself declares
-    /// for it: a workspace's key is text even when it reads as digits, and a count is a number.
+    /// The shell's calls (`session.close_place(place: 3)`) reach the door as any caller's do, a
+    /// list as a list and a map as an object; each is read here as the type the action itself
+    /// declares for it: a workspace's key is text even when it was given as digits, and a flag
+    /// the shell's runtime keeps as a number is a flag.
     /// `types` answers with the declared type of `(resource, action)` 's argument `name` , when the
     /// door publishes it.
     pub(crate) fn serve(
@@ -731,7 +745,7 @@ impl Shell {
                 .iter()
                 .map(|(name, value)| {
                     let ty = types(&ask.resource, &ask.action, name);
-                    (name.clone(), typed(value, ty))
+                    (name.clone(), typed(value.clone(), ty))
                 })
                 .collect();
             // What the invocation is made from goes with its arguments: the app that takes it
@@ -961,37 +975,20 @@ fn pictured(handle: &tilo_desktop_surface::DesktopHandle, key: &str) -> Option<u
     (!handle.withholds(&app)).then_some(surface)
 }
 
-/// `value` (the text the shell's effect wrote) as the door's arguments take it, in the type the
-/// action declares for that argument. Text stays text however it reads: a workspace's key is
-/// `"281474976710657"` , not a number. A flag is written as the integer a tilolang flag travels as
-/// (`1`, `0` ), and reads as true and false. An undeclared argument keeps the text it came as, and
-/// the door refuses it by name.
-fn typed(value: &str, ty: Option<tilo_actions::params::ParamType>) -> Value {
+/// `value` as the type the action declares for it: a number given for a text is its digits, and a
+/// flag the shell's runtime keeps as an integer (`1`, `0`) is true or false. Anything else is sent
+/// as given, and the door refuses by name what it does not take.
+fn typed(value: Value, ty: Option<tilo_actions::params::ParamType>) -> Value {
     use tilo_actions::params::ParamType;
-    match ty {
-        Some(ParamType::Integer) => value
-            .trim()
-            .parse::<i64>()
-            .map_or_else(|_| Value::String(value.to_owned()), Value::from),
-        // ignored-failure: a number that does not parse is sent as the text
-        // the person typed, and the door refuses it by name
-        Some(ParamType::Number) => value
-            .trim()
-            .parse::<f64>()
-            .ok()
-            .and_then(serde_json::Number::from_f64)
-            .map_or_else(|| Value::String(value.to_owned()), Value::Number),
-        Some(ParamType::Boolean) => match value.trim() {
-            "true" | "yes" | "on" | "1" => Value::Bool(true),
-            "false" | "no" | "off" | "0" => Value::Bool(false),
-            _ => Value::String(value.to_owned()),
-        },
-        Some(ParamType::Object) => serde_json::from_str::<Map<String, Value>>(value)
-            .map_or_else(|_| Value::String(value.to_owned()), Value::Object),
-        Some(ParamType::Array) => serde_json::from_str::<Vec<Value>>(value)
-            .map_or_else(|_| Value::String(value.to_owned()), Value::Array),
-        Some(ParamType::Text | ParamType::Resource | ParamType::DateTime | ParamType::Secret)
-        | None => Value::String(value.to_owned()),
+    match (ty, value) {
+        (Some(ParamType::Boolean), Value::Number(number)) => {
+            Value::Bool(number.as_f64().is_some_and(|number| number != 0.0))
+        }
+        (
+            Some(ParamType::Text | ParamType::Resource | ParamType::DateTime | ParamType::Secret),
+            Value::Number(number),
+        ) => Value::String(number.to_string()),
+        (_, value) => value,
     }
 }
 

@@ -11,12 +11,16 @@
 //! relay forwards only the tracks someone asked for. A publisher encodes a
 //! layer only while someone asks for it.
 //!
-//! A room's window carrier carries one more kind of track: a single window
-//! of a host program the publisher runs (a terminal, any Wayland or X
-//! client), one track per window, named by the window's tab
-//! ([`window_track`], `window/<tab as 16 hex digits>`). Its pictures are the
-//! window's own size in the [`Layer::High`] layer, and their payload is
-//! sealed for the room's members, so the relay forwards what it cannot read.
+//! A workspace's live plane carries one more kind of track: a single window
+//! the publisher shares (a terminal, any Wayland or X client), one track per
+//! window, named by the window's tab and its layer
+//! (`window/<tab as 16 hex digits>/high`, [`crate::live::Track::Window`]).
+//! Its pictures are the window's own size in the [`Layer::High`] layer, and
+//! their payload is sealed for the workspace's members, so the relay forwards
+//! what it cannot read. A viewer needs nothing besides the objects to show
+//! it: a keyframe's header says the codec, the size and the colour its
+//! decoder starts from, and a keyframe of another size or codec starts the
+//! decoder over.
 //!
 //! # Groups and objects
 //!
@@ -27,7 +31,7 @@
 //! | Bytes | Field |
 //! | --- | --- |
 //! | 1 | version, `1` |
-//! | 1 | flags: bit 0 keyframe |
+//! | 1 | flags: bit 0 keyframe, bit 1 HDR10 (BT.2020 primaries, PQ, 10 bits; SDR BT.709 without) |
 //! | 1 | [`Codec`] |
 //! | 1 | [`Layer`] |
 //! | 8 | sequence (LE), counting objects of the track |
@@ -75,6 +79,9 @@ pub enum Codec {
     Vp8,
     Vp9,
     Av1,
+    /// HEVC Main10: a shared window's HDR stream where a hardware encoder
+    /// makes it.
+    HevcMain10,
 }
 
 impl Codec {
@@ -84,6 +91,7 @@ impl Codec {
             Self::Vp8 => 2,
             Self::Vp9 => 3,
             Self::Av1 => 4,
+            Self::HevcMain10 => 5,
         }
     }
     const fn from_wire(value: u8) -> Option<Self> {
@@ -92,6 +100,7 @@ impl Codec {
             2 => Some(Self::Vp8),
             3 => Some(Self::Vp9),
             4 => Some(Self::Av1),
+            5 => Some(Self::HevcMain10),
             _ => None,
         }
     }
@@ -241,45 +250,13 @@ pub fn parse_window_track(name: &str) -> Option<u64> {
     tab_of("window", name)
 }
 
-/// A track a relay forwards as video: a call's picture layer or one
-/// window.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum Track {
-    Picture(Source, Layer),
-    /// The window shown in tab `0`, in [`Layer::High`] only.
-    Window(u64),
-}
-
-impl Track {
-    #[must_use]
-    pub fn name(self) -> String {
-        match self {
-            Self::Picture(source, layer) => track(source, layer),
-            Self::Window(tab) => window_track(tab),
-        }
-    }
-
-    /// The video track `name` names, or `None` for any other name.
-    #[must_use]
-    pub fn parse(name: &str) -> Option<Self> {
-        parse_track(name)
-            .map(|(source, layer)| Self::Picture(source, layer))
-            .or_else(|| parse_window_track(name).map(Self::Window))
-    }
-
-    #[must_use]
-    pub const fn layer(self) -> Layer {
-        match self {
-            Self::Picture(_, layer) => layer,
-            Self::Window(_) => Layer::High,
-        }
-    }
-}
-
 /// One encoded picture.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VideoObject {
     pub keyframe: bool,
+    /// Whether the picture is HDR10 (BT.2020 primaries, PQ, 10 bits) rather
+    /// than SDR BT.709.
+    pub hdr: bool,
     pub codec: Codec,
     pub layer: Layer,
     pub sequence: u64,
@@ -323,7 +300,7 @@ impl VideoObject {
         let mut bytes = Vec::with_capacity(HEADER_BYTES.saturating_add(self.payload.len()));
         bytes.extend_from_slice(&[
             1,
-            u8::from(self.keyframe),
+            u8::from(self.keyframe) | (u8::from(self.hdr) << 1),
             self.codec.wire(),
             self.layer.wire(),
         ]);
@@ -343,6 +320,7 @@ impl VideoObject {
         let header = validate(bytes)?;
         Ok(Self {
             keyframe: header.keyframe,
+            hdr: header.hdr,
             codec: header.codec,
             layer: header.layer,
             sequence: header.sequence,
@@ -361,6 +339,7 @@ impl VideoObject {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Header {
     pub keyframe: bool,
+    pub hdr: bool,
     pub codec: Codec,
     pub layer: Layer,
     pub sequence: u64,
@@ -374,7 +353,7 @@ pub fn validate(bytes: &[u8]) -> Result<Header, InvalidVideoObject> {
         return Err(InvalidVideoObject);
     }
     let flags = byte(bytes, 1)?;
-    if byte(bytes, 0)? != 1 || flags & !1 != 0 || field::<4>(bytes, 28)? != [0; 4] {
+    if byte(bytes, 0)? != 1 || flags & !0b11 != 0 || field::<4>(bytes, 28)? != [0; 4] {
         return Err(InvalidVideoObject);
     }
     let codec = Codec::from_wire(byte(bytes, 2)?).ok_or(InvalidVideoObject)?;
@@ -392,6 +371,7 @@ pub fn validate(bytes: &[u8]) -> Result<Header, InvalidVideoObject> {
     }
     Ok(Header {
         keyframe: flags & 1 == 1,
+        hdr: flags & 0b10 != 0,
         codec,
         layer,
         sequence: u64::from_le_bytes(field(bytes, 4)?),
@@ -407,6 +387,7 @@ mod tests {
     fn picture(keyframe: bool) -> VideoObject {
         VideoObject {
             keyframe,
+            hdr: false,
             codec: Codec::H264,
             layer: Layer::Mid,
             sequence: 7,
@@ -430,8 +411,18 @@ mod tests {
         versioned[0] = 2;
         assert!(validate(&versioned).is_err());
         let mut flagged = bytes.clone();
-        flagged[1] = 0b10;
+        flagged[1] = 0b100;
         assert!(validate(&flagged).is_err());
+        let hdr = VideoObject {
+            hdr: true,
+            codec: Codec::HevcMain10,
+            ..picture(true)
+        };
+        assert_eq!(
+            VideoObject::decode(&hdr.encode().unwrap()).unwrap(),
+            hdr,
+            "an HDR keyframe says so, and its codec"
+        );
         let mut truncated = bytes.clone();
         truncated.pop();
         assert!(validate(&truncated).is_err(), "the length says the payload");
@@ -475,29 +466,6 @@ mod tests {
             "",
         ] {
             assert_eq!(parse_track(name), None, "{name}");
-        }
-    }
-
-    #[test]
-    fn a_window_track_names_its_tab_and_nothing_else_parses_as_one() {
-        let tab = 0x5EED_0000_0000_0007;
-        assert_eq!(window_track(tab), "window/5eed000000000007");
-        assert_eq!(Track::parse(&window_track(tab)), Some(Track::Window(tab)));
-        assert_eq!(Track::Window(tab).layer(), Layer::High);
-        assert_eq!(
-            Track::parse("camera/mid"),
-            Some(Track::Picture(Source::Camera, Layer::Mid))
-        );
-        for name in [
-            "window/",
-            "window/5EED000000000007",
-            "window/5eed00000000007",
-            "window/5eed0000000000070",
-            "window/+eed000000000007",
-            "windows/5eed000000000007",
-            "audio",
-        ] {
-            assert_eq!(Track::parse(name), None, "{name}");
         }
     }
 }

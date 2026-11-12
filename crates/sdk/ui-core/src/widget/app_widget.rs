@@ -354,6 +354,11 @@ mod component_adapter {
         /// The size the root was last laid out at: a new size is input its
         /// next sync takes up.
         laid_out: Option<vello::kurbo::Size>,
+        /// What the root's updates read since its last sync: a view built
+        /// from what moved is input the sync it precedes takes up, and a
+        /// build that loads the words it shows proves nothing
+        /// ([`crate::component_inputs`]).
+        update_reads: Option<crate::component_inputs::Reads>,
     }
 
     impl BoundAppWidget {
@@ -366,6 +371,7 @@ mod component_adapter {
                 owes_sync: true,
                 owes_settle: true,
                 laid_out: None,
+                update_reads: None,
             }
         }
 
@@ -513,8 +519,11 @@ mod component_adapter {
             };
             // Work off the frame that lands while the check's own pass runs
             // (a save the store finished) wakes the component for its next
-            // frame: what the pass shows of it was not owed yet.
+            // frame: what the pass shows of it was not owed yet. So does a
+            // language that moves while it runs: the witness the pass ends
+            // with is the language it read, so the next pass reads it again.
             let crossed = self.component.callback_binding().lifetime.crossed();
+            let locale = crate::i18n::I18nManager::revision();
             let ((before, after), reads) = tilo_resource::profiling::unobserved(|| {
                 let binding = self.component.callback_binding();
                 let before = shown(self);
@@ -524,8 +533,9 @@ mod component_adapter {
                 ((before, shown(self)), reads)
             });
             self.witness_pass(state, reads);
-            let consistent =
-                before == after || self.component.callback_binding().lifetime.crossed() != crossed;
+            let consistent = before == after
+                || self.component.callback_binding().lifetime.crossed() != crossed
+                || crate::i18n::I18nManager::revision() != locale;
             if consistent {
                 return;
             }
@@ -577,6 +587,12 @@ mod component_adapter {
                 return;
             }
             let now = self.inputs_now(outer);
+            // What the updates since the last sync read, as they read it: a
+            // view built from what moved is input this pass takes up.
+            let reads = match self.update_reads.take() {
+                Some(update) => reads.join(update),
+                None => reads,
+            };
             let reads = match self.witness.take() {
                 // A settle after its sync: what both read.
                 Some(previous) if self.owes_settle => previous.reads.join(reads),
@@ -584,6 +600,10 @@ mod component_adapter {
                 Some(previous) => reads.carry(previous.reads),
                 None => reads,
             };
+            // The language the pass read in, not the one that stands now:
+            // words loading while it ran (another window's page) are read
+            // again by the next pass, which shows what they say.
+            let locale = reads.locale.unwrap_or(now.standing.locale);
             self.witness = match (now.revision, now.document) {
                 (Some(revision), Some(document)) => Some(crate::component_inputs::Witness {
                     revision,
@@ -601,7 +621,7 @@ mod component_adapter {
                                 .ok_or_else(String::new),
                             ..now.standing.owner
                         },
-                        ..now.standing
+                        locale,
                     },
                     reads,
                 }),
@@ -1219,10 +1239,19 @@ mod component_adapter {
                     .unwrap_or(false)
             };
             let component = &mut self.component;
-            let changed = crate::presence::frame::frame(|presence| {
-                presence.with_permissions(permissions.clone(), || update(component))
-            })
-            .unwrap_or_else(|| update(component));
+            // The build runs as the component's pass reading: what the view
+            // derived from, and the words it loaded to write it, are what the
+            // next sync takes up.
+            let (changed, reads) = crate::component_inputs::reading(&binding.lifetime, || {
+                crate::presence::frame::frame(|presence| {
+                    presence.with_permissions(permissions.clone(), || update(component))
+                })
+                .unwrap_or_else(|| update(component))
+            });
+            self.update_reads = Some(match self.update_reads.take() {
+                Some(earlier) => earlier.join(reads),
+                None => reads,
+            });
             // A change of the root's own is what its next sync shows, and
             // what anything published from it follows.
             if changed {

@@ -34,3 +34,14 @@ capture-failed-not-copied = A screenshot was saved, but not copied: { $why }
 capture-failed-not-read = A screenshot was not copied: { $why }
 capture-failed-clip-not-saved = A clip of what just happened was not saved: { $why }
 capture-failed-not-opened = { $path } could not be opened: { $why }
+
+## Actions
+
+desktop-capture-studio = Capture studio
+so-tilo-capture-studio-open = Open Capture studio
+so-tilo-capture-studio-pause-recording = Pause recording
+so-tilo-capture-studio-record = Record the screen
+so-tilo-capture-studio-resume-recording = Resume recording
+so-tilo-capture-studio-save-replay = Save the last half minute
+so-tilo-capture-studio-screenshot = Take a screenshot
+so-tilo-capture-studio-stop-recording = Stop recording

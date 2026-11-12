@@ -431,7 +431,7 @@ fn sidebar(ui: &Ui) -> Element {
         }
     };
     let mut list = NavList::new(Vec::new())
-        .with_accessible_name(crate::APP_TITLE)
+        .with_accessible_name(crate::locales::CATALOG.t("themes-app-title"))
         .follow(source)
         .on_view(NAV_ID, select);
     // "New theme" opens a draft of a preset, and Delete removes the row's

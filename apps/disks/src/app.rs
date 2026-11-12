@@ -55,8 +55,8 @@ impl ActionKind {
         }
     }
     /// The action's name, for a status.
-    pub(crate) fn title(self) -> &'static str {
-        self.label().trim_end_matches('…')
+    pub(crate) fn title(self) -> String {
+        self.label().trim_end_matches('…').to_owned()
     }
     /// What the action would run on `dev`, reported on the sample machine.
     fn plan(self, dev: &str) -> String {
@@ -150,14 +150,15 @@ impl ActionKind {
             ActionKind::Eject => "eject",
         }
     }
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            ActionKind::Mount => "Mount",
-            ActionKind::Unmount => "Unmount",
-            ActionKind::Format => "Format…",
-            ActionKind::Benchmark => "Benchmark",
-            ActionKind::Eject => "Eject",
-        }
+    /// The action's name, as the menu and its status say it.
+    pub(crate) fn label(self) -> String {
+        crate::locales::CATALOG.t(match self {
+            ActionKind::Mount => "disks-action-mount",
+            ActionKind::Unmount => "disks-action-unmount",
+            ActionKind::Format => "disks-action-format",
+            ActionKind::Benchmark => "disks-action-benchmark",
+            ActionKind::Eject => "disks-action-eject",
+        })
     }
     /// What the action does, as the button's tooltip.
     pub(crate) fn describe(self) -> &'static str {

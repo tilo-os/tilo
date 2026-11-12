@@ -12,12 +12,20 @@
  *   AES-GCM key and only the ciphertext is stored; `unseal()` hands the seed
  *   to the wasm runtime, which keeps it in wasm memory only.
  *
- * A tab is a device of its own. A profile keeps a small pool of device keys,
- * one per slot, each held under an exclusive Web Lock for the custody's whole
- * lifetime: a tab takes the first slot whose lock is free, so a reload takes
- * its slot back and keys are reused across tab sessions, and a new slot (a new
- * key, to be certified as a new device of the same person) is made only when
- * every existing one is held by another tab.
+ * A tab is a device of its own: the protocol takes one writer per device key
+ * (each author numbers its changes, each device advances its own encryption
+ * ratchet, and its store has one writer), so two tabs cannot share one. A
+ * profile keeps a pool of at most `MAX_SLOTS` device keys, one per slot, each
+ * held under an exclusive Web Lock for the custody's whole lifetime:
+ * - A tab remembers its slot (`sessionStorage`, which a reload of the same
+ *   tab keeps), and takes it back after a reload or a navigation, waiting
+ *   for the page before it to let go of it: a reload is the same device.
+ * - A tab whose remembered slot another live tab holds (a duplicated tab
+ *   copies `sessionStorage`) asks first (`BroadcastChannel`): a holder that
+ *   answers is another tab, and this one takes a slot of its own at once.
+ * - A new tab takes a free slot that has a key, so keys are reused across
+ *   tab sessions, and makes a new one (a new device of the same person) only
+ *   when every slot with a key is held by another tab.
  *
  * Storage is `{get(key), put(key, value), delete(key)}`; `idbStorage()`
  * provides it over IndexedDB with strict durability.
@@ -63,33 +71,100 @@ async function createSealedSeed(subtle, random) {
   return {kind: 'sealed-seed', wrapKey, iv, sealed};
 }
 
-/** Takes the lock `name` if no one holds it: `{release, held}`, else `null`.
- * `held` settles once the user agent let go of the lock, after `release()`. */
-async function takeLock(locks, name) {
+/** How long a page asks whether a live tab holds a slot it remembers. */
+export const LIVE_ASK_MS = 300;
+/** How long a page waits for its remembered slot once no live tab says it
+ * holds it: the page before a reload lets go of it within seconds, and a tab
+ * frozen by its browser while holding it is let be after this. */
+export const OWN_SLOT_WAIT_MS = 20_000;
+const SLOT_MEMORY = 'tilo-device-slot:';
+const CHANNEL = 'tilo-device-custody';
+
+/** Takes the lock `name`: `{release, held}`, or `null` when another holds it
+ * (or still does once `wait` ms passed, with `wait`). `held` settles once the
+ * user agent let go of the lock, after `release()`. */
+async function takeLock(locks, name, wait = 0) {
   let release;
   const released = new Promise(resolve => { release = resolve; });
   let held;
+  const signal = wait ? AbortSignal.timeout(wait) : undefined;
   const acquired = await new Promise((resolve, reject) => {
-    held = locks.request(name, {mode: 'exclusive', ifAvailable: true}, lock => {
+    held = locks.request(name, wait ? {mode: 'exclusive', signal} : {mode: 'exclusive', ifAvailable: true}, lock => {
       if (!lock) { resolve(false); return undefined; }
       resolve(true);
       return released;
     });
-    held.catch(reject);
+    held.catch(error => (signal?.aborted ? resolve(false) : reject(error)));
   });
   return acquired ? {release, held} : null;
 }
 
+/** The slots this page's custodies hold, which it answers for while it lives. */
+const holding = new Set();
+let answering = null;
+/** Answer other tabs asking whether a live tab holds a slot this page holds,
+ * until the page goes (`pagehide`): a page on its way out answers nothing, so
+ * the reload after it waits for its slot instead of taking another. */
+function answerForSlots(broadcast, events) {
+  if (answering !== null || !broadcast) return;
+  try { answering = broadcast(CHANNEL); } catch { answering = false; return; }
+  // Answering keeps nothing alive by itself (Node's channels would).
+  answering.unref?.();
+  answering.onmessage = ({data}) => {
+    if (typeof data?.ask === 'string' && holding.has(data.ask)) answering.postMessage({live: data.ask});
+  };
+  events?.addEventListener?.('pagehide', () => { holding.clear(); }, {once: true});
+}
+
+/** Whether a live tab answers that it holds the slot lock `name`. */
+async function liveHolder(broadcast, name) {
+  let channel;
+  try { channel = broadcast?.(CHANNEL); } catch { return false; }
+  if (!channel) return false;
+  try {
+    return await new Promise(resolve => {
+      const timer = setTimeout(() => resolve(false), LIVE_ASK_MS);
+      channel.onmessage = ({data}) => { if (data?.live === name) { clearTimeout(timer); resolve(true); } };
+      channel.postMessage({ask: name});
+    });
+  } finally {
+    channel.close();
+  }
+}
+
+const readSlot = (session, profile) => {
+  try {
+    const slot = Number(session?.getItem(SLOT_MEMORY + profile));
+    return session?.getItem(SLOT_MEMORY + profile) != null && Number.isInteger(slot) && slot >= 0 && slot < MAX_SLOTS ? slot : null;
+  } catch { return null; }
+};
+const keepSlot = (session, profile, slot) => {
+  try { session?.setItem(SLOT_MEMORY + profile, String(slot)); } catch { /* not kept: the next load picks a free slot */ }
+};
+
 /**
- * The slot of `profile` this tab takes: the first whose lock is free. With
+ * The slot of `profile` this tab takes: the one it remembers (`session`)
+ * where no other live tab holds it, waiting for the page before it to let go
+ * of it; else a free one with a key; else the first free one. With
  * `requireExisting`, only a slot that already has a key counts.
  * Resolves to `{slot, release, held}`.
  */
-export async function takeSlot({profile, storage, locks, requireExisting = false}) {
+export async function takeSlot({profile, storage, locks, requireExisting = false, session, broadcast}) {
+  const lockName = slot => LOCK_PREFIX + slotName(profile, slot);
+  const remembered = readSlot(session, profile);
+  if (remembered !== null && (!requireExisting || await storage.get(keyRecord(profile, remembered)))) {
+    const lock = await takeLock(locks, lockName(remembered))
+      ?? (await liveHolder(broadcast, lockName(remembered)) ? null : await takeLock(locks, lockName(remembered), OWN_SLOT_WAIT_MS));
+    if (lock) return {slot: remembered, ...lock};
+  }
+  const keyed = [];
+  for (let slot = 0; slot < MAX_SLOTS; slot++) keyed.push(Boolean(await storage.get(keyRecord(profile, slot))));
   let busy = false;
-  for (let slot = 0; slot < MAX_SLOTS; slot++) {
-    if (requireExisting && !await storage.get(keyRecord(profile, slot))) continue;
-    const lock = await takeLock(locks, LOCK_PREFIX + slotName(profile, slot));
+  // Slots with a key first, so a key is reused before another is made.
+  const order = [...keyed.keys()].sort((a, b) => Number(keyed[b]) - Number(keyed[a]) || a - b);
+  for (const slot of order) {
+    if (requireExisting && !keyed[slot]) continue;
+    const lock = await takeLock(locks, lockName(slot));
     if (lock) return {slot, ...lock};
     busy = true;
   }
@@ -118,6 +193,9 @@ export async function openDeviceCustody({
   locks = globalThis.navigator?.locks,
   preferWebCrypto = true,
   requireExisting = false,
+  session = globalThis.sessionStorage,
+  broadcast = globalThis.BroadcastChannel && (name => new BroadcastChannel(name)),
+  events = globalThis,
 }) {
   if (!profile || typeof profile !== 'string') throw new TypeError('profile is required');
   if (!storage) throw new TypeError('storage is required');
@@ -125,7 +203,12 @@ export async function openDeviceCustody({
   const subtle = crypto.subtle;
   const random = bytes => crypto.getRandomValues(bytes);
 
-  const {slot, release, held} = await takeSlot({profile, storage, locks, requireExisting});
+  const {slot, release: letGo, held} = await takeSlot({profile, storage, locks, requireExisting, session, broadcast});
+  const lockName = LOCK_PREFIX + slotName(profile, slot);
+  holding.add(lockName);
+  answerForSlots(broadcast, events);
+  keepSlot(session, profile, slot);
+  const release = () => { holding.delete(lockName); letGo(); };
   try {
     let record = await storage.get(keyRecord(profile, slot));
     const created = !record;
@@ -172,6 +255,31 @@ export async function openDeviceCustody({
     release();
     throw error;
   }
+}
+
+/** This browser profile's tab devices, in `localStorage`, which every tab
+ * of the profile shares: `{id, certs}`, the profile's own random id and the
+ * certificate each tab's device key holds (as the peer keeps it, JSON). The
+ * page hands them to the person's record when it lists their devices, so
+ * every device of theirs lists this browser as one entry, and taking it back
+ * takes back each of its tabs' keys. */
+export const BROWSER_DEVICES = 'tilo-browser-devices';
+/** How many certificates are kept: past it the oldest goes, a key no tab
+ * held for long (the pool reuses keys, so it rarely gets there). */
+const BROWSER_DEVICES_KEPT = 4 * MAX_SLOTS;
+/** Keep `certified` (`{cert, hostCert}` JSON, as a peer keeps it) as one of
+ * this browser's tab devices, in place of an older certificate of its key. */
+export function rememberBrowserDevice(certified, namespaces = globalThis.localStorage, random = bytes => globalThis.crypto.getRandomValues(bytes)) {
+  try {
+    const cert = JSON.parse(certified)?.cert;
+    const key = JSON.stringify(cert?.device_public_key);
+    if (!Array.isArray(cert?.device_public_key)) return;
+    const kept = JSON.parse(namespaces?.getItem(BROWSER_DEVICES) ?? 'null');
+    const id = typeof kept?.id === 'string' && /^[0-9a-f]{32}$/.test(kept.id) ? kept.id
+      : [...random(new Uint8Array(16))].map(byte => byte.toString(16).padStart(2, '0')).join('');
+    const certs = (Array.isArray(kept?.certs) ? kept.certs : []).filter(other => JSON.stringify(other?.device_public_key) !== key);
+    namespaces?.setItem(BROWSER_DEVICES, JSON.stringify({id, certs: [...certs, cert].slice(-BROWSER_DEVICES_KEPT)}));
+  } catch { /* not kept: the person's record lists this tab as a device of its own */ }
 }
 
 /** `{get, put, delete}` over one IndexedDB object store, strict durability. */

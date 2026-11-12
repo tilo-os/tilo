@@ -14,8 +14,6 @@
     reason = "test fixtures: a failed step is the assertion, and a session outlives every call"
 )]
 
-mod common;
-
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -23,7 +21,7 @@ use tilo_app_launch::SessionEnvironment;
 use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
 
-use common::PERSON;
+use crate::common::PERSON;
 
 /// The notebook, as a package names it.
 const NOTES: &str = "so.tilo.lang.notes";
@@ -67,12 +65,12 @@ fn session(preset: &str, apps: &Rc<Apps>) -> Session {
         },
         &[tilo_compositor::OutputConfig::new(
             "HEADLESS-1",
-            common::WIDTH,
-            common::HEIGHT,
+            crate::common::WIDTH,
+            crate::common::HEIGHT,
         )],
     )
     .expect("a session");
-    common::show_preset(&mut session, preset);
+    crate::common::show_preset(&mut session, preset);
     session
 }
 
@@ -80,7 +78,7 @@ fn session(preset: &str, apps: &Rc<Apps>) -> Session {
 fn an_opened_app_is_handed_to_the_launcher() {
     let mut home = tilo_test_env::TestHome::new().expect("a home");
     let store = home.data().join("tilo-apps");
-    common::install_apps_in(&store, &home.state().join("tilolang"));
+    crate::common::install_apps_in(&store, &home.state().join("tilolang"));
     home.env().set("TILO_APPS_DATA_DIR", &store);
     let handed = home.home().join("handed");
     let launcher = launcher_recording(&home, &handed);
@@ -92,7 +90,7 @@ fn an_opened_app_is_handed_to_the_launcher() {
         open: None,
     })
     .expect("the app is opened");
-    common::until(&mut session, "the launcher is handed the app", |_| {
+    crate::common::until(&mut session, "the launcher is handed the app", |_| {
         launched(&handed)
     });
 }

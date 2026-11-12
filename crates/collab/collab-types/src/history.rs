@@ -54,6 +54,39 @@ pub struct RosterAgent {
     pub color: [u8; 3],
 }
 
+/// What an application installed on this device is called, in each language
+/// its package names it in: what a window reads a change of another app as
+/// ("Heute"), never as the words its id makes. The session sends these with
+/// the names of the workspace's people, and each window reads the name its
+/// own language gives.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NamedApp {
+    /// The app's package id (`so.tilo.lang.today`).
+    pub id: String,
+    /// The name its package gives itself.
+    pub name: String,
+    /// The name in other languages, by BCP 47 tag.
+    pub names: std::collections::BTreeMap<String, String>,
+}
+
+impl NamedApp {
+    /// What the app is called in `locale` (BCP 47): its exact tag, else its
+    /// language, else the name its package gives itself.
+    #[must_use]
+    pub fn name_in(&self, locale: &str) -> &str {
+        let language = locale.split(['-', '_']).next().unwrap_or(locale);
+        [locale, language]
+            .into_iter()
+            .find_map(|wanted| {
+                self.names
+                    .iter()
+                    .find(|(tag, _)| tag.eq_ignore_ascii_case(wanted))
+                    .map(|(_, name)| name.as_str())
+            })
+            .unwrap_or(self.name.as_str())
+    }
+}
+
 /// Collect up to `max` ops of `artifact` with `seq < before_seq`: the newest
 /// such window, in ascending `seq` order, plus whether nothing older remains.
 /// The page semantics every history host shares.

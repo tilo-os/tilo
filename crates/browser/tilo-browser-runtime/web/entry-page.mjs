@@ -25,7 +25,7 @@ import {boot, grammar} from './entry.mjs';
 import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetchDesktop, prefetchOfferedApplications, prepareGpu, reportPageErrors} from './host.mjs';
 import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, openInvitation, profileDevice, withCustody} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
-import {CustodyError, idbStorage, openDeviceCustody} from './device-custody.mjs';
+import {idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {createIdentityActions, SIGN_IN, syncProfile} from './identity-actions.mjs';
 import {firstRun, MCP_URL, setupDone} from './first-run.mjs';
 import {pickImageFile, squarePhoto} from './profile-photos.mjs';
@@ -1069,14 +1069,15 @@ export async function startEntryPage({mode}) {
         try { await lobby.workspaces.enter(room); } finally { await lobby.dispose?.(); }
       }
       // This tab's own device key: a new one where other tabs hold the
-      // others. A workspace admits each device once, through an invitation (or
-      // as its host's owner, above), so in a workspace joined by invitation a new
-      // device of the person cannot get in by itself: said plainly, and the
-      // key, which no host has seen, is not kept.
+      // others, a new device of the person. A workspace the person is in
+      // admits each device their root certifies, so it enters through the
+      // workspace's door on its session, as the person's first device did.
       const custody = await openDeviceCustody({profile: identityProfile(identity, origin), storage: idbStorage()});
       if (custody.created && !kept.owner) {
-        await custody.destroy();
-        throw new CustodyError('custody-busy', 'A new device of this person needs an invitation to this workspace');
+        const door = new URL(`directory/${room}/`, `${origin}/`).href;
+        const entered = await withCustody(custody, () => joinWorkspace({origin, door, identity, runtime, displayName, custody}));
+        keepJoinedHost({origin, room, userPublicKey: identity.userPublicKey});
+        return entered;
       }
       const peer = await withCustody(custody, () => connectPeer({origin, workspace: room, identity, runtime, displayName, custody}));
       // What is kept names the workspace the host's door let this browser

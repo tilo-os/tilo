@@ -44,12 +44,17 @@ pub struct Apps {
     /// workspace from, and where a stopped app's notice goes.
     desktop: RefCell<Option<DesktopHost>>,
     state: RefCell<State>,
+    /// Why a workspace's apps may not start yet, once the session lent it ([`Self::lend_admission`]).
+    admission: RefCell<Option<Admission>>,
 }
 
 /// What lets a package author its own records in the workspace it opens in,
 /// called with the workspace's id and the package's, and what runs once it
 /// may: at once, or on the pass after the workspace's governance answered.
 type Authorship = Rc<dyn Fn(&str, &str, Box<dyn FnOnce(&Apps)>)>;
+
+/// Why the apps of a workspace, by its id, may not start yet: `None` once they may.
+pub(crate) type Admission = Rc<dyn Fn(&str) -> Option<String>>;
 
 /// What starting an app needs besides the launch itself.
 struct State {
@@ -172,6 +177,7 @@ impl Apps {
     ) -> Self {
         Self {
             desktop: RefCell::new(None),
+            admission: RefCell::new(None),
             state: RefCell::new(State {
                 environment,
                 x11: None,
@@ -271,6 +277,18 @@ impl Apps {
 
     /// The session's launch records: each app started from here on is written into them, so its
     /// connection to the session's services is admitted for the launch that made it.
+    /// Lend what says why a workspace's apps may not start yet: the reason, while this device
+    /// waits for the workspace's host to admit it ([`crate::agent_door::awaited_reason`]).
+    pub(crate) fn lend_admission(&self, awaited: Admission) {
+        *self.admission.borrow_mut() = Some(awaited);
+    }
+
+    /// Why an app of `workspace` may not start yet, when this device waits for its host.
+    pub(crate) fn awaited(&self, workspace: &str) -> Option<String> {
+        let awaited = self.admission.borrow().clone()?;
+        awaited(workspace)
+    }
+
     pub fn lend_launches(&self, launches: std::sync::Arc<crate::Launches>) {
         self.state.borrow_mut().launches = Some(launches);
     }
@@ -757,7 +775,7 @@ impl Apps {
     /// app shows there, and standing over the desk when `floated` — and plan the window that fills
     /// it: the session starts it once the desk asks back, the tab being the window's instance
     /// ([`Self::start_asked`]). `reveal` is the item the window shows, when the app named one.
-    /// Nothing comes when the desk holds no tab of the app to open beside.
+    /// Nothing comes when the desk holds no tab of the app to open beside. Whether a tab is held.
     pub fn ask_window(
         &self,
         launch: &Launch,
@@ -765,13 +783,13 @@ impl Apps {
         background: bool,
         floated: bool,
         reveal: Option<&str>,
-    ) {
+    ) -> bool {
         let Some(desktop) = self.desktop.borrow().clone() else {
-            return;
+            return false;
         };
         let app = launch.app();
         if !desktop.with_policy(|policy| policy.hold(app, anchor, background, floated)) {
-            return;
+            return false;
         }
         self.state
             .borrow_mut()
@@ -782,6 +800,7 @@ impl Apps {
                 launch: launch.clone(),
                 reveal: reveal.map(str::to_owned),
             });
+        true
     }
 
     /// The tab the window `app` opened on `item` stands in, while it is on the desk.
@@ -1677,6 +1696,12 @@ impl Apps {
         door: Option<HeldDoor>,
         timed: Option<u64>,
     ) -> Result<u64, DoorError> {
+        // An app of a workspace this device is not admitted to yet would take part in nothing
+        // there, and would not join once the host admits the device: it is not started, and
+        // whoever asked is told why at once.
+        if let Some(reason) = self.awaited(workspace) {
+            return Err(DoorError::Failed(reason));
+        }
         let launches = self.state.borrow().launches.clone();
         let mut state = self.state.borrow_mut();
         let windowless = planned.env.contains_key(ui::window_door::WINDOWLESS_ENV);
@@ -1886,6 +1911,27 @@ impl AppActions for Apps {
             serde_json::Map::new(),
             place,
         )
+    }
+
+    /// A window of the app's own, beside the one it has, opening on `item`: the desk holds its
+    /// tab, as for the app's own ask for another window. An app with no window to open beside
+    /// opens the item where its `open` does, which starts it.
+    fn open_beside(
+        &self,
+        target: RemoteActionTarget,
+        arguments: serde_json::Map<String, serde_json::Value>,
+        item: &str,
+    ) -> Result<(), DoorError> {
+        if let Some((_, app)) = application_provider(&target.provider) {
+            let launch = Launch::Package {
+                app: app.to_owned(),
+                open: None,
+            };
+            if self.ask_window(&launch, None, false, false, Some(item)) {
+                return Ok(());
+            }
+        }
+        self.invoke(target, arguments)
     }
 
     fn cancel(&self, _app: &str, _workspace: &str, _invocation: &str) -> Result<(), DoorError> {

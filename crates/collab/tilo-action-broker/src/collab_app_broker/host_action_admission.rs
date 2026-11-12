@@ -166,6 +166,16 @@ impl AppBrokerState {
                     || principal_id_for_root(certificate.user_public_key),
                     |agent| format!("agent:{}", agent.strip_prefix("agent:").unwrap_or(agent)),
                 );
+                // The connection's app acting under its own identity, by what
+                // the workspace grants it: decided as that app and owned by it,
+                // never attested as the connection's person
+                // (`AppBrokerState::invocation_owner`).
+                if route.cluster_id == workspace
+                    && actor.is_agent
+                    && actor.id == BrokerActor::app(&route.app_id).id
+                {
+                    return Ok(InvocationOwner::Local { actor: actor.id });
+                }
                 if route.cluster_id != workspace
                     || expected != actor.id
                     || current.agent_id.is_some() != actor.is_agent

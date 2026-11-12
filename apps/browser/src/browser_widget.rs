@@ -5867,7 +5867,7 @@ impl BrowserWidget {
                 } else {
                     list.unavailable(
                         "no_account_custody",
-                        crate::browsing_mode::NO_ACCOUNT_CUSTODY,
+                        crate::CATALOG.t(crate::browsing_mode::NO_ACCOUNT_CUSTODY),
                     )
                 }
             }),

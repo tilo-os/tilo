@@ -34,7 +34,7 @@ pub const APP_ID: &str = "so.tilo.shortcut-guide";
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct ShortcutGuide {}
 
-#[resource(kind = "shortcut-guide.guide", label = "Shortcut guide")]
+#[resource(kind = "shortcut-guide.guide")]
 impl ShortcutGuide {}
 
 /// What the guide asks of the shell.
@@ -56,7 +56,7 @@ pub enum GuideEffect {
         second: String,
     },
     /// Close the shortcut guide
-    #[effect(own_device, kind = "read")]
+    #[effect(label = "guide-done", own_device, kind = "read")]
     Done,
 }
 

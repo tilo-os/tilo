@@ -31,8 +31,7 @@ pub fn way_in(link: &str, here: &str) -> Result<String, JsError> {
     answer(way_in::way_in(&read::<Link>(link)?, &read::<Here>(here)?))
 }
 
-/// The way in after the way taken `failed` (`member`, `member-busy`, `reconnect`,
-/// `reconnect-busy`) ([`way_in::after`]).
+/// The way in after the way taken `failed` (`member`, `reconnect`) ([`way_in::after`]).
 ///
 /// # Errors
 ///

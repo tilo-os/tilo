@@ -38,7 +38,25 @@ pub struct Measurement {
     pub device: String,
 }
 
-#[resource(kind = "speed-test.results", label = "Internet speed test")]
+impl SpeedTest {
+    /// What the record holds: every measurement taken, oldest first.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<tilo_resource::__private::serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "speed-test.results",
+    read_content = SpeedTest::read_document
+)]
 impl SpeedTest {
     /// Record a finished measurement.
     #[action(external)]

@@ -106,22 +106,27 @@ pub(crate) fn window_art(window: u64, icon: &tilo_compositor::WindowIcon) -> App
 }
 
 impl crate::Session {
-    /// Hand the desk each window's own icon, which it paints on the window's tab and in the
-    /// switcher, and let go of the icons of windows that closed or set none.
+    /// Hand the desk each window's icon, which it paints on the window's tab and in the switcher:
+    /// the icon the program set for that window, else its app's own as the launcher shows it (the
+    /// icon its installed package signed, or the one its desktop entry names). A window of an app
+    /// with neither shows its app's glyph. Lets go of the icons of windows that closed.
     pub(crate) fn feed_window_artwork(&mut self) {
         let mut shown = BTreeMap::new();
         for (window, _) in self.compositor.windows() {
-            let Some(icon) = window.icon.as_ref() else {
-                continue;
+            // What the artwork comes from: the window's own icon, else its app's, which is looked
+            // up once for each app the window says it is.
+            let source = match window.icon.as_ref() {
+                Some(icon) => format!("window:{}", icon.serial()),
+                None => format!("app:{}", window.app_id.as_deref().unwrap_or_default()),
             };
-            let serial = icon.serial();
-            shown.insert(window.id, serial);
-            if self.window_artwork.get(&window.id) == Some(&serial) {
-                continue;
+            if self.window_artwork.get(&window.id) != Some(&source) {
+                let image = match window.icon.as_ref() {
+                    Some(icon) => Some(window_art(window.id, icon)),
+                    None => window.app_id.as_deref().and_then(app_art),
+                };
+                self.shared.handle.set_window_artwork(window.id, image);
             }
-            self.shared
-                .handle
-                .set_window_artwork(window.id, Some(window_art(window.id, icon)));
+            shown.insert(window.id, source);
         }
         for (gone, _) in std::mem::take(&mut self.window_artwork) {
             if !shown.contains_key(&gone) {
@@ -130,6 +135,22 @@ impl crate::Session {
         }
         self.window_artwork = shown;
     }
+}
+
+/// The app `app_id`'s own artwork, as the launcher draws it: the icon its installed package
+/// signed, else the icon its desktop entry names. `None` for an app with neither, which wears its
+/// glyph. Never touches the disk on the frame's thread: both are read from the app lists and the
+/// memoised entry scan.
+fn app_art(app_id: &str) -> Option<AppImage> {
+    let id = app_id.trim();
+    if id.is_empty() {
+        return None;
+    }
+    let name = installed_icon(id).or_else(|| entry_icon(id))?;
+    Some(AppImage::new(Artwork {
+        key: format!("app:{name}"),
+        layers: vec![Layer::Named(name)],
+    }))
 }
 
 /// The pixels that fill `device_px` : the smallest offer at least that big, so artwork is never
@@ -269,7 +290,15 @@ static LISTS: Mutex<Option<Lists>> = Mutex::new(None);
 /// Answer an app's artwork from `lists` . Before this — and in a session given lists fixed up
 /// front, which are all the artwork there is — only the icons those lists carry are named.
 pub(crate) fn set_lists(lists: Lists) {
+    tell_names(lists.latest().as_ref());
     *LISTS.lock_recover() = Some(lists);
+}
+
+/// Tell this process's own views what the apps installed here are called. The names ride with the
+/// workspace's people, so the session's surfaces name an app-made change by the same feed a
+/// window does.
+pub(crate) fn tell_names(lists: &AppLists) {
+    ui::history_source::set_installed_apps(lists.named.clone());
 }
 
 /// The app lists as last read, for the names they carry: the installed packages' own names and the

@@ -98,6 +98,17 @@ pub const fn founding_wait() -> Duration {
     REQUEST_FIRST.saturating_add(Duration::from_millis(FOUNDING_SPREAD_MS))
 }
 
+/// The longest a device that is waiting for a channel's keys goes between asks
+/// ([`REQUEST_LONGEST`]): each ask it leaves unanswered doubles the wait. A
+/// reader of a record sealed in that channel reads nothing until the keys are
+/// here, so whoever waits for it waits past this: an ask on a busy machine is
+/// answered late, and a reader that gave up before the next one would call a
+/// record that is arriving one that never came.
+#[must_use]
+pub const fn asking_again_wait() -> Duration {
+    REQUEST_LONGEST.saturating_add(REQUEST_FIRST)
+}
+
 /// How long a device that took a channel up for another one that asked
 /// ([`PeerEntry::wanted`]) waits to create its group, once no genesis is on
 /// its way: the asker creates it at once if it can, this one only for an

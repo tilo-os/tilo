@@ -1061,7 +1061,7 @@ pub(crate) fn prepare_file_post(
     let hash = tilo_actions::content_hash(address)
         .unwrap_or(address)
         .to_owned();
-    if !tilo_content::valid_hash(&hash) {
+    if !tilo_content::valid_reference(&hash) {
         return Err(format!(
             "{address:?} is not a content address: post what another step handed over"
         ));
@@ -1145,7 +1145,7 @@ pub(crate) fn valid_attached(attached: &tilo_reference::Attached) -> bool {
         }
         Attached::Image { name, blob, w, h } => {
             valid_name(name)
-                && tilo_content::valid_hash(blob)
+                && tilo_content::valid_reference(blob)
                 && (1..=MAX_ATTACHMENT_DIMENSION).contains(w)
                 && (1..=MAX_ATTACHMENT_DIMENSION).contains(h)
         }
@@ -1157,13 +1157,13 @@ pub(crate) fn valid_attached(attached: &tilo_reference::Attached) -> bool {
             size,
         } => {
             valid_name(name)
-                && tilo_content::valid_hash(blob)
+                && tilo_content::valid_reference(blob)
                 && bytes(*size)
                 && *w <= MAX_ATTACHMENT_DIMENSION
                 && *h <= MAX_ATTACHMENT_DIMENSION
         }
         Attached::File { name, blob, size } => {
-            valid_name(name) && tilo_content::valid_hash(blob) && bytes(*size)
+            valid_name(name) && tilo_content::valid_reference(blob) && bytes(*size)
         }
     }
 }
@@ -1485,14 +1485,23 @@ impl Chat {
 
     /// Name an agent.
     ///
-    /// The name every member shows for an agent task.
+    /// The name every member shows for an agent task, or for an agent by the
+    /// name the device that admitted it gave it: an agent names itself only
+    /// so.
     #[action(audience = "agents")]
-    pub fn name_agent(&mut self, participant: String, name: NonBlank) -> Result<(), Refusal> {
-        if !participant.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
+    pub fn name_agent(
+        &mut self,
+        cx: &mut ActionCx,
+        participant: String,
+        name: NonBlank,
+    ) -> Result<(), Refusal> {
+        let own = cx.author() == Some(participant.as_str())
+            && cx.agent_name().as_deref() == Some(name.as_str());
+        if !(participant.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX) || own)
             || name.len() > MAX_AGENT_NAME_BYTES
         {
             return Err(Refusal::new(
-                "only an agent task is named, with a short name",
+                "only an agent task, or an agent by its own name, is named, with a short name",
             ));
         }
         self.agent_names.insert(participant, name.into_string());

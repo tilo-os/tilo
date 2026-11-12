@@ -40,10 +40,10 @@ crate::effects::effect_family!(BillingEffect => answer);
 #[effect(operation = "settings.effect")]
 pub enum BillingEffect {
     /// Open the provider's page for the account: its card, plan and invoices.
-    #[effect(view, label = "Manage billing")]
+    #[effect(view, label = "settings-billing-manage")]
     ManageBilling,
     /// Open one invoice on the provider's page.
-    #[effect(view, label = "Open invoice")]
+    #[effect(view)]
     OpenInvoice {
         #[param("The invoice's id, as the host's account answer lists it")]
         invoice: String,

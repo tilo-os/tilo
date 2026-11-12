@@ -34,7 +34,10 @@
 #   - Removes a stale socket at the chosen path, but refuses one a live
 #     compositor still answers on — that is someone's session.
 #   - Sets TILO_TEST_CONTROL to the socket path.
-#   - Unsets DISPLAY + WAYLAND_DISPLAY so the binary boots truly headless.
+#   - Unsets DISPLAY + WAYLAND_DISPLAY so the binary boots truly headless, and
+#     XDG_CURRENT_DESKTOP so a session spawned from a Tilo desktop does not
+#     take that login's name and export its own display to the user manager
+#     and D-Bus activation.
 #   - Runs ./target/debug/tilo-session (or $TILO_HEADLESS_BINARY) --backend headless.
 #   - Prints "PROFILE <dir>" and "RUNTIME <dir>" to stderr and "READY <socket>"
 #     to stdout once usable; exits non-zero on timeout (the compositor's logs
@@ -178,7 +181,7 @@ TILO_TEST_CONTROL="$SOCKET" \
     TILO_IDENTITY_ROOT="$PROFILE/identity" \
     TILO_AUTHORITY_SOCKET_DIR="$PROFILE/system/run" \
     TILO_FS_CONTENT_PEER_CACHE_DIR="$PROFILE/system/peer-cache" \
-    env -u DISPLAY -u WAYLAND_DISPLAY \
+    env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_CURRENT_DESKTOP \
     "$BINARY" --backend headless &
 COMP_PID=$!
 

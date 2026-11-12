@@ -264,83 +264,96 @@ view sidebar(all: Conversations) {
     state shown: Text = ""
     ui.NavShell(content_kind: .page, sidebar_title: "Channels") {
         sidebar: {
-            ui.NavList(selected: shown) {
-                for item in all.channels {
-                    match item {
-                        c: Category => {
-                            // A group is its channels: one with none shows no header over
-                            // nothing.
-                            if not c.channels.is_empty() {
-                                ui.NavSection(c.name, collapsible: true) {
-                                    for ch in c.channels {
-                                        ui.NavItem(
-                                            "{c.name}/{ch.name}",
-                                            ch.name,
-                                            icon: .hash,
-                                            item: ch,
-                                            mentions: mentions(ch),
-                                        ) {
-                                            on select: set(shown, "{c.name}/{ch.name}")
-                                                .then(
-                                                    open(ch),
-                                                )
+            // A workspace with no channel and no one else to talk to says so where its places
+            // would be: the screen a narrow window shows its places on never shows nothing. With
+            // no places and nothing open the window says it once, in place of both columns, and
+            // the way to make the first is the window bar's own, which every width shows.
+            if all.channels.is_empty()
+                and workspace.members.filter(m -> m != workspace.me).is_empty() {
+                ui.EmptyState(
+                    "No channels yet",
+                    icon: .hash,
+                    message: "Channels are where your workspace talks, each one a topic.",
+                )
+            } else {
+                ui.NavList(selected: shown) {
+                    for item in all.channels {
+                        match item {
+                            c: Category => {
+                                // A group is its channels: one with none shows no header over
+                                // nothing.
+                                if not c.channels.is_empty() {
+                                    ui.NavSection(c.name, collapsible: true) {
+                                        for ch in c.channels {
+                                            ui.NavItem(
+                                                "{c.name}/{ch.name}",
+                                                ch.name,
+                                                icon: .hash,
+                                                item: ch,
+                                                mentions: mentions(ch),
+                                            ) {
+                                                on select: set(shown, "{c.name}/{ch.name}")
+                                                    .then(
+                                                        open(ch),
+                                                    )
+                                            }
                                         }
                                     }
                                 }
                             }
-                        }
-                        ch: TextChannel => {
-                            ui.NavItem(
-                                "/{ch.name}",
-                                ch.name,
-                                icon: .hash,
-                                item: ch,
-                                mentions: mentions(ch),
-                            ) {
-                                on select: set(shown, "/{ch.name}").then(open(ch))
-                            }
-                        }
-                        d: Direct => {
-                            // A direct conversation reads as the person's row: their avatar and
-                            // presence. The conversation with yourself is your notes, and says
-                            // so.
-                            if d.person == workspace.me {
+                            ch: TextChannel => {
                                 ui.NavItem(
-                                    "/dm/{d.name}",
-                                    "Notes to self",
-                                    icon: .bookmark,
-                                    item: d,
-                                    mentions: mentions(d),
+                                    "/{ch.name}",
+                                    ch.name,
+                                    icon: .hash,
+                                    item: ch,
+                                    mentions: mentions(ch),
                                 ) {
-                                    on select: set(shown, "/dm/{d.name}").then(open(d))
+                                    on select: set(shown, "/{ch.name}").then(open(ch))
                                 }
-                            } else {
-                                ui.NavItem(
-                                    "/dm/{d.name}",
-                                    d.name,
-                                    person: d.person,
-                                    item: d,
-                                    mentions: mentions(d),
-                                ) {
-                                    on select: set(shown, "/dm/{d.name}").then(open(d))
+                            }
+                            d: Direct => {
+                                // A direct conversation reads as the person's row: their avatar and
+                                // presence. The conversation with yourself is your notes, and says
+                                // so.
+                                if d.person == workspace.me {
+                                    ui.NavItem(
+                                        "/dm/{d.name}",
+                                        "Notes to self",
+                                        icon: .bookmark,
+                                        item: d,
+                                        mentions: mentions(d),
+                                    ) {
+                                        on select: set(shown, "/dm/{d.name}").then(open(d))
+                                    }
+                                } else {
+                                    ui.NavItem(
+                                        "/dm/{d.name}",
+                                        d.name,
+                                        person: d.person,
+                                        item: d,
+                                        mentions: mentions(d),
+                                    ) {
+                                        on select: set(shown, "/dm/{d.name}").then(open(d))
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                // Everyone in the workspace: a press opens the conversation with them, or the
-                // one already there. A person is a principal the workspace's membership knows,
-                // never a copy Chat keeps.
-                if not workspace.members.is_empty() {
-                    ui.NavSection("Direct messages", collapsible: true) {
-                        for p in workspace.members {
-                            // Your own place is your notes, which the sidebar says above.
-                            if p != workspace.me {
-                                ui.NavItem("/person/{p.name()}", p.name(), person: p) {
-                                    on select: set(shown, "/person/{p.name()}")
-                                        .then(
-                                            message_person(all, p),
-                                        )
+                    // Everyone in the workspace: a press opens the conversation with them, or the
+                    // one already there. A person is a principal the workspace's membership knows,
+                    // never a copy Chat keeps.
+                    if not workspace.members.is_empty() {
+                        ui.NavSection("Direct messages", collapsible: true) {
+                            for p in workspace.members {
+                                // Your own place is your notes, which the sidebar says above.
+                                if p != workspace.me {
+                                    ui.NavItem("/person/{p.name()}", p.name(), person: p) {
+                                        on select: set(shown, "/person/{p.name()}")
+                                            .then(
+                                                message_person(all, p),
+                                            )
+                                    }
                                 }
                             }
                         }
@@ -349,13 +362,9 @@ view sidebar(all: Conversations) {
             }
         }
         content: {
-            if all.channels.is_empty() {
-                ui.EmptyState("No channels yet", icon: .hash, action: "New channel") {
-                    on act: new_channel(all)
-                }
-            } else {
-                ui.EmptyState("No channel open", icon: .hash)
-            }
+            // What stands where a conversation would, while the places have one to choose. With
+            // no places at all the window says what is missing once, in place of both columns.
+            ui.EmptyState("No channel open", icon: .hash)
         }
     }
 }
@@ -760,4 +769,10 @@ scenario "a thread" -> Thread {
         by: leo,
     )
     t
+}
+
+/// A workspace holding no conversation yet, as a first window opens on it: the places say so
+/// and the bar offers the way to make the first channel.
+scenario "no channels yet" -> Conversations {
+    conversations
 }

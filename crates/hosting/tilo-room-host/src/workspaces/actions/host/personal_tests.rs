@@ -363,3 +363,115 @@ async fn one_record_lists_every_device_the_persons_root_certified() {
     );
     relay.shutdown().await;
 }
+
+/// A browser keeps one key per open tab. A page asking for the record names
+/// its browser's tab keys: each its person's root certified for a device of
+/// theirs joins the record and is listed as that browser's; another root's
+/// key, an agent's grant and an agent asking are not taken in; and each page
+/// naming them replaces what the browser named before.
+#[tokio::test]
+async fn a_pages_browser_names_its_tab_devices_and_the_list_groups_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    workspaces
+        .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
+        .unwrap();
+    let host = HostWorkspaceActions::new();
+    host.attach(workspaces.clone());
+    let root = SigningKey::from_bytes(&rand::random());
+    let tabs: Vec<DeviceCert> = (0..3)
+        .map(|_| key_of(&root, "Firefox on Linux", DeviceCapabilities::member()))
+        .collect();
+    let foreign = key_of(
+        &SigningKey::from_bytes(&rand::random()),
+        "not theirs",
+        DeviceCapabilities::member(),
+    );
+    let agent = key_of(
+        &root,
+        "Claude",
+        DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+    );
+    let browser = "0123456789abcdef0123456789abcdef";
+    let ask = |certs: Vec<&DeviceCert>| json!({"browser": {"id": browser, "certs": certs}});
+
+    let mut named: Vec<&DeviceCert> = tabs.iter().collect();
+    named.push(&foreign);
+    named.push(&agent);
+    let listed: PersonalList = serde_json::from_value(
+        invoke(&host, &tabs[0], LIST_PERSONAL, ask(named))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let mut grouped: Vec<[u8; 32]> = listed
+        .devices
+        .iter()
+        .filter(|device| device.browser.as_deref() == Some(browser))
+        .map(|device| device.cert.device_public_key)
+        .collect();
+    grouped.sort_unstable();
+    let mut expected: Vec<[u8; 32]> = tabs.iter().map(|tab| tab.device_public_key).collect();
+    expected.sort_unstable();
+    assert_eq!(grouped, expected, "the three tabs, as one browser's");
+    assert_eq!(
+        listed.devices.len(),
+        3,
+        "no other root's key and no agent's grant: {:?}",
+        listed.devices
+    );
+
+    // A later page names two of them: the third is no longer the browser's,
+    // and stays in the record as any device of theirs does.
+    invoke(
+        &host,
+        &tabs[1],
+        LIST_PERSONAL,
+        ask(vec![&tabs[1], &tabs[2]]),
+    )
+    .await
+    .unwrap();
+    let listed = read(&host, &tabs[1]).await;
+    let of = |key: [u8; 32]| {
+        listed
+            .devices
+            .iter()
+            .find(|device| device.cert.device_public_key == key)
+            .and_then(|device| device.browser.clone())
+    };
+    assert_eq!(of(tabs[0].device_public_key), None);
+    assert_eq!(of(tabs[1].device_public_key).as_deref(), Some(browser));
+    assert_eq!(of(tabs[2].device_public_key).as_deref(), Some(browser));
+
+    // An agent naming a browser changes nothing; a malformed one still reads.
+    let other = key_of(&root, "Chrome", DeviceCapabilities::member());
+    invoke(
+        &host,
+        &agent,
+        LIST_PERSONAL,
+        json!({"browser": {"id": browser, "certs": [&other]}}),
+    )
+    .await
+    .unwrap();
+    assert!(
+        invoke(
+            &host,
+            &tabs[1],
+            LIST_PERSONAL,
+            json!({"browser": {"id": "nope"}})
+        )
+        .await
+        .is_ok()
+    );
+    let listed = read(&host, &tabs[1]).await;
+    assert!(
+        listed
+            .devices
+            .iter()
+            .all(|device| device.cert.device_public_key != other.device_public_key),
+        "an agent names no browser of the person's"
+    );
+    relay.shutdown().await;
+}

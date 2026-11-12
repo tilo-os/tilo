@@ -159,33 +159,7 @@ impl Workspaces {
         channel: [u8; 32],
         held: &[crate::transport::Envelope],
     ) -> Result<Vec<crate::transport::Envelope>, String> {
-        let mut covered: std::collections::HashMap<[u8; 32], u64> =
-            std::collections::HashMap::new();
-        for message in held.iter().filter_map(relay_frame_write) {
-            let neighbour_wire::NeighbourMsg::AppDocument { envelope, .. } = &message else {
-                continue;
-            };
-            if envelope.kind != collab_types::OpKind::Compaction {
-                continue;
-            }
-            // ignored-failure: a compaction that does not parse covers nothing, and the link's writes are sent
-            let Ok(compaction) = collab_types::SealedCompaction::parse(envelope) else {
-                continue;
-            };
-            for (author, floor) in compaction.covers {
-                let at = covered.entry(*author.as_bytes()).or_default();
-                *at = (*at).max(floor);
-            }
-        }
-        let held: std::collections::HashSet<(tilo_peer_state::store::Lineage, u64)> = held
-            .iter()
-            .filter_map(relay_frame_write)
-            .filter_map(|message| {
-                // ignored-failure: only sealed record writes are what the link keeps; anything else matches none of them
-                tilo_peer_state::store::Frame::of(&message).ok()
-            })
-            .map(|frame| (frame.lineage, frame.seq))
-            .collect();
+        let answered = RelayHistory::of(held.iter().filter_map(relay_frame_write));
         let mut cursors = Vec::new();
         let mut lacking = Vec::new();
         loop {
@@ -207,11 +181,7 @@ impl Workspaces {
                 ) else {
                     continue;
                 };
-                if held.contains(&(frame.lineage, frame.seq))
-                    || covered
-                        .get(&frame.lineage.author)
-                        .is_some_and(|floor| frame.seq <= *floor)
-                {
+                if answered.answers_for(&frame) {
                     continue;
                 }
                 let body = postcard::to_allocvec(message).map_err(|error| error.to_string())?;
@@ -233,6 +203,58 @@ impl Workspaces {
                 return Ok(lacking);
             }
         }
+    }
+}
+
+/// The record writes the relay's history answers for: each write it retains, and each write a
+/// sealed compaction it retains covers. A fold lets the writes it covers go, so a write the link
+/// keeps that a retained compaction covers is no write the relay lacks: carrying it back would put
+/// it after the compaction that replaced it, where no reader takes it in.
+pub(super) struct RelayHistory {
+    held: std::collections::HashSet<(tilo_peer_state::store::Lineage, u64)>,
+    /// Per author on a record's channel, the highest sequence a retained compaction of that
+    /// record covers.
+    covered: std::collections::HashMap<tilo_peer_state::store::Lineage, u64>,
+}
+
+impl RelayHistory {
+    /// What `writes`, the record writes the relay retains, answer for.
+    pub(super) fn of(writes: impl IntoIterator<Item = neighbour_wire::NeighbourMsg>) -> Self {
+        let mut history = Self {
+            held: std::collections::HashSet::new(),
+            covered: std::collections::HashMap::new(),
+        };
+        for message in writes {
+            // ignored-failure: only sealed record writes are what the link keeps; anything else matches none of them
+            let Ok(frame) = tilo_peer_state::store::Frame::of(&message) else {
+                continue;
+            };
+            if let neighbour_wire::NeighbourMsg::AppDocument { envelope, .. } = &message
+                && envelope.kind == collab_types::OpKind::Compaction
+                // ignored-failure: a compaction that does not parse covers nothing, and the writes it names are carried
+                && let Ok(compaction) = collab_types::SealedCompaction::parse(envelope)
+            {
+                for (author, floor) in compaction.covers {
+                    let lineage = tilo_peer_state::store::Lineage {
+                        channel: frame.lineage.channel,
+                        author: *author.as_bytes(),
+                    };
+                    let at = history.covered.entry(lineage).or_default();
+                    *at = (*at).max(floor);
+                }
+            }
+            history.held.insert((frame.lineage, frame.seq));
+        }
+        history
+    }
+
+    /// Whether the relay's history answers for `frame`, a write the link keeps.
+    pub(super) fn answers_for(&self, frame: &tilo_peer_state::store::Frame) -> bool {
+        self.held.contains(&(frame.lineage, frame.seq))
+            || self
+                .covered
+                .get(&frame.lineage)
+                .is_some_and(|floor| frame.seq <= *floor)
     }
 }
 

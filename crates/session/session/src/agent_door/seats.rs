@@ -33,9 +33,9 @@ struct Connection {
     workspace: String,
     /// The workspace it works in, by id.
     workspace_id: String,
-    /// What it is doing now, and the app it does it in when it names one: what everyone in its
-    /// workspace reads beside its face.
-    doing: Option<(String, Option<String>)>,
+    /// What its latest step is, as the catalogue named it, and the app it was taken in when its
+    /// provider names one: what everyone in its workspace reads beside its face.
+    doing: Option<Doing>,
     /// The environment's door it came in by, by number: none for the session's own. It ends with
     /// that environment.
     door: Option<u64>,
@@ -101,14 +101,14 @@ impl Seats {
         inner.revision = inner.revision.wrapping_add(1);
     }
 
-    /// Connection `seat` 's agent is at `line` , in the app `app` names when it names one. Whether
-    /// that is news.
-    pub(super) fn acting(&self, seat: u64, line: String, app: Option<String>) -> bool {
+    /// Connection `seat` 's agent is at `doing` : what its latest step is, and the app it was
+    /// taken in. Whether that is news.
+    pub(super) fn acting(&self, seat: u64, doing: Doing) -> bool {
         let mut inner = self.inner.lock_recover();
         let Some(connection) = inner.connections.get_mut(&seat) else {
             return false;
         };
-        let doing = Some((line, app));
+        let doing = Some(doing);
         if connection.doing == doing {
             return false;
         }
@@ -196,7 +196,10 @@ impl Seats {
                     }
                 }
                 if held.app.is_none() {
-                    held.app = connection.doing.as_ref().and_then(|(_, app)| app.clone());
+                    held.app = connection
+                        .doing
+                        .as_ref()
+                        .and_then(|doing| doing.app.clone());
                 }
             }
         }
@@ -312,8 +315,18 @@ pub(crate) struct Seated {
     pub(crate) agent: String,
     /// What the desk calls it (`Claude Code #2`).
     pub(crate) name: String,
-    /// What it is doing now, and the app it does it in when it names one.
-    pub(crate) doing: Option<(String, Option<String>)>,
+    /// What its latest step is, as the catalogue named it, and the app it was taken in.
+    pub(crate) doing: Option<Doing>,
+}
+
+/// What a step of an agent is, as its workspace says it beside its face.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Doing {
+    /// The action's own name in the catalogue, which says what it is doing ("Replace text at a
+    /// place"); the action's id where the catalogue names none.
+    pub(crate) action: String,
+    /// The app it acts in, when its provider says which one.
+    pub(crate) app: Option<String>,
 }
 
 /// What the commands on the card of an agent seated here act on: the run it works in and the

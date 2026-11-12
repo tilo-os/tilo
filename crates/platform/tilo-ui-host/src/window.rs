@@ -303,6 +303,9 @@ pub struct AppWindow {
     /// The item the window's own view shows in place (a tree beside what it shows): what the
     /// fields of its content belong to.
     shown_in_place: Option<ResourceRef>,
+    /// What the row of the item the window's own view shows as its page names it: what the
+    /// window is named by while it shows one ([`Self::title`]).
+    page_title: Option<String>,
     /// The field of the page the window draws for the item a press showed, until the keyboard
     /// is in it: the page is built again when the item changes, and the keyboard goes with it.
     page_focus: Option<String>,
@@ -430,6 +433,7 @@ impl AppWindow {
             focus_request: None,
             landing: None,
             shown_in_place: None,
+            page_title: None,
             page_focus: None,
             page_focus_tries: 0,
             app_bound: HashMap::new(),
@@ -536,6 +540,9 @@ impl AppWindow {
             if let Err(error) = self.apply(messages) {
                 self.fail(&error);
             }
+        }
+        if any {
+            self.page_title = self.shown_item_title();
         }
         any
     }
@@ -699,28 +706,6 @@ impl AppWindow {
         if lane == Lane::Detail && brought == Some(wire::Front::Input) {
             // Its Took may come in a later batch: what is typed until then follows the press
             // into it.
-            self.opened = Some(self.fired);
-            return true;
-        }
-        false
-    }
-
-    /// A lane's page came to the front of a narrow window, showing `shows`' item in place where
-    /// the window draws its own page: what the person types into it is that item's. Whether the
-    /// press takes the keyboard into the page.
-    fn fronted(&mut self, brought: wire::Front, shows: Option<(u64, ResourceRef)>) -> bool {
-        if let Some((press, shows)) = shows {
-            if press > 0 {
-                self.shows_by_press.insert(press, shows.clone());
-                // A press a person made long ago has no typing left on its way.
-                self.shows_by_press
-                    .retain(|press, _| press.saturating_add(64) > self.fired);
-            }
-            self.shown_in_place = Some(shows);
-        }
-        // A person's press takes the keyboard into the page it shows; what a scenario or a
-        // search opened leaves the keyboard where the person had it.
-        if self.detail.is_none() && brought == wire::Front::Input {
             self.opened = Some(self.fired);
             return true;
         }

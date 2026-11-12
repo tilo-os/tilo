@@ -44,7 +44,7 @@ pub const CODE_MODULE_MAX_PX: u32 = 5;
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct InviteLinks {}
 
-#[resource(kind = "invite.links", label = "Invitations")]
+#[resource(kind = "invite.links")]
 impl InviteLinks {}
 
 /// What the sheet asks of the shell.

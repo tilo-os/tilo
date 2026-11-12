@@ -19,12 +19,7 @@ pub enum NetworkAction {
         on: bool,
     },
     /// Turn Wi-Fi off when it is on, and on when it is off.
-    #[effect(
-        own_device,
-        label = "Wi-Fi",
-        icon = "wifi",
-        keywords = "wifi, wi-fi, wlan, wireless"
-    )]
+    #[effect(own_device, icon = "wifi", keywords = "wifi, wi-fi, wlan, wireless")]
     ToggleWifi,
     /// Look again for Wi-Fi networks in reach.
     #[effect(
@@ -165,12 +160,7 @@ pub enum NetworkAction {
         on: bool,
     },
     /// Turn airplane mode off when it is on, and on when it is off.
-    #[effect(
-        own_device,
-        label = "Airplane mode",
-        icon = "plane",
-        keywords = "airplane mode, flight mode"
-    )]
+    #[effect(own_device, icon = "plane", keywords = "airplane mode, flight mode")]
     ToggleAirplaneMode,
 }
 
@@ -190,12 +180,7 @@ pub enum BluetoothAction {
         on: bool,
     },
     /// Turn Bluetooth off when it is on, and on when it is off.
-    #[effect(
-        own_device,
-        label = "Bluetooth",
-        icon = "bluetooth",
-        keywords = "bluetooth, headphones"
-    )]
+    #[effect(own_device, icon = "bluetooth", keywords = "bluetooth, headphones")]
     ToggleBluetooth,
     /// Connect a paired accessory.
     #[effect(own_device, row, icon = "bluetooth")]

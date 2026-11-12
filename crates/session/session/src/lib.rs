@@ -77,7 +77,6 @@ mod ambient_brightness;
 mod app_icons;
 #[cfg(target_os = "linux")]
 mod app_liveness;
-#[cfg(target_os = "linux")]
 mod app_names;
 #[cfg(target_os = "linux")]
 mod app_sheets;
@@ -298,6 +297,8 @@ mod press_outside;
 mod projection;
 #[cfg(target_os = "linux")]
 mod projection_video;
+#[cfg(target_os = "linux")]
+mod published_workspace;
 #[cfg(target_os = "linux")]
 mod questions;
 #[cfg(target_os = "linux")]

@@ -346,7 +346,7 @@ impl<'a> From<&'a AppearancePrefs> for AppearanceInspection<'a> {
 pub enum AppearanceEffect {
     /// Read the person's current selectors and schedule without resolving
     /// Automatic mode or changing the OS-controlled theme.
-    #[effect(view, returns, kind = "read", label = "Inspect appearance preferences")]
+    #[effect(view, returns, kind = "read")]
     InspectAppearance,
     /// Choose a picture and make it the wallpaper.
     #[effect(job)]

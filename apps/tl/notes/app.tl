@@ -141,14 +141,14 @@ action retitle(n: Note, title: Text) (icon: .pencil, label: "Rename") {
     n.title = title
 }
 
-/// Files a note titled `title` and tagged `t` in one step: what another app writes down of
+/// Files a note titled `title` and tagged `tag` in one step: what another app writes down of
 /// what it did (Today's morning) without waiting on the note it made to name it.
-action file_note(nb: Notebook, title: Text, t: Text) -> Note (
+action file_note(nb: Notebook, title: Text, tag: Text) -> Note (
     icon: .file_plus,
     label: "File a note",
 ) {
     let made = nb.notes.insert(Note(title: title))
-    made.tags.add(t)
+    made.tags.add(tag)
     made
 }
 
@@ -884,4 +884,10 @@ scenario "a note with headings" -> Note {
             ),
         ),
     )
+}
+
+/// A notebook nobody has written in yet, as a first window opens on it: the window says what it
+/// holds none of, once, and the bar offers the way to start the first note.
+scenario "an empty notebook" -> Notebook {
+    notebook
 }
