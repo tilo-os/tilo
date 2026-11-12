@@ -48,7 +48,9 @@ pub(crate) fn software(app: &crate::settings_app::SettingsApp) -> Software {
 }
 
 fn executable_available(name: &str) -> bool {
-    tilo_process::tools::ToolDirs::current().find(name).is_some()
+    tilo_process::tools::ToolDirs::current()
+        .find(name)
+        .is_some()
 }
 
 pub(crate) fn tts_capability() -> Option<&'static str> {
