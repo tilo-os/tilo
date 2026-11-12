@@ -96,7 +96,6 @@ impl SignatureProfile {
 
 #[resource(
     kind = "pdf.signature-profile",
-    label = "Signature",
     params = signature,
     version = 2,
     migrate = upgrade,

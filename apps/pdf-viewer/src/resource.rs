@@ -174,7 +174,6 @@ impl PdfMarkup {
 
 #[resource(
     kind = "pdf.document",
-    label = "PDF",
     search = PdfMarkup::entries,
     read_content = PdfMarkup::read_document,
     version = 4,
@@ -597,7 +596,7 @@ impl PdfMarkup {
     /// Reply.
     ///
     /// Adds an answer to the thread, signed by whoever writes it.
-    #[action(item = comments, field = "comments", writes = comments)]
+    #[action(item = comments, field = "comments", writes = comments, label = "pdf-comment-reply")]
     pub fn reply(
         &mut self,
         cx: &mut ActionCx,
@@ -631,7 +630,7 @@ impl PdfMarkup {
     /// Delete comment.
     ///
     /// A comment pinning a sticky note takes the note with it.
-    #[action(item = comments, writes = comments)]
+    #[action(item = comments, writes = comments, label = "pdf-comment-delete")]
     pub fn delete_comment(&mut self, comment: &Id) -> Result<(), Refusal> {
         let thread = self
             .comments
@@ -656,7 +655,7 @@ impl PdfMarkup {
     /// Sign.
     ///
     /// Places a signature on a page.
-    #[action]
+    #[action(label = "pdf-tool-sign")]
     pub fn add_signature(
         &mut self,
         cx: &mut ActionCx,
@@ -717,7 +716,7 @@ impl PdfMarkup {
     }
 
     /// Delete signature.
-    #[action(item = signatures, writes = comments)]
+    #[action(item = signatures, writes = comments, label = "pdf-signature-delete")]
     pub fn delete_signature(&mut self, signature: &Id) -> Result<(), Refusal> {
         self.signatures
             .take(signature)

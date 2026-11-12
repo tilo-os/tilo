@@ -93,7 +93,6 @@ impl PersonalBookmarks {
 
 #[resource(
     kind = "browser.personal-bookmarks",
-    label = "Personal bookmarks",
     version = 2,
     migrate = upgrade,
     read_content = PersonalBookmarks::read_document

@@ -78,6 +78,7 @@ pub enum BrowserEffect {
     ///
     /// Fences and removes the selected website profile before revoking custody.
     #[effect(row, job, returns, destructive)]
+    #[effect(label = "browser-service-forget")]
     ForgetServiceSession {
         #[param("Selected account")]
         session_id: String,
@@ -111,6 +112,7 @@ pub enum BrowserEffect {
     ///
     /// Answers with the address once the page loaded again.
     #[effect(row, job, cancellable, returns, idempotent)]
+    #[effect(label = "browser-reload")]
     Reload,
     /// Stop loading
     ///
@@ -119,6 +121,7 @@ pub enum BrowserEffect {
     /// the page row's disclosure in the action directory, a private one an
     /// agent is never shown, and the page and all its actions with it.
     #[effect(row, idempotent)]
+    #[effect(label = "browser-stop")]
     Stop,
     /// Open address
     ///
@@ -166,6 +169,7 @@ pub enum BrowserEffect {
     ShowExtensions,
     /// Turn extension on
     #[effect(row, returns)]
+    #[effect(label = "browser-extension-turn-on")]
     TurnOnExtension {
         #[param("The extension's id")]
         id: String,
@@ -174,6 +178,7 @@ pub enum BrowserEffect {
     ///
     /// It keeps what it stored, such as its settings and logins.
     #[effect(row, returns)]
+    #[effect(label = "browser-extension-turn-off")]
     TurnOffExtension {
         #[param("The extension's id")]
         id: String,
@@ -215,6 +220,7 @@ pub enum BrowserEffect {
     /// On an extension's Chrome Web Store page: shows what it may do, and
     /// the person adds it with Add extension.
     #[effect(row, returns)]
+    #[effect(label = "browser-extension-confirm")]
     AddExtension,
     /// Open extension settings
     #[effect(row, returns)]
@@ -233,6 +239,7 @@ pub enum BrowserEffect {
     },
     /// Close side panel
     #[effect(row, returns)]
+    #[effect(label = "browser-extension-side-panel-close")]
     CloseExtensionSidePanel {
         #[param("The extension's id")]
         id: String,
@@ -269,6 +276,7 @@ pub enum BrowserEffect {
     },
     /// Clear library filter
     #[effect(view, row)]
+    #[effect(label = "browser-library-clear-filter")]
     ClearLibraryFilter,
     /// Edit a saved address
     #[effect(view)]
@@ -296,25 +304,30 @@ pub enum BrowserEffect {
     ///
     /// Your saved browsing history will be removed. Bookmarks are kept.
     #[effect(row, returns, destructive)]
+    #[effect(label = "browser-settings-clear-history")]
     ClearHistory,
     /// Clear site data
     ///
     /// Cookies and site storage on this device will be cleared. You may be signed out of websites.
     #[effect(row, returns, destructive)]
+    #[effect(label = "browser-site-clear-data")]
     RequestSiteDataClear,
     /// Pause history in this window
     #[effect(row, returns)]
+    #[effect(label = "browser-menu-pause-history")]
     TogglePause,
     /// Open Picture in Picture
     ///
     /// Floats the page's video, or closes the floating video.
     #[effect(row, job, returns)]
+    #[effect(label = "browser-menu-picture-in-picture")]
     PictureInPicture,
     /// Reader view
     ///
     /// Shows the page's article alone in a calm reading layout, or the page
     /// again.
     #[effect(row, job, returns)]
+    #[effect(label = "browser-menu-reader-view")]
     ReaderView,
     /// Download address
     #[effect(row, returns)]
@@ -348,6 +361,7 @@ pub enum BrowserEffect {
     },
     /// Show downloaded file in Files
     #[effect(row, returns)]
+    #[effect(label = "browser-download-reveal")]
     RevealDownload {
         #[param("The download's id")]
         id: String,
@@ -393,6 +407,7 @@ pub enum BrowserEffect {
     /// Drops the request the window holds: the page stays as it was filled
     /// and nothing leaves.
     #[effect(row, returns)]
+    #[effect(label = "browser-action-keep-page")]
     KeepHeldRequest {
         #[param("The held request's id")]
         id: String,
@@ -401,16 +416,19 @@ pub enum BrowserEffect {
     ///
     /// Makes the page larger on this device; answers the page's size.
     #[effect(row, returns)]
+    #[effect(label = "browser-menu-zoom-in")]
     ZoomIn,
     /// Zoom out
     ///
     /// Makes the page smaller on this device; answers the page's size.
     #[effect(row, returns)]
+    #[effect(label = "browser-menu-zoom-out")]
     ZoomOut,
     /// Show actual size
     ///
     /// Puts the page back at its own size.
     #[effect(row, returns, idempotent)]
+    #[effect(label = "browser-menu-actual-size")]
     ResetZoom,
     /// Read page content
     ///
@@ -832,6 +850,7 @@ pub enum BrowserEffect {
     },
     /// Bookmark this page personally
     #[effect(row, returns, idempotent)]
+    #[effect(label = "browser-bookmark-page")]
     BookmarkPersonalPage {
         #[param("Current page URL")]
         url: String,

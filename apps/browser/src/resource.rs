@@ -61,7 +61,6 @@ impl Browser {
 
 #[resource(
     kind = "browser.application",
-    label = "Browser",
     initialize = Browser::default,
     scopes = Browser::scopes,
     children = Browser::sites,

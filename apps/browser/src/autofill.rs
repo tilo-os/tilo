@@ -104,7 +104,6 @@ impl AddressBook {
 
 #[resource(
     kind = "browser.address-book",
-    label = "Address book",
     read_content = AddressBook::read_document
 )]
 impl AddressBook {}

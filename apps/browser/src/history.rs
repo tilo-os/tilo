@@ -436,7 +436,6 @@ impl BrowsingHistory {
 
 #[resource(
     kind = "browser.browsing-history",
-    label = "Browsing history",
     read_content = BrowsingHistory::read_document
 )]
 impl BrowsingHistory {

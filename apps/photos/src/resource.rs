@@ -94,7 +94,6 @@ fn item_views(field: &str, _item: &Id) -> Vec<ui::tilo_actions::ResourceViewSpec
 
 #[resource(
     kind = "photos.library",
-    label = "Photos",
     children = PhotoLibrary::places,
     item_views = item_views,
     search = crate::search::library_search_entries,
@@ -170,7 +169,7 @@ impl PhotoLibrary {
     /// Remove from library.
     ///
     /// Removes the photograph and every album's mention of it.
-    #[action(item = photos, destructive)]
+    #[action(item = photos, destructive, label = "photos-confirm-remove")]
     pub fn remove_photo(&mut self, photo: &Id) -> Result<(), Refusal> {
         self.photos.remove(photo).ok_or(GONE)?;
         for (_, album) in self.albums.iter_mut() {
@@ -182,7 +181,7 @@ impl PhotoLibrary {
     /// Rotate right.
     ///
     /// Turns the photograph a quarter turn clockwise.
-    #[action(item = photos)]
+    #[action(item = photos, label = "photos-command-rotate-right")]
     pub fn rotate_right(&mut self, photo: &Id) -> Result<(), Refusal> {
         let photo = self.photos.get_mut(photo).ok_or(GONE)?;
         photo.edits = photo.edits.rotated_right();
@@ -192,7 +191,7 @@ impl PhotoLibrary {
     /// Rotate left.
     ///
     /// Turns the photograph a quarter turn anticlockwise.
-    #[action(item = photos)]
+    #[action(item = photos, label = "photos-command-rotate-left")]
     pub fn rotate_left(&mut self, photo: &Id) -> Result<(), Refusal> {
         let photo = self.photos.get_mut(photo).ok_or(GONE)?;
         photo.edits = photo.edits.rotated_left();
