@@ -1126,6 +1126,12 @@ impl App {
         {
             self.controlled_installed_history_definition = Some(controlled_definition);
         }
+        // The tree was just synced against the record, which is the state
+        // pass a window owes before it first shows: nothing is pending until
+        // the model moves from here (or init_layout places focus), so a
+        // window whose frame lays the new tree out leaves no pass behind for
+        // an idle window to run.
+        self.needs_sync = false;
         self.init_layout();
         tilo_startup_metrics::span("history-validate", || self.validate_history_registration())
     }
