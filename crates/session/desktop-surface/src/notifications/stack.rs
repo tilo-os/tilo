@@ -66,6 +66,23 @@ const SWIPE_VELOCITY: f64 = 700.0;
 /// rather than three panels that nearly line up. The overlay stack that hangs the centre and
 /// quick settings under the bar reads this constant too.
 pub const CORNER_INSET: f64 = 8.0;
+/// The gutter either side of a banner on a desk too narrow to keep it in the corner (a phone): the
+/// same gutter as the phone's who-is-here sheet (`spacing.s3`), so the two stand on one line.
+pub const NARROW_GUTTER: f64 = 12.0;
+
+/// Where a banner stands across `viewport`: its left edge and width. In the corner on a desk with
+/// room for it; on a narrow one (a phone) centred between equal gutters, inside the desk, as the
+/// who-is-here sheet stands, rather than off a corner with one gutter wider than the other.
+#[must_use]
+pub fn banner_span(viewport: Rect) -> (f64, f64) {
+    if viewport.width() < 2.0 * TOAST_WIDTH {
+        let width = (viewport.width() - NARROW_GUTTER * 2.0).max(0.0);
+        return (viewport.center().x - width / 2.0, width);
+    }
+    let width = (viewport.width() - CORNER_INSET * 2.0).clamp(0.0, TOAST_WIDTH);
+    (viewport.x1 - CORNER_INSET - width, width)
+}
+
 /// Horizontal text inset of the locked card and the "more" card. Deliberately the shared toast
 /// card's own `CARD_PAD_X` (`ui::widget::toast`, 14) so their text starts on the cards' line; it is
 /// off the 4 px grid for the same reason the card is.
@@ -356,7 +373,12 @@ const MIN_BANNER_H: f64 = 56.0;
 #[must_use]
 pub fn transient_slot(viewport: Rect, top: f64, size: (f64, f64), window_bars: &[Rect]) -> Rect {
     let (width, height) = size;
-    let x1 = viewport.x1 - CORNER_INSET;
+    // A banner as wide as the narrow desk's span stands where that span does.
+    let x1 = if viewport.width() < 2.0 * TOAST_WIDTH {
+        (viewport.center().x + width / 2.0).min(viewport.x1 - CORNER_INSET)
+    } else {
+        viewport.x1 - CORNER_INSET
+    };
     let mut y0 = top.max(viewport.y0 + CORNER_INSET);
     // Each shift clears at least one bar, so this ends.
     for _ in 0..=window_bars.len() {
@@ -1120,7 +1142,7 @@ impl NotificationStack {
     /// Cards keep their designed width on ordinary displays and shrink on compact viewports instead
     /// of painting beyond the left edge.
     fn toast_width(&self) -> f64 {
-        (self.viewport.width() - CORNER_INSET * 2.0).clamp(0.0, TOAST_WIDTH)
+        banner_span(self.viewport).1
     }
 
     /// Locked-session collapse: a single redacted card showing only `count`,
@@ -1549,7 +1571,7 @@ impl NotificationStack {
         // (HIG §7a). Reset for this pass and restore it below.
         let renderer_scale = text_renderer.text_scale();
         text_renderer.set_text_scale(1.0);
-        let x0_rest = self.viewport.x1 - CORNER_INSET - width;
+        let x0_rest = banner_span(self.viewport).0;
         let y = self.first_top();
         let mut ctx = PaintCtx {
             scene,
@@ -1603,14 +1625,13 @@ impl NotificationStack {
             .map(|banner| &banner.notification)
             .filter(|n| n.machine_wide)
             .collect();
-        let width = (viewport.width() - CORNER_INSET * 2.0).clamp(0.0, TOAST_WIDTH);
+        let (x0, width) = banner_span(viewport);
         if banners.is_empty() || width <= 0.0 {
             return Rect::ZERO;
         }
         // Resolved type sizes, as the stack paints them (HIG §7a).
         let renderer_scale = text_renderer.text_scale();
         text_renderer.set_text_scale(1.0);
-        let x0 = viewport.x1 - CORNER_INSET - width;
         let bottom = viewport.y1 - CORNER_INSET;
         let mut y = transient_slot(viewport, viewport.y0, (width, MIN_BANNER_H), window_bars).y0;
         let mut covered = Rect::ZERO;

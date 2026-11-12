@@ -396,9 +396,9 @@ fn compact_viewport_keeps_notification_inside_both_edges() {
     let mut stack = NotificationStack::new();
     stack.set_viewport(Rect::new(0.0, 0.0, 320.0, 480.0));
     let width = stack.toast_width();
-    let x0 = stack.viewport.x1 - CORNER_INSET - width;
-    assert_eq!(width, 320.0 - CORNER_INSET * 2.0);
-    assert_eq!(x0, CORNER_INSET);
+    let (x0, _) = banner_span(stack.viewport);
+    assert_eq!(width, 320.0 - NARROW_GUTTER * 2.0);
+    assert_eq!(x0, NARROW_GUTTER);
 }
 
 fn draw(stack: &mut NotificationStack, host: &TestHost, theme: &Theme) {
@@ -532,18 +532,13 @@ fn a_banner_keeps_the_page_drawing_until_it_stands_at_every_width() {
             std::thread::sleep(std::time::Duration::from_millis(16));
         }
         assert!(frames > 2, "{width} wide: the entry took {frames} frames");
-        // Both widths stand a card of the same width, a corner inset from the right edge: the
-        // page draws the same entry, whole.
-        let card_width = (width - CORNER_INSET * 2.0).clamp(0.0, TOAST_WIDTH);
+        // Each width stands the card where its span says (the corner, or centred on a narrow
+        // desk): the page draws the same entry, whole.
+        let (x0, card_width) = banner_span(Rect::new(0.0, 0.0, width, 800.0));
         assert_eq!(
             stack.rect(),
-            Rect::new(
-                width - CORNER_INSET - card_width,
-                stack.first_top(),
-                width - CORNER_INSET,
-                stack.rect().y1
-            ),
-            "{width} wide: the banner stands at rest in the corner"
+            Rect::new(x0, stack.first_top(), x0 + card_width, stack.rect().y1),
+            "{width} wide: the banner stands at rest in its place"
         );
         let n = host.log().active()[0].clone();
         assert_eq!(
@@ -1335,4 +1330,20 @@ fn a_banner_at_rest_is_solid() {
             "the card's ground is opaque: {ground:?}"
         );
     }
+}
+
+/// On a phone a banner stands centred across the desk, between the same equal gutters as the
+/// who-is-here sheet, inside it; on a wide desk it keeps to the corner.
+#[test]
+fn a_phones_banner_stands_between_equal_gutters() {
+    for width in [390.0, 360.0] {
+        let (x0, w) = banner_span(Rect::new(0.0, 0.0, width, 844.0));
+        let (left, right) = (x0, width - (x0 + w));
+        assert!(
+            (left - right).abs() < 0.5 && (left - NARROW_GUTTER).abs() < 0.5,
+            "{width} wide: gutters {left} and {right}"
+        );
+    }
+    let (x0, w) = banner_span(Rect::new(0.0, 0.0, 1280.0, 800.0));
+    assert_eq!((x0 + w, w), (1280.0 - CORNER_INSET, TOAST_WIDTH), "the corner on a laptop");
 }

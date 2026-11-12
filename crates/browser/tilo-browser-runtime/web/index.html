@@ -136,10 +136,12 @@ root.setAttribute('data-first-run',step==='opening'?'connected':step);
 // step at the first frame; first-run.mjs takes over and asks the host.
 globalThis.__tiloSetupPaint=function(){
  var $=function(id){return document.getElementById(id);},screen=$('first-run'),shown=setup.shown||{};
+ // The prompt breaks only between its words, as first-run.mjs `showPrompt` writes it.
+ var put=function(id,text){var at=$(id);at.textContent='';String(text||'').split(/( +)/).forEach(function(part){if(!part)return;if(/^ +$/.test(part)){at.appendChild(document.createTextNode(part));return;}var word=document.createElement('span');word.className='fr-word';word.textContent=part;at.appendChild(word);});};
  if(!screen)return;
  var fresh=offer&&offer.expiresAt-now>60000&&shown.offer?shown.offer:'';
  screen.dataset.mode=shown.mode==='sign-in'?'sign-in':'setup';
- if(step===''){if(fresh){$('first-run-offer').textContent=fresh;$('first-run-offer-note').textContent='';}return;}
+ if(step===''){if(fresh){put('first-run-offer',fresh);$('first-run-offer-note').textContent='';}return;}
  if(step==='connected'||step==='opening'){
   screen.dataset.skipped=String(!shown.heading);
   $('first-run-connected').textContent=shown.heading||'Opening your workspace';
@@ -147,8 +149,8 @@ globalThis.__tiloSetupPaint=function(){
   return;
  }
  screen.dataset.manual=String(setup.manual===true);
- if(step==='expired'){$('first-run-prompt').textContent=fresh;return;}
- $('first-run-prompt').textContent=shown.prompt||'';
+ if(step==='expired'){put('first-run-prompt',fresh);return;}
+ put('first-run-prompt',shown.prompt);
  screen.dataset.copied=String(setup.copied===true);
  var lines=shown.lines||[],list=$('first-run-steps');
  for(var i=0;i<lines.length;i++){
@@ -413,9 +415,10 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
       position: fixed; inset: 0; z-index: 20; display: flex; box-sizing: border-box; overflow-y: auto;
       padding: max(24px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
       background: var(--fr-ground); color: var(--fr-ink); font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
-      transition: opacity 260ms ease-out;
+      transition: opacity 260ms ease-out; color-scheme: dark;
     }
     @media (prefers-color-scheme: light) {
+      [data-first-run] #first-run { color-scheme: light; }
       [data-first-run] #first-run {
         --fr-ground: #f7f7f9; --fr-ink: #17181c; --fr-muted: #55565f; --fr-faint: #73747d; --fr-line: #e1e2e7; --fr-edge: #c9cad2;
         --fr-well: #ffffff; --fr-primary: #17181c; --fr-primary-ink: #ffffff; --fr-primary-hover: #000000;
@@ -466,6 +469,10 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     html:is([data-first-run=waiting], [data-first-run=expired], [data-first-run=failed]) #first-run .fr-for-start { display: none; }
     [data-first-run=connected] .fr-start { display: none; }
     [data-first-run]:not([data-first-run='']) .fr-aside { visibility: hidden; }
+    /* Stacked under the main column (a phone), the hidden aside would only lengthen the page. */
+    @media (max-width: 759.98px) { [data-first-run]:not([data-first-run='']) .fr-aside { display: none; } }
+    /* A phone's prompt in a smaller mono size, so most of it fits without scrolling sideways. */
+    @media (max-width: 600px) { .fr-offer pre { font-size: 12px; } }
     /* The headings, and the leads, take one place each, whichever shows. */
     .fr-swap { display: grid; }
     .fr-swap > * { grid-area: 1 / 1; }
@@ -476,6 +483,10 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     [data-mode=setup] .fr-for-sign-in, [data-mode=sign-in] .fr-for-setup { display: none; }
     .fr-well { display: flex; align-items: flex-start; box-sizing: border-box; width: 100%; margin: 0 0 24px; border: 1px solid var(--fr-line); border-radius: 12px; background: var(--fr-well); }
     .fr-well pre { flex: 1; min-width: 0; box-sizing: border-box; max-height: 168px; margin: 0; padding: 12px 4px 12px 16px; overflow: auto; font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--fr-ink); white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; -webkit-user-select: all; }
+    /* The prompt wraps only between its words: a flag or a URL stays whole, and one wider than the
+       box scrolls sideways rather than breaking (first-run.mjs `showPrompt`). */
+    .fr-offer pre { overflow-wrap: normal; }
+    .fr-offer .fr-word { white-space: nowrap; }
     #first-run [hidden] { display: none !important; }
     /* The prompt the primary button copies, there before the click; until
        the page has its code, the well says what it waits for, or why there
@@ -485,10 +496,13 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     #first-run-offer:empty, .fr-offer-note:empty { display: none; }
     .fr-offer-note { flex: 1; margin: 0; padding: 12px 16px; font-size: 14px; color: var(--fr-faint); }
     .fr-offer-note[data-problem=true] { color: var(--fr-problem); }
-    /* The box's own Copy sits in its corner, in space kept for it either way, so the prompt wraps the same before and after the click. */
-    .fr-offer { position: relative; }
-    .fr-offer pre { padding-right: 76px; }
-    .fr-offer .fr-copy { position: absolute; top: 6px; right: 6px; }
+    /* The prompt takes the box's whole width, so it wraps the same before and after the click; the
+       box's own Copy stands under it at the box's trailing edge, in line with its padding. */
+    .fr-offer { flex-direction: column; align-items: stretch; }
+    .fr-offer pre { padding: 12px 16px; }
+    #first-run .fr-offer .fr-copy { align-self: flex-end; margin: 0 6px 6px; }
+    /* The button that copies the prompt is as wide as the box it copies. */
+    #first-run .fr-start > .fr-primary { width: 100%; max-width: 520px; }
     #first-run-sign-in-note { margin: 8px 0 0; font-size: 13px; color: var(--fr-muted); }
     #first-run-sign-in-note:empty { display: none; }
     #first-run-sign-in-note[data-problem=true] { color: var(--fr-problem); }
@@ -558,7 +572,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
       <div class="fr-start">
         <div class="fr-swap"><h1 id="first-run-heading" class="fr-for-start" tabindex="-1">Let your agent set up Tilo</h1>
         <h1 id="first-run-heading-wait" class="fr-for-wait" tabindex="-1">Paste it into your agent</h1></div>
-        <div class="fr-swap"><p class="fr-lead fr-for-start">Paste this line into Claude Code, Codex or any agent. It installs Tilo and signs in as you, and this tab becomes your workspace, with your agent in it.</p>
+        <div class="fr-leads"><p class="fr-lead fr-for-start">Paste this line into Claude Code, Codex or any agent. It installs Tilo and signs in as you, and this tab becomes your workspace, with your agent in it.</p>
         <p class="fr-lead fr-for-wait fr-for-setup">Paste the prompt into Claude Code, Codex or any agent; this tab follows along.</p>
         <p class="fr-lead fr-for-wait fr-for-sign-in">Paste the prompt into your agent on a computer where you use Tilo, and it signs this tab in as you.</p></div>
         <div class="fr-well fr-offer"><pre id="first-run-offer" class="fr-for-start" aria-label="The prompt"></pre><pre id="first-run-prompt" class="fr-for-wait" aria-label="The prompt"></pre><p id="first-run-offer-note" class="fr-offer-note fr-for-start" data-problem="false">Getting your code…</p><button id="first-run-offer-retry" class="fr-copy fr-for-start" type="button" hidden>Try again</button><button id="first-run-again" class="fr-copy fr-for-wait" type="button">Copy</button></div>
