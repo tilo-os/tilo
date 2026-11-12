@@ -453,6 +453,107 @@ class CopyLanguageTests(unittest.TestCase):
                 "a resource's title and the reason an action is unavailable are "
                 "rows a person reads in the action directory")
 
+    def test_the_words_a_function_keeps_are_copy_where_the_crate_paints_them(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn friendly_reason(reason: &str) -> &'static str {",
+                "    if reason.is_empty() {",
+                '        "Add paper to continue."',
+                "    } else {",
+                '        "Clear the paper jam, then resume the printer."',
+                "    }",
+                "}",
+                "fn state() -> String {",
+                '    format!("Printing {}", pages)',
+                "}",
+                "fn treated(text: &str) -> Box<dyn Widget> {",
+                "    Box::new(Text::new(text).with_role(TextRole::Body))",
+                "}",
+                "fn pane(reason: &str) -> Node {",
+                "    Node::new(Role::Panel)",
+                '        .with_description(treated(friendly_reason("x"))),',
+                '        .with_hint(treated(state()))',
+                "}",
+                "fn spec() -> ResourceSpec {",
+                '    ResourceSpec::new("demo.thing", "demo.thing", friendly_reason("y"))',
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Add paper to continue.", "Clear the paper jam, then resume the printer.",
+                 "Printing {}"],
+                "a function hands its value back rather than a caller's argument on, "
+                "so the words it returns are what the helper or the resource paints")
+
+    def test_a_models_own_name_and_a_reused_name_are_not_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn name() -> &'static str {",
+                '    match self.kind { Camera => "CameraApp", Files => "file-explorer" }',
+                "}",
+                "fn treated(text: &str) -> Box<dyn Widget> {",
+                "    Box::new(Text::new(text).with_role(TextRole::Body))",
+                "}",
+                "fn pane(&self) -> Node {",
+                "    Node::new(Role::Panel).with_description(treated(name()))",
+                "}",
+                "fn line(text: &str) -> Box<dyn Widget> {",
+                "    Box::new(Text::new(text).with_role(TextRole::Body))",
+                "}",
+                "fn dialog(&self) -> String {",
+                "    format!(\"{}\", self.request)",
+                "}",
+                "fn panel(&self) -> Node {",
+                '    Node::new(Role::Panel).with_description(dialog())',
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)], [],
+                "a name the model answers with is not copy, and a crate that gives "
+                "one name two jobs (`line` here and `line` in another module) says "
+                "nothing about the word a call site hands it")
+
+    def test_a_copy_field_bound_to_a_painted_local_is_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn row(&self) -> Node {",
+                '    let row = Row { title: "Open settings".into(), detail: "Stopped".into() };',
+                "    Node::new(Role::List).with_facts(vec![Text::new(row.title)])",
+                "}",
+                "fn sample(&self) -> Note {",
+                '    let note = Note { title: "Quiet hours".into() };',
+                "    note",
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Open settings"],
+                "a copy field that a builder reads through the local it is bound to "
+                "is copy; the field of a struct nothing painted is a person's own "
+                "content, and so is one built as sample data")
+
+
     def test_the_tree_passes(self):
         self.assertEqual(
             copy.check(copy.ROOT, copy.GLOSSARY, copy.BASELINE, copy.SAVE_EXCEPTIONS,

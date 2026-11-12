@@ -324,3 +324,23 @@ reason = "What the desk action tells a caller that named no known place, never a
 file = "crates/session/session/src/sync/client/plane.rs"
 text = "the collaboration endpoint: {error}"
 reason = "What the sync client reports of a failed endpoint, never a window's copy."
+
+[[allow]]
+file = "apps/browser/src/service_sessions.rs"
+text = "Slack"
+reason = "A service's name, spelled the same in every language."
+
+[[allow]]
+file = "apps/browser/src/service_sessions.rs"
+text = "Discord"
+reason = "A service's name, spelled the same in every language."
+
+[[allow]]
+file = "apps/chat/src/transcript.rs"
+text = "`{other}` is not a format: md or json"
+reason = "What the transcript command answers an agent that named a format it does not have."
+
+[[allow]]
+file = "apps/file-explorer/src/files_app.rs"
+text = "Personal cloud"
+reason = "A label a capture scenario paints, which no one reads."

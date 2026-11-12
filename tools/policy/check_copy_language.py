@@ -70,6 +70,22 @@ Two more ways a word reaches a window without the constructor coming first:
   (`fn button(&self, id: &str, label: &str) -> Button { Button::new(id,
   label) }`): a literal at the parameter's position at any call site of it is
   painted just the same, and so is one passed on through a second helper;
+- from a function that keeps the words rather than passing them on
+  (`fn friendly_reason(reason: &str) -> &'static str { … "Add paper to
+  continue." … }`): the value it returns is what is painted where the crate
+  hands it on — a helper's painted argument, or a resource's or an action's
+  words — and the words inside a branch or a match arm count as the value. A
+  name the crate defines twice with different jobs (`line` as a painted row and
+  as a page outline) says nothing about the word it is handed, so only a name
+  whose every definition hands copy back counts, and a value that is a name the
+  model answers with (`CameraApp`, `demo.thing`) is not copy. A constructor
+  handed the call directly is the same defect; that class is the next
+  migration, so this check reads the positions above for now.
+- as a struct field named like copy, where a `let` binds the struct and a copy
+  builder reads the field back (`let row = Row { title: "Open settings", … };
+  Text::new(row.title)`). A fixture's sample data is bound to nothing a
+  constructor reads, and a field that only holds a person's own content is
+  never read that way, so neither counts;
 - as a resource's or an action's title (`ResourceSpec::new(…, "History
   paused")`, `.unavailable(…, "Open a web page first")`): the action directory
   and the palette show those as the rows a person reads before invoking
@@ -526,6 +542,18 @@ TEXT_CONSTRUCTORS = (
 # Where a surface's own words are painted: the roots whose crates draw a
 # window a person opens.
 SURFACE_ROOTS = ("apps/", "crates/session/")
+
+# The fields of a struct that carry words a person reads (a row's title, a
+# notice's detail), as opposed to a person's own content of the same name (a
+# note's title).
+COPY_FIELDS = (
+    "title", "label", "subtitle", "tooltip", "description", "placeholder",
+    "body", "message", "hint", "summary", "detail", "caption", "reason",
+)
+
+# A function that keeps a word instead of passing a caller's argument on: its
+# value is what a constructor paints.
+RETURNS_WORDS = re.compile(r"->\s*(?:&\s*(?:'static\s+)?str\b|String\b|Cow<)")
 
 # What a surface titles a published resource or action with: the action
 # directory and the palette show it as the row a person reads before invoking
@@ -1010,6 +1038,181 @@ def calls_of(code: str, open_paren: int):
     yield from top_level_parts(code, open_paren + 1, close)
 
 
+def prose_words(value: str) -> bool:
+    """A value that reads as the words a person reads, rather than a name the
+    model answers with for itself.
+
+    `english_words` is tuned to what a builder is handed; a function's return
+    value is as often its own name (`CameraApp`) or a machine word
+    (`demo.thing`). A single token counts only when it is one capitalised word
+    (`Inbox`, `Paused`); anything with a space is words.
+    """
+    if not english_words(value):
+        return False
+    word = value.strip()
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9_.:-]*", word):
+        return re.fullmatch(r"[A-Z][a-z]+", word) is not None
+    return True
+
+
+def return_ranges(code: str, brace: int, end: int) -> list[tuple[int, int]]:
+    """Where the value of the function opening at `brace` is built: after each
+    `return`, and the tail expression before the closing brace."""
+    ranges = []
+    for found in re.finditer(r"\breturn\b", code[brace:end]):
+        begin = brace + found.end()
+        ranges.append((begin, statement_end(code, begin)))
+    at = end - 1
+    while at > brace and code[at].isspace():
+        at -= 1
+    depth = 0
+    position = at
+    while position > brace:
+        char = code[position]
+        if char in ")]}":
+            depth += 1
+        elif char in "([{":
+            if not depth:
+                break
+            depth -= 1
+        elif char == ";" and not depth:
+            break
+        position -= 1
+    ranges.append((position + 1, at + 1))
+    return ranges
+
+
+def returned_words(code: str, starts: list[int],
+                   by_start: dict[int, rust_source.Literal], kept: str,
+                   brace: int, end: int) -> list[rust_source.Literal]:
+    """The English words the function opening at `brace` hands back: its tail
+    value and each `return`, with the branches, arms and sentences in them."""
+    found = []
+    for begin, close in return_ranges(code, brace, end):
+        for literal in painted_literals(code, starts, by_start, begin, close):
+            if kept[literal.start] == "x" and prose_words(literal.value):
+                found.append(literal)
+        for literal in format_template(code, starts, by_start, begin, close):
+            if kept[literal.start] == "x" and prose_words(literal.value):
+                found.append(literal)
+    return found
+
+
+def returning_words(root: Path,
+                    paths: list[Path]) -> dict[str, list[tuple[str, int, str]]]:
+    """Per function name of one crate, the words it hands back, with where they
+    are written.
+
+    A name keeps its place only when every definition of it hands copy back: a
+    crate that uses one name for two jobs (`line` as a painted row and as a
+    page's outline) says nothing about the word a call site gives it.
+    """
+    bodies: list[tuple[str, Path, list[rust_source.Literal]]] = []
+    for path in paths:
+        text = path.read_text(errors="replace")
+        if "fn " not in text:
+            continue
+        code, literals = rust_source.lex(text)
+        starts = sorted(literal.start for literal in literals if not literal.byte)
+        by_start = {literal.start: literal for literal in literals if not literal.byte}
+        marked = list(code)
+        for literal in literals:
+            for index in range(literal.start, literal.end):
+                if marked[index] != "\n":
+                    marked[index] = "x"
+        kept = rust_source.blank_test_items("".join(marked))
+        for function in FUNCTION.finditer(code):
+            brace = code.find("{", function.end())
+            if brace < 0 or not RETURNS_WORDS.search(code[function.end():brace]):
+                continue
+            words = returned_words(code, starts, by_start, kept, brace,
+                                   rust_source.matching(code, brace))
+            bodies.append((function.group(1), path, words))
+    by_name: dict[str, list[tuple[Path, list[rust_source.Literal]]]] = {}
+    for name, path, words in bodies:
+        by_name.setdefault(name, []).append((path, words))
+    table: dict[str, list[tuple[str, int, str]]] = {}
+    for name, definitions in by_name.items():
+        if not all(words for _, words in definitions):
+            continue
+        table[name] = sorted({
+            (path.relative_to(root).as_posix(),
+             rust_source.line_number(path.read_text(errors="replace"), literal.start),
+             literal.value)
+            for path, words in definitions
+            for literal in words
+        })
+    return table
+
+
+def stored_fields(code: str, starts: list[int],
+                  by_start: dict[int, rust_source.Literal],
+                  kept: str) -> list[tuple[str, str, rust_source.Literal]]:
+    """`(binding, field, literal)` for each copy-named field a struct literal
+    stores words in, where a `let` binds the struct.
+
+    Only a struct the code binds and can paint through (`let row = Row { title:
+    "Open settings", … }`) counts; a fixture's sample data is bound to nothing
+    a constructor reads.
+    """
+    found = []
+    for binding in BINDING.finditer(code):
+        if not binding.group(1):
+            continue
+        begin = binding.end()
+        end = statement_end(code, begin)
+        open_brace = code.find("{", begin, end)
+        if open_brace < 0 or not re.fullmatch(
+                r"\s*&?\s*[A-Za-z_][A-Za-z0-9_]*(?:\s*::\s*[A-Za-z_][A-Za-z0-9_]*)*\s*",
+                code[begin:open_brace]):
+            continue
+        close = rust_source.matching(code, open_brace) - 1
+        for part_begin, part_end in top_level_parts(code, open_brace + 1, close):
+            piece = code[part_begin:part_end]
+            colon = piece.find(":")
+            if colon < 0:
+                continue
+            field_name = piece[:colon].strip()
+            if field_name not in COPY_FIELDS:
+                continue
+            at = bisect.bisect_left(starts, part_begin + colon + 1)
+            if at >= len(starts):
+                continue
+            literal = by_start[starts[at]]
+            if literal.start >= part_end or kept[literal.start] != "x":
+                continue
+            if not wrapped(code, part_begin + colon + 1, literal.start):
+                continue
+            if not converted(code, literal.end, part_end):
+                continue
+            if prose_words(literal.value):
+                found.append((binding.group(1), field_name, literal))
+    return found
+
+
+def read_at(code: str, ranges: list[tuple[int, int]], name: str, field: str) -> bool:
+    """Whether `name.field` is read inside one of `ranges`."""
+    pattern = re.compile(rf"(?<![\w$]){re.escape(name)}\s*\.\s*{field}\b")
+    return any(pattern.search(code[begin:end]) for begin, end in ranges)
+
+
+def words_returned_in(code: str, begin: int, end: int,
+                      returning: dict[str, list[tuple[str, int, str]]]
+                      ) -> list[tuple[str, int, str]]:
+    """The words a function of the crate hands back inside `[begin, end)`.
+
+    The call is a constructor's, a resource's or an action's words, or a
+    painted helper's argument: the value the function returns is what is
+    painted there, in the file the function is written in.
+    """
+    found = []
+    for name, words in returning.items():
+        pattern = re.compile(HELPER_CALL.format(name=re.escape(name)))
+        if any(begin <= hand.start() < end for hand in pattern.finditer(code, begin)):
+            found.extend(words)
+    return found
+
+
 def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
     """(file, line, text) of each English literal handed to a copy builder by a
     crate that ships translations, in production code; of each literal or
@@ -1028,6 +1231,7 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
             if location.startswith(f"{crate}/"):
                 by_crate.setdefault(crate, []).append(path)
     helpers: dict[str, dict[str, set[int]]] = {}
+    returning: dict[str, dict[str, list[tuple[str, int, str]]]] = {}
     found = []
     for path in sources:
         unit = path.relative_to(root).as_posix()
@@ -1087,21 +1291,41 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
                 end = statement_end(code, field.end())
                 sentences(field.end(), end, end, bindings)
         if window:
-            for call, index in TEXT_CONSTRUCTORS + SPEC_BUILDERS:
+            ranges = []
+            for call, index in TEXT_CONSTRUCTORS:
                 start = code.find(call)
                 while start >= 0:
                     begin, end = argument(code, start + len(call), index)
                     sentences(begin, end, rust_source.matching(code, start + len(call) - 1),
                               bindings)
+                    ranges.append((begin, end))
+                    start = code.find(call, start + len(call))
+            for call, index in SPEC_BUILDERS:
+                start = code.find(call)
+                while start >= 0:
+                    begin, end = argument(code, start + len(call), index)
+                    sentences(begin, end, rust_source.matching(code, start + len(call) - 1),
+                              bindings)
+                    ranges.append((begin, end))
+                    found.extend(words_returned_in(code, begin, end, returning.get(crate, {})))
                     start = code.find(call, start + len(call))
             if crate not in helpers:
                 helpers[crate] = helper_table(by_crate[crate])
+                returning[crate] = returning_words(root, by_crate[crate])
             for name, indexes in helpers[crate].items():
                 pattern = re.compile(HELPER_CALL.format(name=re.escape(name)))
                 for hand in pattern.finditer(code):
                     for index in indexes:
                         begin, end = argument(code, hand.end(), index)
                         sentences(begin, end, end, bindings)
+                        ranges.append((begin, end))
+                        found.extend(words_returned_in(code, begin, end,
+                                                       returning[crate]))
+            for binding, field, literal in stored_fields(code, starts, by_start, kept):
+                if read_at(code, ranges, binding, field):
+                    found.append((path.relative_to(root).as_posix(),
+                                  rust_source.line_number(text, literal.start),
+                                  literal.value))
         for literal in dict.fromkeys(hits):
             found.append((
                 path.relative_to(root).as_posix(),
