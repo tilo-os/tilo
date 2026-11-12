@@ -100,8 +100,11 @@ env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "
 # this family's build and kept with its test binaries,
 # each shard is handed them (NEXTEST_BIN_EXE_<bin>) and the setups build nothing. The app host's
 # trust test installs with the installer it finds beside its own build (`tilo-install`), which
-# tools/ci/nextest.sh built only where it was named the package: a shard names none.
-starts = { tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "chat:chat", "launcher:tilo-launcher", "tilo-runtime:tilo-runtime", "tasks:tasks"], tilo-quick-settings = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings"], app-host = ["install:tilo-install"] }
+# tools/ci/nextest.sh built only where it was named the package: a shard names none. A run of a
+# package .config/nextest-capabilities.toml names first runs the capability probe
+# (tools/ci/capability_filter.py), handed the same way (tools/tests/test_capability_filter.py
+# holds every such package to it).
+starts = { tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "chat:chat", "launcher:tilo-launcher", "tilo-runtime:tilo-runtime", "tasks:tasks"], tilo-quick-settings = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings"], app-host = ["install:tilo-install"], settings = ["tilo-test-env:tilo-capability-probe"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe"] }
 
 # The same packages' tests once per architecture: a result on one says nothing about the other.
 [[cargo]]
@@ -122,8 +125,9 @@ env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "
 # The programs of other packages these tests find beside their own build: the installer the app
 # CLI's install tests run, and the render helper an agent's host renders video in. Each shard is
 # handed them as the test family's are; tools/ci/nextest.sh built them only where it was named
-# the package, and a shard names none.
-starts = { app-cli = ["install:tilo-install"], tilo-agent-participant = ["tilo-video-render:tilo-video-render"] }
+# the package, and a shard names none. So is the capability probe a run of a package
+# .config/nextest-capabilities.toml names runs first.
+starts = { app-cli = ["install:tilo-install"], tilo-agent-participant = ["tilo-video-render:tilo-video-render"], env-tools = ["tilo-test-env:tilo-capability-probe"], runtime-bundle = ["tilo-test-env:tilo-capability-probe"], ush = ["tilo-test-env:tilo-capability-probe"] }
 matrix = { arch = ["x86_64", "aarch64"] }
 
 # The packages whose tests cost main a lot for what they catch: on main's newest head when t has

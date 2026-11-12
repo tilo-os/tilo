@@ -4,9 +4,12 @@
     capability_filter.py [--packages NAME...] [--probe-output FILE]   # the filter
     capability_filter.py --require-variables                          # KEY=1 lines
 
-Reads .config/nextest-capabilities.toml. Without --probe-output it runs the
-`capability_probe` test of tilo-test-env through `cargo nextest` (so it runs
-where the tests run, a remote builder included) and reads its report. For
+Reads .config/nextest-capabilities.toml. Without --probe-output it runs
+tilo-test-env's `tilo-capability-probe` program as the tests' runner starts a
+test binary (tools/cargo-runner.sh: in the test environment, as the test user),
+here, where the tests run, and reads its report. A run t hands the program
+(t.toml's `starts`, NEXTEST_BIN_EXE_tilo-capability-probe) runs that build of
+it and compiles nothing; any other builds it with Cargo first. For
 each test group whose probe failed it prints a line to stderr naming the
 capability and the reason, and the filter it prints on stdout leaves that
 group out, so nextest counts those tests as not run. The filter is empty when
@@ -23,6 +26,8 @@ capability fails where the capability is missing instead of skipping.
 """
 
 import argparse
+import json
+import os
 import re
 import subprocess
 import sys
@@ -31,9 +36,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / ".config" / "nextest-capabilities.toml"
-PROBE = [
-    "cargo", "nextest", "run", "--locked", "--profile", "ci",
-    "-p", "tilo-test-env", "--test", "capability_probe", "--no-capture",
+PROBE = "tilo-capability-probe"
+# Where t's `starts` hands the family's build of it to a run.
+HANDED = f"NEXTEST_BIN_EXE_{PROBE}"
+BUILD = [
+    "build", "--locked", "-p", "tilo-test-env", "--bin", PROBE,
+    "--message-format", "json-render-diagnostics",
+]
+# How tools/cargo-runner.sh starts a test binary, so the probe sees what the tests will.
+AS_A_TEST = [
+    "bash", str(ROOT / "tools" / "with-test-environment.sh"),
+    "bash", str(ROOT / "tools" / "as-test-user.sh"),
 ]
 # The packages a group's filter names (`.config/nextest-capabilities.toml`).
 PACKAGE = re.compile(r"package\(\s*([^)\s]+)\s*\)")
@@ -95,6 +108,37 @@ def exclusions(text: str, packages: set[str] | None = None) -> tuple[str, list[s
     return ("not (" + " or ".join(left_out) + ")" if left_out else ""), notes
 
 
+def probe_program() -> str:
+    """The probe's executable: the one t handed the run, else Cargo's build of it. A handed one
+    that can't be run is the run's fault, said as such: building it here instead would hide that
+    and compile ~765 units in every shard again."""
+    handed = os.environ.get(HANDED)
+    if handed is not None:
+        if not os.access(handed, os.X_OK):
+            sys.exit(f"{HANDED} names {handed!r}, which is not an executable")
+        return handed
+    build = subprocess.run(
+        ["cargo", *BUILD], cwd=ROOT, capture_output=True, text=True
+    )
+    if build.returncode != 0:
+        sys.stderr.write(build.stderr)
+        sys.exit("the capability probe did not build")
+    for line in build.stdout.splitlines():
+        message = json.loads(line)
+        if message.get("reason") == "compiler-artifact" and message["target"]["name"] == PROBE:
+            if message.get("executable"):
+                return message["executable"]
+    sys.exit(f"cargo named no executable for {PROBE}")
+
+
+def run_probe() -> str:
+    run = subprocess.run([*AS_A_TEST, probe_program()], cwd=ROOT, capture_output=True, text=True)
+    if run.returncode != 0:
+        sys.stderr.write(run.stdout + run.stderr)
+        sys.exit("the capability probe did not run")
+    return run.stdout
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--probe-output", type=Path)
@@ -116,14 +160,7 @@ def main() -> None:
         # None of this run's packages has a test group here: nothing to probe,
         # nothing to leave out.
         return
-    if args.probe_output:
-        text = args.probe_output.read_text()
-    else:
-        run = subprocess.run(PROBE, cwd=ROOT, capture_output=True, text=True)
-        text = run.stdout + run.stderr
-        if run.returncode != 0:
-            sys.stderr.write(text)
-            sys.exit("the capability probe did not run")
+    text = args.probe_output.read_text() if args.probe_output else run_probe()
     left_out, notes = exclusions(text, packages)
     for note in notes:
         print(note, file=sys.stderr)
