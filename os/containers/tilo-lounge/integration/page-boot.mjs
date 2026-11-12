@@ -188,20 +188,24 @@ const open = async (name, app) => {
   await key('k', mac ? 4 : 2);
   await until('!!globalThis.tiloMount?.state()?.searchOpen', `the search opening for ${name}`);
   await type(name.toLowerCase());
-  // The rows shown right after typing can be the previous query's: Enter
-  // waits until two reads agree that the app is the first result.
-  const first = rows => (rows ? rows[rows.indexOf('Results') + 1] ?? null : null);
+  // The card the desk publishes for the query typed, once it owes no row:
+  // nothing before that is its answer to this text (the rows shown right after
+  // typing can be the previous query's), and Enter acts on its first row.
+  const asked = JSON.stringify(name.toLowerCase());
   const deadline = Date.now() + stepLimit(3);
+  let card = null;
   for (;;) {
     await checkPage(`searching for ${name}`);
-    const rows = await paletteRows();
-    await sleep(300);
-    const again = await paletteRows();
-    // The rows on screen are the search's answer to the text typed only once
-    // it says it owes none: an Enter on an earlier query's rows waits for it.
-    const answered = await tab.evaluate('globalThis.tiloMount?.state()?.searchSearching === false').catch(() => false);
-    if (answered && first(rows) === name && JSON.stringify(rows) === JSON.stringify(again)) break;
-    if (Date.now() > deadline) await fail(`the search offers no ${name} first: ${JSON.stringify(again)}`);
+    card = JSON.parse(await tab.evaluate(`(() => {
+      const s = globalThis.tiloMount?.state?.() ?? null;
+      const card = s?.searchCard ?? null;
+      return JSON.stringify(card && s.searchSearching === false && card.query === ${asked} ? card : null);
+    })()`).catch(() => 'null'));
+    if (card?.rows?.[0]?.title === name) break;
+    if (Date.now() > deadline) {
+      await fail(`the search offers no ${name} first: ${JSON.stringify(card?.rows?.map(row => row.title) ?? await paletteRows())}`);
+    }
+    await sleep(250);
   }
   // Which frame showed the window, counted two ways: from the frame counter
   // the page reads when the browser fires Enter, and from the count the desk
