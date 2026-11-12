@@ -54,6 +54,17 @@ const finish = async (code, message) => {
   // Said first: what follows reads every tab, and a tab that stopped answering
   // must not keep the run from saying why it failed.
   if (message) console.error(`FAIL: ${message}`);
+  // And what each tab said, before anything asks a tab: a run past its limit
+  // is stopped, and a stopped run says nothing it had not said yet.
+  if (message) {
+    for (const {name, tab} of tabs) {
+      const lines = (tab.log ?? []).slice(-60);
+      if (lines.length) console.error(`--- ${name} said:\n${lines.join('\n')}`);
+    }
+  }
+  // Each read of a tab is short: a page that answers does at once, and one
+  // that stopped answering would hold every read to the protocol's own limit.
+  const read = (tab, expression) => briefly(tab, expression, 'no answer');
   for (const {name, tab, browser} of tabs) {
     writeFileSync(join(out, `${name}.log`), (tab.log ?? []).join('\n'));
     // A capture waits for the tab's next frame, which a stopped tab never
@@ -65,23 +76,19 @@ const finish = async (code, message) => {
     // a tab mid-navigation or wedged answers nothing the reads below can show.
     report[`${name}At`] = await browser.send('Target.getTargetInfo', {targetId: tab.targetId})
       .then(reply => reply.result?.targetInfo?.url ?? reply.error?.message, error => error.message).catch(() => '');
-    report[`${name}Answers`] = await tab.evaluate('document.readyState', {timeout: 5_000}).catch(error => `no: ${error.message}`);
+    report[`${name}Answers`] = await read(tab, 'document.readyState');
     // What the page kept of the workspaces it entered and the hosts it is a
     // member of: which way it took in on its next load.
-    report[`${name}People`] = await tab.evaluate(`JSON.stringify(globalThis.tiloMount?.people?.() ?? null)`).catch(() => '');
+    report[`${name}People`] = await read(tab, `JSON.stringify(globalThis.tiloMount?.people?.() ?? null)`);
     // Whose channels the page holds keys for: a page without its workspace's
     // keys joins no live plane, so it hears nobody and nobody hears it.
-    report[`${name}Channels`] = await tab.evaluate(`globalThis.tiloChannels?.() ?? ''`).catch(() => '');
-    report[`${name}Kept`] = await tab.evaluate(`JSON.stringify(Object.fromEntries(Object.keys(localStorage)
-      .filter(key => /workspace|membership|entered/i.test(key)).map(key => [key, localStorage.getItem(key)])))`).catch(() => '');
+    report[`${name}Channels`] = await read(tab, `globalThis.tiloChannels?.() ?? ''`);
+    report[`${name}Kept`] = await read(tab, `JSON.stringify(Object.fromEntries(Object.keys(localStorage)
+      .filter(key => /workspace|membership|entered/i.test(key)).map(key => [key, localStorage.getItem(key)])))`);
   }
   writeFileSync(join(out, 'report.json'), JSON.stringify(report, null, 2));
   for (const browser of browsers) await browser.close().catch(() => {});
   if (message) {
-    for (const {name, tab} of tabs) {
-      const lines = (tab.log ?? []).slice(-60);
-      if (lines.length) console.error(`--- ${name} said:\n${lines.join('\n')}`);
-    }
     for (const {name} of tabs) console.error(`--- ${name} at ${report[`${name}At`]}, answering ${report[`${name}Answers`]}\n--- ${name} kept: ${report[`${name}Kept`]}\n--- ${name} people: ${report[`${name}People`]}\n--- ${name} channels: ${report[`${name}Channels`]}`);
     console.error(`FAIL: ${message}`);
   }
@@ -90,7 +97,13 @@ const finish = async (code, message) => {
 };
 const fail = message => finish(1, message);
 
-const pageText = tab => tab.evaluate(`(document.body.innerText || '').replace(/\\s+/g, ' ').trim()`).catch(() => '');
+// A read of a tab that answers at once or is said not to: a renderer that
+// stopped never replies, and the protocol's own limit is two minutes.
+const briefly = (tab, expression, otherwise) => Promise.race([
+  tab.evaluate(expression, {timeout: 5_000}).catch(error => `${otherwise}: ${error.message}`),
+  sleep(10_000).then(() => `${otherwise}: no reply in 10 s`),
+]);
+const pageText = tab => briefly(tab, `(document.body.innerText || '').replace(/\\s+/g, ' ').trim()`, '(the page did not answer)');
 // Wait until `expression` holds in the page, or fail naming what never came.
 const until = async (tab, expression, what, timeout = stepLimit(3)) => {
   const deadline = Date.now() + timeout;
