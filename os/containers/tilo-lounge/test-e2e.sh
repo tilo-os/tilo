@@ -256,8 +256,8 @@ machine_now() {
   load=$(cut -d' ' -f1 /proc/loadavg 2>/dev/null)
   pressure=$(sed -n 's/^some avg10=\([0-9.]*\).*/\1/p' /proc/pressure/cpu 2>/dev/null)
   job=$(sed -n 's/^some avg10=\([0-9.]*\).*/\1/p' /sys/fs/cgroup/cpu.pressure 2>/dev/null)
-  printf 'load %s on %s cores, cpu pressure %s%% (machine) %s%% (this job)' \
-    "${load:-?}" "$(nproc)" "${pressure:-?}" "${job:-?}"
+  printf 'load %s on %s cores, this job given %s threads, cpu pressure %s%% (machine) %s%% (this job)' \
+    "${load:-?}" "$(nproc --all)" "${OMP_NUM_THREADS:-?}" "${pressure:-?}" "${job:-?}"
 }
 await_flow() {
   local status=0 pid= left=() one

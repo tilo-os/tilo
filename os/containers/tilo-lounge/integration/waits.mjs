@@ -120,7 +120,8 @@ export function machine() {
   const throttled = stat.throttled_usec ? `, throttled ${(stat.throttled_usec / 1e6).toFixed(1)} s in ${stat.nr_throttled} periods` : '';
   const pressure = Number.isFinite(jobPressure) ? jobPressure : hostPressure;
   const starved = pressure > 50 || load1 > cores;
-  const text = `${starved ? 'STARVED' : 'not starved'}: load ${load1?.toFixed(1)} on ${cores} cores, `
+  const given = process.env.OMP_NUM_THREADS ? `, this job given ${process.env.OMP_NUM_THREADS} threads` : '';
+  const text = `${starved ? 'STARVED' : 'not starved'}: load ${load1?.toFixed(1)} on ${cores} cores${given}, `
     + `cpu pressure ${Number.isFinite(hostPressure) ? hostPressure : '?'}% (machine) `
     + `${Number.isFinite(jobPressure) ? jobPressure : '?'}% (this job)${throttled}`;
   return {starved, text};
