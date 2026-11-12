@@ -96,7 +96,7 @@ has "$rpms_provenance" 'fingerprint=$(python3 os/dev/rpm-snapshot-fingerprint.py
   'snapshot provenance computes the package-set fingerprint'
 has "$repo/tools/ci/publish/rpm-snapshot-ref.sh" 'ref=$(bash "$repo_root/os/dev/resolve-rpm-snapshot.sh")' \
   'snapshot consumers resolve the fingerprint tag to a verified digest'
-# Signing holds the identity token only on stable, never on main or a working tree.
+# A release tag publishes by fingerprint with no pin pull request, and no pin file.
 if ! grep -Eq 'open-snapshot-pr\.py|reconcile-snapshot-pins\.py|rpms-snapshot\.env' \
      "$rpms_build" "$rpms_provenance"; then
   ok 'snapshot publishes by fingerprint tag with no pin pull request'
@@ -206,7 +206,8 @@ has "$resolve_script" '.buildDefinition.externalParameters.packageSetSha256ByArc
   'fingerprint resolve verifies architecture-specific RPM package-set provenance'
 # The relay image installs only from the snapshot rpm-snapshot resolved and verified.
 # It takes the published snapshot only as a digest-pinned reference; a build of a package set
-# stable has not published (the run's own image-rpms) records so and is never signed.
+# a release tag has not published (the run's own image-rpms) records so and is never
+# signed.
 has "$repo/tools/ci/publish/relay-build.sh" 'snapshot_for_build "$snapshot" "$rpms" x86_64' \
   'the relay image installs from the snapshot rpm-snapshot named'
 has "$repo/tools/ci/publish/lib.sh" '[[ $rpms_ref =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]]' \

@@ -119,11 +119,11 @@ build_board() {
 }
 
 # The frozen RPM snapshot the build installs from, as RPMS_REF: the published one for this
-# tree's package set, verified as every build verifies it. Only stable publishes snapshots, so
-# on main and branches a changed package set has none until it reaches stable; the build then
-# installs from the set image-rpms-ARCH built in this run from the same os/Containerfile.rpms,
-# which build-image.sh takes unsigned (TILO_RPMS_TRUST=unsigned) and labels so
-# (org.tilo.rpms.trust), and which nothing signs or publishes.
+# tree's package set, verified as every build verifies it. Only a release tag publishes snapshots,
+# so on main and branches a changed package set has none until a release tag publishes it; the
+# build then installs from the set image-rpms-ARCH built in this run from the same
+# os/Containerfile.rpms, which build-image.sh takes unsigned (TILO_RPMS_TRUST=unsigned) and labels
+# so (org.tilo.rpms.trust), and which nothing signs or publishes.
 rpms_snapshot() {
   local arch=$1 built=/target/publish/rpms/$1 status=0 id
   bash os/dev/resolve-rpm-snapshot.sh --exists || status=$?
@@ -203,10 +203,10 @@ case ${1:-} in
     # tilo-vm moves a machine only onto a dev image whose base is no older than the one it
     # runs; the OS image's own clock is its base's and RPM snapshot's, so the commit's time
     # orders dev bases, as it did in Build / OS dev. The dev components come compiled
-    # (os-compile-dev-<arch>): nothing compiles here. While stable has not published this tree's
-    # env-runtime the OS image ships none; the dev image then ships env-runtime-dev-<arch>'s, built
-    # from this run's image-rpms-<arch> and sealed with a throwaway key, trusted by it alone. Its
-    # local model catalog is model-catalog-dev-<arch>'s, which names the runtimes of this tree.
+    # (os-compile-dev-<arch>): nothing compiles here. While no release tag has published this
+    # tree's env-runtime the OS image ships none; the dev image then ships env-runtime-dev-<arch>'s,
+    # built from this run's image-rpms-<arch> and sealed with a throwaway key, trusted by it alone.
+    # Its local model catalog is model-catalog-dev-<arch>'s, which names the runtimes of this tree.
     # Its commit is its org.opencontainers.image.revision label, which adds no layer: publishing
     # checks it, and the dev channel moves only forward along main by it. Its layers are dated
     # by the OS image's clock (its base's and RPM snapshot's), not by the commit or the time they

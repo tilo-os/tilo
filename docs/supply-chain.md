@@ -161,7 +161,7 @@ operate it. Companion to `docs/security/design-rationale.md`.
 - **Cross-time reproducibility (frozen RPM repo).** Package versions are frozen
   too, so a rebuild *weeks later* is still byte-identical. The exact resolved RPM
   set is published as a digest-pinned OCI image (`os/Containerfile.rpms`, built and
-  published by **Build / RPM snapshot** to `registry.tilo.so/tilo/rpms`) and
+  published by `publish-rpms` on a release tag to `registry.tilo.so/tilo/rpms`) and
   addressed as `set-<fingerprint>`, where the fingerprint hashes both
   architectures' package sets, `BASE_REF`, and the files that shape the snapshot
   (`os/dev/rpm-snapshot-fingerprint.py`). Builds call
@@ -177,7 +177,7 @@ operate it. Companion to `docs/security/design-rationale.md`.
   builders reject it before any package transaction unless all of those claims
   match the current build inputs.
   **When you add/remove/rename a package in `os/Containerfile`,** merging it to
-  `main` changes the fingerprint, and the next stable run builds, signs, attests
+  `main` changes the fingerprint, and the next release tag's run builds, signs, attests
   and tags the new `set-<fingerprint>`; a fingerprint already published is never
   published again. There is no hand-kept pin file
   and no pin pull request. The kernel does not build against this snapshot.

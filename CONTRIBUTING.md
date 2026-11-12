@@ -152,8 +152,9 @@ tested; a screenshot helps for visual changes. If something would not build or
 you could not test it, say so. CI runs on the pull request, and a maintainer
 reviews and merges it.
 
-`main` is the integration branch and moves fast; releases are cut from
-`stable`.
+`main` is the integration branch and moves fast; releases are cut by a release
+tag (`vMAJOR.MINOR.PATCH`) on a `main` commit, and the tag's run builds, signs
+and publishes what the release carries.
 
 If you use an agent, you remain responsible for understanding the change,
 having the right to contribute it and reporting accurately what was tested.

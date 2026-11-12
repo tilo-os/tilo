@@ -3,10 +3,10 @@
 # (relay, env-runtime): the published snapshot, verified (signature, provenance, both
 # architectures) by os/dev/resolve-rpm-snapshot.sh, written to OUT/rpms-ref.
 #
-# Stable publishes a new package set in the same run first: publish-rpms is an optional need
-# (it runs on stable only), so its snapshot resolves here in the same pass. Where it doesn't run
-# and the package set is not published yet, OUT/unpublished names the snapshot's tag instead,
-# and the builds install from the run's own image-rpms-ARCH, unsigned (lib.sh
+# A release tag publishes a new package set in the same run first: publish-rpms is an optional
+# need (it runs on release tags only), so its snapshot resolves here in the same pass. Where it
+# doesn't run and the package set is not published yet, OUT/unpublished names the snapshot's tag
+# instead, and the builds install from the run's own image-rpms-ARCH, unsigned (lib.sh
 # snapshot_for_build); nothing signs or publishes such a build.
 #
 # usage: rpm-snapshot-ref.sh OUT
@@ -31,6 +31,6 @@ case $status in
     [[ ! -e $published ]] || die "publish-rpms published this package set in this run, yet its snapshot does not resolve ($published)"
     tag=$(bash "$repo_root/os/dev/resolve-rpm-snapshot.sh" --tag)
     printf '%s\n' "$tag" > "$out/unpublished"
-    printf 'the frozen RPM snapshot %s is not published (stable publishes it): builds install from this run'"'"'s image-rpms, unsigned\n' "$tag" ;;
+    printf 'the frozen RPM snapshot %s is not published (a release tag publishes it): builds install from this run'"'"'s image-rpms, unsigned\n' "$tag" ;;
   *) die 'could not ask the registry for the published RPM snapshot' ;;
 esac

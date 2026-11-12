@@ -25,11 +25,15 @@ environment would conceal the omission. The boundary regression tests cover both
 
 ## Local preparation
 
-Publication runs through the **Build / RPM snapshot** workflow
-(`.forgejo/workflows/build-rpms.yml`), which tags
-`registry.tilo.so/tilo/rpms:set-<fingerprint>`. Local builds are supported for preparation and
-diagnosis; they do not publish, sign or promote an artifact. There is no
-`os/dev/snapshot-rpms.sh` helper.
+Publication runs through t: on a release tag (`vMAJOR.MINOR.PATCH`), the checks
+`image-rpms-<arch>`, `image-rpms`, `provenance-rpms`, `sign-rpms` and
+`publish-rpms` build both architectures natively, join them into an index, sign it
+with the release key and tag it `registry.tilo.so/tilo/rpms:set-<fingerprint>`.
+A tag builds, signs and publishes the set its own tree resolves, so the images of
+that tag install from a set that is published; main builds and tests the set and
+publishes nothing. Local builds are supported for preparation and diagnosis; they
+do not publish, sign or promote an artifact. There is no `os/dev/snapshot-rpms.sh`
+helper.
 
 On the native target architecture, use the exact base pin and a named context
 containing `virtio-win-0.1.302-1.noarch.rpm`. The recipe independently checks its

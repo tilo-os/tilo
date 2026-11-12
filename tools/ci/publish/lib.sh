@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Shared by the publishing scripts. Sourced, not run.
 #
-# A publishing check learns what it publishes for from t: T_REF is the branch (`main`,
-# `stable`) or `tag:<name>` of the trusted run, T_COMMIT its commit. Everyone pushes to main,
-# so main only ever publishes development artifacts; releases come from stable and release
-# tags, which only the stabilizer pushes.
+# A publishing check learns what it publishes for from t: T_REF is the branch (`main`, or one the
+# server follows) or `tag:<name>` of the trusted run, T_COMMIT its commit. Everyone pushes to main,
+# so main only ever publishes development artifacts; releases are cut by a release tag
+# (`tag:vMAJOR.MINOR.PATCH`), whose run builds, signs and publishes what the release carries.
 
 # What a build needs as well (die, the scratch directory, buildah, pinned assets, image digests)
 # is build-lib.sh's, which builds source alone, so they are not keyed on how publishing works.
@@ -176,8 +176,8 @@ registry_copy() {
 }
 
 # The frozen RPM snapshot a build installs from (rpm-snapshot-ref.sh wrote SNAPSHOT): the
-# published snapshot in SNAPSHOT/rpms-ref, or, where this package set is not published yet (off
-# stable, before stable publishes it), this run's image-rpms-ARCH in RPMS, loaded unsigned into
+# published snapshot in SNAPSHOT/rpms-ref, or, where this package set is not published yet (a
+# release tag has not published it), this run's image-rpms-ARCH in RPMS, loaded unsigned into
 # the store `b` runs on (use_buildah first). Sets rpms_ref, what the Containerfile's FROM takes,
 # and rpms_source, what the build records beside its output: the published reference, or
 # "unsigned image-rpms-ARCH DIGEST", which require_published_snapshot refuses, so a build of an

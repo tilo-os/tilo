@@ -261,7 +261,7 @@ cmd_apply() {
   local sealed=$1 signed=$2 out=$3 id
   guest_tools
   load_archive "$sealed" localhost/tilo:release
-  # The seal checks an image of a package set stable has yet to publish; a release ships none.
+  # The seal checks an image of a package set no release tag has published; a release ships none.
   [[ $(podman image inspect --format '{{index .Labels "org.tilo.rpms.trust"}}' localhost/tilo:release) != unsigned ]] \
     || die 'a release installs from a published RPM snapshot, not the unsigned set of its run'
   rm -rf "$out"
