@@ -25,6 +25,7 @@ pub mod details;
 pub mod fetcher;
 pub mod flathub;
 
+use crate::resource::CATALOG;
 use std::collections::{BTreeMap, HashSet};
 
 use ui::search::{FieldWeight, ListIndex};
@@ -76,7 +77,7 @@ pub fn now_unix() -> u64 {
 /// localized fields and kept details are in this language.
 #[must_use]
 pub fn desktop_locale() -> String {
-    crate::resource::STORE_CATALOG.current_locale()
+    crate::resource::CATALOG.current_locale()
 }
 
 /// Whether `item` is a bot: bots have their own section and are never in an
@@ -103,8 +104,8 @@ pub fn is_listed_app(item: &StoreItem) -> bool {
 #[must_use]
 pub fn source_label(item: &StoreItem) -> String {
     match &item.source {
-        StoreSource::Tilo { .. } => ui::i18n!("store-source-tilo"),
-        StoreSource::Flathub => ui::i18n!("store-source-flathub"),
+        StoreSource::Tilo { .. } => CATALOG.t("store-source-tilo"),
+        StoreSource::Flathub => CATALOG.t("store-source-flathub"),
         StoreSource::FlatpakRemote { title, .. } => title.clone(),
     }
 }
@@ -115,7 +116,7 @@ pub fn source_label(item: &StoreItem) -> String {
 #[must_use]
 pub fn list_caption(item: &StoreItem) -> String {
     if item.not_built_for_this_device() {
-        ui::i18n!("store-not-for-this-device")
+        CATALOG.t("store-not-for-this-device")
     } else {
         source_label(item)
     }
@@ -127,7 +128,7 @@ pub fn list_caption(item: &StoreItem) -> String {
 pub fn category_label(category: &str) -> String {
     let key = format!("store-category-{}", category.to_ascii_lowercase());
     if ui::i18n::I18nManager::has_message(&key) {
-        crate::resource::STORE_CATALOG.t(&key)
+        crate::resource::CATALOG.t(&key)
     } else {
         category.to_owned()
     }
@@ -555,7 +556,7 @@ mod tests {
     /// a person can get, leaves it out.
     #[test]
     fn an_app_without_a_build_for_this_processor_is_found_and_says_why() {
-        crate::resource::STORE_CATALOG.ensure();
+        crate::resource::CATALOG.ensure();
         let mut steam = app("com.valvesoftware.Steam", "Steam", StoreSource::Flathub);
         steam.categories = vec!["Game".into()];
         steam.listing.featured_rank = Some(0);

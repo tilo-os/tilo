@@ -9,17 +9,3 @@
 2 apps/git-client/src/app.rs
 1 apps/git-client/src/app/diff.rs
 3 apps/git-client/src/app/remote.rs
-2 apps/sheets/src/app.rs
-10 apps/sheets/src/notion.rs
-47 apps/shortcuts/src/view.rs
-6 apps/store/src/actions.rs
-37 apps/store/src/app.rs
-145 apps/store/src/app/view.rs
-10 apps/store/src/app/window_bar.rs
-3 apps/store/src/catalogue/mod.rs
-7 apps/store/src/model.rs
-11 apps/store/src/package_import.rs
-3 apps/store/src/search.rs
-2 apps/store/src/widgets/card.rs
-13 apps/store/src/worker.rs
-5 apps/store/src/worker/refresh.rs

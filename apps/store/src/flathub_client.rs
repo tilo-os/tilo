@@ -84,19 +84,19 @@ pub fn remote_error(remote: &Remote, error: &app_host::client::CatalogueError) -
     use app_host::client::Refusal;
     tracing::warn!(repository = %remote.name, %error, "could not read Flatpak repository");
     match error.refusal() {
-        Some(Refusal::DeviceRepositoryStale) => crate::resource::STORE_CATALOG.t_args(
+        Some(Refusal::DeviceRepositoryStale) => crate::resource::CATALOG.t_args(
             "store-device-repository-refresh",
             &[("name", ui::i18n::ArgValue::Text(remote.title.clone()))],
         ),
-        Some(Refusal::TimedOut) => crate::resource::STORE_CATALOG.t_args(
+        Some(Refusal::TimedOut) => crate::resource::CATALOG.t_args(
             "store-repository-timeout",
             &[("name", ui::i18n::ArgValue::Text(remote.title.clone()))],
         ),
-        Some(Refusal::SystemUpdateNeeded) => crate::resource::STORE_CATALOG.t_args(
+        Some(Refusal::SystemUpdateNeeded) => crate::resource::CATALOG.t_args(
             "store-system-update-needed",
             &[("name", ui::i18n::ArgValue::Text(remote.title.clone()))],
         ),
-        Some(Refusal::Expired) | None => crate::resource::STORE_CATALOG.t_args(
+        Some(Refusal::Expired) | None => crate::resource::CATALOG.t_args(
             "store-repository-read-error",
             &[
                 ("name", ui::i18n::ArgValue::Text(remote.title.clone())),
@@ -539,7 +539,7 @@ mod tests {
 
     #[test]
     fn repository_timeout_explains_retry_without_rpc_internals() {
-        crate::resource::STORE_CATALOG.ensure();
+        crate::resource::CATALOG.ensure();
         let remote = Remote {
             name: "fedora".into(),
             url: "https://example.invalid/fedora".into(),
@@ -580,7 +580,7 @@ mod tests {
         );
         assert_eq!(
             message,
-            crate::resource::STORE_CATALOG.t_args(
+            crate::resource::CATALOG.t_args(
                 "store-repository-timeout",
                 &[("name", ui::i18n::ArgValue::Text("Fedora Flatpaks".into()))],
             )

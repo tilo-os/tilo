@@ -9,6 +9,7 @@
     reason = "test assertions"
 )]
 
+use shortcuts::locales::CATALOG;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -778,7 +779,7 @@ fn render_morning_matrix(app: &mut TestApp<App>, output: &std::path::Path, page:
                         .semantics
                         .as_ref()
                         .and_then(|node| node.name.as_deref()),
-                    Some(ui::i18n!("shortcuts-grant-explain").as_str()),
+                    Some(CATALOG.t("shortcuts-grant-explain").as_str()),
                     "wrapping must retain the complete accessible explanation",
                 );
             }
@@ -809,12 +810,12 @@ fn the_save_review_says_what_saving_allows() {
     })))
     .unwrap();
     press_bar(&mut app, "Review and save…");
-    let explain = ui::i18n!("shortcuts-grant-explain");
+    let explain = CATALOG.t("shortcuts-grant-explain");
     assert!(
         explain.contains("app actions listed") && explain.contains("person running it"),
         "{explain}"
     );
-    let none = ui::i18n!("shortcuts-grant-none");
+    let none = CATALOG.t("shortcuts-grant-none");
     assert!(none.contains("can't read or change"), "{none}");
     for (id, text) in [
         ("shortcuts-grant-explain", explain),
@@ -1058,7 +1059,7 @@ fn the_grant_summary_stays_on_the_page_as_steps_are_added() {
     app.harness()
         .wait_for_named("draft-name", tilo_test_env::hang_bound())
         .expect("the new draft opens in the editor");
-    let none = ui::i18n!("shortcuts-grant-none");
+    let none = CATALOG.t("shortcuts-grant-none");
     app.harness()
         .expect(
             &SemanticExpectation::named("shortcuts-grant-summary-none")

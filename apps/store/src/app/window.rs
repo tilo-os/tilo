@@ -336,7 +336,7 @@ impl Widget for StoreApp {
     /// canvas-free root still names the application for assistive technology.
     fn accessibility(&self) -> Option<AccessNode> {
         let mut root = AccessNode::new(Role::Window)
-            .with_name(crate::resource::STORE_CATALOG.t("store-window-name"))
+            .with_name(crate::resource::CATALOG.t("store-window-name"))
             .with_bounds(self.rect);
         let store = self.state.borrow();
         if !store.status_line.is_empty() {
