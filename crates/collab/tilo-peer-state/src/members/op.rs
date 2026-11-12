@@ -219,14 +219,11 @@ impl SignedMembershipOp {
     ///
     /// As [`Self::verified`], or the operation has no id.
     pub fn verified_stored(bytes: &[u8]) -> Result<(OpId, std::sync::Arc<Self>), String> {
-        use std::collections::HashMap;
-        use std::sync::{Arc, Mutex, OnceLock};
-        type Seen = Mutex<HashMap<Vec<u8>, (OpId, Arc<SignedMembershipOp>)>>;
-        static SEEN: OnceLock<Seen> = OnceLock::new();
+        use std::sync::Arc;
         /// Room for the logs of every workspace a host holds, kept from
         /// growing without bound.
         const LIMIT: usize = 65_536;
-        let seen = SEEN.get_or_init(Seen::default);
+        let seen = verified_ops();
         if let Some(known) = seen.lock().ok().and_then(|seen| seen.get(bytes).cloned()) {
             return Ok(known);
         }
@@ -267,6 +264,26 @@ impl SignedMembershipOp {
     #[must_use]
     pub fn person(&self) -> String {
         hex::encode(self.author.user_public_key)
+    }
+}
+
+type VerifiedOps = std::sync::Mutex<
+    std::collections::HashMap<Vec<u8>, (OpId, std::sync::Arc<SignedMembershipOp>)>,
+>;
+
+/// The operations [`SignedMembershipOp::verified_stored`] remembers, by
+/// their stored bytes.
+fn verified_ops() -> &'static VerifiedOps {
+    static SEEN: std::sync::OnceLock<VerifiedOps> = std::sync::OnceLock::new();
+    SEEN.get_or_init(VerifiedOps::default)
+}
+
+/// Forget every operation [`SignedMembershipOp::verified_stored`]
+/// remembers, as a process that just started holds none.
+#[cfg(test)]
+pub(crate) fn forget_verified_ops() {
+    if let Ok(mut seen) = verified_ops().lock() {
+        seen.clear();
     }
 }
 

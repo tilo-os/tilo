@@ -296,3 +296,65 @@ fn admission_cost_breakdown() {
         time("durable_parts", members, || next.durable_parts().unwrap());
     }
 }
+
+/// What a newcomer's copy works through taking in the governance of a
+/// workspace of `members` and reading who is in it, as a fresh page does:
+/// nothing it reads was checked in its process before.
+fn newcomer_work(members: u32) -> crate::governance_work::GovernanceWork {
+    let (host, authority, now) = crowd(members);
+    let message = host.workspace_message();
+    let owner = host.owner_certificates()[0].clone();
+    tilo_user_identity::cert::forget_verified_signatures();
+    crate::members::op::forget_verified_ops();
+    let _ = crate::governance_work::take();
+    let mut guest = StatePeer::joined(
+        host.workspace_id(),
+        owner,
+        vec![],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    guest
+        .receive(authority.verifying_key().to_bytes(), message, now)
+        .unwrap();
+    let access = guest.governance().governed_access(now).unwrap();
+    let members = usize::try_from(members).unwrap();
+    assert_eq!(access.member_devices.len(), members.saturating_add(2));
+    let people = guest.governance().governed_members(now).unwrap();
+    assert_eq!(people.len(), members);
+    guest.governance().governed_standings(now).unwrap();
+    assert!(matches!(guest.security_basis(), Some(Ok(_))));
+    crate::governance_work::take()
+}
+
+/// A newcomer taking in a workspace of 300 against one of 30. The
+/// governance names every member with their certificate and the proof they
+/// were let in, and the newcomer checks each of those once: one row decoded,
+/// three signatures (the certificate, the membership operation and the
+/// receipt of the invitation they redeemed) and one receipt read per
+/// member, a bound the protocol makes inherent. Every reading over all the
+/// rows is made a fixed number of times, however many members there are.
+#[test]
+fn a_newcomer_works_through_each_member_once() {
+    let small = newcomer_work(30);
+    let large = newcomer_work(300);
+    let more = |large: u64, small: u64| large.saturating_sub(small);
+    assert_eq!(
+        (large.governance_reads, large.replays, large.security_bases),
+        (small.governance_reads, small.replays, small.security_bases),
+        "readings over every row, at 300 members against 30: {large:?} against {small:?}"
+    );
+    assert!(
+        more(large.identities_decoded, small.identities_decoded) <= 270,
+        "one row decoded per member: {large:?} against {small:?}"
+    );
+    assert!(
+        more(large.signatures_verified, small.signatures_verified) <= 3 * 270,
+        "three signatures per member: {large:?} against {small:?}"
+    );
+    assert!(
+        more(large.receipts_read, small.receipts_read) <= 270,
+        "one receipt per member: {large:?} against {small:?}"
+    );
+}
