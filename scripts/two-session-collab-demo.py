@@ -57,7 +57,15 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 sys.path.insert(0, str(HERE / "headless-examples"))
 from real_apps import BUILD, Failed, Session, run, until  # noqa: E402
-from two_people import DESK, device_identity, joined, members_of, owner_of, workspaces  # noqa: E402
+from two_people import (  # noqa: E402
+    DESK,
+    device_identity,
+    front_workspace,
+    joined,
+    members_of,
+    owner_of,
+    workspaces,
+)
 
 # The native app: a package the tree builds, launched by the session's launcher.
 NOTES = "so.tilo.notes"
@@ -191,39 +199,55 @@ def stumbles(session: Session) -> list[str]:
                    ("collaboration stopped", "outcome unknown", "did not become current"))][-4:]
 
 
+def read_action(session: Session):
+    """Tasks' `read` of its workspace's records, as the session lists it now.
+
+    The row is an address in a listing that moves as the app publishes: a window
+    that opens another record, or an instance that comes up again, offers its
+    actions under a new address, and the one a listing held before is gone. So a
+    caller reads the row again each time rather than keeping one."""
+    for action in session.actions("Read the content"):
+        parts = (action.get("id") or "").split("\u001f")
+        if action.get("application") == TASKS and parts[-2:] == [f"tl:{TASKS}", "read"]:
+            return action
+    return None
+
+
 def tasks_content(session: Session, bound: float = 180.0) -> str:
     """What Tasks on this session holds: its own `read` of the workspace's records.
 
     A tilolang app answers a read of the workspace's records by kind and id, and a
     read of each record of its own: the task titles are in what it answers. An
     instance that has not attached to its broker yet answers nothing, which is a
-    task list none of whose titles are there rather than a failure of this run."""
-    def read_action():
-        for action in session.actions("Read the content"):
-            parts = (action.get("id") or "").split("\u001f")
-            if action.get("application") == TASKS and parts[-2:] == [f"tl:{TASKS}", "read"]:
-                return action
-        return None
-    try:
-        action = until("Tasks' read action", read_action, bound, 0.5)
-    except Failed:
-        return ""
-    try:
-        text = answers(session, action)
-    except Failed as error:
-        return f"(Tasks did not answer yet: {error})"
-    try:
-        records = json.loads(text)
-    except json.JSONDecodeError:
-        return text
-    if isinstance(records, dict):
-        for record in records.get("records") or []:
-            if str(record.get("kind", "")).startswith(f"tl.{TASKS}."):
+    task list none of whose titles are there rather than a failure of this run.
+    A read refused because the row the listing held has moved on is tried again
+    from a listing taken at the time, until `bound` has passed."""
+    deadline = time.monotonic() + bound
+    refusal = ""
+    while True:
+        action = read_action(session)
+        if action is not None:
+            try:
+                text = answers(session, action)
+            except Failed as error:
+                refusal = str(error)
+            else:
                 try:
-                    text += "\n" + answers(session, action, {"item": record["item"]})
-                except Failed as error:
-                    text += f"\n(Tasks did not answer yet: {error})"
-    return text
+                    records = json.loads(text)
+                except json.JSONDecodeError:
+                    return text
+                if isinstance(records, dict):
+                    for record in records.get("records") or []:
+                        if str(record.get("kind", "")).startswith(f"tl.{TASKS}."):
+                            try:
+                                text += "\n" + answers(session, action, {"item": record["item"]})
+                            except Failed as error:
+                                text += f"\n(Tasks did not answer yet: {error})"
+                                break
+                return text
+        if time.monotonic() >= deadline:
+            return f"(Tasks did not answer: {refusal})" if refusal else ""
+        time.sleep(0.5)
 
 
 def present(session: Session, room: str) -> list[str]:
@@ -326,15 +350,16 @@ def main() -> int:
             host.type(note_body)
             host.key("Enter")
             host.snapshot(out / "03-host-note.png")
-            find_note = listed_action(peer, NOTES, "Find note")
-            find_text = listed_action(peer, NOTES, "Find text")
-
             def peer_finds() -> str | None:
-                pages = answers(peer, find_note, {"title": note_title})
+                # The row is read again each time: an app's actions move with what its
+                # window shows, so one a listing held before a change may be gone.
+                pages = answers(peer, listed_action(peer, NOTES, "Find note", deadline=30.0),
+                                {"title": note_title})
                 return pages if note_title in pages else None
 
             def peer_holds_text() -> str | None:
-                hits = answers(peer, find_text, {"text": note_body})
+                hits = answers(peer, listed_action(peer, NOTES, "Find text", deadline=30.0),
+                               {"text": note_body})
                 return hits if note_title in hits else None
 
             found = until("the peer's Notes to find the page", peer_finds, CROSSING_BOUND, 0.5)
@@ -357,6 +382,13 @@ def main() -> int:
             check("the package Tasks runs in gives it no network of its own", offline, how)
 
             step("5", "a task typed on the host reaches the peer's Tasks")
+            # The peer's own Tasks is asked from the workspace the task crosses in: the app a
+            # person's desk shows there is the one whose copy of it must list the task, and a
+            # desk that stands elsewhere offers none of that workspace's actions at all.
+            for session in (host, peer):
+                standing = (front_workspace(session) or {}).get("room")
+                check(f"{session.tag} stands in the workspace the task crosses in",
+                      standing == room, f"{standing} of {room}")
             # Only the peer's window is looked at while the task travels: an app that has
             # not drawn it has nothing to answer, and asking would test the door instead.
             focus(peer, TASKS)
@@ -381,7 +413,9 @@ def main() -> int:
             peer.snapshot(out / "06-peer-task.png")
             listed = tasks_content(peer, bound=30.0)
             check("the peer's own Tasks lists the task the host typed", task_title in listed,
-                  listed[:500])
+                  f"{listed[:400]}; the peer's desk stands in "
+                  f"{(front_workspace(peer) or {}).get('room')}; "
+                  f"its session says {stumbles(peer)}")
 
             step("6", "each side's app answers from the one record")
             check("the host's own Tasks lists the task it typed", task_title in tasks_content(host))
@@ -389,7 +423,8 @@ def main() -> int:
                   note_title in answers(host, listed_action(host, NOTES, "Find note"),
                                         {"title": note_title}))
             check("the peer's Notes holds its text, read back on its own",
-                  note_title in answers(peer, find_text, {"text": note_body}))
+                  note_title in answers(peer, listed_action(peer, NOTES, "Find text"),
+                                        {"text": note_body}))
         except Failed as error:
             check(f"the run finished: {error}", False)
             for session, tag in ((host, "host"), (peer, "peer")):
