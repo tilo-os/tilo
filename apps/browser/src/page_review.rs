@@ -38,7 +38,7 @@ impl Device {
 
     /// The device as a person reads it: its name, or the start of its key
     /// when it has none.
-    pub(crate) fn label(&self) -> &str {
+    pub(crate) fn shown_as(&self) -> &str {
         if self.name.is_empty() {
             self.id.get(..8).unwrap_or(&self.id)
         } else {
@@ -1063,11 +1063,14 @@ mod tests {
         };
         let given = from("Given names").expect("a device");
         assert_eq!(
-            (given.id.as_str(), given.name.as_str(), given.label()),
+            (given.id.as_str(), given.name.as_str(), given.shown_as()),
             (laptop.as_str(), "Studio laptop", "Studio laptop")
         );
         let passport = from("Passport number").expect("a device");
-        assert_eq!((passport.name.as_str(), passport.label()), ("", "40404040"));
+        assert_eq!(
+            (passport.name.as_str(), passport.shown_as()),
+            ("", "40404040")
+        );
         assert_eq!(from("Arrival"), None, "an actor on this device");
 
         let mut record = Record::default();
@@ -1082,7 +1085,7 @@ mod tests {
         let devices: Vec<Option<&str>> = record
             .steps
             .iter()
-            .map(|step| step.device.as_ref().map(Device::label))
+            .map(|step| step.device.as_ref().map(Device::shown_as))
             .collect();
         assert_eq!(devices, [Some("Studio laptop"), None, None]);
     }

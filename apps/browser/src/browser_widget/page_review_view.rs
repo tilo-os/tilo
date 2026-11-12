@@ -542,7 +542,7 @@ fn actor_name(actor: &str, device: Option<&Device>) -> Option<String> {
             "browser-review-actor-on-device",
             &[
                 ("name", ArgValue::Text(name)),
-                ("device", ArgValue::Text(device.label().to_owned())),
+                ("device", ArgValue::Text(device.shown_as().to_owned())),
             ],
         ),
         None => name,
