@@ -1006,7 +1006,9 @@ enum Memory {
 /// is remembered for the program, and each connection the answer admits is an instance of its own
 /// (`claude-code@host`, seated as `claude-code@host#2`).
 fn same_program(remembered: &str, seated: &str) -> bool {
-    let program = |id: &str| id.split_once('#').map_or(id, |(program, _)| program);
+    fn program(id: &str) -> &str {
+        id.split_once('#').map_or(id, |(program, _)| program)
+    }
     program(remembered) == program(seated)
 }
 
@@ -2687,6 +2689,29 @@ mod tests {
         assert_eq!(proposed_agent_id("  Claude   Code 2.1 "), "claude-code-2-1");
         assert_eq!(proposed_agent_id("!!!"), "agent");
         assert_eq!(proposed_agent_id("MCP client"), "mcp-client");
+    }
+
+    /// What the commands on a seated agent's card act on: the run its connection works in and the
+    /// records it changed there, each once, as its seat heard of them.
+    #[test]
+    fn a_seat_keeps_the_run_and_the_records_its_agent_changed() {
+        let seats = Seats::new();
+        let seat = seats.joining(None);
+        seats.admitted(seat, "claude-code@host#1", "Claude Code", ("ws", "Desk"));
+        let seated = seats.working("claude-code@host#1").expect("seated here");
+        assert_eq!(seated.workspace, "ws");
+        assert_eq!(seated.run, None, "nothing of it worked in a run yet");
+        seats.working_in(seat, "tilo.task-run:abc");
+        seats.changed(seat, "so.tilo.notes", "main");
+        seats.changed(seat, "so.tilo.notes", "main");
+        let working = seats.working("claude-code@host#1").expect("seated here");
+        assert_eq!(working.run.as_deref(), Some("tilo.task-run:abc"));
+        assert_eq!(
+            working.changed,
+            vec![("so.tilo.notes".to_owned(), "main".to_owned())],
+            "each record once, however many steps touched it"
+        );
+        assert_eq!(seats.working("codex@host#1"), None, "nobody else");
     }
 
     #[test]
