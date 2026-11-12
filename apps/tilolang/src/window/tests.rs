@@ -1001,29 +1001,50 @@ fn what_an_agent_or_a_script_creates_through_the_door_moves_nobodys_view() {
     assert_eq!(workspace.opened_note(), opened);
 }
 
+/// The labels of the navigation items under `node`.
+fn places(node: &UiNode, out: &mut Vec<String>) {
+    if node.kind == "ui.NavItem" {
+        out.push(tilo_ui_host::reconcile::display(&node.props["label"]));
+    }
+    for child in &node.children {
+        places(child, out);
+    }
+}
+
+/// The sections of the navigation list under `node`: each heading and its places.
+fn sections(node: &UiNode, out: &mut Vec<(String, Vec<String>)>) {
+    if node.kind == "ui.NavSection" {
+        let mut held = Vec::new();
+        places(node, &mut held);
+        out.push((tilo_ui_host::reconcile::display(&node.props["title"]), held));
+        return;
+    }
+    for child in &node.children {
+        sections(child, out);
+    }
+}
+
+/// The composed shell's bar offers the action `label` once, and none of the empty states
+/// `states` draws a call to action beside it: one way to do it on the window at any width.
+fn one_offering(shell: &UiNode, states: &[UiNode], label: &str) {
+    assert_eq!(
+        header_labels(shell, "actions")
+            .iter()
+            .filter(|shown| *shown == label)
+            .count(),
+        1,
+        "the bar offers `{label}` once"
+    );
+    assert!(
+        states
+            .iter()
+            .all(|state| !state.props.contains_key("action")),
+        "no empty state draws a call to action beside the bar's"
+    );
+}
+
 #[test]
 fn a_new_channel_is_in_the_sidebar_before_anyone_writes_and_every_channel_under_its_category() {
-    /// The labels of the navigation items under `node`.
-    fn places(node: &UiNode, out: &mut Vec<String>) {
-        if node.kind == "ui.NavItem" {
-            out.push(tilo_ui_host::reconcile::display(&node.props["label"]));
-        }
-        for child in &node.children {
-            places(child, out);
-        }
-    }
-    /// The sections of the navigation list under `node`: each heading and its places.
-    fn sections(node: &UiNode, out: &mut Vec<(String, Vec<String>)>) {
-        if node.kind == "ui.NavSection" {
-            let mut held = Vec::new();
-            places(node, &mut held);
-            out.push((tilo_ui_host::reconcile::display(&node.props["title"]), held));
-            return;
-        }
-        for child in &node.children {
-            sections(child, out);
-        }
-    }
     let mut workspace = Workspace::new("chat");
     assert!(
         node_with(
@@ -1045,10 +1066,12 @@ fn a_new_channel_is_in_the_sidebar_before_anyone_writes_and_every_channel_under_
         empty.first().and_then(|state| state.props.get("title")),
         Some(&Value::text("No channels yet"))
     );
-    // While there is no channel the empty state carries the only New channel button, so the
-    // header does not show the same one twice; its button comes back with the first channel.
-    let empty = workspace.key_of("ui.EmptyState", "title", "No channels yet");
-    workspace.fire(&empty, "act", None);
+    // While there is no channel the window's bar carries the only New channel button, the way
+    // to make the first at every width; the places draw none beside it, which a wide window,
+    // where both stand side by side, does not show twice.
+    one_offering(&workspace.composed(), &empty, "New channel");
+    let button = workspace.key_of("ui.Button", "label", "New channel");
+    workspace.fire(&button, "press", None);
     assert_eq!(workspace.items_of("so.tilo.lang.chat", "channels"), 1);
     let shell = workspace.composed();
     let item = node_with(&shell, "ui.NavItem", "label", "new-channel")

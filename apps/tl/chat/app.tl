@@ -265,13 +265,12 @@ view sidebar(all: Conversations) {
     ui.NavShell(content_kind: .page, sidebar_title: "Channels") {
         sidebar: {
             // A workspace with no channel and no one else to talk to says so where its places
-            // would be, with the way to make the first: the screen a narrow window shows its
-            // places on never shows nothing.
+            // would be: the screen a narrow window shows its places on never shows nothing. The
+            // way to make the first is the window bar's own, which every width shows, so the
+            // places add no second one.
             if all.channels.is_empty()
                 and workspace.members.filter(m -> m != workspace.me).is_empty() {
-                ui.EmptyState("No channels yet", icon: .hash, action: "New channel") {
-                    on act: new_channel(all)
-                }
+                ui.EmptyState("No channels yet", icon: .hash)
             } else {
                 ui.NavList(selected: shown) {
                     for item in all.channels {
@@ -764,4 +763,10 @@ scenario "a thread" -> Thread {
         by: leo,
     )
     t
+}
+
+/// A workspace holding no conversation yet, as a first window opens on it: the places say so
+/// and the bar offers the way to make the first channel.
+scenario "no channels yet" -> Conversations {
+    conversations
 }

@@ -63,6 +63,7 @@ said = hjw5xd6b
 scenario "a message made from another" = pl4gh3jt
 scenario "a team's channels" = ftox4oqv
 scenario "a thread" = zhomgtni
+scenario "no channels yet" = w57cbkph
 send = peb7lz2j
 send_view = qaa5kdra
 send_view~present = dgrvpxre

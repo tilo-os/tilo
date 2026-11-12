@@ -1245,51 +1245,80 @@ fn a_conversation_says_who_is_typing_from_presence() {
     assert!(typing(&mut view).is_empty(), "he stopped");
 }
 
-/// With no channels yet, the workspace offers one way to make the first: the empty state's
-/// "New channel" button. The window's bar names the same action, and steps aside for the call
-/// to action the page draws itself (the host's header rules), so the person is offered one
-/// button; once a channel exists the empty state is gone and the bar keeps its primary.
+/// With no channels yet, the workspace offers one way to make the first: the window bar's
+/// "New channel" primary, which stands on the screen a window opens on at every width. The
+/// places say the workspace has no channels where its channels would stand, and draw no call
+/// to action of their own: a second one would stand beside the bar's on a wide window, and at
+/// a narrow width the two screens of the stack would offer one each, so no width is left with
+/// none or with two. Once a channel exists the places' state is gone and the bar keeps its
+/// primary.
 #[test]
 fn an_empty_workspace_offers_one_new_channel_button() {
     let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
     ada.commit();
 
-    let labelled = |view: &ViewInstance, label: &str| {
-        let mut buttons = Vec::new();
-        find_all(view.tree(), "ui.Button", &mut buttons);
-        buttons
+    // What the view offers: the bar's primary the host reads off the action's declaration, and
+    // each empty state's own call to action. The host's header rules only ever drop a control
+    // that repeats one the content or the sidebar offers, so a view offering this action once
+    // offers it once at every width, on every screen of the stack.
+    let offered = |view: &ViewInstance| -> Vec<String> {
+        let mut nodes: Vec<&UiNode> = Vec::new();
+        find_all(view.tree(), "ui.Button", &mut nodes);
+        find_all(view.tree(), "ui.EmptyState", &mut nodes);
+        nodes
+            .into_iter()
+            .filter_map(|node| {
+                let named = if node.kind == "ui.EmptyState" {
+                    node.props.get("action")
+                } else {
+                    node.props.get("label")
+                };
+                match named {
+                    Some(Value::Text(label)) => Some(label.clone()),
+                    _ => None,
+                }
+            })
+            .collect()
+    };
+    let new_channel = |view: &ViewInstance| -> usize {
+        offered(view)
             .iter()
-            .filter(|b| b.props.get("label") == Some(&Value::text(label)))
+            .filter(|label| label.as_str() == "New channel")
             .count()
     };
     let sidebar = ada.view(APP);
-    let empty = find(sidebar.tree(), "ui.EmptyState").expect("the empty state");
+    let mut states = Vec::new();
+    find_all(sidebar.tree(), "ui.EmptyState", &mut states);
     assert_eq!(
-        empty.props.get("action"),
-        Some(&Value::text("New channel")),
-        "the empty state is where the first channel is made"
+        states.first().and_then(|state| state.props.get("title")),
+        Some(&Value::text("No channels yet")),
+        "the places say the workspace has no channels where they would stand"
     );
-    // The bar's primary comes from the declaration the view no longer reads back; the empty
-    // state's action is the page's own. The host drops the bar's while both would stand
-    // (`tilo_ui_host::shell::header_rules`, its own test), leaving one button on the page.
     assert!(
-        labelled(&sidebar, "New channel") >= 1,
-        "the action is offered: the empty state's, and the bar's until the host composes it"
+        states
+            .iter()
+            .all(|state| !state.props.contains_key("action")),
+        "no empty state draws a call to action beside the bar's"
+    );
+    assert_eq!(
+        new_channel(&sidebar),
+        1,
+        "the window offers the way to make the first channel once"
     );
 
-    // A channel made, the sidebar's "no channels" empty state goes and the bar is the place
-    // to make another.
+    // A channel made, the places' "no channels" state goes and the bar is the place to make
+    // another.
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     let _ = call(&ada, "new_channel", vec![all, Value::text("design")]);
     ada.commit();
     let sidebar = ada.view(APP);
     assert!(
         find(sidebar.tree(), "ui.EmptyState")
-            .is_none_or(|state| state.props.get("action") != Some(&Value::text("New channel"))),
-        "no empty state offering New channel once a channel exists"
+            .is_none_or(|state| state.props.get("title") != Some(&Value::text("No channels yet"))),
+        "no empty state saying the workspace has no channels once one exists"
     );
     assert_eq!(
-        labelled(&sidebar, "New channel"),
+        new_channel(&sidebar),
         1,
         "the bar keeps its primary once the empty state is gone"
     );
