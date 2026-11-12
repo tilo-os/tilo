@@ -1436,7 +1436,9 @@ impl<R: Resource> ActionDecl<R> {
 
     /// The action it builds from `args` at `now_ms`.
     pub fn build_action(&self, args: &ActionArgs, now_ms: i64) -> Result<R::Action, String> {
-        typed::<R>((self.decl.build)(args, now_ms)?)
+        typed::<R>(crate::content::invoking(|| {
+            (self.decl.build)(args, now_ms)
+        })?)
     }
 
     /// Mark a bound edit as refining the resource's declared action of the
@@ -1745,7 +1747,9 @@ pub(crate) fn spec_of_declaration_on(
     let build = Arc::new(build);
     let label = decl.shown_label();
     let encoded = move |target: &Target, args: &tilo_actions::ActionArgs| {
-        encode_built(build(target, args, origin_now_ms()))
+        encode_built(crate::content::invoking(|| {
+            build(target, args, origin_now_ms())
+        }))
     };
     let spec = if let Some(prompt) = &decl.content {
         let param = ActionParam::required_owned(
@@ -2100,7 +2104,7 @@ pub(crate) fn apply_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
         "Action as JSON",
         ExecutionLocus::ClientLocal,
         vec![apply_param(vocabulary)],
-        move |args| match read(args) {
+        move |args| match crate::content::invoking(|| read(args)) {
             Ok(mut action) => {
                 action.stamp(origin_now_ms());
                 encoded(&action)
@@ -2438,8 +2442,18 @@ pub fn build_action<R: Resource>(
     typed::<R>(build_action_of(vocabulary::<R>(), id, arguments, now_ms)?)
 }
 
-/// [`build_action`] of the resource `vocabulary`.
+/// [`build_action`] of the resource `vocabulary`, on the side invoking it
+/// ([`crate::content::invoking`]).
 pub(crate) fn build_action_of(
+    vocabulary: &Vocabulary,
+    id: &str,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+    now_ms: i64,
+) -> Result<Built, String> {
+    crate::content::invoking(|| build_invoked(vocabulary, id, arguments, now_ms))
+}
+
+fn build_invoked(
     vocabulary: &Vocabulary,
     id: &str,
     arguments: &serde_json::Map<String, serde_json::Value>,

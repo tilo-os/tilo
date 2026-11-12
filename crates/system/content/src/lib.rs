@@ -90,6 +90,19 @@ pub fn hash_bytes(bytes: &[u8]) -> String {
     blake3::hash(bytes).to_hex().to_string()
 }
 
+/// Whether `bytes` are the content `reference` names: the bytes its address hashes, or for a
+/// sealed reference the bytes whose sealing under its key that address hashes.
+pub fn names(reference: &str, bytes: &[u8]) -> bool {
+    let Some(parsed) = ContentRef::parse(reference) else {
+        return false;
+    };
+    match parsed.key() {
+        None => verify(parsed.address(), bytes),
+        Some(key) => tilo_seal::content::seal(key, bytes)
+            .is_ok_and(|sealed| verify(parsed.address(), &sealed)),
+    }
+}
+
 /// True when `bytes` really are the content named by `hash`.
 pub fn verify(hash: &str, bytes: &[u8]) -> bool {
     hash_bytes(bytes) == hash
@@ -450,6 +463,31 @@ impl ContentStore {
         self.backend
             .put(&mut reader, &sniff(bytes).mime)
             .map(|stored| stored.hash)
+    }
+
+    /// Keep `bytes` as the content `reference` names: sealed under its key when it carries one, so
+    /// a device that holds the bytes keeps exactly what the writer stored. Refused when `bytes`
+    /// are not that content.
+    ///
+    /// # Errors
+    /// [`ContentError::HashMismatch`] for other bytes, else see [`ContentBackend::put`].
+    pub fn put_as(&self, reference: &str, bytes: &[u8]) -> Result<(), ContentError> {
+        let parsed = ContentRef::parse(reference)
+            .ok_or_else(|| ContentError::InvalidHash(reference.to_owned()))?;
+        let stored = match parsed.key() {
+            None => self.put_public(bytes)?,
+            Some(key) => {
+                let sealed = tilo_seal::content::seal(key, bytes)
+                    .map_err(|error| ContentError::Io(error.to_string()))?;
+                let mut reader = sealed.as_slice();
+                self.backend.put(&mut reader, SEALED_MIME)?.hash
+            }
+        };
+        if stored == parsed.address() {
+            Ok(())
+        } else {
+            Err(ContentError::HashMismatch)
+        }
     }
 
     /// Store everything `reader` yields without holding it in memory: the device store sends it

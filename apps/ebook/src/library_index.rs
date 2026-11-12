@@ -678,7 +678,7 @@ impl LibraryIndex {
     ) {
         self.store = store.cloned();
         for entry in entries {
-            let Some(hash) = entry.index_hash() else {
+            let Some(hash) = entry.index_reference() else {
                 continue;
             };
             if local(&entry.id) || self.segments.contains_key(&hash) || self.waiting.contains(&hash)
@@ -796,7 +796,7 @@ impl LibraryIndex {
         let send = self.fetched_send.clone();
         let wake = self.wake.clone();
         let spawned = self.background.spawn("books-fetch", move || {
-            let read = match entry.content_hash() {
+            let read = match entry.content_reference() {
                 Some(hash) => Read::from(&store, &hash, |_| {
                     let paths: HashMap<String, std::path::PathBuf> = HashMap::new();
                     crate::content::hydrate_library(
@@ -873,7 +873,7 @@ impl LibraryIndex {
                 .iter()
                 .filter(|entry| !local(&entry.id))
                 .filter_map(|entry| {
-                    let segment = self.segments.get(&entry.index_hash()?)?.clone()?;
+                    let segment = self.segments.get(&entry.index_reference()?)?.clone()?;
                     let title = if entry.title.trim().is_empty() {
                         "Untitled".to_owned()
                     } else {

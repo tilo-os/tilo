@@ -254,7 +254,11 @@ impl PdfMarkup {
         }
         let hash = crate::markup::unhex(&hash.to_ascii_lowercase())
             .ok_or("a source is named by its 64-digit content hash")?;
-        self.source = Bytes::Blob { hash, len };
+        self.source = Bytes::Blob {
+            hash,
+            len,
+            sealed: None,
+        };
         self.source_name = name;
         Ok(())
     }

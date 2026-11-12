@@ -546,3 +546,28 @@ fn references_parse_strictly() {
         Some("b".repeat(64))
     );
 }
+
+#[test]
+fn another_device_keeps_sealed_content_exactly_from_its_reference_and_bytes() {
+    let picture = [TINY_PNG, &vec![3_u8; 70 * 1024]].concat();
+    let reference = ContentStore::memory().sealing().put(&picture).unwrap();
+    assert!(names(&reference, &picture));
+    assert!(!names(&reference, TINY_PNG), "other bytes");
+    assert!(names(&hash_bytes(TINY_PNG), TINY_PNG), "a plain reference");
+
+    let elsewhere = ContentStore::memory();
+    elsewhere.put_as(&reference, &picture).unwrap();
+    assert!(
+        elsewhere.has(content_address(&reference).as_deref().unwrap()),
+        "kept under the writer's address"
+    );
+    assert_eq!(
+        elsewhere.read(&reference).as_deref(),
+        Some(picture.as_slice())
+    );
+    assert!(!elsewhere.has(&hash_bytes(&picture)), "never in the clear");
+    assert_eq!(
+        elsewhere.put_as(&reference, TINY_PNG),
+        Err(ContentError::HashMismatch)
+    );
+}

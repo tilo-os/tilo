@@ -275,7 +275,7 @@ impl PdfMarkup {
     #[must_use]
     pub fn pinned_source(&self) -> Option<PinnedSource> {
         match &self.source {
-            Bytes::Blob { hash, len } => Some(PinnedSource {
+            Bytes::Blob { hash, len, .. } => Some(PinnedSource {
                 hash: hex::encode(hash),
                 len: *len,
                 name: self.source_name.clone(),

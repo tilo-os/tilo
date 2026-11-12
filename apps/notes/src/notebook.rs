@@ -26,9 +26,9 @@ use ui::widget::marks::Mark;
 
 use crate::model::PageId;
 
-/// Largest image a note accepts. The notebook records a reference and the
-/// bytes live in the content store, but the action adding it carries the
-/// bytes once, so this stays well inside one action payload.
+/// Largest image a note accepts. The side placing it keeps the bytes, sealed,
+/// in the content store, and the action adding it carries the reference
+/// ([`Bytes::to_keep`]).
 pub const MAX_ASSET_BYTES: usize = 1024 * 1024;
 
 /// The title a note gets when none is given.
@@ -503,12 +503,8 @@ impl Notebook {
     /// Keep a PNG, JPEG or WebP picture with the notebook, for a note's body
     /// to show by `![alt](asset:<digest>)`.
     #[action(audience = "agents")]
-    pub fn keep_image(
-        &mut self,
-        cx: &mut ActionCx,
-        #[param("The picture")] bytes: Vec<u8>,
-    ) -> Result<(), Refusal> {
-        self.store_image(cx, &bytes).map(drop)
+    pub fn keep_image(&mut self, #[param("The picture")] bytes: Bytes) -> Result<(), Refusal> {
+        self.store_image(&bytes).map(drop)
     }
 
     /// Place image
@@ -518,13 +514,12 @@ impl Notebook {
     #[action(item = pages, audience = "agents")]
     pub fn place_image(
         &mut self,
-        cx: &mut ActionCx,
         page: &Id,
-        #[param("The picture")] bytes: Vec<u8>,
+        #[param("The picture")] bytes: Bytes,
         #[param("A short description of it")] alt: Option<String>,
     ) -> Result<(), Refusal> {
         self.pages.get(page).ok_or("no such note")?;
-        let digest = self.store_image(cx, &bytes)?;
+        let digest = self.store_image(&bytes)?;
         let alt = alt
             .filter(|alt| !alt.trim().is_empty())
             .unwrap_or_else(|| "Image".to_owned())
@@ -587,7 +582,7 @@ impl Notebook {
         cx: &mut ActionCx,
         #[param("Title")] title: String,
         #[param("Markdown content")] markdown: String,
-        #[param("Pictures the Markdown shows")] images: Vec<Vec<u8>>,
+        #[param("Pictures the Markdown shows")] images: Vec<Bytes>,
         #[param("The id the note is kept under; a new one when none")] note: Option<Id>,
     ) -> Result<(), Refusal> {
         check_markdown_import(&markdown).map_err(Refusal::new)?;
@@ -601,8 +596,8 @@ impl Notebook {
             Some(note) => note,
             None => Id::from(cx.uuid().to_string()),
         };
-        for bytes in images {
-            self.store_image(cx, &bytes)?;
+        for picture in &images {
+            self.store_image(picture)?;
         }
         let fallback = CATALOG.t("notes-imported-untitled");
         let page = Page::titled(
@@ -777,16 +772,24 @@ impl Notebook {
         ordered
     }
 
-    /// Keep picture `bytes` under its digest; the digest.
-    fn store_image(&mut self, cx: &ActionCx, bytes: &[u8]) -> Result<String, Refusal> {
-        let (digest, stored) = image(bytes)?;
-        if stored.needs_store() {
-            let store = cx.content().ok_or("no content store keeps pictures here")?;
-            store.put(bytes).map_err(|error| {
-                Refusal::new(format!("the content store refused the picture: {error}"))
-            })?;
+    /// Name `picture`, which the side placing it kept, by its digest; the
+    /// digest.
+    fn store_image(&mut self, picture: &Bytes) -> Result<String, Refusal> {
+        match picture.inline() {
+            // Data too large for the notebook is kept by whoever places it.
+            Some(bytes) if Bytes::of(bytes).inline().is_none() => {
+                return Err(Refusal::new("a picture is kept where it is placed"));
+            }
+            Some(bytes) => check_picture(bytes)?,
+            None if usize::try_from(picture.len()).unwrap_or(usize::MAX) > MAX_ASSET_BYTES => {
+                return Err(Refusal::new("a picture is between 1 byte and 1 MiB"));
+            }
+            None => {}
         }
-        self.images.insert(digest.clone(), stored);
+        let digest = blake3::Hash::from_bytes(picture.hash())
+            .to_hex()
+            .to_string();
+        self.images.insert(digest.clone(), picture.clone());
         Ok(digest)
     }
 
@@ -1112,19 +1115,19 @@ pub fn mark_op(block: &str, range: std::ops::Range<usize>, mark: &Mark) -> RichT
     }
 }
 
-/// The digest an image is kept under, and how it is stored.
+/// Whether `bytes` are a picture a note shows.
 ///
 /// # Errors
 /// Refuses anything but a PNG, JPEG or WebP picture of at most
 /// [`MAX_ASSET_BYTES`].
-pub fn image(bytes: &[u8]) -> Result<(String, Bytes), Refusal> {
+pub fn check_picture(bytes: &[u8]) -> Result<(), Refusal> {
     if bytes.is_empty() || bytes.len() > MAX_ASSET_BYTES {
         return Err(Refusal::new("a picture is between 1 byte and 1 MiB"));
     }
     if image_mime(bytes).is_none() {
         return Err(Refusal::new("a picture is PNG, JPEG or WebP"));
     }
-    Ok((blake3::hash(bytes).to_hex().to_string(), Bytes::of(bytes)))
+    Ok(())
 }
 
 /// The picture format of `bytes`, when it is one notes show.
@@ -1152,23 +1155,18 @@ pub fn content() -> tilo_content::ContentStore {
     ui::tilo_resource::content::current().unwrap_or_else(tilo_content::ContentStore::memory)
 }
 
-/// The pictures of a notebook's `images` whose bytes are readable now, by the `asset:`
-/// source their bodies name them by. A picture a collaborator added may
-/// still be on its way from their device; it is absent until it arrives.
+/// The pictures of a notebook's `images` whose bytes are readable now from
+/// `content`, by the `asset:` source their bodies name them by. A picture a
+/// collaborator added may still be on its way from their device; it is
+/// absent until it arrives.
 #[must_use]
 pub fn image_snapshot(
     images: &Map<Bytes>,
-    read: impl Fn(&str) -> Option<Vec<u8>>,
+    content: &tilo_content::ContentStore,
 ) -> HashMap<String, Vec<u8>> {
     images
         .iter()
-        .filter_map(|(digest, stored)| {
-            let bytes = match stored.inline() {
-                Some(bytes) => bytes.to_vec(),
-                None => read(digest).filter(|bytes| tilo_content::verify(digest, bytes))?,
-            };
-            Some((format!("asset:{digest}"), bytes))
-        })
+        .filter_map(|(digest, stored)| Some((format!("asset:{digest}"), stored.read(content)?)))
         .collect()
 }
 

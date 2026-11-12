@@ -243,7 +243,7 @@ fn place_of(book: &crate::model::Book, words: &str) -> (usize, usize) {
 
 #[test]
 fn a_book_with_no_local_content_is_found_by_a_phrase_from_its_middle_and_opens_there() {
-    use crate::resource::{StoredContent, index_book, shelve};
+    use crate::resource::{index_book, shelve};
 
     let mut app = TestApp::<EbookShell>::new().unwrap();
     // Nothing reaches outside the process, and the work done off the UI
@@ -257,18 +257,14 @@ fn a_book_with_no_local_content_is_found_by_a_phrase_from_its_middle_and_opens_t
     // text has not.
     let segment = crate::library_index::Segment::build(&book).encode();
     let index = content.put(&segment).unwrap();
-    let text = tilo_content::hash_bytes(&bytes);
     let mut entry =
         crate::content::prepare_imported_book(std::path::Path::new("odyssey.epub"), book.clone()).1;
     entry.shared = false;
-    entry.content = crate::model::LibraryEntry::stored(&text, bytes.len() as u64).unwrap();
+    entry.content = named(&bytes);
     app.invoke(shelve(&entry)).unwrap();
     app.invoke(index_book(
         &book.id,
-        StoredContent {
-            hash: index,
-            size: segment.len() as u64,
-        },
+        ui::tilo_resource::Bytes::kept_as(&segment, &index),
     ))
     .unwrap();
     app.settle();
@@ -373,11 +369,10 @@ fn a_book_whose_text_arrives_later_is_indexed_on_that_device() {
     let content = app.content();
     let bytes = crate::test_epub::long_classic(24, 6);
     let book = crate::epub::parse_epub(&bytes, 0, "").unwrap();
-    let text = tilo_content::hash_bytes(&bytes);
     let mut entry =
         crate::content::prepare_imported_book(std::path::Path::new("odyssey.epub"), book.clone()).1;
     entry.shared = false;
-    entry.content = crate::model::LibraryEntry::stored(&text, bytes.len() as u64).unwrap();
+    entry.content = named(&bytes);
     app.invoke(shelve(&entry)).unwrap();
     app.settle();
     let index_of = |app: &TestApp<EbookShell>| {
@@ -385,7 +380,7 @@ fn a_book_whose_text_arrives_later_is_indexed_on_that_device() {
             .entries
             .values()
             .find(|row| row.id == book.id)
-            .and_then(crate::model::LibraryEntry::index_hash)
+            .and_then(crate::model::LibraryEntry::index_reference)
     };
     assert_eq!(index_of(&app), None, "nobody has indexed it yet");
 
@@ -424,9 +419,7 @@ fn a_guest_who_may_only_view_builds_no_index_and_sends_no_write() {
     let mut entry =
         crate::content::prepare_imported_book(std::path::Path::new("odyssey.epub"), book.clone()).1;
     entry.shared = false;
-    entry.content =
-        crate::model::LibraryEntry::stored(&tilo_content::hash_bytes(&bytes), bytes.len() as u64)
-            .unwrap();
+    entry.content = named(&bytes);
     app.invoke(shelve(&entry)).unwrap();
     app.settle();
 
@@ -461,14 +454,14 @@ fn a_guest_who_may_only_view_builds_no_index_and_sends_no_write() {
         .find(|row| row.id == book.id)
         .cloned()
         .unwrap();
-    assert_eq!(row.index_hash(), None, "the row names no index");
+    assert_eq!(row.index_reference(), None, "the row names no index");
 }
 
 #[test]
 fn an_index_and_a_text_on_their_way_are_waited_for_and_the_passage_opens() {
     use ui::collaboration::record_content::{ContentLane, RecordContent};
 
-    use crate::resource::{StoredContent, index_book, shelve};
+    use crate::resource::{index_book, shelve};
 
     let mut app = TestApp::<EbookShell>::new().unwrap();
     books(&mut app).query = super::query_view::BookQuery::hermetic();
@@ -485,18 +478,9 @@ fn an_index_and_a_text_on_their_way_are_waited_for_and_the_passage_opens() {
     let mut entry =
         crate::content::prepare_imported_book(std::path::Path::new("odyssey.epub"), book.clone()).1;
     entry.shared = false;
-    entry.content =
-        crate::model::LibraryEntry::stored(&tilo_content::hash_bytes(&bytes), bytes.len() as u64)
-            .unwrap();
+    entry.content = named(&bytes);
     app.invoke(shelve(&entry)).unwrap();
-    app.invoke(index_book(
-        &book.id,
-        StoredContent {
-            hash: tilo_content::hash_bytes(&segment),
-            size: segment.len() as u64,
-        },
-    ))
-    .unwrap();
+    app.invoke(index_book(&book.id, named(&segment))).unwrap();
     app.settle();
 
     books(&mut app).query_opened();
@@ -582,4 +566,9 @@ fn a_store_book_that_did_not_arrive_carries_try_again() {
             "Try again fetched the book again ({width}, semantic: {semantic})"
         );
     }
+}
+
+/// `data` named as a content store keeps it, without its bytes here.
+fn named(data: &[u8]) -> ui::tilo_resource::Bytes {
+    crate::model::LibraryEntry::stored(&tilo_content::hash_bytes(data), data.len() as u64).unwrap()
 }

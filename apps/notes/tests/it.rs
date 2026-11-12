@@ -65,6 +65,8 @@ mod responsive_drawer;
 mod scroll_damage;
 #[path = "scroll_stability.rs"]
 mod scroll_stability;
+#[path = "sealed_pictures.rs"]
+mod sealed_pictures;
 #[path = "sidebar_actions.rs"]
 mod sidebar_actions;
 #[path = "sidebar_collab_growth.rs"]

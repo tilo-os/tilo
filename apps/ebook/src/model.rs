@@ -1222,20 +1222,27 @@ impl LibraryEntry {
         }
     }
 
-    /// The content hash (hex) the index of the book's text is kept under.
-    pub fn index_hash(&self) -> Option<String> {
-        match &self.index {
-            Bytes::Empty => None,
-            index => Some(blake3::Hash::from_bytes(index.hash()).to_hex().to_string()),
-        }
+    /// The reference a content store keeps the book's bytes under, when
+    /// the row names them.
+    pub fn content_reference(&self) -> Option<String> {
+        self.content.reference()
     }
 
-    /// Bytes the content store keeps as `hash` (its hex form), `len` long.
-    pub fn stored(hash: &str, len: u64) -> Option<Bytes> {
+    /// Bytes a content store elsewhere keeps as `hash` (its hex form),
+    /// `len` long, named without being here.
+    #[cfg(test)]
+    pub(crate) fn stored(hash: &str, len: u64) -> Option<Bytes> {
         blake3::Hash::from_hex(hash).ok().map(|hash| Bytes::Blob {
             hash: *hash.as_bytes(),
             len,
+            sealed: None,
         })
+    }
+
+    /// The reference a content store keeps the index of the book's text
+    /// under, when the row names one.
+    pub fn index_reference(&self) -> Option<String> {
+        self.index.reference()
     }
 
     /// A row names its book by `book:` and the start of its content hash,

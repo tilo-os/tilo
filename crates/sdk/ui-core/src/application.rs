@@ -700,20 +700,8 @@ impl HostContext {
             tracing::warn!(%error, "the app's surface could not be kept");
         }
         // The large parts of the actions this window records, and of those
-        // it replays, live here too.
-        let keep = store.clone();
-        let read = store.clone();
-        tilo_actions::keep_content_in(
-            move |content: tilo_actions::ContentParts| {
-                // Named by their own address in the recorded action.
-                for (_, bytes) in content {
-                    if let Err(error) = keep.put_public(&bytes) {
-                        tracing::warn!(%error, "an action's content could not be kept");
-                    }
-                }
-            },
-            move |hash| read.read(hash),
-        );
+        // it replays, live here too, sealed as the window's record content is.
+        tilo_actions::keep_content_in(store.clone());
         self.content = Some(store);
     }
     pub fn content(&self) -> Option<&tilo_content::ContentStore> {

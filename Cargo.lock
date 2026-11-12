@@ -17081,10 +17081,12 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-clock",
+ "tilo-content",
  "tilo-content-types",
  "tilo-lock",
  "tilo-selector",
  "tilo-test-env",
+ "tracing",
  "unicode-normalization",
  "uuid",
 ]

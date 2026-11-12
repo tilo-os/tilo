@@ -463,10 +463,7 @@ impl BooksApp {
     fn may_index(&self) -> bool {
         self.dispatch.may_invoke(&crate::resource::index_book(
             "",
-            crate::resource::StoredContent {
-                hash: String::new(),
-                size: 0,
-            },
+            ui::tilo_resource::Bytes::Empty,
         ))
     }
 
@@ -481,17 +478,16 @@ impl BooksApp {
             return;
         }
         for (book, segment) in built {
+            // Kept in the store however small: a device reads it from there
+            // before the book is here.
             match store.put(&segment) {
-                Ok(hash) => {
-                    let size = u64::try_from(segment.len()).unwrap_or(u64::MAX);
-                    self.edit(
-                        doc,
-                        crate::resource::index_book(
-                            &book,
-                            crate::resource::StoredContent { hash, size },
-                        ),
-                    );
-                }
+                Ok(reference) => self.edit(
+                    doc,
+                    crate::resource::index_book(
+                        &book,
+                        ui::tilo_resource::Bytes::kept_as(&segment, &reference),
+                    ),
+                ),
                 Err(error) => tracing::debug!(%book, %error, "books: an index could not be kept"),
             }
         }

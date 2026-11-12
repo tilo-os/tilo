@@ -211,23 +211,6 @@ impl ActionCx {
     pub const fn invocation(&self) -> Option<tilo_actions::InvocationId> {
         self.invocation
     }
-
-    /// The content store of the window applying the action, where the bytes
-    /// the record names by hash are kept: the one the host lent that window,
-    /// which carries them on the record's route. Content is not replayed —
-    /// a replica that applies the action reads the bytes through its own
-    /// window's store. `None` where no window applies it (a tool writing a
-    /// document directly).
-    ///
-    /// What an action stores here is kept under its own address, unsealed:
-    /// every replica applying the action must name it alike, and a key
-    /// drawn while applying would differ on each. Content to seal is put
-    /// by whoever invokes the action, into the window's store, and the
-    /// action carries the sealed reference it answered.
-    #[must_use]
-    pub fn content(&self) -> Option<tilo_content::ContentStore> {
-        crate::content::current().map(tilo_content::ContentStore::unsealed)
-    }
 }
 
 fn uuid_from(digest: &[u8; 32]) -> uuid::Uuid {

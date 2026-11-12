@@ -627,7 +627,7 @@ fn bytes_inline_small_values_and_reference_large_ones() {
     let small = Bytes::of(b"logo");
     assert_eq!(small.inline(), Some(&b"logo"[..]));
     let large = Bytes::of(&[7; 4096]);
-    assert!(large.needs_store());
+    assert!(large.inline().is_none());
     assert_eq!(large.len(), 4096);
     for value in [small, large, Bytes::default()] {
         assert_eq!(Bytes::from_json(&value.to_json()).unwrap(), value);

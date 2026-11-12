@@ -18,7 +18,7 @@ use ui::framework::{LaunchInput, ResourceApp, SeedCx, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::prelude::Effect;
 use ui::tilo_resource::{
-    self, ActionCx, Atom, Collection, Derived, Id, Invoke, JsonSchema, Map, Model, Refusal,
+    self, ActionCx, Atom, Bytes, Collection, Derived, Id, Invoke, JsonSchema, Map, Model, Refusal,
     resource,
 };
 use ui::widget::Element;
@@ -106,15 +106,6 @@ pub struct Passage {
     pub excerpt: String,
 }
 
-/// Bytes a content store keeps for a book.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct StoredContent {
-    /// Their content hash
-    pub hash: String,
-    /// How many bytes
-    pub size: u64,
-}
-
 /// One paragraph's share of a highlight: the characters of `block` from
 /// `start` to `end`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -164,17 +155,8 @@ impl Ebook {
         #[param("Author")] author: String,
         #[param("Subject")] subject: String,
         #[param("Whether a copy is in the shared workspace")] shared: bool,
-        #[param("The book's bytes, when a content store keeps them")] content: Option<
-            StoredContent,
-        >,
+        #[param("The book's bytes, when a content store keeps them")] content: Option<Bytes>,
     ) -> Result<(), Refusal> {
-        let content = match content {
-            Some(stored) => Some(
-                LibraryEntry::stored(&stored.hash, stored.size)
-                    .ok_or("the content hash is not a content hash")?,
-            ),
-            None => None,
-        };
         self.put_on_shelf(cx, book, [title, author, subject], shared, content);
         Ok(())
     }
@@ -210,10 +192,8 @@ impl Ebook {
     pub fn index_book(
         &mut self,
         #[param("The book's id")] book: String,
-        #[param("The index of its text, as a content store keeps it")] index: StoredContent,
+        #[param("The index of its text, as a content store keeps it")] index: Bytes,
     ) -> Result<(), Refusal> {
-        let index = LibraryEntry::stored(&index.hash, index.size)
-            .ok_or("the index hash is not a content hash")?;
         let entry = self
             .entries
             .get_mut(&Id::from_raw(book))
@@ -490,7 +470,7 @@ impl Ebook {
         book: String,
         [title, author, subject]: [String; 3],
         shared: bool,
-        content: Option<tilo_resource::Bytes>,
+        content: Option<Bytes>,
     ) {
         let key = Id::from_raw(book.clone());
         if let Some(entry) = self.entries.get_mut(&key) {
@@ -1139,15 +1119,12 @@ pub(crate) fn shelve(entry: &LibraryEntry) -> Invoke<Ebook> {
         author: entry.author.clone(),
         subject: entry.subject.clone(),
         shared: entry.shared,
-        content: entry.content_hash().map(|hash| StoredContent {
-            hash,
-            size: entry.content.len(),
-        }),
+        content: (!entry.content.is_empty()).then(|| entry.content.clone()),
     })
 }
 
 /// The index of `book`'s text, kept as `stored`, joining its row.
-pub(crate) fn index_book(book: &str, stored: StoredContent) -> Invoke<Ebook> {
+pub(crate) fn index_book(book: &str, stored: Bytes) -> Invoke<Ebook> {
     Ebook::INDEX_BOOK.with(books::IndexBook {
         book: book.to_owned(),
         index: stored,

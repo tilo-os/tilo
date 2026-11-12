@@ -392,6 +392,7 @@ impl Terminal {
             Some(hash) => Bytes::Blob {
                 hash: content_hash(hash).ok_or("the output is not a content hash")?,
                 len: run.output_len,
+                sealed: None,
             },
             None => Bytes::Empty,
         };
