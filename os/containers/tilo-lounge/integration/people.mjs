@@ -188,7 +188,10 @@ const dump = async (tab, name) => {
 // a turn between frames, so a wait of forty polls was adding forty turns of
 // work to the very page it waited for.
 const until = async (tab, expression, what, timeout = stepLimit(3)) => {
-  const value = await tab.evaluate(`globalThis.__tiloWait?.(() => (${expression}), ${timeout}) ?? false`)
+  // The frames the desk had presented as the wait began, kept in the page,
+  // so a wait that runs out says whether the desk drew at all meanwhile.
+  const value = await tab.evaluate(`(globalThis.__tiloWaitFrames = globalThis.tiloMount?.state()?.frames ?? 0,
+    globalThis.__tiloWait?.(() => (${expression}), ${timeout}) ?? false)`)
     .catch(() => false);
   if (value) return value;
   // Where the page stopped, in the failure line itself: the step it was in
@@ -200,9 +203,11 @@ const until = async (tab, expression, what, timeout = stepLimit(3)) => {
     progress: document.documentElement.dataset.arrivalProgress ?? null,
     status: document.getElementById('status')?.textContent ?? null,
     waited: ${JSON.stringify(what)},
+    framesWhenTheWaitBegan: globalThis.__tiloWaitFrames ?? null,
+    framesNow: globalThis.tiloMount?.state()?.frames ?? null,
   })`).catch(() => 'unreadable');
   await dump(tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
-  await failed(`${what} never appeared: ${shown}`, tab);
+  await failed(`${what} never appeared${timeout >= 1000 ? ` in ${timeout / 1000} s` : ''}: ${shown}; the machine: ${waits.machine().text}`, tab);
 };
 // The page's own wait, in every page this file opens: `ask` until it answers
 // something true, or `ms` has passed, resolved as it answers.
@@ -282,7 +287,7 @@ const settle = (tab, by = 2, owed = () => true) => waits.settle({
   timeoutMs: stepLimit(3),
   pollMs: 100,
   onTimeout: ({from, by}) => until(tab, `(globalThis.tiloMount?.state()?.frames ?? 0) >= ${from + by}`,
-    `the desk stepping ${by} more frame(s)`, 1),
+    `the desk stepping ${by} more frame(s) from frame ${from} in ${stepLimit(3) / 1000} s`, 1),
 });
 // The desk presented `by` more frames, or none for a whole step: a desk that
 // had already drawn what the person did (a pointer moved, a swipe it drew as

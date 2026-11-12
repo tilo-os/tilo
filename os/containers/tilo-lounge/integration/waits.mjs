@@ -7,6 +7,9 @@
 // finished. Every wait here ends when the desk's own answer says so, and the
 // frames it may also look at are progress only while the desk still owes work.
 
+import {availableParallelism} from 'node:os';
+import {readFileSync} from 'node:fs';
+
 /** How long one step of a page test may take before the run calls it hung
  * and says which step it was: one thing a person does and the page's answer.
  * TILO_STEP_SECONDS sets it (default 5), for a machine whose pages answer
@@ -94,3 +97,31 @@ export async function settle({
  * no rows (`searchSearching` false) as much as when the frames came. */
 export const settleSearch = (tab, {evaluate = tab.evaluate.bind(tab), ...rest} = {}) =>
   settle({evaluate, owed: () => searching(tab), ...rest});
+
+/** What the machine was doing when a wait ran out, so a run that timed out
+ * because the machine never gave the page a turn reads differently from one
+ * where the page itself hung. It reads the load against this machine's cores,
+ * the CPU pressure (the share of the last ten seconds in which something
+ * runnable waited for a core) of the machine and of this job's own cgroup,
+ * and how much of this job's CPU time its cgroup throttled.
+ * `starved` is true when the job's tasks waited for a core more than half of
+ * the last ten seconds or there were more runnable tasks than cores: then a
+ * frame or an answer that never came says the machine was too busy, not that
+ * the product hung. */
+export function machine() {
+  const read = path => { try { return readFileSync(path, 'utf8'); } catch { return ''; } };
+  const avg10 = text => Number(text.match(/^some avg10=([\d.]+)/m)?.[1] ?? NaN);
+  const cores = availableParallelism();
+  const [load1] = read('/proc/loadavg').split(' ').map(Number);
+  const hostPressure = avg10(read('/proc/pressure/cpu'));
+  const jobPressure = avg10(read('/sys/fs/cgroup/cpu.pressure'));
+  const stat = Object.fromEntries(read('/sys/fs/cgroup/cpu.stat').trim().split('\n')
+    .map(line => line.split(' ')).filter(pair => pair.length === 2).map(([k, v]) => [k, Number(v)]));
+  const throttled = stat.throttled_usec ? `, throttled ${(stat.throttled_usec / 1e6).toFixed(1)} s in ${stat.nr_throttled} periods` : '';
+  const pressure = Number.isFinite(jobPressure) ? jobPressure : hostPressure;
+  const starved = pressure > 50 || load1 > cores;
+  const text = `${starved ? 'STARVED' : 'not starved'}: load ${load1?.toFixed(1)} on ${cores} cores, `
+    + `cpu pressure ${Number.isFinite(hostPressure) ? hostPressure : '?'}% (machine) `
+    + `${Number.isFinite(jobPressure) ? jobPressure : '?'}% (this job)${throttled}`;
+  return {starved, text};
+}

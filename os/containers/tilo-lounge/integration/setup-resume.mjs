@@ -35,7 +35,7 @@ import {chmodSync, mkdirSync, writeFileSync} from 'node:fs';
 import {connect} from 'node:tls';
 import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
-import {stepLimit, deskMetrics} from './waits.mjs';
+import {stepLimit, deskMetrics, machine} from './waits.mjs';
 import {clock} from './timing.mjs';
 
 const [site, relay, tiloBin, siteCa, out] = process.argv.slice(2);
@@ -47,18 +47,19 @@ mkdirSync(out, {recursive: true});
 const report = {site, relay, at: new Date().toISOString(), cases: []};
 const failures = [];
 const open = [];
-// Each numbered case says how long it took as the next begins, so a slow run
-// names the case that was slow.
+// Each numbered case says how long it took as the next begins, the line
+// named after the case that ended, and each page load and agent stage inside
+// it says its own seconds, so a slow run names the part that was slow.
 const mark = clock();
 let caseNo = null;
 const check = (ok, what, detail = '') => {
   const number = what.match(/^(\d+)\./)?.[1] ?? caseNo;
   if (number !== caseNo) {
-    mark(`case ${number}`);
+    if (caseNo !== null) mark(`case ${caseNo}`);
     caseNo = number;
   }
   report.cases.push({ok: Boolean(ok), what, ...(detail ? {detail} : {})});
-  console.log(`${ok ? 'ok' : 'FAIL'} ${what}${!ok && detail ? `: ${detail}` : ''}`);
+  console.log(`${ok ? 'ok' : 'FAIL'} ${what}${!ok && detail ? `: ${detail}` : ''}${ok ? '' : ` (the machine: ${machine().text})`}`);
   if (!ok) failures.push(what);
   return Boolean(ok);
 };
@@ -116,8 +117,9 @@ const shot = async (tab, name) => {
   await sleep(400);
   // A capture waits on the page's next frame: one the GPU never draws is a
   // picture missing from the report, not the run's end.
-  const png = await Promise.race([tab.screenshot().catch(() => null), sleep(stepLimit(2)).then(() => null)]);
+  const png = await Promise.race([tab.screenshot().catch(() => null), sleep(stepLimit(1)).then(() => null)]);
   if (png) writeFileSync(join(out, `${name}.png`), png);
+  mark(`case ${caseNo}: picture ${name}${png ? '' : ' (none: no frame came)'}`);
   report.captures = [...(report.captures ?? []), `${name}.png`];
   // Where a check's outputs cannot be fetched, the log carries the capture
   // too, small, when asked (SETUP_RESUME_LOG_SHOTS=1).
@@ -140,7 +142,8 @@ const until = async (tab, expression, timeout = stepLimit(3)) => {
     await sleep(200);
   }
 };
-const firstFrame = tab => until(tab, 'globalThis.__firstFrame && JSON.stringify(globalThis.__firstFrame)', stepLimit(2)).then(text => JSON.parse(text ?? '{}'));
+const firstFrame = tab => until(tab, 'globalThis.__firstFrame && JSON.stringify(globalThis.__firstFrame)', stepLimit(2))
+  .then(text => { mark(`case ${caseNo ?? 1}: a page's first frame`); return JSON.parse(text ?? '{}'); });
 const setup = tab => tab.evaluate(`localStorage.getItem('tilo-setup')`).then(text => JSON.parse(text ?? 'null')).catch(() => null);
 const pageText = tab => tab.evaluate(`(document.body.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 400)`).catch(() => '');
 // Where the tab is: the first screen's step, or the workspace it is titled after.
@@ -233,10 +236,19 @@ printf '{"mcpServers":{"%s":{"type":"stdio","command":"%s","args":[%s],"env":{}}
   return {PATH: `${join(home, 'bin')}:${process.env.PATH}`, HOME: home, XDG_STATE_HOME: join(home, 'state'),
     XDG_CONFIG_HOME: join(home, 'config'), CLAUDECODE: '1', TILO_TEST_CA_FILE: `${siteCa}:${join(home, 'relay.pem')}`};
 };
-const login = (code, env) => new Promise(resolve => {
-  execFile(tiloBin, ['login', code, '--site', site], {env, timeout: 600_000, maxBuffer: 1 << 20},
-    (error, stdout, stderr) => resolve({code: error ? (error.code ?? 1) : 0, stdout, stderr}));
-});
+// `tilo login CODE` on that computer: a promise of how it ended, and `asked`,
+// which resolves once it says it waits for the person's tab, the moment the
+// agent is installing in earnest.
+const login = (code, env) => {
+  let saidWaiting;
+  const asked = new Promise(resolve => { saidWaiting = resolve; });
+  const child = execFile(tiloBin, ['login', code, '--site', site], {env, timeout: 600_000, maxBuffer: 1 << 20});
+  let stdout = '', stderr = '';
+  child.stdout.on('data', chunk => { stdout += chunk; });
+  child.stderr.on('data', chunk => { stderr += chunk; if (/Waiting for the person/.test(stderr)) saidWaiting(true); });
+  const ended = new Promise(resolve => child.on('close', code => { saidWaiting(false); resolve({code: code ?? 1, stdout, stderr}); }));
+  return Object.assign(ended, {asked});
+};
 
 // ---- One person, through every step.
 const person = await browser.context();
@@ -299,12 +311,13 @@ await tab.close();
 
 // 3. Agent installing while the tab is closed: it waits for this browser to approve it.
 const agent = login(codeOf(promptB), computer('one'));
-await sleep(3_000);
+await Promise.race([agent.asked, sleep(stepLimit(1))]);
 tab = await tabIn(person, 'reopened');
 await tab.navigate(site);
 frame = await firstFrame(tab);
 check(frame.step === 'waiting' && frame.prompt === promptB, '3. reopened while the agent installs: waiting, same prompt', JSON.stringify(frame));
 const loggedIn = await until(tab, `(document.getElementById('first-run-steps')?.innerText ?? '').includes('logged in as you') || document.documentElement.dataset.firstRun === 'connected'`, stepLimit(3));
+mark('case 3: the agent logged in');
 check(loggedIn, '3. the reopened tab approved the agent, which logged in', await pageText(tab));
 await shot(tab, 'resume-3-agent-installing');
 // 4. Signed in: reload.
@@ -320,6 +333,7 @@ check((['waiting', 'connected'].includes(frame.step) && (frame.step === 'connect
   '4. reloaded once the agent signed in: what it did so far at the first frame, or its workspace once it was in', JSON.stringify(frame));
 await shot(tab, 'resume-4-agent-signed-in');
 const ran = await agent;
+mark('case 4: tilo login finished');
 check(ran.code === 0, '3. tilo login finished', `${ran.stderr}${ran.stdout}`.slice(-600));
 // 5. Entered: the person's own workspace.
 const own = await until(tab, `document.documentElement.dataset.firstRun === undefined && /^Tilo · /.test(document.title) && !/lounge/i.test(document.title) && document.title`, stepLimit(3));
@@ -351,6 +365,7 @@ check(await until(tab, `(document.getElementById('first-run-steps')?.innerText ?
   '6. the agent logged in', await pageText(tab));
 await tab.close();
 const ranC = await agentC;
+mark('case 6: tilo login finished');
 check(ranC.code === 0 && /Entered/.test(ranC.stdout), '6. the agent entered the workspace while the tab was closed', `${ranC.stdout}`.slice(-400));
 tab = await tabIn(later, 'reopened-after-agent');
 await tab.navigate(site);
@@ -406,6 +421,7 @@ await click(tab, 'first-run-agent');
 check(await until(tab, `(document.getElementById('first-run-steps')?.innerText ?? '').includes('logged in as you') || document.documentElement.dataset.firstRun === 'connected'`, stepLimit(3)),
   '9. an agent that logs in at once is approved', await pageText(tab));
 const ranE = await agentE;
+mark('case 9: tilo login finished');
 check(ranE.code === 0 && /Entered/.test(ranE.stdout), '9. tilo login run the moment the prompt showed finishes and enters',
   `${ranE.stderr}${ranE.stdout}`.slice(-600));
 check(!/another user identity/.test(ranE.stderr), '9. never refused as another user identity', ranE.stderr.slice(-400));

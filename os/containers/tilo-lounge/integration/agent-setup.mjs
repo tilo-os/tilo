@@ -28,7 +28,7 @@ import {connect} from 'node:tls';
 import {join, resolve} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
-import {stepLimit, deskMetrics} from './waits.mjs';
+import {stepLimit, deskMetrics, machine} from './waits.mjs';
 
 const [site, relay, tiloBin, siteCa, out] = process.argv.slice(2);
 if (!site || !relay || !tiloBin || !siteCa || !out) {
@@ -76,6 +76,7 @@ const finish = async (code, message) => {
   // Said first: what follows reads every tab, and a tab that stopped answering
   // must not keep the run from saying why it failed.
   if (message) console.error(`FAIL: ${message}`);
+  if (message) console.error(`the machine as it failed: ${machine().text}`);
   // And what each tab said, before anything asks a tab: a run past its limit
   // is stopped, and a stopped run says nothing it had not said yet.
   if (message) {

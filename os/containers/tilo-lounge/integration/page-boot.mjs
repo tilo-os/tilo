@@ -21,7 +21,7 @@ import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
-import {stepLimit, deskMetrics, DESK} from './waits.mjs';
+import {stepLimit, deskMetrics, DESK, machine} from './waits.mjs';
 
 const [site, relay, out] = process.argv.slice(2);
 if (!site || !relay || !out) {
@@ -81,6 +81,7 @@ const finish = async (code, message) => {
     const said = tab.log.slice(-30);
     if (said.length) console.error(`--- the page said:\n${said.join('\n')}`);
     console.error(`FAIL: ${message}`);
+    console.error(`the machine as it failed: ${machine().text}`);
   }
   console.log(JSON.stringify(report));
   process.exit(code);

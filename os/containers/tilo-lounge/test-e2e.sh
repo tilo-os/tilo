@@ -247,6 +247,18 @@ run_flow() {
 # await_flow: the next flow to end, in the order they end, so each one's
 # seconds are its own; its result, and on failure what it said.
 failed=()
+# The machine as a flow ends: load against cores and the CPU pressure (the
+# share of the last ten seconds something runnable waited for a core) of the
+# machine and of this job, so a slow or timed-out flow on a starved node reads
+# differently from one where the product was slow on a machine with room.
+machine_now() {
+  local load pressure job
+  load=$(cut -d' ' -f1 /proc/loadavg 2>/dev/null)
+  pressure=$(sed -n 's/^some avg10=\([0-9.]*\).*/\1/p' /proc/pressure/cpu 2>/dev/null)
+  job=$(sed -n 's/^some avg10=\([0-9.]*\).*/\1/p' /sys/fs/cgroup/cpu.pressure 2>/dev/null)
+  printf 'load %s on %s cores, cpu pressure %s%% (machine) %s%% (this job)' \
+    "${load:-?}" "$(nproc)" "${pressure:-?}" "${job:-?}"
+}
 await_flow() {
   local status=0 pid= left=() one
   wait -n -p pid "${running[@]}" || status=$?
@@ -260,10 +272,10 @@ await_flow() {
   local took=$(($(stat -c %Y "$work/$1.log") - ${flow_started[$1]}))
   ((status != 124)) || echo "FAIL: $1 did not finish in ${limit}s" >> "$work/$1.log"
   if ((status == 0)); then
-    printf 'TIMING flow=%s seconds=%s result=ok\n' "$1" "$took"
-    grep '^ok:' "$work/$1.log" | sed "s/^/  [$1] /" || true
+    printf 'TIMING flow=%s seconds=%s result=ok (%s)\n' "$1" "$took" "$(machine_now)"
+    grep -E '^(TIMING|ok:)' "$work/$1.log" | sed "s/^/  [$1] /" || true
   else
-    printf 'TIMING flow=%s seconds=%s result=FAIL\n' "$1" "$took"
+    printf 'TIMING flow=%s seconds=%s result=FAIL (%s)\n' "$1" "$took" "$(machine_now)"
     # A failed check keeps no outputs: where the flow got to, step by step,
     # and what it said last are said here.
     echo "--- $1's steps:"

@@ -20,7 +20,7 @@
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
-import {stepLimit} from './waits.mjs';
+import {stepLimit, machine} from './waits.mjs';
 
 const [site, origin, workspace, out] = process.argv.slice(2);
 if (!site || !origin || !workspace || !out) {
@@ -62,6 +62,7 @@ const failed = async message => {
     console.error(`--- ${name} said:\n${last.join('\n')}`);
   }
   console.error(`FAIL: ${message}`);
+  console.error(`the machine as it failed: ${machine().text}`);
   finish(1);
 };
 
