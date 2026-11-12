@@ -218,6 +218,7 @@ impl Session {
             self.kept_at = Instant::now();
             self.shared.observe();
             self.follow_session_actions();
+            self.follow_settings_steps();
         }
         self.compositor.end_tick();
         Ok(())
