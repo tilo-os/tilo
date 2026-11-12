@@ -1096,6 +1096,56 @@ fn line_facts(app: &mut HeadlessApp<QuickSettingsApp>, test_id: &str) -> Vec<Str
     out
 }
 
+/// A session with no audio server: the volume row says there is no device
+/// where its track would be, stands no track to move, and stands as tall as
+/// a row with a device, so the panel does not move when the sound appears.
+/// With the sound back, it names the output it sets only when there is a
+/// choice: one output, the only place the sound can go, names nothing.
+#[test]
+fn the_volume_row_says_what_is_missing_and_names_an_output_only_to_choose_one() {
+    let _settled = ui::motion::testing::settled();
+    let (mut silent, _) = hosted("silent");
+    let absent = target(&mut silent, "qs-volume-row");
+    assert_eq!(
+        line_facts(&mut silent, "qs-volume-room"),
+        ["No audio device"],
+        "the row says what is missing, where the track would be"
+    );
+    assert!(
+        !has(&mut silent, "qs-volume"),
+        "no track with nothing to set"
+    );
+    assert!(
+        !has(&mut silent, "qs-volume-mute"),
+        "and no press that would do nothing"
+    );
+
+    let (mut audio, host) = hosted("controls");
+    assert_eq!(
+        line_facts(&mut audio, "qs-volume-device"),
+        ["Speakers"],
+        "of two outputs, the one playing is named"
+    );
+    let named = target(&mut audio, "qs-volume-row");
+    // The sound comes back with the one output this session plays through.
+    host.update(|state| state.sound_outputs.retain(|output| output.current));
+    audio.settle();
+    let present = target(&mut audio, "qs-volume-row");
+    assert!(has(&mut audio, "qs-volume"), "a device has its track");
+    assert!(
+        !has(&mut audio, "qs-volume-device"),
+        "one output: no name to read"
+    );
+    assert!(
+        (present.height() - absent.height()).abs() < 0.5,
+        "the row stands as tall either way: {present:?} against {absent:?}"
+    );
+    assert!(
+        present.height() < named.height(),
+        "the name was what the row grew by: {present:?} against {named:?}"
+    );
+}
+
 /// An output the sound graph names in a paragraph — the card, its mode and
 /// the screen after it — is one line under its slider: the screen and the
 /// port it plays through.

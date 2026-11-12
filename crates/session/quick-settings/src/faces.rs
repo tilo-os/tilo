@@ -93,19 +93,26 @@ impl Sliders {
         // stays, saying there is no audio device, and the sound's own
         // service turns it back on when the server appears.
         let available = state.volume_available && state.status.volume.is_some();
+        // A row names the output it sets only when there is a choice: one
+        // output is the only place the sound can go, and its name — the card
+        // with the profile it plays through — is a line about nothing. With
+        // no device at all, the name is the absence.
+        let device = if available {
+            match state.sound_outputs.as_slice() {
+                [_] => Vec::new(),
+                outputs => outputs
+                    .iter()
+                    .find(|output| output.current)
+                    .map_or_else(Vec::new, |output| crate::sound::output_facts(&output.name)),
+            }
+        } else {
+            vec![Fact::text(t("qs-sound-no-device"))]
+        };
         sliders.push(SliderFace {
             id: "qs-volume".into(),
             kind: SliderKind::Volume,
             name: t("qs-volume"),
-            device: if available {
-                state
-                    .sound_outputs
-                    .iter()
-                    .find(|output| output.current)
-                    .map_or_else(Vec::new, |output| crate::sound::output_facts(&output.name))
-            } else {
-                vec![Fact::text(t("qs-sound-no-device"))]
-            },
+            device,
             value: if !available {
                 String::new()
             } else if muted {
@@ -1164,7 +1171,9 @@ mod tests {
         assert_eq!(said(&volume.device), vec![t("qs-sound-no-device")]);
         assert!(!sliders.outputs, "there is no output to choose");
 
-        // The server came: the same row reads the output it landed.
+        // The server came: the same row reads the output it landed. There is
+        // one output, the one playing, so the row names nothing: a name is
+        // for choosing between outputs.
         state.volume_available = true;
         state.status.volume = Some(media::audio::default_node::VolumeState {
             level: 0.4,
@@ -1182,9 +1191,27 @@ mod tests {
             .find(|row| row.id == "qs-volume")
             .expect("an output to set");
         assert!(volume.available);
-        assert_eq!(said(&volume.device), ["Speakers"]);
+        assert!(volume.device.is_empty(), "the only output needs no name");
         assert_eq!(volume.value, "40%");
         assert!(sliders.outputs);
+
+        // A second output to choose from: the row says which one plays.
+        state.sound_outputs.push(SoundOutput {
+            node: 52,
+            name: "Studio headphones".into(),
+            current: false,
+        });
+        let sliders = Sliders::of(&state);
+        let volume = sliders
+            .rows
+            .iter()
+            .find(|row| row.id == "qs-volume")
+            .expect("an output to set");
+        assert_eq!(
+            said(&volume.device),
+            ["Speakers"],
+            "of two outputs, the one playing is named"
+        );
     }
 
     #[test]
@@ -1219,18 +1246,16 @@ mod tests {
         assert_eq!(state.status.battery, None);
         assert_eq!(state.status.link, None);
         assert!(!state.network.wifi.available);
-
-        let sliders = Sliders::of(&state);
-        let ids: Vec<String> = sliders.rows.iter().map(|row| row.id.clone()).collect();
+        let ids: Vec<String> = Sliders::of(&state)
+            .rows
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
         assert_eq!(
             ids,
             ["qs-volume"],
             "no brightness row stands at a level nobody set"
         );
-        let volume = &sliders.rows[0];
-        assert!(!volume.available);
-        assert!(volume.value.is_empty(), "and no level");
-        assert_eq!(said(&volume.device), vec![t("qs-sound-no-device")]);
     }
 
     #[test]

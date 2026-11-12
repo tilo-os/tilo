@@ -62,11 +62,13 @@ fn a_panel_publishes_its_accessibility_tree() {
     let mut session = session_with(&[panel()]);
     session.start_surface(&panel()).expect("the panel starts");
     shown(&mut session);
-    let names = assistive.until_it_sees(&mut session, "Brightness");
+    let names = assistive.until_it_sees(&mut session, "Night light");
 
     // The controls a person reaches with a screen reader are there, by the
-    // names they hear, and they can be pressed through AT-SPI.
-    for control in ["Brightness", "Volume", "Night light"] {
+    // names they hear, and they can be pressed through AT-SPI. This session
+    // runs no sound server and no backlight: the volume row says so rather
+    // than standing a control that could set nothing.
+    for control in ["Night light", "No audio device"] {
         assert!(
             names.iter().any(|name| name == control),
             "the panel's tree names no {control}: {names:?}"
@@ -87,22 +89,32 @@ fn the_reader_speaks_the_focused_panel_control() {
     let mut session = session_with(&[panel()]);
     session.start_surface(&panel()).expect("the panel starts");
     shown(&mut session);
-    assistive.until_it_sees(&mut session, "Volume");
+    let names = assistive.until_it_sees(&mut session, "Night light");
+    // This session has no audio server: the volume row says so, and stands
+    // no slider to reach or move.
     assert!(
-        !spoken.said().contains("Volume"),
+        names.iter().any(|name| name == "No audio device"),
+        "the panel says the row has no device: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|name| name == "Volume"),
+        "no volume control stands where nothing can be set: {names:?}"
+    );
+    assert!(
+        !spoken.said().contains("Night light"),
         "the panel speaks what it is focused on, and it starts out focused on nothing: {:?}",
         spoken.said()
     );
 
-    // Assistive technology focuses the volume control the way it acts on
+    // Assistive technology focuses a control the way it acts on
     // any app: the control the reader reached takes the keyboard.
     assert!(
-        assistive.focus("Volume"),
-        "the panel's volume control takes focus over AT-SPI"
+        assistive.focus("Night light"),
+        "the night light tile takes focus over AT-SPI"
     );
 
     let deadline = Instant::now() + OPENING;
-    while !spoken.said().contains("Volume") {
+    while !spoken.said().contains("Night light") {
         assert!(
             Instant::now() < deadline,
             "the panel's reader said nothing about the control it focused: {:?}",
