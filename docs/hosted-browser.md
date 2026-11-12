@@ -225,17 +225,18 @@ Per action, not per VM:
 ## Cost
 
 Measured with `t test hosted-vm-measure` (the VM host image and this
-checkout's guest on a KVM machine; small VMs, a one-form page open in each):
+checkout's guest on a KVM machine; small VMs, a one-form page open in each),
+over two runs; the slower ends are from a run on a fully booked build node:
 
 | | Cold (booted) | Clone of the template |
 | :--- | ---: | ---: |
-| Wake to the agent answering | 4.5 s | 0.12–0.25 s |
-| Engine start to `ready` | 5.9 s | 2.4–2.9 s |
-| Engine start to the page's first frame | 6.6 s | 2.7–3.3 s |
-| Host memory with the page open (PSS) | 615–645 MiB | 320–325 MiB |
+| Wake to the agent answering | 4.5–5.6 s | 0.12–0.86 s |
+| Engine start to `ready` | 5.9–7.6 s | 2.4–5.7 s |
+| Engine start to the page's first frame | 6.6–8.6 s | 2.7–7.0 s |
+| Host memory with the page open (PSS) | 615–700 MiB | 320–330 MiB |
 | … of which shared with the template | none | about 210 MiB of 530–545 MiB RSS |
 
-A D4s_v5 leaves its VMs 12 GiB: about 38 such clones by what they take.
+A D4s_v5 leaves its VMs 12 GiB: about 37 such clones by what they take.
 The host's memory budget counts a VM at its size instead (a small VM is
 4 GiB, as its tenant may fill it), so it wakes 3 small VMs there at once, and
 a workspace that only holds its Browser counts the same as one compiling.
