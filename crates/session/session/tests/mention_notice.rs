@@ -194,7 +194,7 @@ fn opening_in(
 /// development session starts in.
 fn home_with_an_identity() -> tilo_test_env::TestHome {
     let mut home = tilo_test_env::TestHome::new().expect("a home");
-    // The identity `dist/dev/shell-run.sh` mints before it starts its session: a throwaway whose
+    // The identity `dist/dev/nested-session.sh` mints before it starts its session: a throwaway whose
     // certificate lets this device govern its own workspaces, so the desk's workspace is one this
     // session holds.
     let identity = home.config().join("tilo/identity");

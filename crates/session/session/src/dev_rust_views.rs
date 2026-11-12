@@ -1,8 +1,8 @@
 //! A Rust app's resources and views in a development session, so a shell draws them live.
 //!
-//! Built only with `dev-rust-views` (a shot of a Rust app's view on the canvas,
-//! `dist/dev/shell-run.sh --dev-rust-views`): the sample catalogue of Tube's channels and videos,
-//! each a resource of the app `tube`, and the demo workspace's `#design-crit` channel of Chat,
+//! Built only with `dev-rust-views` (a shot of a Rust app's view on the canvas): the sample
+//! catalogue of Tube's channels and videos, each a resource of the app `tube`, and the demo
+//! workspace's `#design-crit` channel of Chat,
 //! each a resource of its app, published as the session publishes any app's resources, and the
 //! views `#[view]` declared in the crates registered with the shell's runtime, so a place that
 //! shows a channel draws that app's own `page` (one-app-model.md §2). Chat's channel posts: its

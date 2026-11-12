@@ -1,4 +1,4 @@
-//! The development session as `dist/dev/shell-run.sh` runs it: seen through the test-control
+//! The development session as `dist/dev/nested-session.sh` runs it: seen through the test-control
 //! socket `tilo-control snapshot` writes a PNG over, with the tilolang apps seeded, and ending on
 //! SIGTERM as it ends on its own, the files people choose for apps unmounted.
 
@@ -192,7 +192,7 @@ fn mounted(at: &Path) -> bool {
         .any(|entry| entry.split(' ').nth(4) == Some(at.to_str().unwrap()))
 }
 
-/// A headless `tilo-session`, started as `dist/dev/shell-run.sh` starts its first pass, in a
+/// A headless `tilo-session`, started as `dist/dev/nested-session.sh` starts its first pass, in a
 /// runtime directory and a process group of its own.
 struct StartedSession {
     child: std::process::Child,

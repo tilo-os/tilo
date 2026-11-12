@@ -4,16 +4,16 @@
 //!
 //! This is the seam a live tilolang app's pictures travel: the connector is the process with
 //! the network, and the window is the one that draws. Neither ever speaks to the image's
-//! filesystem daemon: a session started from a build under test serves them this one instead
-//! (`dist/dev/shell-run.sh`), because the image's daemon keeps a different wire and every call
-//! to it dies on the first frame.
+//! filesystem daemon: a session started from a build under test serves them this one instead,
+//! because the image's daemon keeps a different wire and every call to it dies on the first
+//! frame.
 //!
 //! Before this, no such server existed and both halves reached `/run/tilo/fs-blobs.sock`: the
 //! put failed with `blob service unavailable: the filesystem connection is closed`, and every
 //! still drew its placeholder.
 //!
-//! The server here is the shipped binary, started with the arguments the development session's
-//! script starts it with, and the two callers are the launcher's app-scoped connections.
+//! The server here is the shipped binary, started with the arguments a session's image starts it
+//! with, and the two callers are the launcher's app-scoped connections.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -36,8 +36,8 @@ fn fs_binary() -> PathBuf {
     tilo_test_env::package_binary!("fs")
 }
 
-/// A session's media server at `socket`, keeping content in `store`, as
-/// `dist/dev/shell-run.sh` starts one.
+/// A session's media server at `socket`, keeping content in `store`, as a session started from
+/// a build under test serves one.
 struct Server {
     child: Child,
     socket: PathBuf,

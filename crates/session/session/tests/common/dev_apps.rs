@@ -1,7 +1,7 @@
 //! The tilolang apps a development session installs, for the tests that start one: each
 //! `apps/tl/<name>` built with `tilolang build` into a signed `.tapp` , and installed with
 //! `package-store` into the test's own app store, the way `tilo-install` installs a person's app
-//! and `dist/dev/shell-run.sh` installs a dev session's.
+//! and `tilolang run` installs a dev session's.
 //! The session then reads the apps the way it reads any installed app: the payload from its store
 //! row, the manifest the launcher opens it with, and the origins the connector planning plans from.
 //! Nothing here compiles a package into a session; the only thing a test seeds is each app's first

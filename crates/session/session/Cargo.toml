@@ -41,7 +41,7 @@ dev-overrides = []
 # Publishes a Rust app's (Tube's, Chat's) resources and views in a development session, so a
 # shell draws them live: Tube's sample catalogue and Chat's demo conversation, with the views a
 # `#[view]` declares, never the live worker. A shot of a Rust app's view on the canvas builds
-# with it (dist/dev/shell-run.sh --dev-rust-views); a production image never does.
+# with it (`--features dev-rust-views`); a production image never does.
 dev-rust-views = ["dep:tube", "chat/samples"]
 
 [dependencies]
@@ -410,7 +410,7 @@ tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 # the sample catalogue's channels and videos, never the live worker.
 tube = { path = "../../../apps/tube", default-features = false, features = ["samples"] }
 # A development session's tilolang apps, built into signed `.tapp`s the tests install into
-# their own app store: the same packages `dist/dev/shell-run.sh` installs.
+# their own app store: the same packages a development session installs.
 tilolang-cli = { path = "../../lang/tilolang-cli" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 package-store = { path = "../../packaging/package-store", features = ["store"] }
