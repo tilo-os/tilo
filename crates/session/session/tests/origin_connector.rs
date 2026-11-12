@@ -277,6 +277,80 @@ fn client_items(session: &Session, kind: &str) -> Vec<(String, String)> {
     items
 }
 
+/// "youtube videos of <creator>" typed on the canvas places that creator's channel, live: the
+/// channel is not in the client's records when the person types, and the client's own search
+/// action asks its origin (here a **scripted test origin**, not YouTube), whose answer becomes the
+/// channel's record and then the place. Nothing here is special-cased for YouTube: the query names
+/// the client by its app and the channel by its type, and the app's own search action answers it
+/// (search.md §4, §7; shell.md §8 "Finding what to place").
+#[test]
+fn a_live_canvas_query_places_a_channel_the_client_never_held() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().expect("a home");
+    let store = home.data().join("tilo-apps");
+    common::install_apps_in(&store, &home.state().join("tilolang"));
+    home.env().set("TILO_APPS_DATA_DIR", &store);
+    let launcher = connector_launcher(&home);
+    let root = private_home();
+    let mut session = session(&home, root.path(), &launcher);
+
+    // The channel the scripted test origin answers for "compositor" is not held before the query:
+    // only the client's own scenario channels are.
+    common::until(&mut session, "the client's root", |session| {
+        session
+            .resources()
+            .iter()
+            .any(|resource| resource.kind == format!("tl.{TUBE}.YouTube"))
+    });
+    assert!(
+        !record_says(&session, NAME),
+        "the channel the scripted test origin answers with is not in the record before the query"
+    );
+
+    // The person types `youtube videos of <creator>` on the canvas, as the canvas entry's own
+    // `place-found` action receives it.
+    session
+        .invoke(
+            "shell:arrangement",
+            "place-found",
+            serde_json::json!({"text": "youtube videos of compositor", "x": 80, "y": 60})
+                .as_object()
+                .expect("arguments"),
+        )
+        .expect("the arranging action runs");
+
+    // The client's own search action asked its origin, and the answer became the channel's
+    // record: the channel the scripted test origin named, held now by the client.
+    common::until(
+        &mut session,
+        "the answered channel in the record",
+        |session| record_says(session, NAME),
+    );
+    // And that channel's page is the place, not the client's feed.
+    common::until(&mut session, "the answered channel placed", |session| {
+        placed(session)
+            .iter()
+            .any(|(kind, label)| kind == &format!("tl.{TUBE}.Channel") && label == NAME)
+    });
+    let held = placed(&session);
+    assert!(
+        held.iter()
+            .any(|(kind, label)| kind == &format!("tl.{TUBE}.Channel") && label == NAME),
+        "the query places the answered channel's page: {held:?}"
+    );
+    assert!(
+        !held
+            .iter()
+            .any(|(kind, _)| kind == &format!("tl.{TUBE}.YouTube")),
+        "the client's front page is not the place: {held:?}"
+    );
+}
+
+/// What stands on the canvas, by the kind and label of the resource each place shows.
+fn placed(session: &Session) -> Vec<(String, String)> {
+    common::placed_resources(session)
+}
+
 /// Whether any of the client's records holds `text` in a text field, as the session's door reads
 /// them.
 fn record_says(session: &Session, text: &str) -> bool {
