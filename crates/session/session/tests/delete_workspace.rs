@@ -94,7 +94,6 @@ fn workspace_held_here(state: &Path, workspace: WorkspaceId, cert: &DeviceCert, 
                 workspace,
                 TransportOrigin::RetainedRelayDelta(host),
                 postcard::from_bytes(&frame).expect("a publication is a message"),
-                None,
                 SystemTime::now(),
             )
             .expect("the host admits the workspace's people");

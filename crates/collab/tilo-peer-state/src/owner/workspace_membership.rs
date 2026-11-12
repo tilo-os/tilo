@@ -15,8 +15,7 @@ pub(crate) struct StoredMembershipReceipt {
 
 impl NativeWorkspaceOwner {
     /// Commit a typed membership command as this device, signed by `signer`,
-    /// its custody of its key, outside the owner's turn
-    /// ([`Self::signed_turn`]): the workspace's admission decides it against the caller's
+    /// its custody of its key, outside the owner's turn: the workspace's admission decides it against the caller's
     /// grants, here and on every device that receives it. A device of the
     /// workspace's owner publishes the governance as a checkpoint; any other
     /// member publishes the changes it made, which every participant admits

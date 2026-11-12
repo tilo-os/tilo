@@ -157,7 +157,7 @@ impl<'a> Membership<'a> {
         })
     }
 
-    /// Write `command` into the workspace's governance as this device, signed with its own key,
+    /// Write `command` into the workspace's governance as this device, signed by its custody,
     /// saying why when the workspace refuses it or cannot publish it.
     fn command(&self, command: WorkspaceMembershipCommand) -> Result<(), String> {
         let identity = self.engine.identity();
@@ -173,7 +173,7 @@ impl<'a> Membership<'a> {
             .owner()
             .commit_workspace_membership_command(
                 request,
-                &identity.signing_key()?,
+                identity.signer.as_ref(),
                 tilo_clock::SystemTime::now(),
             )
             .map(|_receipt| ())

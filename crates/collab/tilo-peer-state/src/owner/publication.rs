@@ -1091,7 +1091,7 @@ impl NativeWorkspaceOwner {
     /// leave every member with a receipt no other member can merge.
     ///
     /// The snapshots are signed by `signer`, this device's custody of its key,
-    /// outside the owner's turn ([`Self::signed_turn`]).
+    /// outside the owner's turn.
     ///
     /// # Errors
     /// The workspace is not held here, `signer` is not this device's, signing

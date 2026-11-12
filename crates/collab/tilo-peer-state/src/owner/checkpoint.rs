@@ -1,9 +1,10 @@
 //! Native app-record checkpoints. Content is retained before a signed workspace root
 //! crosses the owner's ordinary publication barrier. No historical grants survive.
+use crate::owner::write::Signatures;
 use crate::owner::{DocumentRead, NativeCommittedView, NativeWorkspaceOwner, Store, WorkspaceId};
 use crate::owner_commit::{CommitBinding, CommitTarget};
 use automerge::{ROOT, ReadDoc};
-use ed25519_dalek::SigningKey;
+use collab_types::signer::DeviceSigner;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use tilo_user_identity::DeviceCert;
@@ -486,14 +487,14 @@ impl NativeWorkspaceOwner {
     pub fn execute_checkpoint(
         &self,
         request: &CheckpointRequest,
-        key: &SigningKey,
+        signer: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<serde_json::Value, String> {
         request.digest()?;
         let workspace =
             WorkspaceId::parse(&request.workspace).ok_or("invalid checkpoint workspace")?;
         self.with_current(workspace, |view| {
-            view.peer.workspace().check_checkpoint_writer(key, now)
+            view.peer.workspace().check_checkpoint_writer(signer, now)
         })?;
         match &request.command {
             CheckpointCommand::Capture {
@@ -501,30 +502,35 @@ impl NativeWorkspaceOwner {
                 description,
                 routes,
             } => {
-                let ack = self.capture_checkpoint_bound(
-                    workspace,
-                    &request.caller,
-                    key,
-                    CheckpointCapture {
-                        id: request.invocation,
-                        name,
-                        description,
-                        routes,
-                    },
-                    now,
-                    Some(request),
-                )?;
+                let capture = CheckpointCapture {
+                    id: request.invocation,
+                    name,
+                    description,
+                    routes,
+                };
+                let ack = self.signed_turn(signer, |key| {
+                    self.capture_checkpoint_bound(
+                        workspace,
+                        &request.caller,
+                        key,
+                        capture,
+                        now,
+                        Some(request),
+                    )
+                })?;
                 serde_json::to_value(ack).map_err(|e| e.to_string())
             }
             CheckpointCommand::NameBind { name, id } => {
-                let ack = self.bind_checkpoint_name_bound(
-                    workspace,
-                    &request.caller,
-                    key,
-                    name,
-                    *id,
-                    Some(request),
-                )?;
+                let ack = self.signed_turn(signer, |key| {
+                    self.bind_checkpoint_name_bound(
+                        workspace,
+                        &request.caller,
+                        key,
+                        (name, *id),
+                        now,
+                        Some(request),
+                    )
+                })?;
                 serde_json::to_value(ack).map_err(|e| e.to_string())
             }
             CheckpointCommand::Inspect { id } => {
@@ -547,17 +553,19 @@ impl NativeWorkspaceOwner {
         &self,
         workspace: WorkspaceId,
         caller: &DeviceCert,
-        key: &SigningKey,
+        signer: &dyn DeviceSigner,
         capture: CheckpointCapture<'_>,
         now: SystemTime,
     ) -> Result<CheckpointAcknowledgement, String> {
-        self.capture_checkpoint_bound(workspace, caller, key, capture, now, None)
+        self.signed_turn(signer, |key| {
+            self.capture_checkpoint_bound(workspace, caller, key, capture, now, None)
+        })
     }
     fn capture_checkpoint_bound(
         &self,
         workspace: WorkspaceId,
         caller: &DeviceCert,
-        key: &SigningKey,
+        key: &Signatures,
         capture: CheckpointCapture<'_>,
         now: SystemTime,
         request: Option<&CheckpointRequest>,
@@ -652,7 +660,7 @@ impl NativeWorkspaceOwner {
         workspace: WorkspaceId,
         candidate: &NativeCommittedView,
         index: &Index,
-        key: &SigningKey,
+        key: &Signatures,
         now: SystemTime,
     ) -> Result<(), String> {
         let address = put_metadata(self.0.store.as_ref(), index)?;
@@ -669,6 +677,7 @@ impl NativeWorkspaceOwner {
                 now,
                 generation,
             )?;
+            key.settled()?;
             record.generation = generation;
             crate::owner::publication::replace_governance_checkpoint(
                 live,
@@ -686,24 +695,26 @@ impl NativeWorkspaceOwner {
         &self,
         workspace: WorkspaceId,
         caller: &DeviceCert,
-        key: &SigningKey,
+        signer: &dyn DeviceSigner,
         name: &str,
         id: uuid::Uuid,
     ) -> Result<(), String> {
-        self.bind_checkpoint_name_bound(workspace, caller, key, name, id, None)
-            .map(|_| ())
+        let now = SystemTime::now();
+        self.signed_turn(signer, |key| {
+            self.bind_checkpoint_name_bound(workspace, caller, key, (name, id), now, None)
+        })
+        .map(|_| ())
     }
     fn bind_checkpoint_name_bound(
         &self,
         workspace: WorkspaceId,
         caller: &DeviceCert,
-        key: &SigningKey,
-        name: &str,
-        id: uuid::Uuid,
+        key: &Signatures,
+        (name, id): (&str, uuid::Uuid),
+        now: SystemTime,
         request: Option<&CheckpointRequest>,
     ) -> Result<CheckpointAcknowledgement, String> {
         name_valid(name)?;
-        let now = SystemTime::now();
         let _turn = self.0.mutation.lock();
         let candidate = self.with_current(workspace, |v| Ok(v.clone()))?;
         candidate

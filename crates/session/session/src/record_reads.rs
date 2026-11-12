@@ -692,7 +692,6 @@ mod tests {
                     host.key.verifying_key().to_bytes(),
                 ),
                 message,
-                None,
                 testing::now(),
             )
             .expect("this device takes what the host sent");
@@ -772,7 +771,6 @@ mod tests {
                     host.key.verifying_key().to_bytes(),
                 ),
                 message,
-                None,
                 testing::now(),
             )
             .expect("this device takes what the host sent");

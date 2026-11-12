@@ -783,7 +783,6 @@ fn put_grant(f: &Fixture, grant: tilo_action_policy::Grant) {
                     f.native.key.verifying_key().to_bytes(),
                 ),
                 message,
-                Some(&f.native.key),
                 now,
             )
             .unwrap();

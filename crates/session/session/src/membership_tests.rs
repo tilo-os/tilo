@@ -64,7 +64,6 @@ fn workspace_here(joiner: &str) -> (Engine, Workspace, String, tempfile::TempDir
                 workspace_id,
                 tilo_peer_state::TransportOrigin::RetainedRelayDelta(cert.device_public_key),
                 postcard::from_bytes(bytes).expect("a workspace change"),
-                None,
                 now,
             )
             .expect("this device takes the workspace as its governor has it");
@@ -168,7 +167,6 @@ fn the_owner_admitted_ada() -> TwoDesks {
                     workspace_id,
                     tilo_peer_state::TransportOrigin::RetainedRelayDelta(a_cert.device_public_key),
                     message.clone(),
-                    None,
                     now,
                 )
                 .expect("a device takes the workspace as its host has it");
@@ -229,7 +227,6 @@ fn the_owner_raised_ada() -> (WorkspaceId, WorkspacePolicy, String, String, Stri
                     desks.owner_cert.device_public_key,
                 ),
                 message,
-                None,
                 desks.now,
             )
             .expect("this desk takes the change");
@@ -1046,7 +1043,6 @@ fn the_people_another_device_admits_are_on_this_desks_people() {
                     workspace_id,
                     tilo_peer_state::TransportOrigin::RetainedRelayDelta(cert.device_public_key),
                     postcard::from_bytes(bytes).expect("a workspace change"),
-                    None,
                     now,
                 )
                 .expect("this device takes the workspace's change");
@@ -1240,7 +1236,6 @@ fn a_second_device(
                     workspace_id,
                     tilo_peer_state::TransportOrigin::RetainedRelayDelta(cert.device_public_key),
                     postcard::from_bytes(bytes).expect("a workspace change"),
-                    None,
                     now,
                 )
                 .expect("the workspace's change is taken");
@@ -1369,7 +1364,6 @@ fn her_device_takes(
                 workspace_id,
                 tilo_peer_state::TransportOrigin::RetainedRelayDelta(cert.device_public_key),
                 message,
-                None,
                 now,
             )
             .expect("her device takes the workspace's change");
