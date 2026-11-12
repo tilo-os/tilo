@@ -1837,3 +1837,4 @@ imager-installer-preview-edit-preview = Einrichtung ändern
 imager-installer-preview-continue-preview = Weitermachen
 imager-installer-preview-back-in-preview = Zurück
 imager-installer-preview-restart-preview = Vorschau neu starten
+imager-setup-action-install-desktop = Tilo Desktop installieren

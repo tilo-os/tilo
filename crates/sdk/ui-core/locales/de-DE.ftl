@@ -1255,3 +1255,5 @@ step-running = Führt { $command } aus
 step-running-in = Führt in { $record } aus
 step-working = Arbeitet in { $record }
 step-working-alone = Arbeitet
+now-playing-seek = Wiedergabeposition
+now-playing-seek-help = Mit Pfeil links und rechts um fünf Sekunden springen

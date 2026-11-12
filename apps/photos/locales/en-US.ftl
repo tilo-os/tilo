@@ -553,3 +553,4 @@ photos-library-set-person-membership = Set person
 photos-library-rename-person = Rename person
 photos-library-remove-person = Remove person
 photos-library-remove-album = Remove album
+photos-search-library = Photo library

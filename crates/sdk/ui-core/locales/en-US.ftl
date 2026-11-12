@@ -1291,3 +1291,5 @@ step-running = Running { $command }
 step-running-in = Running in { $record }
 step-working = Working in { $record }
 step-working-alone = Working
+now-playing-seek = Playback position
+now-playing-seek-help = Use Left and Right Arrow to move five seconds
