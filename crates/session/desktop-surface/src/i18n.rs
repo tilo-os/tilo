@@ -151,20 +151,63 @@ mod tests {
         ui::i18n::I18nManager::set_locale("en-US");
         assert_eq!(
             english.0,
-            "Open on Ada's laptop. Share the window there to see it on this one."
+            "Open on Ada's laptop. Choose “Share with workspace” in the window's menu there to \
+             see it on this one."
         );
         assert_eq!(
             english.1,
-            "Open on { $app } { -brand }. Share the window there to see it on this one."
+            "Open on { $app } { -brand }. Choose “Share with workspace” in the window's menu \
+             there to see it on this one."
         );
         assert_eq!(
             german.0,
-            "Auf Adas Laptop geöffnet. Teile das Fenster dort, um es auf diesem Gerät zu sehen."
+            "Auf Adas Laptop geöffnet. Wähle dort im Menü des Fensters „Mit dem Arbeitsbereich \
+             teilen“, um es auf diesem Gerät zu sehen."
         );
         assert_eq!(
             german.1,
-            "Auf einem anderen Gerät geöffnet. Teile das Fenster dort, um es auf diesem zu sehen."
+            "Auf einem anderen Gerät geöffnet. Wähle dort im Menü des Fensters „Mit dem \
+             Arbeitsbereich teilen“, um es auf diesem zu sehen."
         );
+    }
+
+    /// What a window open on another device tells the person to choose there is the row that
+    /// window's menu offers, word for word, in every language: the two never name the share
+    /// differently.
+    #[test]
+    fn a_window_open_elsewhere_names_the_menu_row_that_shares_it_in_every_locale() {
+        let words = || {
+            (
+                t("window-menu-share-with-workspace"),
+                t("window-menu-stop-sharing-with-workspace"),
+                t_args("window-menu-stop-sharing-watched", &[("viewers", 2.into())]),
+                t("peer-window-elsewhere"),
+                t_args("peer-window-on-device", &[("device", "Framework".into())]),
+            )
+        };
+        let english = words();
+        ui::i18n::I18nManager::set_locale("de-DE");
+        let german = words();
+        ui::i18n::I18nManager::set_locale("en-US");
+        assert_eq!(english.0, "Share with workspace");
+        assert_eq!(english.1, "Stop sharing with workspace");
+        assert_eq!(english.2, "Stop sharing with workspace (2 watching)");
+        assert_eq!(german.0, "Mit dem Arbeitsbereich teilen");
+        assert_eq!(german.1, "Teilen mit dem Arbeitsbereich beenden");
+        assert_eq!(
+            german.2,
+            "Teilen mit dem Arbeitsbereich beenden (2 sehen zu)"
+        );
+        for (locale, (share, stop, _, elsewhere, on_device)) in
+            [("en-US", &english), ("de-DE", &german)]
+        {
+            assert!(
+                elsewhere.contains(share.as_str()) && on_device.contains(share.as_str()),
+                "{locale}: the placeholder names the row “{share}”: {elsewhere} / {on_device}"
+            );
+            assert!(on_device.contains("Framework"), "{locale}: {on_device}");
+            assert_ne!(share, stop, "{locale}");
+        }
     }
 
     #[test]

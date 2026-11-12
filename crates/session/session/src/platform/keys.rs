@@ -429,6 +429,14 @@ impl Shared {
         }
     }
 
+    /// What a window's menu asked of its share with the workspace, as the window shares' own
+    /// published actions: the window is shared, or no longer, by its tab.
+    pub(crate) fn follow_window_share_asks(&self) {
+        self.invocations
+            .borrow_mut()
+            .extend(crate::window_share::follow_asks(&self.handle));
+    }
+
     /// Run the published actions keys and gestures asked for, through the door every caller uses.
     /// The lock screen withholds the hosted surfaces' actions while it is up; the keys that work
     /// there are the device's own (a level, the power key), and the services publishing those still

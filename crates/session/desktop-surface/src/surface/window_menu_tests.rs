@@ -5,12 +5,15 @@ use crate::TileSource;
 use crate::navigation::{ChromeEffect, DeskEffect, Verb};
 use crate::surface::tests::{desk_with, one_window_desk};
 use crate::surface::{DesktopHandle, DesktopSurface};
-use std::collections::HashMap;
+use crate::surface::{WorkspaceShare, WorkspaceShares};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap};
+use std::rc::Rc;
 use tilo_desktop_model::width::{
     WIDTH_NARROW_PERMILLE, WIDTH_NORMAL_PERMILLE, WIDTH_WIDE_PERMILLE,
 };
 use tilo_desktop_model::{
-    Capability, DesktopTree, Display, GRANT_ALWAYS, Strip, StripId, TabId, TileContent,
+    Capability, DesktopTree, Display, GRANT_ALWAYS, IdMinter, Strip, StripId, TabId, TileContent,
     WindowWidth, Workspace, WorkspaceSlot,
 };
 use ui::widget::TabHolder;
@@ -795,6 +798,357 @@ fn only_a_window_the_sharing_app_lists_offers_the_share_row() {
         command(&tree, &route, UN_SHARE, None),
         Some(Verb::Chrome(ChromeEffect::ShareWindow { on: false, .. }))
     ));
+}
+
+/// What a session reads of the windows it shares with its workspaces, as a desk asks it: the
+/// reading a test changes, and every question the desk put to it.
+#[derive(Default)]
+struct SessionShares {
+    /// The workspaces the session takes part in, by id.
+    takes_part: RefCell<Vec<String>>,
+    /// The windows it shares, and how many devices view each.
+    shared: RefCell<BTreeMap<TabId, usize>>,
+    /// The window and workspace of every question, in order.
+    asked: RefCell<Vec<(TabId, String)>>,
+}
+
+impl SessionShares {
+    /// The reading as `handle` 's desk is given it.
+    fn read_by(self: &Rc<Self>, handle: &DesktopHandle) {
+        let shares = Rc::clone(self);
+        let reading: WorkspaceShares = Rc::new(move |tab, workspace| {
+            shares.asked.borrow_mut().push((tab, workspace.to_owned()));
+            if !shares.takes_part.borrow().iter().any(|id| id == workspace) {
+                return None;
+            }
+            let viewers = shares.shared.borrow().get(&tab).copied();
+            Some(WorkspaceShare {
+                shared: viewers.is_some(),
+                viewers: viewers.unwrap_or(0),
+            })
+        });
+        handle.reads_workspace_shares(reading);
+    }
+}
+
+/// A window of an outside program this device maps.
+fn mapped_notes() -> TileContent {
+    TileContent::Foreign {
+        app_id: "so.tilo.notes".into(),
+        surface_id: 41,
+    }
+}
+
+/// A desk of the device minting under 7 whose one window shows `tile`, in a tab minted under
+/// `salt`: the surface, its handle and the tab.
+fn desk_showing(salt: u16, tile: TileContent) -> (DesktopSurface, DesktopHandle, TabId) {
+    let mut minter = IdMinter::new(salt);
+    let id = minter.mint();
+    let tab = Tab {
+        id,
+        title: "Notes".into(),
+        tile,
+        app_title: None,
+        view: String::new(),
+        pinned: false,
+    };
+    let tree = crate::seed_tree(&mut minter, "Desk", vec![tab]);
+    let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Apps));
+    (surface, handle, id)
+}
+
+/// The id of the workspace the desk's one window stands in.
+fn workspace_of(handle: &DesktopHandle) -> String {
+    handle.read(|tree| tree.workspaces[0].policy.workspace.clone())
+}
+
+/// A session that takes part in the workspace of `handle` 's desk and shares nothing yet, read by
+/// that desk.
+fn session_sharing_with(handle: &DesktopHandle) -> Rc<SessionShares> {
+    let shares = Rc::new(SessionShares::default());
+    shares.takes_part.borrow_mut().push(workspace_of(handle));
+    shares.read_by(handle);
+    shares
+}
+
+/// The share with the workspace is offered where it can work and nowhere else: for a window this
+/// device maps, in a tab it minted, in a workspace its session takes part in. Another device's
+/// window, the picture of one, an app still to open and a desk whose session shares nothing with
+/// the workspace offer no such row.
+#[test]
+fn only_a_window_this_device_can_share_offers_the_share_with_its_workspace() {
+    let (_surface, handle, tab) = desk_showing(7, mapped_notes());
+    assert!(
+        row(&handle.window_menu(tab), SHARE_WITH_WORKSPACE).is_none(),
+        "a desk no session reads the shares for offers no share"
+    );
+
+    let shares = session_sharing_with(&handle);
+    let rows = handle.window_menu(tab);
+    let share = row(&rows, SHARE_WITH_WORKSPACE)
+        .expect("a window this device maps in a workspace it shares with offers the share");
+    assert_eq!(share.label, "Share with workspace");
+    assert!(share.enabled && share.icon.is_some());
+    assert!(row(&rows, STOP_SHARING_WITH_WORKSPACE).is_none());
+    assert_eq!(
+        shares.asked.borrow().last(),
+        Some(&(tab, workspace_of(&handle))),
+        "the session is asked about the tab, in the workspace the tab stands in"
+    );
+
+    // A session that takes no part in the workspace has nobody to share with.
+    shares.takes_part.borrow_mut().clear();
+    assert!(row(&handle.window_menu(tab), SHARE_WITH_WORKSPACE).is_none());
+
+    // A desk in no workspace is not asked about at all.
+    shares.takes_part.borrow_mut().push(String::new());
+    let mut nowhere = handle.read(Clone::clone);
+    nowhere.workspaces[0].policy.workspace.clear();
+    handle.replace_tree(nowhere);
+    let asked = shares.asked.borrow().len();
+    assert!(row(&handle.window_menu(tab), SHARE_WITH_WORKSPACE).is_none());
+    assert_eq!(shares.asked.borrow().len(), asked);
+
+    let app = || "so.tilo.notes".to_owned();
+    let not_this_devices = [
+        // Another device's window, its tab minted there.
+        (
+            9,
+            TileContent::PeerWindow {
+                app_id: app(),
+                label: "Notes".into(),
+                note: String::new(),
+                missing: None,
+            },
+        ),
+        // The picture of a window another device shares.
+        (
+            9,
+            TileContent::HostedWindow {
+                app_id: app(),
+                label: "Notes".into(),
+                host: "ab".repeat(32),
+                host_label: "Framework".into(),
+            },
+        ),
+        // The same two in a tab this device minted: what the tab shows decides, too.
+        (
+            7,
+            TileContent::HostedWindow {
+                app_id: app(),
+                label: "Notes".into(),
+                host: "ab".repeat(32),
+                host_label: "Framework".into(),
+            },
+        ),
+        // An app whose window has yet to open here.
+        (
+            7,
+            TileContent::LocalApp {
+                app_id: app(),
+                label: "Notes".into(),
+                note: String::new(),
+            },
+        ),
+        // A window mapped here in a tab another device minted is that device's to share.
+        (9, mapped_notes()),
+    ];
+    for (salt, tile) in not_this_devices {
+        let (_surface, handle, tab) = desk_showing(salt, tile.clone());
+        let shares = session_sharing_with(&handle);
+        shares.shared.borrow_mut().insert(tab, 1);
+        let rows = handle.window_menu(tab);
+        assert!(
+            row(&rows, SHARE_WITH_WORKSPACE).is_none()
+                && row(&rows, STOP_SHARING_WITH_WORKSPACE).is_none(),
+            "{tile:?} in a tab minted under {salt} is not this device's to share"
+        );
+        assert_eq!(
+            handle
+                .choose_window_menu(tab, SHARE_WITH_WORKSPACE, None)
+                .err()
+                .as_deref(),
+            Some("That is not something this window offers")
+        );
+        assert!(handle.take_workspace_share_asks().is_empty());
+    }
+}
+
+/// The row says what the session reads of the share when the menu is asked for, every time: the
+/// desk keeps no flag of its own, so a share started, viewed, and ended elsewhere (a script, the
+/// window closing) is what the menu shows next.
+#[test]
+fn the_share_with_the_workspace_reads_as_the_session_says_it_stands() {
+    let (_surface, handle, tab) = desk_showing(7, mapped_notes());
+    let shares = session_sharing_with(&handle);
+    let labels = |handle: &DesktopHandle| -> (Option<String>, Option<String>) {
+        let rows = handle.window_menu(tab);
+        let label = |id| row(&rows, id).map(|row| row.label.clone());
+        (
+            label(SHARE_WITH_WORKSPACE),
+            label(STOP_SHARING_WITH_WORKSPACE),
+        )
+    };
+    assert_eq!(labels(&handle), (Some("Share with workspace".into()), None));
+
+    shares.shared.borrow_mut().insert(tab, 0);
+    assert_eq!(
+        labels(&handle),
+        (None, Some("Stop sharing with workspace".into())),
+        "a shared window offers the way back instead"
+    );
+    shares.shared.borrow_mut().insert(tab, 1);
+    assert_eq!(
+        labels(&handle),
+        (
+            None,
+            Some("Stop sharing with workspace (1 watching)".into())
+        )
+    );
+    shares.shared.borrow_mut().insert(tab, 3);
+    assert_eq!(
+        labels(&handle),
+        (
+            None,
+            Some("Stop sharing with workspace (3 watching)".into())
+        )
+    );
+
+    ui::i18n::I18nManager::set_locale("de-DE");
+    let german_shared = labels(&handle);
+    shares.shared.borrow_mut().clear();
+    let german = labels(&handle);
+    ui::i18n::I18nManager::set_locale("en-US");
+    assert_eq!(
+        german_shared,
+        (
+            None,
+            Some("Teilen mit dem Arbeitsbereich beenden (3 sehen zu)".into())
+        )
+    );
+    assert_eq!(german, (Some("Mit dem Arbeitsbereich teilen".into()), None));
+    assert_eq!(
+        labels(&handle),
+        (Some("Share with workspace".into()), None),
+        "the share ended in the session, and the menu says so without being told"
+    );
+}
+
+/// Choosing the row leaves the ask for the session, by the tab and nothing else, and changes
+/// nothing the menu says: the window reads as shared once the session's reading does.
+#[test]
+fn choosing_the_share_with_the_workspace_asks_the_session_by_the_tab() {
+    let (_surface, handle, tab) = desk_showing(7, mapped_notes());
+    let shares = session_sharing_with(&handle);
+    assert!(handle.take_workspace_share_asks().is_empty());
+
+    handle
+        .choose_window_menu(tab, SHARE_WITH_WORKSPACE, None)
+        .expect("the row is offered, so it is chosen");
+    assert_eq!(handle.take_workspace_share_asks(), vec![(tab, true)]);
+    assert!(
+        handle.take_workspace_share_asks().is_empty(),
+        "an ask is taken once"
+    );
+    assert!(
+        row(&handle.window_menu(tab), SHARE_WITH_WORKSPACE).is_some(),
+        "asking shares nothing by itself: the session's reading still says it is not shared"
+    );
+    assert_eq!(
+        handle
+            .choose_window_menu(tab, STOP_SHARING_WITH_WORKSPACE, None)
+            .err()
+            .as_deref(),
+        Some("That is not something this window offers"),
+        "a window that is not shared offers no stop"
+    );
+
+    shares.shared.borrow_mut().insert(tab, 2);
+    assert_eq!(
+        handle
+            .choose_window_menu(tab, SHARE_WITH_WORKSPACE, None)
+            .err()
+            .as_deref(),
+        Some("That is not something this window offers"),
+        "a shared window is not shared twice"
+    );
+    handle
+        .choose_window_menu(tab, STOP_SHARING_WITH_WORKSPACE, None)
+        .expect("a shared window offers the stop");
+    assert_eq!(handle.take_workspace_share_asks(), vec![(tab, false)]);
+}
+
+/// On a desktop several people share, a window is its holder's to share: anyone else sees the
+/// row and why they cannot choose it, and choosing it asks nothing.
+#[test]
+fn someone_elses_window_is_theirs_to_share_with_the_workspace() {
+    let (_surface, handle, tab) = desk_showing(7, mapped_notes());
+    let _shares = session_sharing_with(&handle);
+    assert!(handle.set_holders(HashMap::from([(
+        tab,
+        TabHolder {
+            name: "Ben".into(),
+            rgb: (200, 120, 40),
+        },
+    )])));
+    let rows = handle.window_menu(tab);
+    let share = row(&rows, SHARE_WITH_WORKSPACE).expect("the row is shown");
+    assert!(!share.enabled);
+    assert_eq!(share.reason.as_deref(), Some("Ben's window"));
+    assert_eq!(
+        handle
+            .choose_window_menu(tab, SHARE_WITH_WORKSPACE, None)
+            .err()
+            .as_deref(),
+        Some("Ben's window")
+    );
+    assert!(handle.take_workspace_share_asks().is_empty());
+}
+
+/// A window the sharing app lists offers both shares, side by side in the sharing group, and each
+/// says which it is: the window's live picture to the workspace, or its record in a channel.
+#[test]
+fn the_two_shares_of_a_window_stand_together_and_read_apart() {
+    let (_surface, handle, tab) = desk_showing(7, mapped_notes());
+    let shares = session_sharing_with(&handle);
+    handle.shared.borrow_mut().window_offers = vec![OpenWindow {
+        tab,
+        app: "so.tilo.notes".into(),
+        app_title: "Notes".into(),
+        title: "Notes".into(),
+        record: String::new(),
+        kind: String::new(),
+        item: None,
+    }];
+    let rows = handle.window_menu(tab);
+    let sharing: Vec<(&str, &str)> = rows
+        .split(|row| row.separator)
+        .find(|group| group.iter().any(|row| row.id == SHARE))
+        .expect("the sharing group")
+        .iter()
+        .map(|row| (row.id.as_str(), row.label.as_str()))
+        .collect();
+    assert_eq!(
+        sharing,
+        vec![
+            (SHARE_WITH_WORKSPACE, "Share with workspace"),
+            (SHARE, "Share to channel…"),
+        ]
+    );
+    let icon = |id| row(&rows, id).and_then(|row| row.icon);
+    assert_ne!(icon(SHARE_WITH_WORKSPACE), icon(SHARE));
+
+    // Shared with the workspace, the stop names what it stops; the channel's row is as it was.
+    shares.shared.borrow_mut().insert(tab, 0);
+    let rows = handle.window_menu(tab);
+    assert_eq!(
+        row(&rows, STOP_SHARING_WITH_WORKSPACE).map(|row| row.label.as_str()),
+        Some("Stop sharing with workspace")
+    );
+    assert_eq!(
+        row(&rows, SHARE).map(|row| row.label.as_str()),
+        Some("Share to channel…")
+    );
 }
 
 /// Only a host (non-Tilo) window's tab offers a name; it names the window in place, and a name too

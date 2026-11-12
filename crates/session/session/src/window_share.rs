@@ -37,7 +37,7 @@ use tilo_compositor::{Compositor, InputEvent, Selection};
 
 use tilo_desktop::chrome::ActiveExposure;
 use tilo_desktop_model::window_share::{
-    window_node, window_of_node, window_share_id, window_shares,
+    mapped_window, window_node, window_of_node, window_share_id, window_shares,
 };
 use tilo_desktop_model::{
     DesktopTree, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, peer_salt_of,
@@ -2168,25 +2168,13 @@ fn window_shown(
     tree: &DesktopTree,
     tab: TabId,
 ) -> Option<(String, String, String)> {
-    let (held, shown) = tree.workspaces.iter().find_map(|held| {
-        held.strips
-            .iter()
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .find(|shown| shown.id == tab)
-            .map(|shown| (held, shown))
-    })?;
-    let TileContent::Foreign { app_id, surface_id } = &shown.tile else {
-        return None;
-    };
-    let workspace = held.policy.workspace.clone();
-    if workspace.is_empty() {
-        return None;
-    }
+    // The rule the desk offers the share by, in the window's menu: the two never disagree about
+    // which window is this device's to share.
+    let mapped = mapped_window(&tree.workspaces, tab)?;
     Some((
-        compositor.shareable_window_of(*surface_id)?,
-        app_id.clone(),
-        workspace,
+        compositor.shareable_window_of(mapped.surface_id)?,
+        mapped.app_id.to_owned(),
+        mapped.workspace.to_owned(),
     ))
 }
 
@@ -2487,6 +2475,9 @@ fn unwatch_action() -> ActionSpec {
         },
     )
 }
+
+mod menu;
+pub(crate) use menu::{follow_asks, reading_for_menus};
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests;

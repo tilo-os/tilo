@@ -10,9 +10,9 @@ use super::super::HeardDevices;
 use super::*;
 
 /// What a window open on a device this one cannot name says.
-const ELSEWHERE: &str = "Open on another device. Share the window there to see it on this one.";
+const ELSEWHERE: &str = "Open on another device. Choose “Share with workspace” in the window's menu there to see it on this one.";
 /// What a window open on the device called Framework says.
-const ON_FRAMEWORK: &str = "Open on Framework. Share the window there to see it on this one.";
+const ON_FRAMEWORK: &str = "Open on Framework. Choose “Share with workspace” in the window's menu there to see it on this one.";
 
 /// The salt `device` mints its ids under.
 fn salt_of(device: &EndpointId) -> u16 {

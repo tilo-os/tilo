@@ -85,6 +85,7 @@ mod tile_content;
 mod window_bars;
 pub mod window_menu;
 mod window_move;
+mod workspace_share;
 
 pub use history::{ActivityModel, ActivityPaneCode, HistorySource, OpenActivity, open_activity};
 pub use liveness::LivenessChoice;
@@ -101,6 +102,7 @@ pub use seed::{seed_tree, seed_tree_in};
 pub use tile_content::tile_app_kind;
 use tile_content::{build_tile, descriptor, placeholder};
 pub use window_menu::Row as WindowMenuRow;
+pub use workspace_share::{WorkspaceShare, WorkspaceShares};
 
 /// The caret or selection a surface publishes as its presence: the keyboard-focused widget's when
 /// it is one of the focused window's (or application's) editors `window` , else that window's first
@@ -200,6 +202,12 @@ struct Shared {
     /// ([`DesktopSurface::offer_window_shares`]): a window's menu offers the share row exactly for
     /// these.
     window_offers: Vec<ui::window_share::OpenWindow>,
+    /// The host session's reading of the windows it shares with their workspaces
+    /// ([`DesktopHandle::reads_workspace_shares`]): what a window's menu says of its share.
+    workspace_shares: Option<WorkspaceShares>,
+    /// The windows whose menu asked to be shared with their workspace, or to stop, waiting for
+    /// the host ([`DesktopHandle::take_workspace_share_asks`]).
+    workspace_share_asks: Vec<(TabId, bool)>,
     /// The windows waiting for the person ([`DesktopHandle::ask_attention`]),
     /// until each has their focus.
     asking: std::collections::BTreeSet<TabId>,

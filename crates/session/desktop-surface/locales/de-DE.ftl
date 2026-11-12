@@ -1147,8 +1147,9 @@ answer-reopen = Wieder öffnen
 answer-why-unknown-app = Es gibt keine App, die das öffnet.
 answer-why-not-opened = Es wurde beendet, bevor ein Fenster erschien.
 answer-why-cannot-start = Apps können gerade nicht gestartet werden.
-peer-window-elsewhere = Auf einem anderen Gerät geöffnet. Teile das Fenster dort, um es auf diesem zu sehen.
-peer-window-on-device = Auf { $device } geöffnet. Teile das Fenster dort, um es auf diesem Gerät zu sehen.
+# Die hier genannte Zeile ist die, die das Menü des Fensters auf dem Gerät anbietet, das es hat.
+peer-window-elsewhere = Auf einem anderen Gerät geöffnet. Wähle dort im Menü des Fensters „{ window-menu-share-with-workspace }“, um es auf diesem zu sehen.
+peer-window-on-device = Auf { $device } geöffnet. Wähle dort im Menü des Fensters „{ window-menu-share-with-workspace }“, um es auf diesem Gerät zu sehen.
 # Ein Kürzel des Desktops, für das eine Browserseite keine Oberfläche hat: sie
 # sagt das, statt nichts zu tun.
 answer-capture-not-in-browser = Bildschirmfotos und Aufnahmen gibt es in Tilo auf einem Computer
@@ -1459,6 +1460,15 @@ window-menu-new-group = In ein neues Fenster verschieben
 window-menu-close = Schließen
 window-menu-close-window = Dieses Fenster schließen
 window-menu-stop-desktop-control = Die Steuerung des Desktops beenden
+# Ein Fenster mit seinem Arbeitsbereich zu teilen zeigt sein Livebild in seinem Tab auf den anderen
+# Geräten des Arbeitsbereichs. „In Kanal teilen…“ aus dem Toolkit stellt das Fenster dagegen in
+# einen Kanal: Die beiden Zeilen stehen beieinander, also nennt jede, wohin das Fenster geht.
+window-menu-share-with-workspace = Mit dem Arbeitsbereich teilen
+window-menu-stop-sharing-with-workspace = Teilen mit dem Arbeitsbereich beenden
+window-menu-stop-sharing-watched = Teilen mit dem Arbeitsbereich beenden ({ $viewers } { $viewers ->
+        [one] sieht zu
+       *[other] sehen zu
+    })
 window-menu-someone-elses = { $name }s Fenster
 # The desk's widgets: what each is called, and what its controls do.
 desk-widget-music = Musik

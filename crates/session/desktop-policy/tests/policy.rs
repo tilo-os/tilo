@@ -1088,7 +1088,7 @@ fn notice_of(driver: &ui::headless::FrameHarness, title: &str) -> String {
 }
 
 /// What a window open on a device this one cannot name says.
-const ELSEWHERE: &str = "Open on another device. Share the window there to see it on this one.";
+const ELSEWHERE: &str = "Open on another device. Choose “Share with workspace” in the window's menu there to see it on this one.";
 
 /// A window of the workspace called `title`, open on the device that mints its ids under `salt`:
 /// its tab as this device's desk holds it.
@@ -1199,7 +1199,7 @@ fn a_window_open_on_a_device_the_workspace_heard_names_the_device() {
 
     assert_eq!(
         notice_of(&driver, "Quarterly plan"),
-        "Open on Ada's laptop. Share the window there to see it on this one.",
+        "Open on Ada's laptop. Choose “Share with workspace” in the window's menu there to see it on this one.",
         "the tab names the device the window is open on"
     );
     assert_eq!(
@@ -1241,11 +1241,11 @@ fn each_window_open_elsewhere_names_its_own_device() {
     settle(&mut driver);
     assert_eq!(
         notice_of(&driver, "Quarterly plan"),
-        "Open on Ada's laptop. Share the window there to see it on this one."
+        "Open on Ada's laptop. Choose “Share with workspace” in the window's menu there to see it on this one."
     );
     assert_eq!(
         notice_of(&driver, "Budget"),
-        "Open on Grace's desktop. Share the window there to see it on this one."
+        "Open on Grace's desktop. Choose “Share with workspace” in the window's menu there to see it on this one."
     );
     assert_eq!(
         notice_of(&driver, "Roadmap"),
@@ -1258,7 +1258,7 @@ fn each_window_open_elsewhere_names_its_own_device() {
     settle(&mut driver);
     assert_eq!(
         notice_of(&driver, "Quarterly plan"),
-        "Open on Workshop. Share the window there to see it on this one."
+        "Open on Workshop. Choose “Share with workspace” in the window's menu there to see it on this one."
     );
     assert_eq!(notice_of(&driver, "Budget"), ELSEWHERE);
     assert_eq!(notice_of(&driver, "Roadmap"), ELSEWHERE);
@@ -1284,7 +1284,7 @@ fn a_devices_name_is_shown_as_the_text_it_is() {
     settle(&mut driver);
     assert_eq!(
         notice_of(&driver, "Quarterly plan"),
-        "Open on { $device } { -brand } <b>Ada</b>. Share the window there to see it on this one."
+        "Open on { $device } { -brand } <b>Ada</b>. Choose “Share with workspace” in the window's menu there to see it on this one."
     );
 
     policy.name_devices([(0x21, " \n\u{200F} ".to_owned())].into());

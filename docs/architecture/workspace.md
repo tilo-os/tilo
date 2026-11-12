@@ -374,6 +374,14 @@ holds, so sharing it shares the resource and nothing is streamed: other
 members open the same resource in the same app. Driving someone else's window
 needs its owner's control grant.
 
+A person shares a window from its own menu, "Share with workspace", on the
+device that has it, and stops there. The row is one more caller of the
+session's window share (`session:window-share`, `share` and `stop` by the
+tab): it reads whether the window is shared, and who watches, from that
+resource, and keeps no state of its own. Only a window the device maps, in a
+tab it minted, in a workspace its session takes part in offers the row; a
+device that shows the window's picture, or its placeholder, does not.
+
 ## Presence
 
 Presence is per resource, layout is per person. Inside a resource several

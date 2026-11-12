@@ -1128,8 +1128,9 @@ answer-reopen = Reopen
 answer-why-unknown-app = No app here opens it.
 answer-why-not-opened = It was stopped before a window appeared.
 answer-why-cannot-start = Apps cannot be started right now.
-peer-window-elsewhere = Open on another device. Share the window there to see it on this one.
-peer-window-on-device = Open on { $device }. Share the window there to see it on this one.
+# The row named here is the one the window's menu offers on the device that has the window.
+peer-window-elsewhere = Open on another device. Choose “{ window-menu-share-with-workspace }” in the window's menu there to see it on this one.
+peer-window-on-device = Open on { $device }. Choose “{ window-menu-share-with-workspace }” in the window's menu there to see it on this one.
 # A chord of the desktop's a browser page has no surface for: it says so,
 # rather than doing nothing.
 answer-capture-not-in-browser = Screenshots and recordings run in Tilo on a computer
@@ -1443,6 +1444,12 @@ window-menu-new-group = Move to a new window
 window-menu-close = Close
 window-menu-close-window = Close this window
 window-menu-stop-desktop-control = Stop controlling the desktop
+# Sharing a window with its workspace shows its live picture in its tab on the workspace's other
+# devices. The toolkit's "Share to channel…" posts the window in a channel instead: the two rows
+# stand together, so each names where the window goes.
+window-menu-share-with-workspace = Share with workspace
+window-menu-stop-sharing-with-workspace = Stop sharing with workspace
+window-menu-stop-sharing-watched = Stop sharing with workspace ({ $viewers } watching)
 window-menu-someone-elses = { $name }'s window
 
 # The desk's widgets: what each is called, and what its controls do.

@@ -38,6 +38,8 @@ impl Shared {
             holders: HashMap::new(),
             opened_by: std::collections::BTreeMap::new(),
             window_offers: Vec::new(),
+            workspace_shares: None,
+            workspace_share_asks: Vec::new(),
             asking: std::collections::BTreeSet::new(),
             opens: true,
             revision: 1,

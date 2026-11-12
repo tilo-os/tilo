@@ -1770,6 +1770,9 @@ fn a_member_the_workspace_lets_edit_shares_and_reaches_input() {
 /// What the desk calls the workspace's other devices, and how long it remembers them.
 mod devices;
 
+/// A window shared with its workspace, and no longer, from its own menu.
+mod menu;
+
 /// A window one device shares shows on another device's desk because the workspace's governance
 /// says it is shared there: nobody names the tab on the other device.
 #[test]

@@ -4,13 +4,15 @@
 //! for the person, covering the display with it, filling the strip with it
 //! and giving the strip back, carrying it into another strip, workspace or
 //! display, giving it a share of its strip, opening another tab of its app,
-//! sharing it with the people of its workspace, naming it, splitting a tab
-//! out into a window of its own, closing the tab or the window, and stopping
-//! an app from controlling the desktop beyond it. Every row is a navigation
-//! command the desktop already answers, so a menu — the overflow menu in the
-//! window's own bar, or one a sheet mounts beside it — offers exactly what
-//! the desktop can do, and choosing a row sends the same command a chord or
-//! a control sends.
+//! sharing its live picture with its workspace or its record in a channel,
+//! naming it, splitting a tab out into a window of its own, closing the tab
+//! or the window, and stopping an app from controlling the desktop beyond
+//! it. Every row is a navigation command the desktop already answers, so a
+//! menu — the overflow menu in the window's own bar, or one a sheet mounts
+//! beside it — offers exactly what the desktop can do, and choosing a row
+//! sends the same command a chord or a control sends. The share with the
+//! workspace alone is the host session's: its row reads what the session's
+//! window shares say and leaves the ask to them ([`super::workspace_share`]).
 //!
 //! Which rows apply follows the window: a window covering its display offers
 //! it back, a window filling the strip offers the strip back instead of
@@ -42,7 +44,7 @@ use ui::icons::Icon;
 use crate::i18n::{t, t_args};
 use crate::navigation::{ChromeEffect, DeskEffect, Destination, RouteIds, Verb, WidthPreset};
 
-use super::{DesktopHandle, Shared};
+use super::{DesktopHandle, Shared, WorkspaceShare};
 
 impl DesktopHandle {
     /// The windows whose bar was asked for its menu since the last call — a secondary click — in
@@ -108,6 +110,10 @@ pub const WIDTH: &str = "window-width";
 pub const NEW_TAB: &str = "window-new-tab";
 pub const SHARE: &str = "window-share";
 pub const UN_SHARE: &str = "window-unshare";
+/// Share the window with its workspace: its live picture, in its tab on the workspace's other
+/// devices.
+pub const SHARE_WITH_WORKSPACE: &str = "window-share-with-workspace";
+pub const STOP_SHARING_WITH_WORKSPACE: &str = "window-stop-sharing-with-workspace";
 pub const RENAME: &str = "window-rename";
 pub const SPLIT_RIGHT: &str = "window-split-right";
 pub const NEW_GROUP: &str = "window-new-group";
@@ -142,8 +148,12 @@ pub struct Facts {
     pub local: bool,
     /// This person opens windows and tabs on this desktop (someone let only look is offered none).
     pub opens: bool,
-    /// The share row the window offers; `None` for a window this desktop cannot share.
+    /// The row asking the sharing app to post the window in a channel; `None` for a window the
+    /// sharing app does not list.
     pub sharing: Option<Sharing>,
+    /// What the session reads of the window's share with its workspace; `None` for a window that
+    /// cannot be shared from this device.
+    pub workspace_share: Option<WorkspaceShare>,
 }
 
 /// One row of a window's menu: what it does, how it reads, and why it cannot be chosen when it
@@ -304,22 +314,7 @@ pub fn rows(tree: &DesktopTree, route: &RouteIds, facts: &Facts) -> Vec<Row> {
             .with_icon(Icon::Columns2),
         ],
     );
-    if let Some(sharing) = &facts.sharing {
-        add_group(
-            &mut rows,
-            vec![
-                Row::offered(
-                    if sharing.shared { UN_SHARE } else { SHARE },
-                    sharing.label.clone(),
-                )
-                .with_icon(if sharing.shared {
-                    Icon::EyeOff
-                } else {
-                    Icon::ScreenShare
-                }),
-            ],
-        );
-    }
+    add_group(&mut rows, sharing_rows(facts, own, held()));
     add_group(
         &mut rows,
         show_rows(tree, route, tab, own, held(), renamable, facts.opens),
@@ -335,6 +330,49 @@ pub fn rows(tree: &DesktopTree, route: &RouteIds, facts: &Facts) -> Vec<Row> {
         );
     }
     rows
+}
+
+/// What sharing the window offers: its live picture to its workspace, which is its owner's to
+/// give, and its record posted in a channel. Each says which of the two it is, and each offers
+/// the way back instead while it is shared.
+fn sharing_rows(facts: &Facts, own: bool, held: Option<String>) -> Vec<Row> {
+    let mut rows = Vec::new();
+    if let Some(share) = facts.workspace_share {
+        rows.push(workspace_share_row(share).theirs(own, held));
+    }
+    if let Some(sharing) = &facts.sharing {
+        rows.push(
+            Row::offered(
+                if sharing.shared { UN_SHARE } else { SHARE },
+                sharing.label.clone(),
+            )
+            .with_icon(if sharing.shared {
+                Icon::EyeOff
+            } else {
+                Icon::ScreenShare
+            }),
+        );
+    }
+    rows
+}
+
+/// The row sharing the window with its workspace, or, once the session reads it as shared, the
+/// row that stops: it says how many devices watch the window while any does.
+fn workspace_share_row(share: WorkspaceShare) -> Row {
+    if !share.shared {
+        return Row::offered(SHARE_WITH_WORKSPACE, t("window-menu-share-with-workspace"))
+            .with_icon(Icon::MonitorSmartphone);
+    }
+    let label = if share.viewers == 0 {
+        t("window-menu-stop-sharing-with-workspace")
+    } else {
+        let viewers = i64::try_from(share.viewers).unwrap_or(i64::MAX);
+        t_args(
+            "window-menu-stop-sharing-watched",
+            &[("viewers", viewers.into())],
+        )
+    };
+    Row::offered(STOP_SHARING_WITH_WORKSPACE, label).with_icon(Icon::EyeOff)
 }
 
 /// What covering and filling the window offer: it covers its display, or gives it back, and it
@@ -1088,6 +1126,7 @@ impl crate::surface::DesktopHandle {
             local,
             opens,
             sharing,
+            workspace_share: self.workspace_share(tab),
         }
     }
 
@@ -1136,6 +1175,12 @@ impl crate::surface::DesktopHandle {
         // what they commit there is renamed by the same action an agent names it with.
         if id == RENAME && name.is_none() {
             self.rename_in_bar(tab);
+            return Ok(());
+        }
+        // The share with the workspace is the session's: the row leaves the ask for it, and the
+        // session invokes its window share with the tab.
+        if id == SHARE_WITH_WORKSPACE || id == STOP_SHARING_WITH_WORKSPACE {
+            self.ask_workspace_share(tab, id == SHARE_WITH_WORKSPACE);
             return Ok(());
         }
         match command {

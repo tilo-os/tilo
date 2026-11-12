@@ -18,6 +18,7 @@ use tilo_action_policy::{
 };
 
 use crate::ids::{TabId, device_salt_of_key, peer_salt_of};
+use crate::layout::TileContent;
 use crate::workspace::Workspace;
 
 /// Key of the workspace's governed device identities, by device key.
@@ -58,6 +59,43 @@ pub fn device_salts(doc: &automerge::AutoCommit) -> BTreeMap<u16, String> {
         .into_iter()
         .filter_map(|(salt, device)| Some((salt, device?)))
         .collect()
+}
+
+/// A window a device maps in a tab that stands in a workspace: what that device can share with
+/// the workspace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MappedWindow<'a> {
+    /// The app the window belongs to.
+    pub app_id: &'a str,
+    /// The surface the device's compositor maps the window under.
+    pub surface_id: u64,
+    /// The workspace the tab stands in, by its id.
+    pub workspace: &'a str,
+}
+
+/// The window the device holding `workspaces` maps in `tab`. `None` for a tab the desk does not
+/// hold, one in no workspace, and one that shows no window this device maps: another device's
+/// window or the picture of one, and an app whose window has yet to open. Only such a window is
+/// shared from this device, so a desk offers the share and its session carries it out by this one
+/// rule.
+#[must_use]
+pub fn mapped_window(workspaces: &[Workspace], tab: TabId) -> Option<MappedWindow<'_>> {
+    let (held, shown) = workspaces.iter().find_map(|held| {
+        held.tabs()
+            .find(|shown| shown.id == tab)
+            .map(|shown| (held, shown))
+    })?;
+    let TileContent::Foreign { app_id, surface_id } = &shown.tile else {
+        return None;
+    };
+    if held.policy.workspace.is_empty() {
+        return None;
+    }
+    Some(MappedWindow {
+        app_id,
+        surface_id: *surface_id,
+        workspace: &held.policy.workspace,
+    })
 }
 
 /// The resource kind a window's node names under its app.
@@ -314,6 +352,93 @@ mod tests {
     use crate::ids::compose_id;
 
     const WORKSPACE: &str = "6f1d2c3b-4a59-4e8d-9c7b-1a2b3c4d5e6f";
+
+    /// A workspace whose one window shows `tile` in `tab`.
+    fn showing(tile: TileContent, tab: TabId) -> Workspace {
+        let mut workspace = Workspace::new(crate::WorkspaceSlot(1), "Desk");
+        let mut strip = crate::Strip::new(crate::StripId::from(1), "Main");
+        strip.window_groups.push(crate::WindowGroup {
+            id: crate::GroupId::from(1_u64),
+            tabs: vec![crate::Tab {
+                id: tab,
+                title: "Notes".to_owned(),
+                tile,
+                app_title: None,
+                view: String::new(),
+                pinned: false,
+            }],
+            active_tab: tab,
+            width: crate::WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        });
+        workspace.strips.push(strip);
+        workspace
+    }
+
+    /// A device shares the window it maps in a tab of a workspace, and nothing else a tab can
+    /// show: not another device's window, not the picture of one, not an app still to open, and
+    /// nothing from a desk in no workspace.
+    #[test]
+    fn only_a_window_the_device_maps_in_a_workspace_is_one_it_can_share() {
+        let tab = compose_id(7, 1);
+        let app = || "so.tilo.notes".to_owned();
+        let mapped = showing(
+            TileContent::Foreign {
+                app_id: app(),
+                surface_id: 41,
+            },
+            tab,
+        );
+        let workspace = mapped.policy.workspace.clone();
+        assert!(!workspace.is_empty(), "a workspace is known by its id");
+        assert_eq!(
+            mapped_window(std::slice::from_ref(&mapped), tab),
+            Some(MappedWindow {
+                app_id: "so.tilo.notes",
+                surface_id: 41,
+                workspace: &workspace,
+            })
+        );
+        assert_eq!(
+            mapped_window(std::slice::from_ref(&mapped), compose_id(7, 2)),
+            None,
+            "a tab the desk does not hold shows no window"
+        );
+        for tile in [
+            TileContent::PeerWindow {
+                app_id: app(),
+                label: "Notes".to_owned(),
+                note: String::new(),
+                missing: None,
+            },
+            TileContent::HostedWindow {
+                app_id: app(),
+                label: "Notes".to_owned(),
+                host: "ab".repeat(32),
+                host_label: "Framework".to_owned(),
+            },
+            TileContent::LocalApp {
+                app_id: app(),
+                label: "Notes".to_owned(),
+                note: String::new(),
+            },
+        ] {
+            let other = showing(tile.clone(), tab);
+            assert_eq!(
+                mapped_window(std::slice::from_ref(&other), tab),
+                None,
+                "{tile:?} is no window this device maps"
+            );
+        }
+        let mut nowhere = mapped;
+        nowhere.policy.workspace.clear();
+        assert_eq!(
+            mapped_window(std::slice::from_ref(&nowhere), tab),
+            None,
+            "a desk in no workspace has nobody to share with"
+        );
+    }
 
     #[test]
     fn a_window_share_names_its_window_its_sharer_and_its_host_while_it_lasts() {
