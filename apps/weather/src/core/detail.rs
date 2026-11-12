@@ -604,7 +604,7 @@ impl Notice {
         Self { kind, height }
     }
 
-    fn content_for<'a>(kind: ForecastNotice, retry: &'a str) -> BannerContent<'a> {
+    fn content_for(kind: ForecastNotice, retry: &str) -> BannerContent<'_> {
         match kind {
             ForecastNotice::UpdateFailed => {
                 BannerContent::new(BannerKind::Error, "Couldn't update the forecast")

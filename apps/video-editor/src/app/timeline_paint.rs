@@ -612,7 +612,7 @@ impl VideoEditorApp {
             ui::widget::EmptyState::paint(
                 &mut ui::paint::PaintCtx::new(scene, tf, tr, theme),
                 empty.area,
-                &empty.content(&words),
+                &super::timeline_empty::TimelineEmpty::content(&words),
                 self.last_mouse,
             );
         }

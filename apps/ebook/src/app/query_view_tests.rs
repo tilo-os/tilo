@@ -202,7 +202,10 @@ fn the_store_answers_below_the_library_and_its_books_can_be_got() {
     let mut app = TestApp::<EbookShell>::capture(Some("search")).unwrap();
     let results = books(&mut app).query.engine.results().clone();
     let store = results.remote.first().expect("the store has its section");
-    assert_eq!(store.label, crate::store::STORE_LABEL);
+    assert_eq!(
+        store.label,
+        crate::resource::CATALOG.t(crate::store::STORE_LABEL)
+    );
     assert!(store.is_answered());
     let got: Vec<&str> = store
         .rows()

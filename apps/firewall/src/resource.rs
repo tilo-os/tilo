@@ -831,10 +831,42 @@ mod german_catalogue_tests {
             crate::locales::CATALOG.t("firewall-start"),
             "Die Firewall gestartet"
         );
+        // The words a table holds read in German too: a zone's name, the
+        // action on a rule, and a dropped-traffic row.
+        assert_eq!(
+            crate::locales::CATALOG.t(crate::model::ZoneKind::Trusted.title_message()),
+            "Trusted"
+        );
+        assert_eq!(
+            crate::locales::CATALOG.t(crate::model::Action::Allow.title_message()),
+            "Zulassen"
+        );
+        assert_eq!(
+            crate::locales::CATALOG.t_args(
+                "firewall-blocked-title-port",
+                &[
+                    ("action", ui::i18n::ArgValue::Text("Verworfen".to_owned())),
+                    ("proto", ui::i18n::ArgValue::Text("TCP".to_owned())),
+                    ("port", ui::i18n::ArgValue::Text("5900".to_owned())),
+                ],
+            ),
+            "TCP-Port 5900: Verworfen"
+        );
         crate::locales::CATALOG.set_locale("en-US");
         assert_eq!(
             crate::locales::CATALOG.t("firewall-start"),
             "Started the firewall"
+        );
+        assert_eq!(
+            crate::locales::CATALOG.t_args(
+                "firewall-blocked-title-port",
+                &[
+                    ("action", ui::i18n::ArgValue::Text("Drop".to_owned())),
+                    ("proto", ui::i18n::ArgValue::Text("TCP".to_owned())),
+                    ("port", ui::i18n::ArgValue::Text("5900".to_owned())),
+                ],
+            ),
+            "Drop TCP port 5900"
         );
     }
 }

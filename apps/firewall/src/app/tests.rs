@@ -382,8 +382,12 @@ fn making_a_zone_active_changes_the_default() {
     until_stored(&mut app, "the zone becomes the default", |config| {
         config.default_zone != before
     });
+    let zone = crate::locales::CATALOG.t(app.state().config().default_zone.title_message());
     let frame = app.harness().inspection_json().unwrap();
-    assert!(frame.contains("is now the active zone"), "{frame}");
+    assert!(
+        frame.contains(&format!("Made {zone} the active zone")),
+        "{frame}"
+    );
 }
 
 #[test]

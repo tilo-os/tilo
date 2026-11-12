@@ -58,10 +58,7 @@ impl TimelineEmpty {
         }
     }
 
-    pub(super) fn content<'a>(
-        &self,
-        words: &'a TimelineEmptyWords,
-    ) -> ui::widget::EmptyStateContent<'a> {
+    pub(super) fn content(words: &TimelineEmptyWords) -> ui::widget::EmptyStateContent<'_> {
         ui::widget::EmptyStateContent {
             icon: Some(Icon::Layers),
             message: Some(&words.message),
@@ -138,7 +135,12 @@ impl VideoEditorApp {
         let action = empty.action?;
         let words = empty.words();
         let rect = self.with_dialog_layout(|_, tr, theme| {
-            ui::widget::EmptyState::action_rect_in(tr, theme, empty.area, &empty.content(&words))
+            ui::widget::EmptyState::action_rect_in(
+                tr,
+                theme,
+                empty.area,
+                &TimelineEmpty::content(&words),
+            )
         })?;
         Some((rect, action))
     }

@@ -46,6 +46,11 @@ pub struct BlockedGroup {
     pub window_minutes: u32,
 }
 
+/// One named variable of a catalogued sentence, holding `value` verbatim.
+fn arg<'a>(name: &'a str, value: &str) -> (&'a str, ArgValue) {
+    (name, ArgValue::Text(value.to_owned()))
+}
+
 impl BlockedGroup {
     /// What the rule is, in the person's words: `Drop TCP port 5900`.
     pub fn title(&self) -> String {
@@ -54,9 +59,6 @@ impl BlockedGroup {
             _ => "firewall-blocked-action-drop",
         });
         let proto = self.protocol.to_ascii_uppercase();
-        fn arg<'a>(name: &'a str, value: &str) -> (&'a str, ArgValue) {
-            (name, ArgValue::Text(value.to_owned()))
-        }
         match &self.port {
             Some(port) => CATALOG.t_args(
                 "firewall-blocked-title-port",

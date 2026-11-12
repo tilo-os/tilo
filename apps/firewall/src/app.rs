@@ -829,7 +829,7 @@ impl Store {
         self.dispatch(Firewall::paths().default_zone.set(self.selected_zone));
         self.report(
             CATALOG.t_args(
-                "firewall-default-zone",
+                "firewall-firewall-default-zone",
                 &[(
                     "new",
                     ui::i18n::ArgValue::Text(CATALOG.t(self.selected_zone.title_message())),

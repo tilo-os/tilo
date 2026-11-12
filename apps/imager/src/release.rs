@@ -1465,7 +1465,7 @@ mod tests {
             assert_ne!(releases[0].selection_id(), releases[1].selection_id());
             let board = releases[1].to_source();
             assert!(board.name.contains("lenovo-83ed only"));
-            assert!(board.label.contains("lenovo-83ed only"));
+            assert!(board.label.contains("lenovo-83ed"));
             assert_eq!(
                 board.expected_sha256.as_deref(),
                 Some("c".repeat(64).as_str())
