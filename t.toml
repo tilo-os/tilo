@@ -472,8 +472,8 @@ run = "python3 -m unittest tools/tests/test_client_licenses.py && python3 -I too
 
 [[check]]
 name = "lockfile"
-run = "find . \\( -name target -o -path ./vendor -o -path ./fuzz \\) -prune -o -name Cargo.lock -print | sort | while read -r lock; do\n  cargo metadata --locked --format-version 1 --manifest-path \"${lock%.lock}.toml\" >/dev/null || exit 1\ndone\n"
-fix = "find . \\( -name target -o -path ./vendor -o -path ./fuzz \\) -prune -o -name Cargo.lock -print | sort | while read -r lock; do\n  cargo metadata --format-version 1 --manifest-path \"${lock%.lock}.toml\" >/dev/null || exit 1\ndone\n"
+run = "find . \\( -name target -o -path ./vendor -o -path ./fuzz \\) -prune -o -name Cargo.lock -print | sort | while read -r lock; do\n  cargo metadata --locked --format-version 1 --manifest-path \"${lock%.lock}.toml\" >/dev/null || exit 1\ndone\npython3 tools/ci/check_lock_update.py --verify\n"
+fix = "find . \\( -name target -o -path ./vendor -o -path ./fuzz \\) -prune -o -name Cargo.lock -print | sort | while read -r lock; do\n  cargo metadata --format-version 1 --manifest-path \"${lock%.lock}.toml\" >/dev/null || exit 1\ndone\npython3 tools/ci/check_lock_update.py --write\n"
 
 # Resolves every nested lockfile afresh, beyond what the state's root Cargo.lock names, so it
 # needs cargo's network; t turns it off where it hands a job the state's crates.

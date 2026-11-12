@@ -169,6 +169,13 @@ jobs:
       - name: The unified workspace matches the members' features
         run: python3 tools/ci/workspace_unify.py --check
 
+      # A crate the lock holds twice can satisfy a wide requirement with either
+      # version, and a re-resolve picks between them by the order it walks the
+      # graph: the lock's references are held to the canonical form, the newest
+      # version each package allows (tools/ci/check_lock_update.py).
+      - name: Cargo.lock references keep the newest version each package allows
+        run: python3 tools/ci/check_lock_update.py --verify
+
       # The lint app developers run locally: an app that adds platform code
       # without moving it into a platform crate or declaring itself native
       # fails here. ci-fast already provides /usr/bin/cc (pinned digest).
