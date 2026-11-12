@@ -333,6 +333,16 @@ pub fn config_json(
             "guest_cid": GUEST_CID,
             "uds_path": path(&files.vsock_socket()),
         },
+        // The balloon starts holding nothing and holds back what the host
+        // asks for under pressure ([`Api::balloon`]). `deflate_on_oom` is
+        // what keeps a guest the balloon pushed too far alive: it gives the
+        // memory back itself rather than the workspace losing a page, or the
+        // kernel killing what holds it.
+        "balloon": {
+            "amount_mib": 0,
+            "deflate_on_oom": true,
+            "stats_polling_interval_s": 0,
+        },
         // Randomness for the guest's TLS from its first moment.
         "entropy": {},
     });
@@ -430,6 +440,16 @@ impl Api {
                 "resume_vm": true,
             }),
         )
+    }
+
+    /// Move the VM's balloon to `amount_mib`: the guest's usable memory
+    /// shrinks by that much, which the host gets back as its Firecracker
+    /// process gives the pages up. A VM whose Firecracker has no balloon
+    /// device answers with a client error, which
+    /// [`HostedVm::balloon`](super::vm::HostedVm::balloon) tells apart from a
+    /// host that failed.
+    pub fn balloon(&self, amount_mib: u64) -> Result<(), FirecrackerError> {
+        self.call("PATCH", "/balloon", &json!({ "amount_mib": amount_mib }))
     }
 
     fn call(
@@ -654,6 +674,14 @@ mod tests {
         assert_eq!(config["machine-config"]["vcpu_count"], 8);
         assert_eq!(config["machine-config"]["mem_size_mib"], 16384);
         assert_eq!(config["machine-config"]["track_dirty_pages"], true);
+        assert_eq!(
+            config["balloon"]["amount_mib"], 0,
+            "a VM starts holding its memory, and gives it back under pressure"
+        );
+        assert_eq!(
+            config["balloon"]["deflate_on_oom"], true,
+            "a guest the balloon pushed too far gives the memory back itself"
+        );
         assert_eq!(
             config["drives"][0]["path_on_host"],
             "/h/vm/state/vmm/disk.raw"

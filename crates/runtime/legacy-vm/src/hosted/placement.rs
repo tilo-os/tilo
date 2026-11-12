@@ -49,8 +49,16 @@ pub enum Placement {
 
 /// Where the VM `vm` of `size` runs: the host `placed` names for it, or,
 /// placed nowhere yet, the first host up with room for it.
+///
+/// A host's load is what its kernel measures its VMs at, so what a new VM
+/// needs is what one costs before it is measured
+/// ([`memory::CLONE_MIB`](super::memory::CLONE_MIB)), whatever size it is:
+/// its size bounds the CPU it gets and the memory it may grow into, and the
+/// host admits by what it uses. The host's own admission is the authority; a
+/// host this places on and that then has no room answers Busy, which is what
+/// starts another machine.
 #[must_use]
-pub fn place(hosts: &[HostView], placed: Option<&str>, size: VmSize) -> Placement {
+pub fn place(hosts: &[HostView], placed: Option<&str>, _size: VmSize) -> Placement {
     if let Some(holder) = placed {
         return match hosts.iter().find(|host| host.name == holder) {
             Some(host) if host.ready => Placement::Host(host.name.clone()),
@@ -59,7 +67,7 @@ pub fn place(hosts: &[HostView], placed: Option<&str>, size: VmSize) -> Placemen
     }
     hosts
         .iter()
-        .find(|host| host.ready && host.load.free_mib() >= size.memory_mib())
+        .find(|host| host.ready && host.load.free_mib() >= super::memory::CLONE_MIB)
         .map_or(Placement::Wait, |host| Placement::Host(host.name.clone()))
 }
 
@@ -228,7 +236,7 @@ impl Placer {
                 lock(&self.waiting).insert(
                     id,
                     Waiting {
-                        mib: vm.size.memory_mib(),
+                        mib: super::memory::CLONE_MIB,
                         at_ms: (self.clock)(),
                     },
                 );
@@ -367,6 +375,7 @@ pub fn read_load(address: &str) -> Option<HostLoad> {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use super::super::memory::CLONE_MIB;
     use super::*;
 
     const GIB: u64 = 1024;
@@ -393,7 +402,8 @@ mod tests {
         );
         assert_eq!(
             place(&hosts, None, VmSize::Default),
-            Placement::Host("vm-host-1".into())
+            Placement::Host("vm-host-0".into()),
+            "a VM is placed by what it takes now, not by what it may grow into"
         );
         assert_eq!(
             place(&hosts, Some("vm-host-0"), VmSize::Default),
@@ -413,7 +423,59 @@ mod tests {
         );
         assert_eq!(
             place(&[host("vm-host-0", 12, 12)], None, VmSize::Small),
-            Placement::Wait
+            Placement::Wait,
+            "a host whose VMs take all its memory places nothing more"
+        );
+        // phase: a host with a clone's worth left takes the largest VM there
+        // is: the size bounds what the guest may grow into, not what it takes
+        let nearly = [HostView {
+            load: HostLoad {
+                budget_mib: Some(12 * GIB),
+                awake_mib: 12 * GIB - CLONE_MIB,
+                waiting_mib: 0,
+            },
+            ..host("vm-host-0", 12, 0)
+        }];
+        assert_eq!(
+            place(&nearly, None, VmSize::Xlarge),
+            Placement::Host("vm-host-0".into())
+        );
+    }
+
+    #[test]
+    fn hundreds_of_workspaces_fill_a_fleet_by_what_they_take() {
+        // The customer's scale: 300 workspaces, each holding a clone's worth,
+        // placed across the nodes a stack runs them on.
+        let mut hosts: Vec<HostView> = (0..8)
+            .map(|n| HostView {
+                name: format!("vm-host-{n}"),
+                ready: true,
+                load: HostLoad {
+                    budget_mib: Some(62 * GIB),
+                    awake_mib: 0,
+                    waiting_mib: 0,
+                },
+            })
+            .collect();
+        for workspace in 0..300 {
+            let Placement::Host(name) = place(&hosts, None, VmSize::Small) else {
+                panic!("workspace {workspace} waits with eight nodes up");
+            };
+            let host = hosts
+                .iter_mut()
+                .find(|host| host.name == name)
+                .expect("the host it was placed on");
+            host.load.awake_mib = host.load.awake_mib.saturating_add(CLONE_MIB);
+        }
+        let used = hosts.iter().filter(|host| host.load.awake_mib > 0).count();
+        assert_eq!(used, 2, "300 workspaces take two nodes, not eighty");
+        for host in &hosts {
+            assert!(host.load.awake_mib <= 62 * GIB, "{}", host.name);
+        }
+        assert_eq!(
+            hosts.first().map(|host| host.load.free_mib()),
+            Some(62 * GIB - 195 * CLONE_MIB),
+            "the placer reads what a host really has left"
         );
     }
 

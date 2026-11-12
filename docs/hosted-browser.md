@@ -236,23 +236,34 @@ over two runs; the slower ends are from a run on a fully booked build node:
 | Host memory with the page open (PSS) | 615–700 MiB | 320–330 MiB |
 | … of which shared with the template | none | about 210 MiB of 530–545 MiB RSS |
 
-A D4s_v5 leaves its VMs 12 GiB: about 37 such clones by what they take.
-The host's memory budget counts a VM at its size instead (a small VM is
-4 GiB, as its tenant may fill it), so it wakes 3 small VMs there at once, and
-a workspace that only holds its Browser counts the same as one compiling.
+A D4s_v5 leaves its VMs 14 GiB: the whole node's 16 GiB less the 2 GiB a
+host keeps for itself.
+
+The host admits a VM by what it really takes, not by its size: the processes
+of each running VM are read every second (their proportional set sizes, which
+split what clones share between them), and a new VM is counted at what a clone
+costs until it has been measured, plus a little over a third of that again as
+headroom. So one node holds 43 such workspaces where counting a small VM at
+its size ran 3, and a workspace that only holds its Browser no longer counts
+the same as one compiling. A VM that does compile counts what the compiler
+takes, as it takes it.
 
 Per hour, at westus2 prices of November 2026 (`clusters/azure-tilo-sh` in
 the infra repo), for a workspace with Browser open:
 
 | Node | Price | Counted at its size (small, 4 GiB) | By what a clone takes (about 325 MiB) |
 | :--- | ---: | ---: | ---: |
-| Warm D4s_v5 (always up, already paid) | $0.192/h | 3 VMs: $0.064 each | about 38: $0.005 each |
-| Overflow D16s_v5, on demand | $0.768/h | 14 VMs: $0.055 each | about 180: $0.004 each |
-| E16as_v5 on Spot, once quota is granted | $0.167/h | 31 VMs: $0.005 each | about 380: under $0.001 each |
+| Warm D4s_v5 (always up, already paid) | $0.192/h | 3 VMs: $0.064 each | 43: $0.0045 each |
+| Overflow D16s_v5, on demand | $0.768/h | 14 VMs: $0.055 each | 194: $0.004 each |
+| E16as_v5 on Spot, once quota is granted | $0.167/h | 31 VMs: $0.005 each | 396: $0.0004 each |
+
+Under pressure — the node's free memory under the host's reserve — the guests'
+balloons are asked for memory back a step at a time before any wake is
+refused, and no workspace's VM is ever killed to make room.
 
 Browser-only workspaces are mostly idle, so CPU limits a node well before
 memory does in the right-hand column. A ten-minute visa form costs about a
-cent on demand counted at size, and a tenth of that on Spot.
+fifteenth of a cent on demand, and a hundred-and-fiftieth of a cent on Spot.
 
 ## Running it
 

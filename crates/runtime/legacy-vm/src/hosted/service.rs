@@ -17,7 +17,7 @@
 use std::collections::BTreeMap;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -29,6 +29,7 @@ use super::control::{
 };
 use super::files::Served;
 use super::firecracker::VmFiles;
+use super::memory::{self, Budget};
 use super::meter::{Ledger, Meter, VmIdentity, summarize};
 use super::plan::{AwakeVm, Plans, admit};
 use super::size::VmSize;
@@ -108,7 +109,29 @@ struct Entry {
     vm: Mutex<HostedVm>,
     /// The browser session in this VM, once a browser action started one.
     browser: Mutex<Option<Arc<Browser>>>,
+    /// What the VM takes of the host's memory, as the kernel last measured it.
+    memory: Mutex<Measured>,
 }
+
+/// What a host knows of one VM's memory.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct Measured {
+    /// MiB the VM's process holds of this host's memory; `None` until it is
+    /// measured since it woke, when one is counted at what a VM is expected
+    /// to take ([`Budget::expected_mib`]).
+    resident_mib: Option<u64>,
+    /// MiB the VM's balloon holds back from its guest, which the host has.
+    balloon_mib: u64,
+    /// Whether the VM's balloon took a target: `None` until one is set,
+    /// `Some(false)` when its Firecracker has no balloon device at all.
+    balloon: Option<bool>,
+}
+
+/// What the host measures: what a running VM's process takes, and what the
+/// host can still hand out. A test replaces them with fake VMs whose memory
+/// grows; a host reads its kernel.
+type Weigh = Arc<dyn Fn(&HostedVm) -> Option<u64> + Send + Sync>;
+type Available = Arc<dyn Fn() -> Option<u64> + Send + Sync>;
 
 impl Entry {
     fn id(&self) -> String {
@@ -124,9 +147,14 @@ pub struct Service {
     admission: Mutex<()>,
     /// The host is being taken back: no more wakes.
     evicting: AtomicBool,
-    /// The most memory the VMs awake on this host may take together, by
-    /// their sizes; `None` bounds them by the slots alone.
-    memory_budget_mib: Option<u64>,
+    /// What the host may pack into its memory, and what it keeps free.
+    budget: Budget,
+    /// How it measures, and what it can still hand out.
+    weigh: Weigh,
+    available: Available,
+    /// What the templates being made right now are counted at until each is
+    /// a snapshot and no longer a VM.
+    building_mib: AtomicU64,
     /// Wakes waiting for room: what each asks for, and when it last asked.
     waiting: Mutex<BTreeMap<String, (u64, u64)>>,
     /// How long a browser session may be idle, and live.
@@ -220,7 +248,10 @@ impl Service {
             vms: Mutex::new(BTreeMap::new()),
             admission: Mutex::new(()),
             evicting: AtomicBool::new(false),
-            memory_budget_mib: None,
+            budget: Budget::default(),
+            weigh: Arc::new(|vm: &HostedVm| vm.resident_mib()),
+            available: Arc::new(memory::available_mib),
+            building_mib: AtomicU64::new(0),
             waiting: Mutex::new(BTreeMap::new()),
             browser_limits: Limits::default(),
             templates: Mutex::new(BTreeMap::new()),
@@ -239,12 +270,21 @@ impl Service {
         Ok(service)
     }
 
-    /// Bound the VMs awake at once by the memory their sizes take
-    /// together: a wake beyond it is refused in plain words, so a small
-    /// host never runs out of memory under its VMs.
+    /// Admit by the memory the VMs really take: what the kernel measures,
+    /// with `budget`'s reserve kept free for the host itself, and a wake
+    /// beyond that waits for room.
     #[must_use]
-    pub const fn with_memory_budget(mut self, mib: u64) -> Self {
-        self.memory_budget_mib = Some(mib);
+    pub const fn with_memory(mut self, budget: Budget) -> Self {
+        self.budget = budget;
+        self
+    }
+
+    /// Measure with `weigh` and `available` instead of this host's kernel: a
+    /// test's fake VMs, whose memory grows, and the free memory that follows.
+    #[must_use]
+    pub fn with_measure(mut self, weigh: Weigh, available: Available) -> Self {
+        self.weigh = weigh;
+        self.available = available;
         self
     }
 
@@ -269,6 +309,7 @@ impl Service {
                 Arc::clone(&self.clock),
             )?),
             browser: Mutex::new(None),
+            memory: Mutex::new(Measured::default()),
         });
         lock(&self.vms).insert(entry.id(), Arc::clone(&entry));
         Ok(entry)
@@ -332,12 +373,6 @@ impl Service {
         }
         let plans = Plans::load(&self.config.plans).map_err(EnsureError::Invalid)?;
         let id = format!("{}/{}", request.workspace, request.environment);
-        // Under the admission lock, so the room it finds is the room the
-        // entry takes.
-        if !self.room_for(request.size, &id) {
-            self.waits(&id, request.size);
-            return Err(EnsureError::HostFull);
-        }
         let (existing_entry, awake, existing) = {
             let vms = lock(&self.vms);
             lock(&self.waiting).remove(&id);
@@ -367,6 +402,17 @@ impl Service {
                 "the VM of workspace {} belongs to another account",
                 request.workspace
             )));
+        }
+        // Under the admission lock, so the room it finds is the room the wake
+        // takes. A VM that already runs takes no more of the host's memory:
+        // its next command runs even where the host is full, so a workspace is
+        // never refused its own machine.
+        let runs = existing_entry
+            .as_ref()
+            .is_some_and(|entry| entry.awake.load(Ordering::SeqCst));
+        if !runs && !self.room_for(&id) {
+            self.waits(&id);
+            return Err(EnsureError::HostFull);
         }
         if linux {
             admit(
@@ -401,31 +447,51 @@ impl Service {
         Ok(entry)
     }
 
-    /// What the awake VMs other than `except` take of the memory budget.
-    fn awake_mib(&self, except: &str) -> u64 {
+    /// What the awake VMs other than `except` take of the host's memory:
+    /// what the kernel measured of each, or, for one admitted since the last
+    /// measurement, what a VM is expected to take.
+    fn used_mib(&self, except: &str) -> u64 {
+        let expected = self.budget.expected_mib();
         lock(&self.vms)
             .values()
             .filter(|entry| entry.id() != except && entry.awake.load(Ordering::SeqCst))
-            .map(|entry| lock(&entry.size).memory_mib())
+            .map(|entry| lock(&entry.memory).resident_mib.unwrap_or(expected))
             .sum()
     }
 
-    /// Whether one more VM of `size` fits in the memory budget, beside every
-    /// awake VM but the one named `except` (a VM asking for room for itself).
-    fn room_for(&self, size: VmSize, except: &str) -> bool {
-        self.memory_budget_mib.is_none_or(|budget_mib| {
-            self.awake_mib(except).saturating_add(size.memory_mib()) <= budget_mib
-        })
+    /// What the templates being made right now are counted at: each is a
+    /// booted VM of its own until it is a snapshot.
+    fn building_mib(&self) -> u64 {
+        self.building_mib.load(Ordering::SeqCst)
+    }
+
+    /// Whether the host may start one more VM beside every awake one but the
+    /// VM named `except` (one asking for room for itself): what the awake
+    /// ones are measured at, what the new one is expected to take, and the
+    /// host's reserve must fit its memory — and its kernel must have that
+    /// much to hand out now.
+    fn room_for(&self, except: &str) -> bool {
+        let expected = self.budget.expected_mib();
+        let used = self.used_mib(except).saturating_add(self.building_mib());
+        if !self.budget.admits(used, expected) {
+            return false;
+        }
+        // The arithmetic is what this host counted; this is what it really
+        // has. The page cache of a hundred VMs' disks is available, but the
+        // kernel may not have given it back yet.
+        (self.available)()
+            .is_none_or(|free| free >= self.budget.reserve_mib.saturating_add(expected))
     }
 
     /// Note that `id` waits for room: what a placer starts another machine
     /// for.
-    fn waits(&self, id: &str, size: VmSize) {
-        lock(&self.waiting).insert(id.to_owned(), (size.memory_mib(), (self.clock)()));
+    fn waits(&self, id: &str) {
+        lock(&self.waiting).insert(id.to_owned(), (self.budget.expected_mib(), (self.clock)()));
     }
 
-    /// Poll every awake VM; suspend the idle ones. A VM busy with a wake
-    /// or a suspend is left for the next tick.
+    /// Poll every awake VM; suspend the idle ones; weigh the ones that run.
+    /// A VM busy with a wake or a suspend keeps its last measurement, and the
+    /// one the host counts it at until it is weighed again.
     pub fn tick(&self) {
         let awake: Vec<Arc<Entry>> = lock(&self.vms)
             .values()
@@ -439,7 +505,86 @@ impl Service {
             if let Err(error) = vm.poll() {
                 eprintln!("tilo-legacy hosted: {}: {error}", entry.id());
             }
-            entry.awake.store(vm.awake(), Ordering::SeqCst);
+            let measured = (self.weigh)(&vm);
+            // What holds memory runs: its process is the usual word on that,
+            // and a host that weighs its VMs another way says so by weighing
+            // one.
+            let up = vm.awake() || measured.is_some();
+            entry.awake.store(up, Ordering::SeqCst);
+            lock(&entry.memory).resident_mib = measured;
+        }
+        self.reclaim();
+    }
+
+    /// Keep the host's own memory free: while its kernel says it has less
+    /// than the reserve, ask every awake VM's guest for a step back, starting
+    /// with the VM that holds the most; once the host has plenty, give one
+    /// step back to one VM a tick, so that memory the guests then start using
+    /// again arrives a step at a time and not as a spike the node cannot
+    /// absorb.
+    ///
+    /// Nothing is ever killed here: a host that cannot reclaim refuses the
+    /// next VM instead ([`Service::room_for`]), and a running workspace keeps
+    /// its VM, its browser and its open page.
+    fn reclaim(&self) {
+        let Some(free) = (self.available)() else {
+            return;
+        };
+        let reserve = self.budget.reserve_mib;
+        let short = free < reserve;
+        let plenty = free > reserve.saturating_add(memory::BALLOON_STEP_MIB.saturating_mul(2));
+        if !short && !plenty {
+            return;
+        }
+        let mut awake: Vec<Arc<Entry>> = lock(&self.vms)
+            .values()
+            .filter(|entry| entry.awake.load(Ordering::SeqCst))
+            .cloned()
+            .collect();
+        // The VM holding the most is the one with the most to give back.
+        awake.sort_by_key(|entry| std::cmp::Reverse(lock(&entry.memory).resident_mib.unwrap_or(0)));
+        for entry in awake {
+            let Ok(vm) = entry.vm.try_lock() else {
+                continue;
+            };
+            let size_mib = lock(&entry.size).memory_mib();
+            let (current_mib, balloon) = {
+                let measured = lock(&entry.memory);
+                (measured.balloon_mib, measured.balloon)
+            };
+            // A VM whose Firecracker has no balloon device has no memory to
+            // give back, and no later call changes that.
+            if balloon == Some(false) {
+                continue;
+            }
+            let target = if short {
+                memory::next_inflate_mib(current_mib, size_mib)
+            } else {
+                memory::next_deflate_mib(current_mib)
+            };
+            if target == current_mib {
+                continue;
+            }
+            match vm.balloon(target) {
+                Ok(true) => {
+                    let mut measured = lock(&entry.memory);
+                    measured.balloon_mib = target;
+                    measured.balloon = Some(true);
+                }
+                Ok(false) => {
+                    lock(&entry.memory).balloon = Some(false);
+                    eprintln!(
+                        "tilo-legacy hosted: {}: its Firecracker has no balloon device, so its \
+                         memory is not the host's to reclaim",
+                        entry.id()
+                    );
+                }
+                // Not running, or the API is busy: the next tick asks again.
+                Err(error) => eprintln!("tilo-legacy hosted: {}: balloon: {error}", entry.id()),
+            }
+            if plenty {
+                return;
+            }
         }
     }
 
@@ -597,13 +742,14 @@ impl Service {
         }
     }
 
-    /// Start making `size`'s template when it has none, there is room for
-    /// one more VM of its size, and it was not tried lately.
+    /// Start making `size`'s template when it has none, there is room for one
+    /// more VM, and it was not tried lately. Until it is a snapshot it is a
+    /// booted VM like any other, and is counted as one.
     fn keep_template(self: &Arc<Self>, size: VmSize, now: u64) {
         let settings = &self.config.settings;
         if super::vm::template_dir(settings, size).is_none()
             || super::vm::template(settings, size).is_some()
-            || !self.room_for(size, "")
+            || !self.room_for("")
         {
             return;
         }
@@ -617,10 +763,16 @@ impl Service {
             }
             tried.insert(size, now);
         }
+        let expected = self.budget.expected_mib();
+        self.building_mib.fetch_add(expected, Ordering::SeqCst);
         let service = Arc::clone(self);
-        std::thread::spawn(move || match service.make_template(size) {
-            Ok(()) => eprintln!("tilo-legacy hosted: the {size} template is ready"),
-            Err(error) => eprintln!("tilo-legacy hosted: the {size} template: {error}"),
+        std::thread::spawn(move || {
+            let made = service.make_template(size);
+            service.building_mib.fetch_sub(expected, Ordering::SeqCst);
+            match made {
+                Ok(()) => eprintln!("tilo-legacy hosted: the {size} template is ready"),
+                Err(error) => eprintln!("tilo-legacy hosted: the {size} template: {error}"),
+            }
         });
     }
 
@@ -735,17 +887,17 @@ impl Service {
         self.evicting.load(Ordering::SeqCst)
     }
 
-    /// What the awake VMs take of the memory budget, and what waiting
-    /// wakes ask for.
+    /// What the awake VMs and the templates being made take of the host's
+    /// memory now, and what waiting wakes ask for.
     #[must_use]
     pub fn load(&self) -> HostLoad {
-        let awake_mib = self.awake_mib("");
+        let used_mib = self.used_mib("").saturating_add(self.building_mib());
         let now = (self.clock)();
         let mut waiting = lock(&self.waiting);
         waiting.retain(|_, (_, at)| now.saturating_sub(*at) <= WAITING_FOR_MS);
         HostLoad {
-            budget_mib: self.memory_budget_mib,
-            awake_mib,
+            budget_mib: self.budget.for_vms_mib(),
+            awake_mib: used_mib,
             waiting_mib: waiting.values().map(|(mib, _)| mib).sum(),
         }
     }
@@ -758,6 +910,7 @@ impl Service {
             .map(|entry| {
                 let vm = lock(&entry.vm);
                 let wake = vm.last_wake();
+                let measured = *lock(&entry.memory);
                 VmStatus {
                     vm: entry.id(),
                     account: entry.account.clone(),
@@ -766,6 +919,8 @@ impl Service {
                     last_wake_ms: wake.map(|wake| wake.millis),
                     last_wake_restored: wake.map(|wake| wake.restored),
                     snapshot_bytes: vm.snapshot_bytes(),
+                    resident_mib: measured.resident_mib,
+                    balloon_mib: measured.balloon_mib,
                 }
             })
             .collect()
@@ -938,7 +1093,11 @@ fn read_names(dir: &Path) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+    use std::io::{Read as _, Write as _};
+
     use super::super::firecracker::Machine;
+    use super::super::memory::{BALLOON_STEP_MIB, CLONE_MIB};
     use super::super::meter::{OpenRun, RunEnd, UsageKind};
     use super::super::size::VmSize;
     use super::*;
@@ -979,6 +1138,169 @@ mod tests {
         Arc::new(move || at)
     }
 
+    /// A host whose kernel measures nothing and has memory to spare: a test
+    /// that is not about admission says so, and does not depend on the
+    /// machine it runs on.
+    fn open_at(config: &ServiceConfig, at: u64) -> Service {
+        Service::open(config.clone(), clock(at))
+            .unwrap()
+            .with_measure(Arc::new(|_: &HostedVm| None), Arc::new(|| Some(1 << 20)))
+    }
+
+    /// Fake VMs, and the host's memory that follows them: what each one's
+    /// guest holds, what each one's Firecracker API took for its balloon, and
+    /// what the service asked for.
+    #[derive(Default)]
+    struct World {
+        resident: Mutex<BTreeMap<String, u64>>,
+        balloon: Mutex<BTreeMap<String, u64>>,
+        asked: Mutex<Vec<(String, u64)>>,
+        /// VMs whose Firecracker has no balloon device: their API answers as
+        /// one booted or restored without the device does.
+        no_balloon: Mutex<BTreeSet<String>>,
+    }
+
+    impl World {
+        /// What `id`'s VM takes of the host's memory now.
+        fn takes_mib(&self, id: &str) -> Option<u64> {
+            let held = *self.resident.lock().unwrap().get(id)?;
+            let back = *self.balloon.lock().unwrap().get(id).unwrap_or(&0);
+            Some(held.saturating_sub(back))
+        }
+
+        /// What the host's VMs take together.
+        fn used_mib(&self) -> u64 {
+            let ids: Vec<String> = self.resident.lock().unwrap().keys().cloned().collect();
+            ids.iter().filter_map(|id| self.takes_mib(id)).sum()
+        }
+
+        /// `id`'s guest fills up to `mib`.
+        fn fill(&self, id: &str, mib: u64) {
+            self.resident.lock().unwrap().insert(id.to_owned(), mib);
+        }
+
+        /// `id`'s VM sleeps: the host has its memory back (its snapshot
+        /// holds its pages as a file, which is disk and not this).
+        fn sleep(&self, id: &str) {
+            self.resident.lock().unwrap().remove(id);
+            self.balloon.lock().unwrap().remove(id);
+        }
+
+        /// What the service asked each VM's balloon to hold, in order.
+        fn asked(&self) -> Vec<(String, u64)> {
+            self.asked.lock().unwrap().clone()
+        }
+    }
+
+    /// A host whose node has `node_mib`, measuring the fake VMs of `world`.
+    fn fake_host(dir: &Path, node_mib: u64) -> (Service, Arc<World>) {
+        let world = Arc::new(World::default());
+        let weighed = Arc::clone(&world);
+        let freed = Arc::clone(&world);
+        let service = Service::open(config(dir), clock(0))
+            .unwrap()
+            .with_memory(Budget {
+                node_mib: Some(node_mib),
+                ..Budget::default()
+            })
+            .with_measure(
+                Arc::new(move |vm: &HostedVm| weighed.takes_mib(&vm.identity().vm)),
+                Arc::new(move || Some(node_mib.saturating_sub(freed.used_mib()))),
+            );
+        (service, world)
+    }
+
+    /// Admit `workspace`'s fake VM whose guest holds `mib`, with a Firecracker
+    /// API at its socket: the one a VM booted without a balloon device would
+    /// answer with when `balloon` is false.
+    fn fake_vm(
+        service: &Service,
+        world: &Arc<World>,
+        config: &ServiceConfig,
+        workspace: &str,
+        mib: u64,
+        balloon: bool,
+    ) -> String {
+        let entry = service
+            .admit(
+                &request(workspace, &format!("acct-{workspace}"), VmSize::Small),
+                true,
+            )
+            .unwrap();
+        let id = entry.id();
+        world.fill(&id, mib);
+        if !balloon {
+            world.no_balloon.lock().unwrap().insert(id.clone());
+        }
+        let files = config.files(workspace, "default");
+        std::fs::create_dir_all(&files.run).unwrap();
+        serve_api(&files.api_socket(), Arc::clone(world), id.clone());
+        id
+    }
+
+    /// A fake Firecracker's API at `socket`, answering the balloon calls the
+    /// service makes: a target the VM takes, or, without a balloon device, the
+    /// client error a real one gives.
+    /// One whole HTTP request: the client writes its head and its body in
+    /// one go or not, so read until the body is all there.
+    fn read_request(stream: &mut std::os::unix::net::UnixStream) -> String {
+        let mut request = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        loop {
+            let read = stream.read(&mut chunk).unwrap_or(0);
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&chunk[..read]);
+            let text = String::from_utf8_lossy(&request).into_owned();
+            let Some((head, body)) = text.split_once("\r\n\r\n") else {
+                continue;
+            };
+            let length = head
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())?
+                })
+                .unwrap_or(0);
+            if body.len() >= length {
+                return text;
+            }
+        }
+        String::from_utf8_lossy(&request).into_owned()
+    }
+
+    fn serve_api(socket: &Path, world: Arc<World>, id: String) {
+        let listener = std::os::unix::net::UnixListener::bind(socket).unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else {
+                    continue;
+                };
+                let request = read_request(&mut stream);
+                let reply = if request.starts_with("PATCH /balloon") {
+                    let body = request
+                        .split_once("\r\n\r\n")
+                        .map(|(_, body)| body)
+                        .unwrap_or_default();
+                    let asked: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+                    let target = asked["amount_mib"].as_u64().unwrap_or(0);
+                    world.asked.lock().unwrap().push((id.clone(), target));
+                    if world.no_balloon.lock().unwrap().contains(&id) {
+                        "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n"
+                    } else {
+                        world.balloon.lock().unwrap().insert(id.clone(), target);
+                        "HTTP/1.1 204 No Content\r\n\r\n"
+                    }
+                } else {
+                    "HTTP/1.1 204 No Content\r\n\r\n"
+                };
+                let _ = stream.write_all(reply.as_bytes());
+            }
+        });
+    }
+
     /// A VM the account already has, as a meter on disk.
     fn existing(config: &ServiceConfig, workspace: &str, account: &str, open: Option<OpenRun>) {
         let files = config.files(workspace, "default");
@@ -1007,7 +1329,7 @@ mod tests {
                 billed_from_ms: Some(1_500),
             }),
         );
-        let service = Service::open(config.clone(), clock(90_000)).unwrap();
+        let service = open_at(&config, 90_000);
         let records = service.ledger.records("acct-1").unwrap();
         assert_eq!(records.len(), 1);
         let record = records.first().unwrap();
@@ -1016,7 +1338,7 @@ mod tests {
             (UsageKind::Running, Some(RunEnd::Recovered), 61_500, 60)
         );
         drop(service);
-        let again = Service::open(config, clock(95_000)).unwrap();
+        let again = open_at(&config, 95_000);
         assert_eq!(
             again.ledger.records("acct-1").unwrap().len(),
             1,
@@ -1037,7 +1359,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = config(dir.path());
         existing(&config, "ws1", "acct-1", None);
-        let service = Service::open(config.clone(), clock(0)).unwrap();
+        let service = open_at(&config, 0);
         assert!(!service.evicting());
         service.evict();
         assert!(service.evicting());
@@ -1061,7 +1383,7 @@ mod tests {
             run: dir.path().join("run-of-the-next-host"),
             ..config
         };
-        let elsewhere = Service::open(next, clock(10_000)).unwrap();
+        let elsewhere = open_at(&next, 10_000);
         assert!(!elsewhere.evicting());
         assert_eq!(
             elsewhere
@@ -1074,52 +1396,185 @@ mod tests {
     }
 
     #[test]
-    fn a_host_wakes_no_more_than_its_memory_budget_holds() {
+    fn a_host_admits_by_what_its_vms_take_not_by_what_they_are_configured_at() {
         let dir = tempfile::tempdir().unwrap();
         let config = config(dir.path());
-        let service = Service::open(config, clock(0))
-            .unwrap()
-            .with_memory_budget(12 * 1024);
-        let admitted = |workspace: &str, size: VmSize| {
-            service
-                .admit(
-                    &request(workspace, &format!("acct-{workspace}"), size),
-                    true,
-                )
-                .map(|_| ())
-        };
-        admitted("ws1", VmSize::Default).unwrap();
-        admitted("ws2", VmSize::Small).unwrap();
-        // phase: a VM already awake is not counted twice
-        admitted("ws1", VmSize::Default).unwrap();
-        // phase: one more would pass the budget, whoever asks: it waits, and is demand
+        // A node of 4 GiB, which the host keeps 2 GiB of for itself: five
+        // clones of 325 MiB fit where one VM of its configured 4 GiB would not.
+        let (service, world) = fake_host(dir.path(), 4 * 1024);
+        for n in 0..5 {
+            fake_vm(
+                &service,
+                &world,
+                &config,
+                &format!("ws{n}"),
+                CLONE_MIB,
+                true,
+            );
+            service.tick();
+        }
+        assert_eq!(
+            service.load(),
+            HostLoad {
+                budget_mib: Some(2 * 1024),
+                awake_mib: 5 * CLONE_MIB,
+                waiting_mib: 0,
+            },
+            "what the VMs take, not what they may grow into"
+        );
+        // phase: the sixth would pass the host's memory: it waits, and the
+        // placer starts another machine for it
         assert!(matches!(
-            admitted("ws3", VmSize::Small),
+            service.admit(&request("ws5", "acct-ws5", VmSize::Small), true),
             Err(EnsureError::HostFull)
         ));
         let Reply::Busy(words) = service.handle(Request::Ensure {
-            vm: request("ws3", "acct-ws3", VmSize::Small),
+            vm: request("ws5", "acct-ws5", VmSize::Small),
             shares: Vec::new(),
         }) else {
             panic!("a full host makes the wake wait");
         };
         assert_eq!(words, "Starting another machine for it, about 3 minutes.");
         assert_eq!(
-            service.load(),
-            HostLoad {
-                budget_mib: Some(12 * 1024),
-                awake_mib: 12 * 1024,
-                waiting_mib: 4 * 1024,
-            }
+            service.load().waiting_mib,
+            453,
+            "what a VM is expected to take"
         );
-        // phase: once one sleeps there is room again
+        // phase: a VM that already runs takes no more memory: its next
+        // command runs on a host that is full
         service
-            .entry("ws2", "default")
+            .admit(&request("ws0", "acct-ws0", VmSize::Small), true)
+            .unwrap();
+        // phase: once one sleeps there is room again, and nothing waits
+        service
+            .entry("ws1", "default")
             .unwrap()
             .awake
             .store(false, Ordering::SeqCst);
-        admitted("ws3", VmSize::Small).unwrap();
+        world.sleep("ws1/default");
+        service
+            .admit(&request("ws5", "acct-ws5", VmSize::Small), true)
+            .unwrap();
         assert_eq!(service.load().waiting_mib, 0, "a woken VM waits no more");
+    }
+
+    #[test]
+    fn a_host_short_of_memory_balloons_its_vms_before_it_refuses_one_and_kills_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config(dir.path());
+        let (service, world) = fake_host(dir.path(), 4 * 1024);
+        let mut ids = Vec::new();
+        for n in 0..5 {
+            ids.push(fake_vm(
+                &service,
+                &world,
+                &config,
+                &format!("ws{n}"),
+                CLONE_MIB,
+                true,
+            ));
+            service.tick();
+        }
+        assert_eq!(
+            world.asked(),
+            vec![],
+            "room to spare asks no guest for memory"
+        );
+        // phase: the guests fill up, and the host's free memory falls under
+        // its reserve: each balloon gives a step back
+        for id in &ids {
+            world.fill(id, 900);
+        }
+        service.tick();
+        assert_eq!(
+            world.used_mib(),
+            5 * (900 - BALLOON_STEP_MIB),
+            "each guest gave a step of its memory back"
+        );
+        // phase: they fill up further, and the balloons take steps to half a
+        // VM, which is as much as a guest may give
+        for id in &ids {
+            world.fill(id, 4096);
+        }
+        for _ in 0..10 {
+            service.tick();
+        }
+        assert!(
+            world
+                .balloon
+                .lock()
+                .unwrap()
+                .values()
+                .all(|held| *held == 2 * 1024),
+            "every balloon holds half a small VM, and no more"
+        );
+        // phase: what the guests took is past what the host has: it refuses a
+        // new VM, and kills none
+        assert!(matches!(
+            service.admit(&request("ws9", "acct-ws9", VmSize::Small), true),
+            Err(EnsureError::HostFull)
+        ));
+        assert_eq!(service.status().len(), 5, "every workspace keeps its VM");
+        for n in 0..5 {
+            assert!(
+                service
+                    .entry(&format!("ws{n}"), "default")
+                    .unwrap()
+                    .awake
+                    .load(Ordering::SeqCst),
+                "ws{n}'s VM still runs"
+            );
+        }
+        // phase: the guests finish what they were doing, and the balloons hold
+        // what they no longer need: the host has its memory back, and admits
+        // the VM it refused while it had none
+        for id in &ids {
+            world.fill(id, 2 * 1024);
+        }
+        service.tick();
+        assert!(
+            world.used_mib() < CLONE_MIB,
+            "the balloons hold what the guests no longer need: {} MiB in use",
+            world.used_mib()
+        );
+        service
+            .admit(&request("ws9", "acct-ws9", VmSize::Small), true)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_vm_whose_firecracker_has_no_balloon_is_asked_once_and_never_killed_for_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config(dir.path());
+        let (service, world) = fake_host(dir.path(), 4 * 1024);
+        let plain = fake_vm(&service, &world, &config, "ws1", CLONE_MIB, true);
+        let bare = fake_vm(&service, &world, &config, "ws2", CLONE_MIB, false);
+        // phase: pressure finds one balloon to ask, and one that answers with
+        // no device at all
+        world.fill(&plain, 4096);
+        world.fill(&bare, 4096);
+        service.tick();
+        let asked = world.asked();
+        assert!(
+            asked
+                .iter()
+                .any(|(id, mib)| id == &plain && *mib == BALLOON_STEP_MIB),
+            "{asked:?}"
+        );
+        assert!(
+            asked.iter().any(|(id, _)| id == &bare),
+            "the VM without a balloon was asked once: {asked:?}"
+        );
+        // phase: it is not asked again, and it is not stopped either
+        for _ in 0..5 {
+            service.tick();
+        }
+        let bare_asks = world.asked().iter().filter(|(id, _)| id == &bare).count();
+        assert_eq!(
+            bare_asks, 1,
+            "a balloon that is not there is not asked twice"
+        );
+        assert_eq!(service.status().len(), 2);
     }
 
     #[test]
@@ -1132,7 +1587,7 @@ mod tests {
                 "add_payment_method":"https://tilo.sh/card","browser_free_actions":300}}"#,
         )
         .unwrap();
-        let service = Service::open(config, clock(0)).unwrap();
+        let service = open_at(&config, 0);
         // phase: Browser wakes the workspace's VM, card or not
         service
             .admit(&request("ws1", "acct-free", VmSize::Small), false)
@@ -1164,7 +1619,7 @@ mod tests {
         let with_relay = |relay: &str| {
             let mut config = config(dir.path());
             config.settings.relay = Some(Endpoint::parse(relay).unwrap());
-            Service::open(config, clock(0)).unwrap()
+            open_at(&config, 0)
         };
         let dialled = |line: &str| -> std::net::SocketAddr {
             let line: tilo_relay_protocol::hosted::Material = serde_json::from_str(line).unwrap();
@@ -1205,7 +1660,7 @@ mod tests {
     #[test]
     fn a_host_without_the_relays_endpoint_serves_no_browser() {
         let dir = tempfile::tempdir().unwrap();
-        let service = Service::open(config(dir.path()), clock(0)).unwrap();
+        let service = open_at(&config(dir.path()), 0);
         let Reply::Error(message) = service.handle(Request::OpenBrowser {
             browser: OpenBrowser {
                 workspace: "ws1".into(),
@@ -1243,7 +1698,7 @@ mod tests {
         existing(&config, "ws1", "acct-1", None);
         existing(&config, "ws2", "acct-1", None);
         existing(&config, "ws9", "acct-2", None);
-        let service = Service::open(config, clock(0)).unwrap();
+        let service = open_at(&config, 0);
         let refused = |request: &VmRequest| match service.handle(Request::Ensure {
             vm: request.clone(),
             shares: Vec::new(),

@@ -22,6 +22,7 @@ use thiserror::Error;
 use super::files::Served;
 use super::firecracker::{self, Api, FirecrackerError, Machine, VmFiles};
 use super::jail::{Jail, JailDirs};
+use super::memory;
 use super::meter::{Ledger, Meter, RunEnd, UsageRecord, VmIdentity};
 use super::network::Endpoint;
 use super::size::VmSize;
@@ -262,6 +263,28 @@ impl HostedVm {
     #[must_use]
     pub fn snapshot_bytes(&self) -> Option<u64> {
         self.meter.snapshot.map(|held| held.bytes)
+    }
+
+    /// What the running VM takes of this host's memory, MiB, as its kernel
+    /// accounts it ([`memory::resident_mib`]): what the host counts the VM at
+    /// and what it stops admitting new ones over. `None` when it is not
+    /// running, or between its start and the kernel's first word.
+    #[must_use]
+    pub fn resident_mib(&self) -> Option<u64> {
+        memory::resident_mib(self.process.as_ref()?.id())
+    }
+
+    /// Ask the running VM's guest to give `target_mib` of its memory back,
+    /// which the host then has: `Ok(true)` when its Firecracker took the
+    /// target, `Ok(false)` when this VM has no balloon device (it booted or
+    /// was restored from a snapshot made without one), which no later call
+    /// changes.
+    pub fn balloon(&self, target_mib: u64) -> Result<bool, VmError> {
+        match Api::new(self.files.api_socket()).balloon(target_mib) {
+            Ok(()) => Ok(true),
+            Err(FirecrackerError::Api { status, .. }) if (400..500).contains(&status) => Ok(false),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Wake the VM with `shares` mounted, and say how to reach its agent,
