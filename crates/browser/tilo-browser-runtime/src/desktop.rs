@@ -424,10 +424,14 @@ impl Shared {
         }
     }
 
-    /// Ask the host to run the surface's update pass before the next frame
-    /// (queued navigation, a replaced tree).
+    /// Ask the host to run the surface's update pass, and for the frame it runs in (queued
+    /// navigation, a replaced tree, an app action chosen in the bar's cards). A page draws only
+    /// when something changes: a flag alone waited for whatever drew next, so the card a press on
+    /// an agent's "Open card" asked Console for could stay unopened on a page with nothing else
+    /// to draw.
     pub fn wake(&self) {
         self.woken.store(true, Ordering::Release);
+        crate::browser::wake_desktops();
     }
 
     /// A record arrived: build the tabs still waiting for theirs again.
