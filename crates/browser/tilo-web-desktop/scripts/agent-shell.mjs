@@ -291,20 +291,6 @@ async function untilDrawn(tab, fn, ms, interval = 150, frames = DRAWN_FRAMES) {
     await sleep(interval);
   }
 }
-/** Until the page has stopped drawing: no frame presented for `quiet` ms, or `ms` passed. A page
- * draws only while something on it moves, so a notice fading in is still drawing and one that
- * stands is not. */
-async function atRest(tab, {quiet = 1500, ms = 20000} = {}) {
-  const deadline = Date.now() + ms;
-  let last = await presentedFrames(tab);
-  let since = Date.now();
-  while (Date.now() < deadline) {
-    await sleep(250);
-    const now = await presentedFrames(tab);
-    if (now !== last) { last = now; since = Date.now(); continue; }
-    if (Date.now() - since >= quiet) return;
-  }
-}
 /** Until the page has presented `frames` more frames than now, or `ms` passed: what a press
  * changed is drawn by then, however slowly the page draws. */
 async function afterFrames(tab, frames = 1, ms = 30000) {
@@ -2022,9 +2008,11 @@ try {
         if (!finished) log(`${combo}: the finished notice`, (await semantics(tab)).filter(finishedNotice).map(node => node.name).join(' | ') || 'none');
         check(`${combo}: the person is told what the agent changed once it stops`, Boolean(finished),
           finished ? finished.name : names(await semantics(tab)));
-        // The notice comes in with a fade: shot once it stands, when the page has stopped
-        // drawing (a page draws only while something moves), not part way in.
-        await atRest(tab);
+        // The notice comes in with a fade timed by the clock: shot from a frame drawn after the
+        // fade's length has passed, which shows it whole, not part way in. A page drawing a frame
+        // every few seconds would look at rest between two frames of the same fade.
+        await sleep(800);
+        await afterFrames(tab, 1, 15000);
         await shot(tab, combo, 'agent-finished');
 
         const exceptions = tab.log.filter(line => line.startsWith('EXC') || /panic/i.test(line));
