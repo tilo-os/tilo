@@ -644,6 +644,18 @@ def check_places(session: Session, out: Path) -> dict:
     return {"titles": tabs()}
 
 
+def drawn_window(session: Session, tab) -> dict | None:
+    """The desk's row of the window `tab` once the session says the window is drawn: the
+    compositor placed it on a display (`rect`) and its client committed a frame (`frames`). A
+    tab is on the desk as soon as its app opened the window, and the compositor maps the window
+    when its first buffer arrives, so a row whose `rect` is null is a window nothing has drawn
+    yet. A tool reads a window once the session reports it drawn, never on a timer's guess."""
+    row = next((shown for shown in session.windows() if shown.get("tab") == tab), None)
+    if row is None or not row.get("rect") or not row.get("frames"):
+        return None
+    return row
+
+
 def window_controls(session: Session, window: dict) -> list[str]:
     """The controls the desk names in `window`, with the window in front: what its app drew of its
     own content — its rows, its lists — named where the window stands."""
@@ -651,15 +663,9 @@ def window_controls(session: Session, window: dict) -> list[str]:
     until(f"window {window['tab']} in front", lambda: any(
         shown.get("tab") == window["tab"] and shown.get("active")
         for shown in session.windows()), 30)
-    time.sleep(0.5)
-    shown = next((shown for shown in session.windows() if shown.get("tab") == window["tab"]), None)
-    if shown is None:
-        raise Failed(f"window {window['tab']} is not on the desk to be read")
-    rect = shown.get("rect")
-    if rect is None:
-        # Not drawn yet: it names nothing, and a caller waiting for a name asks again.
-        return []
-    x, y, width, height = rect
+    drawn = until(f"window {window['tab']} drawn on the desk to be read",
+                  lambda: drawn_window(session, window["tab"]), 30)
+    x, y, width, height = drawn["rect"]
     return [target["name"] for target in session.targets()
             if x <= target["rect"][0] < x + width and y <= target["rect"][1] < y + height]
 
@@ -669,8 +675,11 @@ def today_shown(session: Session, out: Path, name: str) -> bytes:
     today = app_id("today")
     window = next(w for w in session.windows() if w.get("app_id") == today)
     focus(session, window)
+    until(f"window {window['tab']} drawn on the desk to be read",
+          lambda: drawn_window(session, window["tab"]), 30)
+    # The frame that shows the window in front, drawn before its picture is taken.
     time.sleep(1.0)
-    rect = next(w["rect"] for w in session.windows() if w.get("tab") == window["tab"])
+    rect = drawn_window(session, window["tab"])["rect"]
     path = out / f"today-{name}.png"
     session.control_cmd("snapshot", str(path))
     return window_pixels(png_rgb(path), rect)
