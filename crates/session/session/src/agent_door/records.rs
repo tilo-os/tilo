@@ -17,6 +17,9 @@ pub(crate) struct ServiceRecords {
     pub(crate) session: Arc<SessionDoors>,
     /// An admitted agent's run, whose steps its changes of the workspace's records are.
     pub(crate) run: Option<Arc<dyn tilo_actions::remote::RecordChanges>>,
+    /// The seat an admitted agent's connection sits at, when it sits at one: the records it
+    /// changes are kept there, as what taking its work back undoes.
+    pub(crate) seat: Option<(Arc<super::Seats>, u64)>,
 }
 
 impl ServiceRecords {
@@ -99,6 +102,11 @@ impl tilo_actions::remote::RecordChanges for ServiceRecords {
         caller: &Caller,
         change: &tilo_actions::remote::RecordChange,
     ) -> Result<serde_json::Value, ActionHostError> {
+        // The seat hears of every record this connection changes, whichever end applies it: one
+        // of the records taking its work back undoes.
+        if let Some((seats, seat)) = &self.seat {
+            seats.changed(*seat, &change.app, &change.record);
+        }
         let asked = (caller.principal().clone(), change.clone());
         if let Some(answer) = self.on_pass(&change.app, |done| DoorAsk::Change {
             actor: asked.0,

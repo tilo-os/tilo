@@ -148,6 +148,14 @@ pub(crate) struct Held {
     issue: String,
 }
 
+impl Held {
+    /// The issue that names its run: what every change the connection makes is stamped with, and
+    /// what taking its work back names.
+    pub(crate) fn issue(&self) -> &str {
+        &self.issue
+    }
+}
+
 impl Drop for Held {
     fn drop(&mut self) {
         self.runs
