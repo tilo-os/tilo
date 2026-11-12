@@ -133,6 +133,10 @@ pub(super) struct Listings {
     /// being handed one. The host's operator sets it; it is not a listing's
     /// field, so what a stored listing holds never changes.
     invitation_only: std::sync::Mutex<BTreeSet<String>>,
+    /// The people the host's operator declares owners or moderators of each
+    /// workspace: an invitation-only door lets them in as it lets in someone
+    /// invited, since nobody else could invite the first of them.
+    declared: std::sync::Mutex<BTreeMap<String, BTreeSet<[u8; 32]>>>,
     /// When a member last wrote to each workspace, Unix milliseconds, since this
     /// relay started: the directory's activity hint.
     active: std::sync::Mutex<BTreeMap<String, u64>>,
@@ -155,6 +159,7 @@ impl Listings {
             path,
             stored: std::sync::Mutex::new(stored),
             invitation_only: std::sync::Mutex::default(),
+            declared: std::sync::Mutex::default(),
             active: std::sync::Mutex::default(),
             changes: tokio::sync::broadcast::channel(16).0,
         }
@@ -175,6 +180,15 @@ impl Listings {
         } else {
             closed.remove(workspace);
         }
+    }
+
+    /// Whether the host's operator declares `user` an owner or moderator of
+    /// `workspace`.
+    fn declared(&self, workspace: &str, user: &[u8; 32]) -> bool {
+        self.declared
+            .lock_recover()
+            .get(workspace)
+            .is_some_and(|people| people.contains(user))
     }
 
     fn get(&self, workspace: &str) -> Option<Listing> {
@@ -396,6 +410,39 @@ impl Workspaces {
         Ok(())
     }
 
+    /// The people the host's operator declares owners or moderators of
+    /// `workspace`, as it declares them now: its door lets them in even when it
+    /// takes people by invitation, and the operator gives them their part once
+    /// they are in. Settled at every start and whenever the declaration
+    /// changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns why `device` may not change the workspace's settings.
+    pub async fn admit_declared(
+        &self,
+        workspace: &str,
+        device: &DeviceCert,
+        people: BTreeSet<[u8; 32]>,
+    ) -> Result<(), CollaborationError> {
+        {
+            let governed = self.workspace(workspace).await?;
+            let governed = governed.lock().await;
+            self.authorize(
+                device,
+                Some(&governed),
+                WorkspaceOp::Govern(governance::SETTINGS),
+                tilo_clock::unix_now_ns(),
+            )?;
+        }
+        self.inner
+            .listings
+            .declared
+            .lock_recover()
+            .insert(workspace.to_owned(), people);
+        Ok(())
+    }
+
     /// Whether `user` holds an invitation this workspace issued and has not
     /// spent: one from a member, or the one its door hands a person it lets
     /// in. Either is bound to them, so an invitation-only door still knows
@@ -560,11 +607,12 @@ impl Workspaces {
         let now = tilo_clock::unix_now_ns();
         let member = self.member_role(workspace, user).await;
         // An invitation-only door refuses a stranger who holds no
-        // invitation of their own, and says so: the person's page offers
-        // them the way to be invited (the site's wait list) instead of a
-        // link in as a guest.
+        // invitation of their own and whom the operator did not declare, and
+        // says so: the person's page offers them the way to be invited (the
+        // site's wait list) instead of a link in as a guest.
         if self.inner.listings.invites_only(workspace)
             && member.is_none()
+            && !self.inner.listings.declared(workspace, &user)
             && !self.invited(workspace, user, now).await
         {
             return Err(DoorRefusal::InvitationOnly);
@@ -1664,5 +1712,68 @@ mod door_tests {
             .unwrap();
         assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
         relay.shutdown().await;
+    }
+
+    /// Someone the host's operator declares an owner or moderator comes in
+    /// through an invitation-only door with no invitation: the first owner of
+    /// a workspace nobody is in yet has no one to invite them.
+    #[tokio::test]
+    async fn an_invitation_only_door_admits_whom_the_operator_declares() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let relay = test_host(dir.path(), &key, &owner).await;
+        let workspaces = relay.workspaces();
+        let workspace = workspaces.create("Lounge").await.unwrap().workspace;
+        workspaces
+            .publish(
+                &workspace,
+                &owner,
+                Listing {
+                    description: "Coffee and tea".into(),
+                    default_role: WorkspaceRole::Editor,
+                },
+            )
+            .await
+            .unwrap();
+        workspaces
+            .list_invitation_only(&workspace, &owner, true)
+            .await
+            .unwrap();
+
+        // Someone the operator declares an owner is no stranger: the door
+        // lets them in with no invitation, and refuses them again once the
+        // declaration no longer names them.
+        let (_, declared) = guest_device();
+        let declared_join = DoorJoin {
+            user_public_key: hex::encode(declared.user_public_key),
+            display_name: "Ed".into(),
+        };
+        let people = std::collections::BTreeSet::from([declared.user_public_key]);
+        workspaces
+            .admit_declared(&workspace, &owner, people)
+            .await
+            .unwrap();
+        let reply = walk_in_as(workspaces, &workspace, &declared_join, &declared)
+            .await
+            .unwrap();
+        assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
+        let (_, undeclared) = guest_device();
+        workspaces
+            .admit_declared(&workspace, &owner, std::collections::BTreeSet::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            workspaces
+                .admit_listed(
+                    &workspace,
+                    &DoorJoin {
+                        user_public_key: hex::encode(undeclared.user_public_key),
+                        display_name: "Fa".into(),
+                    }
+                )
+                .await
+                .map(|_| ()),
+            Err(DoorRefusal::InvitationOnly)
+        );
     }
 }
