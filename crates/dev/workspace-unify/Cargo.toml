@@ -546,7 +546,7 @@ doc = false
 "iroh-dns-1_0_3" = { package = "iroh-dns", version = "^1.0.3", default-features = false, features = ["default", "tls-ring"] }
 "iroh-io-0_6_2" = { package = "iroh-io", version = "^0.6.2", default-features = false, features = ["default", "smallvec", "tokio", "tokio-io"] }
 "iroh-metrics-1_0_1" = { package = "iroh-metrics", version = "^1.0.1", default-features = false, features = ["default", "metrics", "service"] }
-"iroh-relay-1_0_3" = { package = "iroh-relay", path = "../../../vendor/iroh-relay", default-features = false, features = ["default", "metrics", "server", "tls-ring"] }
+"iroh-relay-1_0_3" = { package = "iroh-relay", path = "../../../vendor/iroh-relay", default-features = false, features = ["default", "metrics", "server", "test-utils", "tls-ring"] }
 "iroh-tickets-1_0_0" = { package = "iroh-tickets", version = "^1.0.0", default-features = false, features = [] }
 "iroh-util-0_6_0" = { package = "iroh-util", version = "^0.6.0", default-features = false, features = [] }
 "ironcalc_base-0_9_1" = { package = "ironcalc_base", version = "^0.9.1", default-features = false, features = [] }
