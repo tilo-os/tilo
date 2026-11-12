@@ -1110,10 +1110,26 @@ ip -o addr show dev "$dev"
                     return group.get("id"), tab.get("id")
             return None, None
 
+        def listed(box: Box, query: str) -> list:
+            """The rows `box`'s desk lists for `query`, as a person's menu lists them and as
+            the desktop lists them for scripts. A desk with a page open lists thousands of
+            rows, and they change while they are paged: a listing that cannot be read whole is
+            left out and said, never taken for an empty one."""
+            rows = []
+            for read in (lambda: self.rows(box, query),
+                         lambda: box.vm.actions(query, programmatic=True)):
+                try:
+                    rows += read()
+                except VmError as exc:
+                    unread = res.facts.setdefault("listings_unread", [])
+                    if len(unread) < 6:
+                        unread.append(f"{box.letter} {query!r}: {str(exc)[:120]}")
+            return rows
+
         def row_of(box: Box, action: str, within: str) -> dict | None:
-            # As a person's menu lists it, else as the desktop lists it for scripts.
-            for listed in (self.rows(box, ""), box.vm.actions("", programmatic=True)):
-                for row in listed:
+            # The narrow listings first: by what provides it, by its name, then everything.
+            for query in (within, action, ""):
+                for row in listed(box, query):
                     rid = str(row.get("id", ""))
                     if rid.split("\x1f")[-1] == action and within in rid + str(row.get("provider", "")):
                         return row
@@ -1148,15 +1164,19 @@ ip -o addr show dev "$dev"
         share = row_of(b, "share", "session:window-share")
         stop = row_of(b, "stop", "session:window-share")
         if share is None or stop is None:
-            res.facts["share_rows"] = [str(row.get("id")) for row in b.vm.actions("", programmatic=True)
+            res.facts["share_rows"] = [str(row.get("id")) for row in listed(b, "share")
                                        if "share" in str(row.get("id"))][:40]
             raise Failed("B's session lists no action to share a window with the workspace, or none "
                          "to stop sharing it")
         res.facts["shared"] = b.vm.invoke(share["provider"], share["id"], {"tab": str(tab)})
         try:
             def held_on_a() -> list:
-                return [row for row in a.vm.actions("", programmatic=True)
-                        if "desktop.peer-surface" in str(row.get("id")) + str(row.get("provider"))]
+                for query in ("peer-surface", "Browser", ""):
+                    rows = [row for row in listed(a, query)
+                            if "desktop.peer-surface" in str(row.get("id")) + str(row.get("provider"))]
+                    if rows:
+                        return rows
+                return []
 
             def pictured_on_a() -> list:
                 rows = held_on_a()

@@ -19,7 +19,7 @@ from pathlib import Path
 # `actions list` pages: rows asked for per page (the desktop's most), and how often a
 # listing that changed under the cursor is read again from its start.
 LISTING_PAGE = 2000
-LISTING_ATTEMPTS = 3
+LISTING_ATTEMPTS = 6
 # Base64 characters per write_home_file command: a multiple of 4, so each piece decodes alone.
 WRITE_CHUNK = 64 * 1024
 
