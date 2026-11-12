@@ -164,3 +164,56 @@ fn the_bar_is_html_and_its_notice_does_not_move_the_note() {
         );
     }
 }
+
+/// On a wide window the notice does not take the title's place: the bar
+/// keeps the note's location, and the notice comes on a card of its own at
+/// the window's foot, no wider than a line read at a glance.
+#[test]
+fn a_wide_windows_notice_is_a_card_and_the_title_stays() {
+    let mut app = notes();
+    let page = add_note(&mut app, "Trip to Lisbon", "Flights are booked.");
+    open(&mut app, page);
+    app.harness().host_window_slots();
+    app.harness().resize((1280, 800)).unwrap();
+    let _ = app.harness().poll_frame();
+    ui::window_toolbar::notify(Some(ui::window_toolbar::ToolbarNotice::new(
+        "Imported Trip to Lisbon",
+        ui::widget::toast::ToastKind::Success,
+    )));
+    let _ = app.harness().poll_frame();
+    let _ = app.harness().poll_frame();
+
+    let composition = app.harness().composition();
+    let bar = composition
+        .layers
+        .iter()
+        .chain(std::iter::once(&composition.root))
+        .flat_map(|layer| find(layer, "WindowSlots"))
+        .next()
+        .expect("the window's bar");
+    let words = |node: &Composed| match &node.own {
+        Some(Own::Face(face)) => face.label.as_ref().map(|label| label.text.clone()),
+        Some(Own::Text(look)) => Some(look.text.clone()),
+        _ => None,
+    };
+    let location = find(bar, "WindowLocation");
+    let location = location.first().expect("the bar keeps its location");
+    let title = words(location).unwrap_or_default();
+    assert!(
+        !title.is_empty() && !title.contains("Imported"),
+        "the title stays: {title:?}"
+    );
+    let card = find(bar, "WindowNoticeStrip");
+    let card = card.first().expect("the notice's card");
+    assert!(card.rect[2] <= 520.0, "a card, not a band: {:?}", card.rect);
+    assert!(
+        card.rect[1] > 600.0,
+        "at the window's foot: {:?}",
+        card.rect
+    );
+    let notice = find(card, "WindowNotice");
+    assert_eq!(
+        notice.first().and_then(|notice| words(notice)).as_deref(),
+        Some("Imported Trip to Lisbon")
+    );
+}

@@ -333,7 +333,7 @@ impl FrameHarness {
 
     /// The row as HTML: a toolbar across the top of the window, each slot a
     /// real button showing its face, named as a reader hears it, and the
-    /// location as its words. A compact window's notice stands over the
+    /// location as its words. A notice stands over the
     /// app's top as a status that is read out, and does not move what the
     /// app shows. While a menu is open, the location is edited or the search
     /// is open, the row shows its paint, which those draw over the app.
@@ -439,7 +439,7 @@ impl FrameHarness {
             }
             row.children.push(part);
         }
-        // A compact window's notice: a card over the app at the window's
+        // The notice: a card over the app at the window's
         // foot, that comes and goes without moving the app.
         if let Some(band) = strip {
             let mut card = Composed::new(

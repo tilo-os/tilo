@@ -151,10 +151,11 @@ pub(crate) struct SlotRow {
     /// them.
     window_actions: Vec<WindowAction>,
     last_ground_press: Option<crate::time::Instant>,
-    /// The window is narrower than the compact breakpoint: a notice has a
-    /// strip of its own, over the app at the window's foot.
-    compact: bool,
 }
+
+/// The widest a notice's card stands, logical pixels: a line a person reads
+/// at a glance, not a band across a wide window.
+const NOTICE_CARD_MAX_WIDTH: f64 = 480.0;
 
 impl SlotRow {
     pub(crate) fn new() -> Self {
@@ -179,7 +180,6 @@ impl SlotRow {
             window_controls: false,
             window_actions: Vec::new(),
             last_ground_press: None,
-            compact: false,
         }
     }
 
@@ -237,7 +237,7 @@ impl SlotRow {
     /// app's slots, its notice and the window's `history` control. Call
     /// every frame before layout, then [`Self::drive_search`]. Returns the
     /// row's height: the app's frame starts that far below `place.top`. A
-    /// compact window's notice floats over the app at the window's foot
+    /// notice floats over the app at the window's foot
     /// while it is up and does not move what the app shows: the notice is
     /// transient.
     pub(crate) fn refresh(
@@ -267,13 +267,10 @@ impl SlotRow {
             (width - place.right - inset).max(place.left + inset),
             place.top + TOOLBAR_ROW_HEIGHT,
         );
-        // A compact window says a notice in a strip of its own, where the
-        // row has no room for it.
-        let compact = width < f64::from(theme.tokens.metrics.compact_breakpoint);
-        let restyled = self.compact != compact;
-        self.compact = compact;
-        if restyled || self.shown.as_ref() != Some(&(toolbar.clone(), rect)) {
-            self.row.set_compact(compact);
+        if self.shown.as_ref() != Some(&(toolbar.clone(), rect)) {
+            // A notice is transient: it says itself on a card of its own and
+            // the row keeps the window's title, however wide the window.
+            self.row.set_compact(true);
             self.row.show(
                 WINDOW,
                 Some(&toolbar),
@@ -290,15 +287,16 @@ impl SlotRow {
         }
         // It floats at the window's foot on a card of its own
         // ([`Self::strip_card`]), clear of what the app shows at its top, as
-        // a transient notice does.
+        // a transient notice does: across a narrow window, centred and no
+        // wider than a line of reading on a wide one.
         let pad = f64::from(theme.tokens.spacing.s3);
-        self.repaint |= self
-            .row
-            .measure_strip(theme, (rect.width() - 2.0 * pad).max(0.0));
+        let across = (rect.width() - 2.0 * pad).clamp(0.0, NOTICE_CARD_MAX_WIDTH);
+        self.repaint |= self.row.measure_strip(theme, across);
         let strip = self.row.strip_height();
         let foot = place.top + window_height - pad;
+        let x0 = rect.center().x - across / 2.0;
         self.row.place_strip(if strip > 0.0 {
-            Rect::new(rect.x0 + pad, foot - strip, rect.x1 - pad, foot)
+            Rect::new(x0, foot - strip, x0 + across, foot)
         } else {
             Rect::ZERO
         });
@@ -510,7 +508,7 @@ impl SlotRow {
             None,
             &band,
         );
-        // A compact window's notice, on a card of its own over the app.
+        // A notice, on a card of its own over the app.
         if let Some(card) = self.strip_card(theme) {
             let card =
                 vello::kurbo::RoundedRect::from_rect(card, f64::from(theme.tokens.radii.control));
@@ -827,7 +825,7 @@ impl SlotRow {
     }
 
     /// What each part of the row shows, keyed as [`Self::accessibility`]
-    /// names them: the app's slots, the location, a compact window's notice
+    /// names them: the app's slots, the location, the notice
     /// and the search's button, each in the face it is painted with.
     pub(crate) fn composed_parts(
         &self,
@@ -855,8 +853,7 @@ impl SlotRow {
         parts
     }
 
-    /// The card a compact window's notice stands on over the app while one
-    /// is up: the strip, padded at its sides.
+    /// The card a notice stands on over the app while one is up: the strip, padded at its sides.
     pub(crate) fn strip_card(&self, theme: &crate::theme::Theme) -> Option<Rect> {
         let pad = f64::from(theme.tokens.spacing.s3);
         self.row.strip_band().map(|strip| strip.inflate(pad, 0.0))
