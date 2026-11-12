@@ -203,8 +203,22 @@ bash "$tilo_sh/stack.sh" status || true
 timing 'phase=the stack up'
 
 export E2E_WORK=$work E2E_BUNDLE=$bundle E2E_SITE=$site_origin E2E_RELAY=$relay_origin E2E_ROOM=$room \
-  E2E_ROLES=$roles E2E_SITE_CA=$state/local-ca.pem E2E_DOOR=$door_origin TILO_CLI_BIN=$tilo_bin \
-  E2E_REVIEWER_PORT=$((base + 50))
+  E2E_ROLES=$roles E2E_SITE_CA=$state/local-ca.pem E2E_DOOR=$door_origin TILO_CLI_BIN=$tilo_bin
+
+# What each of the stack's services complained about while it ran: each error
+# and warning it logged, without its time, with how often. A failing check
+# keeps none of its outputs, so where a service stopped answering is said
+# here, beside the flows that waited for it.
+service_complaints() {
+  local name file said
+  for name in relay door web tls; do
+    file=$state/logs/$name.log
+    [[ -s $file ]] || continue
+    said=$(sed -E 's/\x1b\[[0-9;]*m//g' "$file" | grep -E '^[0-9T:.-]+Z +(ERROR|WARN) ' \
+      | sed -E 's/^[0-9T:.-]+Z +//' | sort | uniq -c | sort -rn | head -20 || true)
+    [[ -z $said ]] || { echo "--- $name complained (count, level, where, what):"; echo "$said"; }
+  done
+}
 
 # Every record a start reads, read whole: a sealed write left out of its
 # history, a record it cannot open, or a seeded app that did not settle serves
@@ -212,7 +226,12 @@ export E2E_WORK=$work E2E_BUNDLE=$bundle E2E_SITE=$site_origin E2E_RELAY=$relay_
 verify_records_read() {
   local broken
   broken=$(grep -E 'writes of its history that do not merge|invalid automerge input|duplicate seq|does not open: |open the chat.s channels|seed(ing)? .* failed' "$log" || true)
-  [[ -z $broken ]] || { echo 'FAIL: a record did not read whole:' >&2; head -5 <<< "$broken" >&2; exit 1; }
+  [[ -z $broken ]] || {
+    echo 'FAIL: a record did not read whole:' >&2
+    head -20 <<< "$broken" >&2
+    service_complaints >&2
+    exit 1
+  }
   echo 'ok: every record the Lounge read on start read whole'
 }
 
@@ -304,11 +323,9 @@ if wants restart; then
   fi
 fi
 
-# What the Lounge complained about while it ran: each error and warning it
-# logged, without its time, with how often, on every run, passing or not.
-said=$(sed -E 's/\x1b\[[0-9;]*m//g' "$log" | grep -E '^[0-9T:.-]+Z +(ERROR|WARN) ' \
-  | sed -E 's/^[0-9T:.-]+Z +//' | sort | uniq -c | sort -rn | head -40 || true)
-[[ -z $said ]] || { echo '--- the Lounge complained (count, level, where, what):'; echo "$said"; }
+# What the services complained about while the flows ran, on every run,
+# passing or not.
+service_complaints
 printf 'TIMING phase=end seconds=%s total=%s\n' 0 "$((SECONDS - began))"
 if ((${#failed[@]})); then
   echo "FAIL: ${failed[*]}"
