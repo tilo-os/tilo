@@ -28,13 +28,15 @@ mod rows;
 #[cfg(test)]
 mod no_match_tests;
 #[cfg(test)]
+mod pressed_row_tests;
+#[cfg(test)]
 mod ready_rows_tests;
 #[cfg(test)]
 mod windowed_host_tests;
 
 use rows::{
     all_results_entry, always_shown, entries_for, everywhere, kind_facets, narrowed,
-    nothing_matched, stands_tall,
+    nothing_matched, pressed_hit, stands_tall, take_the_press,
 };
 
 /// The row `id` names when it is a group's "more" row: an id this palette
@@ -279,6 +281,11 @@ pub struct DesktopSearch {
     /// in: a frame that has no room for it yet does not take their choice
     /// away.
     kept_choice: Option<ChosenRow>,
+    /// What each row the palette hands out stands for, by the entry id it is handed out under, as
+    /// of the last frame: `hit:{i}` is the thing `rows[i]` is about, `more:{i}` is a group asked
+    /// whole. A press names the row the person saw by one of these ids, and is taken as that row
+    /// even when a source's answer rebuilt the list in the same frame and renumbered it.
+    shown_rows: std::collections::HashMap<String, rows::ShownRow>,
     /// Where this search stands: the workspace, every workspace, one app's
     /// own — so a row carried out by the host can be asked again where the
     /// person was when they chose it.
@@ -328,6 +335,7 @@ impl DesktopSearch {
             rows_room: RowRoom::Guess(0),
             shown_two_lines: false,
             kept_choice: None,
+            shown_rows: std::collections::HashMap::new(),
             scope: Scope::Workspace,
             refusal: None,
         }
@@ -380,6 +388,7 @@ impl DesktopSearch {
         self.sources = Some(Sources::new(data));
         self.choice = None;
         self.shown_query = None;
+        self.shown_rows.clear();
         self.shown_kinds.clear();
         self.stream = None;
         self.expanded.clear();
@@ -821,6 +830,7 @@ impl DesktopSearch {
                 .map(|index| format!("{MORE_PREFIX}{index}")),
         });
         self.palette.set_entries(entries);
+        self.shown_rows = rows::shown_rows(&rows, &self.more_rows);
         let cursor = kept.and_then(|id| {
             self.palette
                 .visible_entries()
@@ -1004,7 +1014,7 @@ impl DesktopSearch {
                 // row's own line (an action's argument) is typed in the field after its query, so
                 // an Enter that carries one is never this.
                 self.choose_top_of_typed_query();
-            } else if let Some(hit) = self.hit(&outcome.id) {
+            } else if let Some(hit) = pressed_hit(self, &outcome.id) {
                 self.choose_hit(hit, outcome.argument, self.palette.chosen_with());
             }
         }
@@ -1119,6 +1129,12 @@ impl DesktopSearch {
     /// over every workspace.
     pub fn take_scope_widened(&mut self) -> bool {
         self.palette.take_scope_token_removed()
+    }
+
+    /// Take the press `id` names, as [`Self::observe`] does for the palette's own outcome: a row
+    /// the frame handed out, opened as the thing it stood for then.
+    pub fn take_the_press(&mut self, id: &str) {
+        take_the_press(self, id);
     }
 
     fn hit(&self, id: &str) -> Option<Hit> {
@@ -2315,7 +2331,7 @@ mod tests {
 
     /// Search over `base` with an app whose answer is still coming: what
     /// the app publishes, and the window the person searches it from.
-    fn with_a_late_app(base: SearchData) -> (DesktopSearch, std::rc::Rc<std::cell::Cell<bool>>) {
+    pub(super) fn with_a_late_app(base: SearchData) -> (DesktopSearch, std::rc::Rc<std::cell::Cell<bool>>) {
         let arrived = std::rc::Rc::new(std::cell::Cell::new(false));
         let mut meeting = ResourceSpec::new("meeting", "notes.page", "Meeting");
         meeting
@@ -2421,7 +2437,7 @@ mod tests {
     /// Draw the frames a host draws for a search until every source has
     /// answered: a source answers on a worker and wakes the desk, so a test
     /// drives the frames those wakes ask for.
-    fn settled(search: &mut DesktopSearch) {
+    pub(super) fn settled(search: &mut DesktopSearch) {
         let now = ui::time::now();
         let deadline = now.checked_add(crate::tests::SETTLE).unwrap_or(now);
         loop {
@@ -2439,36 +2455,9 @@ mod tests {
         }
     }
 
-    fn selected(search: &DesktopSearch) -> Option<(String, String)> {
+    pub(super) fn selected(search: &DesktopSearch) -> Option<(String, String)> {
         let hit = search.hit(search.palette().selected_id()?)?;
         Some((hit.provider, hit.id))
-    }
-
-    /// The person arrowed to a row; an app's answer arriving a frame later
-    /// re-ranks the list. Enter must still open the row they moved to, not
-    /// whatever slid under the cursor.
-    #[test]
-    fn an_answer_that_arrives_late_keeps_the_row_the_person_moved_to() {
-        let (mut search, arrived) = with_a_late_app(data());
-        search.set_query("notes");
-        settled(&mut search);
-        assert!(search.waiting(), "the app's answer is still coming");
-        assert!(search.results().len() >= 2, "{:?}", search.results());
-        assert!(arrow_down(&mut search));
-        let chosen = selected(&search).expect("a row is selected");
-
-        arrived.set(true);
-        assert!(search.refresh(), "the answer re-ranks the rows");
-        settled(&mut search);
-        assert!(
-            search
-                .results()
-                .iter()
-                .any(|hit| hit.title == "notes from the meeting"),
-            "the late answer is listed: {:?}",
-            search.results()
-        );
-        assert_eq!(selected(&search), Some(chosen));
     }
 
     /// The person moved to a group's "Show all" row; an app's answer
@@ -2755,7 +2744,7 @@ mod tests {
         );
     }
 
-    fn arrow_down(search: &mut DesktopSearch) -> bool {
+    pub(super) fn arrow_down(search: &mut DesktopSearch) -> bool {
         let before = search.palette().cursor();
         search.palette_mut().handle_list_key(
             &ui::winit::keyboard::Key::Named(ui::winit::keyboard::NamedKey::ArrowDown),

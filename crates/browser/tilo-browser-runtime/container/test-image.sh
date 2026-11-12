@@ -258,6 +258,15 @@ for entry in / /app/ /sign-in; do
       || fail "$entry preloads $hint, which the image does not serve"
   done < <(hints_of "$body")
 done
+# Every file a page starts itself — a script's `src`, a hint's `href` — is the
+# image's to serve: one left at the top level, where nothing is, fails its load
+# in the visitor's tab, and a script's error there reads as a stopped arrival.
+for entry in / /app/ /sign-in; do
+  while read -r reference; do
+    [[ -f "$root/srv/tilo-web/${reference#./}" || -f "$root/srv/tilo-web/${reference#../}" ]] \
+      || fail "$entry references $reference, which the image does not serve"
+  done < <(grep -oE '(src|href)="\.{1,2}/[^"]*"' <<<"$(get "$entry")" | sed -n 's|.*="\([^"]*\)"|\1|p')
+done
 # The sign-in page a service's sign-in link lands on: served at /sign-in
 # (Caddyfile), revalidated like the entry pages, starting its own module, and
 # posting the person's answer as a form to the service that asked — another
