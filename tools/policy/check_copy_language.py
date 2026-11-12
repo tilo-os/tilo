@@ -111,6 +111,13 @@ to `.type_mut().label` counts too. The test is syntactic, on purpose: a
 sentence that travels through a chain of app helpers is a migration to do, not
 a checker to build.
 
+A widget hands a reader many names at once, so it projects them as a tuple and
+names each node from one element of it (`let (target, name, role, state) =
+self.a11y_control(action)?`, then `.with_name(name)`). That element is words a
+person hears: the tuple the projecting function returns, and the arms of the
+`match` its own `let` picks the tuple from, are checked there — a literal and a
+`format!` sentence alike.
+
 A headless participant has no window of its own: it says what it does to the
 person through a task run's update, which the task's own surface shows as it
 is. A crate that ships a translation and hands that update an English literal
@@ -872,18 +879,38 @@ def tuple_arms(code: str, begin: int, end: int,
         return []
     close = rust_source.matching(code, brace) - 1
     found = []
-    for part_begin, part_end in top_level_parts(code, brace + 1, close):
+    for part_begin, part_end in arm_parts(code, brace + 1, close):
         arrow = top_level_find(code, part_begin, part_end, "=>")
         if arrow < 0:
             continue
-        body = arrow + 2
-        while body < part_end and code[body].isspace():
-            body += 1
-        if body < part_end and code[body] == "(":
-            open_element, close_element = argument(code, body + 1, element)
-            if open_element < close_element:
-                found.append((open_element, close_element))
+        found.extend(element_of_tuple(code, arrow + 2, part_end, element))
     return found
+
+
+def arm_parts(code: str, begin: int, end: int) -> list[tuple[int, int]]:
+    """The range of each arm of a `match` body `[begin, end)`: between the
+    top-level commas, and after a block arm, whose `}` is its own end — an arm
+    that is a block needs no comma, so splitting on commas alone merges it with
+    the arm that follows."""
+    parts = []
+    start = position = begin
+    depth = 0
+    while position < end:
+        character = code[position]
+        if character in "([{":
+            depth += 1
+        elif character in ")]}":
+            depth = max(depth - 1, 0)
+            if not depth and character == "}":
+                parts.append((start, position))
+                start = position + 1
+        elif character == "," and not depth:
+            parts.append((start, position))
+            start = position + 1
+        position += 1
+    if start < end:
+        parts.append((start, end))
+    return parts
 
 
 def bound_names(binding: re.Match[str]) -> list[tuple[str, int | None]]:
@@ -1364,6 +1391,138 @@ def words_returned_in(code: str, begin: int, end: int,
     return found
 
 
+# The setter that gives a node its name for assistive technology, and the `let`
+# that destructures what a method hands back: `let (role, name, state) =
+# self.semantics(hit)?`.
+NAME_SETTER = re.compile(r"\.(?:with|set)_(?:accessible_)?name\s*\(")
+TUPLE_CALL = re.compile(r"let\s*\(([^)]*)\)\s*=\s*(?:self\.)?([a-z_][A-Za-z0-9_]*)\s*\(")
+SOME_OPEN = re.compile(r"^\s*Some\s*\(")
+
+
+def element_of_tuple(code: str, begin: int, end: int,
+                     element: int) -> list[tuple[int, int]]:
+    """Where element `element` of the tuple `begin` and `end` enclose is built:
+    its place in the tuple itself, in each arm of the `match` that picks it, or
+    in the value the block hands back."""
+    while begin < end and code[begin].isspace():
+        begin += 1
+    some = SOME_OPEN.match(code[begin:end])
+    if some:
+        return element_of_tuple(code, begin + some.end(), end, element)
+    if code.startswith("match ", begin):
+        return tuple_arms(code, begin, end, element)
+    if code.startswith("(", begin):
+        open_element, close_element = argument(code, begin + 1, element)
+        return [(open_element, close_element)] if open_element < close_element else []
+    if code.startswith("{", begin):
+        block = rust_source.matching(code, begin) - 1
+        found = []
+        for value_begin, value_end in return_ranges(code, begin, block):
+            found.extend(element_of_tuple(code, value_begin, value_end, element))
+        return found
+    return []
+
+
+def tuple_words(code: str, starts: list[int],
+                by_start: dict[int, rust_source.Literal], kept: str,
+                begin: int, end: int, element: int) -> list[rust_source.Literal]:
+    """The English words element `element` of the tuple `[begin, end)`, or of
+    the `match` that picks the tuple, is built from."""
+    found = []
+    for element_begin, element_end in element_of_tuple(code, begin, end, element):
+        for literal in (painted_literals(code, starts, by_start, element_begin, element_end)
+                        + format_template(code, starts, by_start, element_begin,
+                                          element_end)):
+            if kept[literal.start] == "x" and prose_words(literal.value):
+                found.append(literal)
+    return found
+
+
+def named_element(binding: re.Match[str], code: str) -> int | None:
+    """The position in the tuple `binding` destructures whose name the same
+    function hands to a name setter, or None when none of them is a name."""
+    names = [piece.strip().removeprefix("mut ").strip()
+             for piece in binding.group(1).split(",")]
+    enclosing = [(function, code.find("{", function.end()))
+                 for function in FUNCTION.finditer(code, 0, binding.start())]
+    enclosing = [(function, brace) for function, brace in enclosing
+                 if brace >= 0 and brace < binding.start()
+                 and binding.start() < rust_source.matching(code, brace)]
+    if not enclosing:
+        return None
+    _, brace = enclosing[-1]
+    close = rust_source.matching(code, brace)
+    for element, name in enumerate(names):
+        if not re.fullmatch(r"[a-z_][A-Za-z0-9_]*", name) or name == "_":
+            continue
+        for setter in NAME_SETTER.finditer(code, brace, close):
+            first_begin, first_end = argument(code, setter.end(), 0)
+            if first_end > first_begin and bare(code[first_begin:first_end], name):
+                return element
+    return None
+
+
+def named_tuple_words(root: Path,
+                      paths: list[Path]) -> dict[str, list[tuple[str, int, str]]]:
+    """Per function name of one crate, the words it hands back for a name an
+    assistive technology hears, with where they are written.
+
+    A widget projects its nodes as tuples and names each one from an element
+    (`let (target, name, role, state) = self.a11y_control(action)?` and then
+    `.with_name(name)`), so that element of what the projecting function
+    returns is copy: a reader with a German desktop says "Termin öffnen", not
+    "Open event".
+    """
+    elements: dict[str, set[int]] = {}
+    lexed = []
+    for path in paths:
+        text = path.read_text(errors="replace")
+        if "fn " not in text:
+            continue
+        code, literals = rust_source.lex(text)
+        for binding in TUPLE_CALL.finditer(code):
+            element = named_element(binding, code)
+            if element is not None:
+                elements.setdefault(binding.group(2), set()).add(element)
+        lexed.append((path, text, code, literals))
+    table: dict[str, list[tuple[str, int, str]]] = {}
+    for path, text, code, literals in lexed:
+        if not any(name in text for name in elements):
+            continue
+        marked = list(code)
+        for literal in literals:
+            for index in range(literal.start, literal.end):
+                if marked[index] != "\n":
+                    marked[index] = "x"
+        kept = rust_source.blank_test_items("".join(marked))
+        by_start = {literal.start: literal for literal in literals if not literal.byte}
+        starts = sorted(by_start)
+        for function in FUNCTION.finditer(code):
+            positions = elements.get(function.group(1))
+            if not positions or kept[function.start()] == " ":
+                continue
+            brace = code.find("{", function.end())
+            if brace < 0:
+                continue
+            close = rust_source.matching(code, brace)
+            values = [(binding.end(), statement_end(code, binding.end()))
+                      for binding in BINDING.finditer(code, brace, close)
+                      if binding.group(2) is not None]
+            values.extend(return_ranges(code, brace, close))
+            words = set()
+            for element in positions:
+                for begin, end in values:
+                    words.update(tuple_words(code, starts, by_start, kept, begin, end,
+                                             element))
+            if words:
+                found = table.setdefault(function.group(1), [])
+                found.extend((path.relative_to(root).as_posix(),
+                              rust_source.line_number(text, literal.start),
+                              literal.value)
+                             for literal in words)
+    return {name: sorted(set(words)) for name, words in table.items()}
+
+
 def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
     """(file, line, text) of each English literal handed to a copy builder by a
     crate that ships translations, in production code; of each literal or
@@ -1383,6 +1542,7 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
                 by_crate.setdefault(crate, []).append(path)
     helpers: dict[str, dict[str, set[int]]] = {}
     returning: dict[str, dict[str, list[tuple[str, int, str]]]] = {}
+    naming: dict[str, dict[str, list[tuple[str, int, str]]]] = {}
     fields: dict[str, set[tuple[str, str]]] = {}
     found = []
     for path in sources:
@@ -1458,6 +1618,7 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
             if crate not in helpers:
                 helpers[crate] = helper_table(by_crate[crate])
                 returning[crate] = returning_words(root, by_crate[crate])
+                naming[crate] = named_tuple_words(root, by_crate[crate])
             ranges = []
             for call, index in TEXT_CONSTRUCTORS:
                 start = code.find(call)
@@ -1477,6 +1638,8 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
                     ranges.append((begin, end))
                     found.extend(words_returned_in(code, begin, end, returning[crate]))
                     start = code.find(call, start + len(call))
+            for words in naming[crate].values():
+                found.extend(words)
             for name, indexes in helpers[crate].items():
                 pattern = re.compile(HELPER_CALL.format(name=re.escape(name)))
                 for hand in pattern.finditer(code):

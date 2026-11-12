@@ -810,6 +810,51 @@ class CopyLanguageTests(unittest.TestCase):
                 "a method a test double only stubs says nothing about the job a name "
                 "has in the window code")
 
+    def test_the_name_a_reader_hears_is_copy_in_every_branch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn control(&self, hit: &Hit) -> Option<(String, String, Role, State)> {",
+                "    let (target, name, role, state) = match hit {",
+                '        Hit::Close => ("close".into(), "Done".into(), Role::Button,',
+                "                       State::new()),",
+                '        Hit::Nothing => ("none".into(), tr("demo-name"), Role::Group,',
+                "                          State::new()),",
+                "        Hit::Open => {",
+                "            let label = self.title();",
+                "            (",
+                '                "open".into(),',
+                '                format!("Open {}", label),',
+                "                Role::Button,",
+                "                State::new(),",
+                "            )",
+                "        }",
+                "        Hit::Other => return None,",
+                "    };",
+                "    Some((target, name, role, state))",
+                "}",
+                "fn node(&self) -> Node {",
+                "    let (target, name, role, state) = self.control(&Hit::Close)?;",
+                "    Node::new(role).with_name(name).with_action_target(target)",
+                "}",
+                "fn measured(&self) -> Node {",
+                "    let (width, height) = self.pane_size();",
+                "    Node::new(Role::Group).with_bounds(Rect::new(0.0, 0.0, width, height))",
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Done", "Open {}"],
+                "a widget names each of its nodes from one element of the tuple it "
+                "projects, so that element is what a German reader hears — in the "
+                "arms the tuple is written in as well as the value it returns")
+
     def test_the_tree_passes(self):
         self.assertEqual(
             copy.check(copy.ROOT, copy.GLOSSARY, copy.BASELINE, copy.SAVE_EXCEPTIONS,
