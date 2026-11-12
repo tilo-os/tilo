@@ -871,22 +871,24 @@ mod tests {
         assert!(last_verified_at(&checkpoint, &owner_hex, 150).is_err());
     }
 
+    /// The registry checkpoint is the device's anti-rollback record, kept by
+    /// the checkpoint custodian outside every app sandbox: an app granted its
+    /// own directory can neither list what lies outside it nor write, lock or
+    /// replace the checkpoint.
     #[cfg(target_os = "linux")]
     #[test]
-    fn registry_checkpoint_cannot_walk_ancestors_outside_the_app_sandbox() {
+    fn a_sandboxed_app_cannot_write_the_registry_checkpoint() {
         const CHILD: &str = "TILO_CHECKPOINT_CONFINEMENT_CHILD";
-        if let Some(root) = std::env::var_os(CHILD) {
-            let root = std::path::PathBuf::from(root);
-            let owner = SigningKey::from_bytes(&[8; 32]);
-            let registry = RegistryConfig {
-                name: "main".into(),
-                base_url: "https://apps.tilo.so".into(),
-                owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
-                enabled: true,
-                channel: tilo_app_package::version::ReleaseChannel::Stable,
-            };
-            let snapshot = snapshot(&owner);
-            let plan = launcher::landlock::plan_from_paths(&[], &[root]);
+        let owner = SigningKey::from_bytes(&[8; 32]);
+        let registry = RegistryConfig {
+            name: "main".into(),
+            base_url: "https://apps.tilo.so".into(),
+            owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
+            enabled: true,
+            channel: tilo_app_package::version::ReleaseChannel::Stable,
+        };
+        if let Some(app) = std::env::var_os(CHILD) {
+            let plan = launcher::landlock::plan_from_paths(&[], &[app.into()]);
             assert_eq!(
                 launcher::landlock::apply_plan_or_log(&plan, false),
                 launcher::landlock::LandlockOutcome::FullyEnforced
@@ -895,29 +897,25 @@ mod tests {
                 std::fs::read_dir("/").unwrap_err().kind(),
                 std::io::ErrorKind::PermissionDenied
             );
-            let error = persist_checkpoint(&registry, &snapshot, b"{}").unwrap_err();
+            let error = persist_checkpoint(&registry, &snapshot(&owner), b"{}").unwrap_err();
             assert!(
                 matches!(error, RegistryError::Checkpoint(ref text) if text.contains("Permission denied")),
                 "{error}"
             );
-            assert!(
-                checkpoint_path(&registry)
-                    .unwrap()
-                    .with_extension("lock")
-                    .is_file()
-            );
             return;
         }
         let root = tempfile::tempdir().unwrap();
+        let app = root.path().join("app");
         let config = root.path().join(".config/tilo-store");
+        std::fs::create_dir_all(&app).unwrap();
         std::fs::create_dir_all(&config).unwrap();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "client::tests::registry_checkpoint_cannot_walk_ancestors_outside_the_app_sandbox",
+                "client::tests::a_sandboxed_app_cannot_write_the_registry_checkpoint",
                 "--nocapture",
             ])
-            .env(CHILD, root.path())
+            .env(CHILD, &app)
             .env("TILO_STORE_CONFIG_DIR", &config)
             .output_locked()
             .unwrap();
@@ -926,6 +924,13 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "the confined half did not run"
+        );
+        // Nothing of the checkpoint's was made: not its directory, its lock
+        // or the record itself.
+        assert_eq!(std::fs::read_dir(&config).unwrap().count(), 0);
     }
 
     #[test]

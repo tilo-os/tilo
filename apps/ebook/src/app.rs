@@ -365,14 +365,14 @@ impl ReaderShortcut {
         }
     }
 
-    const fn label(self) -> &'static str {
-        match self {
-            Self::PreviousPage => "Previous page",
-            Self::NextPage => "Next page",
-            Self::Bookmark => "Bookmark page",
-            Self::Highlight => "Highlight selection",
-            Self::AddNote => "Add note",
-        }
+    fn label(self) -> String {
+        CATALOG.t(match self {
+            Self::PreviousPage => "ebook-action-previous-page",
+            Self::NextPage => "ebook-action-next-page",
+            Self::Bookmark => "ebook-bookmark-page",
+            Self::Highlight => "ebook-highlight-selection",
+            Self::AddNote => "ebook-add-note-button",
+        })
     }
 
     const fn default_key(self) -> &'static str {
@@ -4263,7 +4263,10 @@ impl BooksApp {
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("book");
-            let text = format!("Opening {name}");
+            let text = CATALOG.t_args(
+                "ebook-opening",
+                &[("name", ArgValue::Text(name.to_owned()))],
+            );
             loading
                 .card
                 .publish(|()| ToolbarNotice::new(text, ToastKind::Info));
@@ -4278,7 +4281,7 @@ impl BooksApp {
                 notice.action(ui::window_toolbar::ToolbarAction::new(
                     STORE_RETRY_ACTION,
                     "rotate-cw",
-                    "Try again",
+                    CATALOG.t("ebook-try-again"),
                 ))
             } else {
                 notice

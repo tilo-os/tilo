@@ -437,6 +437,11 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
     let community = home.config().join("community.toml");
     std::fs::write(&community, "site = \"\"\n").expect("a config naming no site");
     home.env().set("TILO_COMMUNITY_CONFIG", &community);
+    // Nor does it relay through anyone: the link names the addresses of this computer's own
+    // network, which her device dials directly, rather than a public relay a test cannot count on.
+    settings_store::relay::RELAY
+        .set(settings_store::relay::Relays::None)
+        .expect("the relay setting is kept");
     let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
     let Hosted {
         _kept,

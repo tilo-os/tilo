@@ -1386,7 +1386,9 @@ impl Widget for Music {
             || self.live_search_pending.is_some()
             || self.search.needs_frame()
             || self.search.highlight.is_some()
-            || self.now_playing.in_flight(ui::time::now())
+            // Asked while a frame lays out: the frame's motions read at its
+            // instant, never at the clock ([`ui::motion::frame_now`]).
+            || self.now_playing.in_flight(ui::motion::frame_now())
             || self.page.rows_moving()
             || self.source_invocation.is_some()
             || !self.spotify_jobs.is_empty()
@@ -1410,10 +1412,10 @@ impl Widget for Music {
             .then_some(self.last_tick + super::PLAYBACK_POLL_INTERVAL)
             .into_iter()
             .chain(self.toast.deadline())
-            .chain(self.search.next_placeholder_step(ui::time::now()))
+            .chain(self.search.next_placeholder_step(ui::motion::frame_now()))
             // What is on its way from the catalogue steps on at its
             // deadlines; its answer wakes the window itself.
-            .chain(self.arriving_step_at(ui::time::now()))
+            .chain(self.arriving_step_at(ui::motion::frame_now()))
             .chain(
                 self.children()
                     .into_iter()
@@ -2329,7 +2331,7 @@ impl Music {
         self.body_scroll.set_viewport(r, ctx.theme);
         let body = self.body_scroll.content_rect();
         self.body_rect = body;
-        self.follow_now_playing(ctx.theme, ui::time::now());
+        self.follow_now_playing(ctx.theme, ui::motion::frame_now());
 
         // Body first so chrome draws on top (and chrome hits win). The window
         // ground is the framework's; nothing here fills it.
@@ -2401,19 +2403,19 @@ impl Music {
     /// playlist shown.
     pub(super) fn view_title(&self) -> String {
         match &self.view {
-            View::Home => "Home".into(),
+            View::Home => crate::i18n::t("music-view-home"),
             View::Recommendations => crate::i18n::t("music-recommendations-title"),
-            View::Songs => "Songs".into(),
-            View::Albums => "Albums".into(),
-            View::Artists => "Artists".into(),
-            View::Playlists => "Playlists".into(),
-            View::Downloads => "Downloads".into(),
-            View::Liked => "Liked songs".into(),
-            View::Browse => "Browse".into(),
-            View::Queue => "Queue".into(),
-            View::Lyrics => "Lyrics".into(),
-            View::NowPlaying => "Now playing".into(),
-            View::Search => "Search".into(),
+            View::Songs => crate::i18n::t("music-view-songs"),
+            View::Albums => crate::i18n::t("music-view-albums"),
+            View::Artists => crate::i18n::t("music-view-artists"),
+            View::Playlists => crate::i18n::t("music-view-playlists"),
+            View::Downloads => crate::i18n::t("music-view-downloads"),
+            View::Liked => crate::i18n::t("music-view-liked"),
+            View::Browse => crate::i18n::t("music-view-browse"),
+            View::Queue => crate::i18n::t("music-view-queue"),
+            View::Lyrics => crate::i18n::t("music-view-lyrics"),
+            View::NowPlaying => crate::i18n::t("music-view-now-playing"),
+            View::Search => crate::i18n::t("music-view-search"),
             View::Kept(id) => self
                 .kept_views()
                 .get(id)
@@ -2427,7 +2429,7 @@ impl Music {
                 .get(id)
                 .map(|p| p.name.clone())
                 .or_else(|| self.lib.artist(id).map(|a| a.name.clone()))
-                .unwrap_or_else(|| "Artist".to_string()),
+                .unwrap_or_else(|| crate::i18n::t("music-kind-artist")),
             View::Playlist(id) => self
                 .playlist_pages
                 .get(id)

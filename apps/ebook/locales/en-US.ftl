@@ -257,3 +257,12 @@ ebook-add-font-title = Add a system font
 
 ## The buttons of the settings sheets
 ebook-done = Done
+
+## The window bar's slots
+ebook-sort-books = Sort books
+ebook-hide-finished = Hide finished books
+ebook-settings-title = Settings
+ebook-bookmark-page = Bookmark page
+ebook-highlight-selection = Highlight selection
+ebook-opening = Opening { $name }
+ebook-try-again = Try again

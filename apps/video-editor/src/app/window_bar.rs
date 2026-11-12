@@ -60,13 +60,13 @@ impl VideoEditorApp {
                 let mut actions = vec![
                     bar.entry(
                         "scissors",
-                        "Split at playhead",
+                        crate::resource::CATALOG.t("video-editor-shortcut-split"),
                         BarCommand::Run(VideoEditorEffect::SplitSelection),
                     )
                     .enabled(self.can_split_selection()),
                     bar.entry(
                         "columns-2",
-                        "Place side by side",
+                        crate::resource::CATALOG.t("video-editor-side-by-side"),
                         BarCommand::PlaceSideBySide,
                     )
                     .enabled(self.can_place_side_by_side()),
@@ -74,16 +74,16 @@ impl VideoEditorApp {
                     bar.entry(
                         "panel-right",
                         if inspector_open {
-                            "Hide inspector"
+                            crate::resource::CATALOG.t("video-editor-hide-inspector")
                         } else {
-                            "Show inspector"
+                            crate::resource::CATALOG.t("video-editor-show-inspector")
                         },
                         BarCommand::Run(VideoEditorEffect::ToggleInspector),
                     )
                     .on(inspector_open),
                     bar.entry(
                         "folder-open",
-                        "Import media",
+                        crate::resource::CATALOG.t("video-editor-shortcut-import-media"),
                         BarCommand::Run(VideoEditorEffect::Import { path: None }),
                     )
                     .in_menu(),
@@ -107,8 +107,16 @@ impl VideoEditorApp {
             return Vec::new();
         }
         [
-            (ui::UndoRequest::Undo, "undo-2", "Undo"),
-            (ui::UndoRequest::Redo, "redo-2", "Redo"),
+            (
+                ui::UndoRequest::Undo,
+                "undo-2",
+                crate::resource::CATALOG.t("video-editor-shortcut-undo"),
+            ),
+            (
+                ui::UndoRequest::Redo,
+                "redo-2",
+                crate::resource::CATALOG.t("video-editor-shortcut-redo"),
+            ),
         ]
         .into_iter()
         .map(|(which, icon, label)| {
@@ -126,19 +134,29 @@ impl VideoEditorApp {
     fn export_action(&self) -> ToolbarAction {
         let export = BarCommand::Run(VideoEditorEffect::ShowExport);
         self.bar_entries
-            .entry("upload", "Export", export)
+            .entry(
+                "upload",
+                crate::resource::CATALOG.t("video-editor-start-export"),
+                export,
+            )
             .on(matches!(self.export_status, ExportStatus::Rendering { .. }))
     }
 
     /// The project picker's rows: a project file in, and one out.
     fn project_choices() -> Vec<LocationChoice> {
         [
-            ("Open project file…", OPEN),
-            ("Export project file…", EXPORT_FILE),
+            (
+                crate::resource::CATALOG.t("video-editor-open-project-file"),
+                OPEN,
+            ),
+            (
+                crate::resource::CATALOG.t("video-editor-export-project-file"),
+                EXPORT_FILE,
+            ),
         ]
         .into_iter()
         .map(|(label, value)| LocationChoice {
-            label: label.to_owned(),
+            label,
             value: value.to_owned(),
             current: false,
             separated: false,

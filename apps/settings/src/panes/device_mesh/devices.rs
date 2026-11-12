@@ -7,9 +7,9 @@ use ui::widget::{Button, ButtonRole, DisclosureRow, Dropdown, EditableLabel, Wid
 
 use super::{
     DeviceMeshEffect, HomePeerHealth, Page, PairingTarget, RelayRuntimeStatus, home_server_row,
-    last_seen_label, mesh_status_shown, peer_health_badge, peer_health_detail, peer_key,
-    personal_device_key, replication_description, replication_shown, role_shown,
-    runtime_status_tone, shows_advanced_services,
+    last_seen_label, peer_health_badge, peer_health_detail, peer_key, personal_device_key,
+    replication_description, replication_shown, role_shown, runtime_status_tone,
+    shows_advanced_services,
 };
 use crate::effects::effect;
 use crate::i18n::{t, t_args};
@@ -155,10 +155,9 @@ impl Page<'_> {
                 .secondary(self.device_state(&entry)),
             )));
         }
-        if let Some(error) = &self.personal_device_error {
-            items.push(row(error_caption(&t_args(
-                "mesh-device-list-err",
-                &[("error", error.as_str().into())],
+        if self.personal_devices_unavailable {
+            items.push(row(error_caption(&t(
+                "mesh-status-device-list-unavailable",
             ))));
         }
 
@@ -188,13 +187,8 @@ impl Page<'_> {
             )),
         ));
         items.push(note(&t("mesh-personal-caption")));
-        if (pairing
-            || self.pairing_candidate.is_some()
-            || self.load_status.starts_with("Home server"))
-            || (self.pairing_target == PairingTarget::PersonalDevice
-                && !self.load_status.is_empty())
-        {
-            items.push(note(&mesh_status_shown(&self.load_status)));
+        if let Some(status) = self.status.pairing_shown() {
+            items.push(note(&status));
         }
         section_with(&t("mesh-trusted-title"), add_device, rows(items))
     }

@@ -127,18 +127,6 @@ fn replication_description(intent: &ReplicationIntent) -> String {
     })
 }
 
-fn mesh_status_shown(status: &str) -> String {
-    if status == "Home server paired" {
-        t("mesh-status-shown-home-paired")
-    } else if status == "Personal device added" {
-        t("mesh-status-shown-device-added")
-    } else if let Some(error) = status.strip_prefix("Not saved: ") {
-        t_args("mesh-status-shown-not-saved", &[("error", error.into())])
-    } else {
-        status.to_string()
-    }
-}
-
 fn shows_advanced_services(role: DeviceRole) -> bool {
     role.can_serve()
 }
@@ -550,7 +538,14 @@ impl DeviceMeshArea {
                 model.home_relay.hosting.clone_from(&scene.home_relay);
                 match crate::device_fleet::views(scene.fleet_devices.clone()) {
                     Ok(devices) => model.personal_devices = devices,
-                    Err(error) => model.personal_device_error = Some(error),
+                    Err(error) => {
+                        tracing::warn!(
+                            target: "tilo::settings",
+                            %error,
+                            "the capture's device list is not readable"
+                        );
+                        model.personal_devices_unavailable = true;
+                    }
                 }
             }
             Rc::new(RefCell::new(model))
@@ -666,6 +661,85 @@ pub(super) enum HomePeerHealth {
     Unreachable,
 }
 
+/// Where this device's sync settings stand, and what the last pairing step
+/// came to, as the pane keeps it: a state, so its rows word it in the
+/// person's language and the host's own words about a failure go to the log.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) enum MeshStatus {
+    /// The settings are in use and nothing needs saying.
+    #[default]
+    Ready,
+    /// Nothing is configured on this device yet: a normal first run.
+    NotConfigured,
+    /// This device's sync settings are not readable from here, so the
+    /// defaults are in use.
+    ConfigUnreadable,
+    /// The last change did not reach the system.
+    NotSaved,
+    /// Looking nearby for the device to pair.
+    Looking { target: PairingTarget },
+    /// Nearby discovery found the device; both screens show `code`.
+    Found { label: String, code: String },
+    /// The host is approving the device; both screens show `code`.
+    Approving { label: String, code: String },
+    /// Pairing ended before a device was paired, because the person
+    /// cancelled it or because it failed.
+    PairingStopped { cancelled: bool },
+    /// Nearby discovery answered with a device this pane cannot pair.
+    DiscoveryUnusable,
+    /// A home server is paired.
+    HomeServerPaired,
+    /// A personal device is added.
+    DeviceAdded,
+}
+
+impl MeshStatus {
+    /// What the pairing steps read under "Your devices", or none while no
+    /// pairing ran and while the status is about the settings instead.
+    fn pairing_shown(&self) -> Option<String> {
+        Some(match self {
+            Self::Looking {
+                target: PairingTarget::HomePeer,
+            } => t("mesh-status-looking-home"),
+            Self::Looking {
+                target: PairingTarget::PersonalDevice,
+            } => t("mesh-status-looking-device"),
+            Self::Found { label, code } => t_args(
+                "mesh-status-found",
+                &[
+                    ("label", label.as_str().into()),
+                    ("code", code.as_str().into()),
+                ],
+            ),
+            Self::Approving { label, code } => t_args(
+                "mesh-status-approving",
+                &[
+                    ("label", label.as_str().into()),
+                    ("code", code.as_str().into()),
+                ],
+            ),
+            Self::PairingStopped { cancelled: true } => t("mesh-status-pairing-cancelled"),
+            Self::PairingStopped { cancelled: false } => t("mesh-status-pairing-failed"),
+            Self::DiscoveryUnusable => t("mesh-status-discovery-unusable"),
+            Self::HomeServerPaired => t("mesh-status-home-paired"),
+            Self::DeviceAdded => t("mesh-status-device-added"),
+            Self::Ready | Self::NotConfigured | Self::ConfigUnreadable | Self::NotSaved => {
+                return None;
+            }
+        })
+    }
+
+    /// What the pane says when this device's own settings are not what it
+    /// shows, or when the last change did not stay.
+    fn settings_trouble_shown(&self) -> Option<String> {
+        match self {
+            Self::ConfigUnreadable => Some(t("mesh-status-config-unreadable")),
+            Self::NotSaved => Some(t("mesh-status-not-saved")),
+            _ => None,
+        }
+    }
+}
+
 /// Editor for the daemon's real device-mesh configuration.
 #[expect(
     clippy::struct_excessive_bools,
@@ -674,7 +748,7 @@ pub(super) enum HomePeerHealth {
 pub struct DeviceMeshModel {
     config_path: PathBuf,
     config: RelayConfig,
-    load_status: String,
+    status: MeshStatus,
     /// Whether it follows this device's relay.
     devices: bool,
     changed: bool,
@@ -683,7 +757,9 @@ pub struct DeviceMeshModel {
     home_peer_health: HashMap<String, HomePeerHealth>,
     home_peer_last_seen: HashMap<String, u64>,
     personal_devices: Vec<crate::device_fleet::DeviceView>,
-    personal_device_error: Option<String>,
+    /// The host could not list the person's devices, or answered something
+    /// unreadable; why is in the log.
+    personal_devices_unavailable: bool,
     /// The device rows, keyed by device, which open their settings.
     device_rows: DisclosureGroup,
     /// The device whose removal is being asked about, by its row's key.
@@ -691,7 +767,9 @@ pub struct DeviceMeshModel {
     roaming_provenance_path: Option<PathBuf>,
     roaming_provenance_stamp: Option<SystemTime>,
     roaming_provenance: Option<RoamingProvenance>,
-    roaming_provenance_status: Option<String>,
+    /// The roaming settings this device keeps could not be read; why is in
+    /// the log.
+    roaming_provenance_unreadable: bool,
     management_child: Option<bounded_command::AsyncCommand>,
     management_device: Option<String>,
     /// A home-server removal the host runs for this pane, and the server it
@@ -739,7 +817,7 @@ struct PairCandidate {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum PairingTarget {
+pub(super) enum PairingTarget {
     #[default]
     HomePeer,
     PersonalDevice,
@@ -828,42 +906,34 @@ fn provenance_summaries(provenance: &RoamingProvenance) -> Vec<(String, String)>
         .collect()
 }
 
-/// The roaming provenance at `path` as read: the projection or why it
+/// The roaming provenance at `path` as read: the projection, whether it
 /// could not be read, and when the file was last written.
-type ProvenanceRead = (
-    Option<RoamingProvenance>,
-    Option<String>,
-    Option<SystemTime>,
-);
+type ProvenanceRead = (Option<RoamingProvenance>, bool, Option<SystemTime>);
 
-/// Read the roaming provenance at `path`; an error is left untranslated
-/// ([`shown_roaming_provenance`]), so this may run off the UI thread.
+/// Read the roaming provenance at `path`; why it could not be read goes to
+/// the log, and the pane says it in the person's language.
 fn read_roaming_provenance(path: Option<&std::path::Path>) -> ProvenanceRead {
     let Some(path) = path else {
-        return (None, None, None);
+        return (None, false, None);
     };
     let stamp = std::fs::metadata(path)
         .ok()
         .and_then(|metadata| metadata.modified().ok());
     if stamp.is_none() {
-        return (None, None, None);
+        return (None, false, None);
     }
     match RoamingProvenance::load_at(path) {
-        Ok(provenance) => (Some(provenance), None, stamp),
-        Err(error) => (None, Some(error.to_string()), stamp),
+        Ok(provenance) => (Some(provenance), false, stamp),
+        Err(error) => {
+            tracing::warn!(
+                target: "tilo::settings",
+                %error,
+                path = %path.display(),
+                "the roaming settings could not be read"
+            );
+            (None, true, stamp)
+        }
     }
-}
-
-/// `read` as the pane shows it: the projection, the status saying why it
-/// could not be read, and its stamp.
-fn shown_roaming_provenance(read: ProvenanceRead) -> ProvenanceRead {
-    let (provenance, error, stamp) = read;
-    let status = error.map(|error| t_args("mesh-provenance-err", &[("error", error.into())]));
-    (provenance, status, stamp)
-}
-
-fn load_roaming_provenance(path: Option<&std::path::Path>) -> ProvenanceRead {
-    shown_roaming_provenance(read_roaming_provenance(path))
 }
 
 fn home_peer_health_path() -> PathBuf {
@@ -962,7 +1032,7 @@ fn command_error(stderr: &[u8], fallback: &str) -> String {
 pub(crate) struct MeshRead {
     config_path: PathBuf,
     config: RelayConfig,
-    load_status: String,
+    status: MeshStatus,
     runtime_status: RelayRuntimeStatus,
     home_peers: Vec<tilo_relay_protocol::HomePeerRegistration>,
     home_peer_last_seen: HashMap<String, u64>,
@@ -976,8 +1046,8 @@ impl MeshRead {
     /// configuration is a normal first-run state and starts from the
     /// daemon's defaults.
     fn of(config_path: PathBuf, devices: bool, now: SystemTime) -> Self {
-        let (config, load_status) = match RelayConfig::load(&config_path) {
-            Ok(config) => (config, "Configuration loaded".to_string()),
+        let (config, status) = match RelayConfig::load(&config_path) {
+            Ok(config) => (config, MeshStatus::Ready),
             Err(tilo_relay_protocol::config::ConfigError::Io(error))
                 if error.kind() == std::io::ErrorKind::NotFound
                     && config_path.parent().is_some_and(|dir| !dir.is_dir()) =>
@@ -985,19 +1055,17 @@ impl MeshRead {
                 // The configuration directory ships with every device; not
                 // seeing it means it cannot be read from here, not that the
                 // device is unconfigured.
+                tracing::warn!(
+                    target: "tilo::settings",
+                    config = %config_path.display(),
+                    "this device's sync settings are not visible from here"
+                );
                 let config = RelayConfig {
                     device_role: DeviceRole::Interactive,
                     services: tilo_relay_protocol::ServiceCapabilities::default(),
                     ..RelayConfig::default()
                 };
-                let dir = config_path
-                    .parent()
-                    .map(|dir| dir.display().to_string())
-                    .unwrap_or_default();
-                (
-                    config,
-                    format!("Configuration could not be read: {dir} is not visible to Settings"),
-                )
+                (config, MeshStatus::ConfigUnreadable)
             }
             Err(tilo_relay_protocol::config::ConfigError::Io(error))
                 if error.kind() == std::io::ErrorKind::NotFound =>
@@ -1010,12 +1078,17 @@ impl MeshRead {
                     services: tilo_relay_protocol::ServiceCapabilities::default(),
                     ..RelayConfig::default()
                 };
-                (config, "Not configured on this device".to_string())
+                (config, MeshStatus::NotConfigured)
             }
-            Err(error) => (
-                RelayConfig::default(),
-                format!("Configuration could not be read: {error}"),
-            ),
+            Err(error) => {
+                tracing::warn!(
+                    target: "tilo::settings",
+                    %error,
+                    config = %config_path.display(),
+                    "this device's sync settings could not be read"
+                );
+                (RelayConfig::default(), MeshStatus::ConfigUnreadable)
+            }
         };
         let runtime_status = RelayRuntimeStatus::read(&config, now);
         let home_peers = if devices {
@@ -1030,7 +1103,7 @@ impl MeshRead {
         Self {
             config_path,
             config,
-            load_status,
+            status,
             runtime_status,
             home_peers,
             home_peer_last_seen: if devices {
@@ -1059,12 +1132,12 @@ impl DeviceMeshModel {
     /// The model over what `read` read of the device, following this
     /// device's relay when `devices`.
     fn from_read(devices: bool, read: MeshRead) -> Self {
-        let (roaming_provenance, roaming_provenance_status, roaming_provenance_stamp) =
-            shown_roaming_provenance(read.roaming_provenance);
+        let (roaming_provenance, roaming_provenance_unreadable, roaming_provenance_stamp) =
+            read.roaming_provenance;
         Self {
             config_path: read.config_path,
             config: read.config,
-            load_status: read.load_status,
+            status: read.status,
             devices,
             changed: false,
             runtime_status: read.runtime_status,
@@ -1072,13 +1145,13 @@ impl DeviceMeshModel {
             home_peer_health: HashMap::new(),
             home_peer_last_seen: read.home_peer_last_seen,
             personal_devices: Vec::new(),
-            personal_device_error: None,
+            personal_devices_unavailable: false,
             device_rows: DisclosureGroup::new(),
             removing: None,
             roaming_provenance_path: read.roaming_provenance_path,
             roaming_provenance_stamp,
             roaming_provenance,
-            roaming_provenance_status,
+            roaming_provenance_unreadable,
             management_child: None,
             management_device: None,
             management_call: None,
@@ -1227,9 +1300,16 @@ impl DeviceMeshModel {
             match answer.and_then(|output| crate::device_fleet::devices(output.value)) {
                 Ok(devices) => {
                     self.personal_devices = devices;
-                    self.personal_device_error = None;
+                    self.personal_devices_unavailable = false;
                 }
-                Err(error) => self.personal_device_error = Some(error),
+                Err(error) => {
+                    tracing::warn!(
+                        target: "tilo::settings",
+                        %error,
+                        "the host's device list could not be read"
+                    );
+                    self.personal_devices_unavailable = true;
+                }
             }
             self.changed = true;
         }
@@ -1342,10 +1422,10 @@ impl DeviceMeshModel {
         if stamp == self.roaming_provenance_stamp {
             return;
         }
-        let (projection, status, stamp) =
-            load_roaming_provenance(self.roaming_provenance_path.as_deref());
+        let (projection, unreadable, stamp) =
+            read_roaming_provenance(self.roaming_provenance_path.as_deref());
         self.roaming_provenance = projection;
-        self.roaming_provenance_status = status;
+        self.roaming_provenance_unreadable = unreadable;
         self.roaming_provenance_stamp = stamp;
         self.changed = true;
     }
@@ -1474,10 +1554,8 @@ impl Page<'_> {
             value_row(&activity, &sync_auto),
             note(&t("mesh-activity-caption")),
         ];
-        if self.load_status.starts_with("Configuration could not")
-            || self.load_status.starts_with("Not saved")
-        {
-            continuation_rows.push(row(error_caption(&mesh_status_shown(&self.load_status))));
+        if let Some(trouble) = self.status.settings_trouble_shown() {
+            continuation_rows.push(row(error_caption(&trouble)));
         }
 
         let target_name = self
@@ -1486,23 +1564,25 @@ impl Page<'_> {
             .find(|device| !device.current && !device.revoked)
             .map_or_else(|| t("mesh-no-target"), |device| device.label.clone());
 
-        let mut roaming_rows = self.roaming_provenance.as_ref().map_or_else(
-            || vec![note(&t("mesh-roaming-empty"))],
-            |provenance| {
-                let summaries = provenance_summaries(provenance);
-                if summaries.is_empty() {
-                    vec![note(&t("mesh-roaming-none"))]
-                } else {
-                    summaries
-                        .into_iter()
-                        .map(|(name, detail)| value_row(&name, &detail))
-                        .collect()
-                }
-            },
-        );
-        if let Some(status) = &self.roaming_provenance_status {
-            roaming_rows.push(note(status));
-        }
+        let mut roaming_rows = if self.roaming_provenance_unreadable {
+            // Nothing can be said about what is roaming: it was not read.
+            vec![note(&t("mesh-roaming-unreadable"))]
+        } else {
+            self.roaming_provenance.as_ref().map_or_else(
+                || vec![note(&t("mesh-roaming-empty"))],
+                |provenance| {
+                    let summaries = provenance_summaries(provenance);
+                    if summaries.is_empty() {
+                        vec![note(&t("mesh-roaming-none"))]
+                    } else {
+                        summaries
+                            .into_iter()
+                            .map(|(name, detail)| value_row(&name, &detail))
+                            .collect()
+                    }
+                },
+            )
+        };
         roaming_rows.push(note(&t("mesh-roaming-caption")));
 
         let mut groups = vec![self.devices_section().into_element()];
@@ -1648,19 +1728,27 @@ impl DeviceMeshModel {
                 self.apply_queued = true;
                 // Applying the change is the system's job; only a failure
                 // is news.
-                self.load_status.clear();
+                self.status = MeshStatus::Ready;
             } else {
                 self.start_apply();
             }
             return;
         }
-        self.load_status = match self.config.save(&self.config_path) {
-            Ok(()) => String::new(),
-            Err(error) => format!("Not saved: {error}"),
+        self.status = match self.config.save(&self.config_path) {
+            Ok(()) => MeshStatus::Ready,
+            Err(error) => {
+                tracing::warn!(
+                    target: "tilo::settings",
+                    %error,
+                    config = %self.config_path.display(),
+                    "this device's sync settings could not be saved"
+                );
+                MeshStatus::NotSaved
+            }
         };
     }
 
-    fn spawn_apply(&self) -> Result<bounded_command::AsyncCommand, String> {
+    fn spawn_apply(&self) -> Result<bounded_command::AsyncCommand, bounded_command::Error> {
         let request = serde_json::json!({
             "identity_root": identity_root(),
             "role": match self.config.device_role {
@@ -1688,16 +1776,22 @@ impl DeviceMeshModel {
             COMMAND_OUTPUT_LIMIT,
             APPLY_TIMEOUT,
         )
-        .map_err(|error| format!("could not start system setup: {error}"))
     }
 
     fn start_apply(&mut self) {
         match self.spawn_apply() {
             Ok(child) => {
                 self.apply_child = Some(child);
-                self.load_status.clear();
+                self.status = MeshStatus::Ready;
             }
-            Err(error) => self.load_status = format!("Not saved: {error}"),
+            Err(error) => {
+                tracing::warn!(
+                    target: "tilo::settings",
+                    %error,
+                    "this device's sync setup could not be started"
+                );
+                self.status = MeshStatus::NotSaved;
+            }
         }
     }
 
@@ -1724,10 +1818,7 @@ impl DeviceMeshModel {
                 None,
             ));
             self.pairing_discovery = true;
-            self.load_status = match target {
-                PairingTarget::HomePeer => "Looking for your new home server…".into(),
-                PairingTarget::PersonalDevice => "Looking for your new device…".into(),
-            };
+            self.status = MeshStatus::Looking { target };
             self.changed = true;
             return;
         };
@@ -1753,10 +1844,10 @@ impl DeviceMeshModel {
             Some(Confirmation::Confirmed),
         ));
         self.pairing_discovery = false;
-        self.load_status = format!(
-            "Approving {} with code {}…",
-            candidate.label, candidate.verification_code
-        );
+        self.status = MeshStatus::Approving {
+            label: candidate.label,
+            code: candidate.verification_code,
+        };
         self.changed = true;
     }
 
@@ -1777,20 +1868,25 @@ impl DeviceMeshModel {
         let output = match answer {
             ui::Arrival::Ready(InvocationUpdate::Succeeded { output, .. }) => output,
             ui::Arrival::Ready(InvocationUpdate::Failed { error, .. }) => {
-                self.load_status = format!(
-                    "Device was not paired: {}. Choose the pairing action to retry.",
-                    error.message
+                tracing::warn!(
+                    target: "tilo::settings",
+                    message = %error.message,
+                    "pairing did not finish"
                 );
+                self.status = MeshStatus::PairingStopped { cancelled: false };
                 return;
             }
             ui::Arrival::Ready(_) => {
-                self.load_status =
-                    "Pairing stopped: it was cancelled. Choose the pairing action to retry.".into();
+                self.status = MeshStatus::PairingStopped { cancelled: true };
                 return;
             }
             ui::Arrival::Failed(error) => {
-                self.load_status =
-                    format!("Pairing stopped: {error}. Choose the pairing action to retry.");
+                tracing::warn!(
+                    target: "tilo::settings",
+                    %error,
+                    "pairing did not finish"
+                );
+                self.status = MeshStatus::PairingStopped { cancelled: false };
                 return;
             }
             ui::Arrival::Pending { .. } => return,
@@ -1802,24 +1898,36 @@ impl DeviceMeshModel {
                 .transpose()
             {
                 Ok(Some(candidate)) => {
-                    self.load_status = format!(
-                        "Found {}. Confirm code {} on both devices, then approve.",
-                        candidate.label, candidate.verification_code
-                    );
+                    self.status = MeshStatus::Found {
+                        label: candidate.label.clone(),
+                        code: candidate.verification_code.clone(),
+                    };
                     self.pairing_candidate = Some(candidate);
                 }
-                Ok(None) | Err(_) => {
-                    self.load_status = "Nearby discovery returned an invalid identity".into();
+                Ok(None) => {
+                    tracing::warn!(
+                        target: "tilo::settings",
+                        "nearby discovery found no device to pair"
+                    );
+                    self.status = MeshStatus::DiscoveryUnusable;
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        target: "tilo::settings",
+                        %error,
+                        "the device nearby discovery found is not readable"
+                    );
+                    self.status = MeshStatus::DiscoveryUnusable;
                 }
             }
             return;
         }
         self.refresh_runtime_status();
-        self.load_status = match self.pairing_target {
-            PairingTarget::HomePeer => "Home server paired".into(),
+        self.status = match self.pairing_target {
+            PairingTarget::HomePeer => MeshStatus::HomeServerPaired,
             PairingTarget::PersonalDevice => {
                 self.refresh_personal_devices();
-                "Personal device added".into()
+                MeshStatus::DeviceAdded
             }
         };
         self.pairing_candidate = None;
@@ -1914,21 +2022,31 @@ impl DeviceMeshModel {
                         self.apply_queued = false;
                         self.start_apply();
                     } else {
-                        self.load_status.clear();
+                        self.status = MeshStatus::Ready;
                     }
                 } else {
                     self.apply_queued = false;
-                    self.load_status = format!(
-                        "Not saved: {}",
-                        command_error(&output.stderr, "administrator approval was not granted")
+                    tracing::warn!(
+                        target: "tilo::settings",
+                        detail = %command_error(
+                            &output.stderr,
+                            "administrator approval was not granted"
+                        ),
+                        "this device's sync settings could not be applied"
                     );
+                    self.status = MeshStatus::NotSaved;
                 }
                 self.changed = true;
             }
             Some(Err(error)) => {
                 self.apply_child = None;
                 self.apply_queued = false;
-                self.load_status = format!("Not saved: {error}");
+                tracing::warn!(
+                    target: "tilo::settings",
+                    %error,
+                    "this device's sync settings could not be applied"
+                );
+                self.status = MeshStatus::NotSaved;
                 self.changed = true;
             }
             None => {}
@@ -2165,12 +2283,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let hidden = dir.path().join("etc-tilo").join("relay.toml");
         let pane = DeviceMeshModel::with_path(&hidden);
-        assert!(
-            pane.load_status
-                .starts_with("Configuration could not be read: "),
-            "{}",
-            pane.load_status
-        );
+        assert_eq!(pane.status, MeshStatus::ConfigUnreadable);
         let config = RelayConfig {
             state_root: dir.path().join("missing").join("tilo-relay"),
             ..RelayConfig::default()
@@ -2346,13 +2459,9 @@ mod tests {
                 .path()
                 .join(settings_store::roaming_provenance::FILE_NAME);
             std::fs::write(&path, r#"{"schema_version":99}"#).unwrap();
-            let (projection, status, _) = load_roaming_provenance(Some(&path));
+            let (projection, unreadable, _) = read_roaming_provenance(Some(&path));
             assert!(projection.is_none());
-            assert!(
-                status
-                    .unwrap()
-                    .contains("unsupported roaming provenance schema 99")
-            );
+            assert!(unreadable, "the schema is not one this device knows");
         }
 
         // Case `continuity_edits_persist_locally_and_append_redacted_audit_rows`.
@@ -2430,7 +2539,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("relay.toml");
             let mut pane = DeviceMeshModel::with_path(&path);
-            assert!(pane.load_status.contains("Not configured"));
+            assert_eq!(pane.status, MeshStatus::NotConfigured);
             assert_eq!(pane.config.device_role, DeviceRole::Interactive);
             assert_eq!(
                 pane.config.services,
@@ -2548,6 +2657,76 @@ mod tests {
             assert!(saved.services.full_content_replication);
             assert!(saved.services.inbound_relay);
         }
+    }
+
+    /// A pairing that did not finish says so under "Your devices", in the
+    /// person's language, whichever device was being paired, and the host's
+    /// own words for the failure stay in the log.
+    #[test]
+    fn a_pairing_that_did_not_finish_says_what_to_do_not_the_hosts_words() {
+        const HOST_WORDS: &str = "the code the second screen showed did not match";
+        let dir = tempfile::tempdir().unwrap();
+        let mut model = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
+        model.remote = ui::RemoteActions::with_host(
+            Arc::new(PairingHost {
+                approval_failure: Some(HOST_WORDS.into()),
+                ..PairingHost::default()
+            }),
+            ui::tilo_actions::remote::Caller::local_person("owner"),
+        );
+        model.apply(&DeviceMeshEffect::PairHomeServer).unwrap();
+        model.poll_background_tasks();
+        model.apply(&DeviceMeshEffect::PairHomeServer).unwrap();
+        model.poll_background_tasks();
+        assert_eq!(
+            model.status,
+            MeshStatus::PairingStopped { cancelled: false }
+        );
+
+        let mut app = window_on(model);
+        app.settle();
+        let shown =
+            provider_settings_ui::widgets::announced_text(app.harness().root_widget()).join("\n");
+        assert!(
+            shown.contains(&t("mesh-status-pairing-failed")),
+            "the pane says what to do: {shown}"
+        );
+        assert!(
+            !shown.contains(HOST_WORDS),
+            "the host's words stay in the log: {shown}"
+        );
+    }
+
+    /// What this device could not do or read reads in the person's language:
+    /// the roaming settings, the device list and the change that did not stay.
+    #[test]
+    fn the_panes_troubles_read_in_the_persons_language() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut model = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
+        model.status = MeshStatus::NotSaved;
+        model.personal_devices_unavailable = true;
+        model.roaming_provenance_unreadable = true;
+        let mut app = window_on(model);
+        app.settle();
+        let shown =
+            provider_settings_ui::widgets::announced_text(app.harness().root_widget()).join("\n");
+        for message in [
+            t("mesh-status-not-saved"),
+            t("mesh-status-device-list-unavailable"),
+            t("mesh-roaming-unreadable"),
+        ] {
+            assert!(shown.contains(&message), "{message} is shown: {shown}");
+        }
+        assert!(MeshStatus::Ready.settings_trouble_shown().is_none());
+        assert!(MeshStatus::NotConfigured.pairing_shown().is_none());
+        assert_eq!(
+            MeshStatus::ConfigUnreadable.settings_trouble_shown(),
+            Some(t("mesh-status-config-unreadable"))
+        );
+        assert_eq!(
+            MeshStatus::PairingStopped { cancelled: true }.pairing_shown(),
+            Some(t("mesh-status-pairing-cancelled"))
+        );
     }
 
     /// Peer health, fresh metrics and complete residency.
@@ -2828,6 +3007,9 @@ mod tests {
     #[derive(Default)]
     pub(super) struct PairingHost {
         asked: Mutex<Vec<ui::tilo_actions::remote::InvokeRequest>>,
+        /// What approving the device found answers instead of pairing it:
+        /// the host's own words for the failure.
+        approval_failure: Option<String>,
     }
 
     impl PairingHost {
@@ -2908,17 +3090,29 @@ mod tests {
             } else {
                 serde_json::json!({"role": "home-peer", "device": NEARBY_DEVICE, "label": "Kitchen NAS"})
             };
+            let failure = self
+                .approval_failure
+                .clone()
+                .filter(|_| request.target.address.action != device_pairing::DISCOVER);
             self.asked.lock().unwrap().push(request);
-            ui::tilo_actions::remote::Pending::ready(Ok(
-                ui::tilo_actions::remote::InvocationReceipt {
-                    invocation,
-                    status: ui::tilo_actions::remote::ReceiptStatus::Completed {
-                        output: ui::tilo_actions::ActionOutput {
-                            value: Some(value),
-                            resources: Vec::new(),
-                        },
+            let status = match failure {
+                Some(message) => ui::tilo_actions::remote::ReceiptStatus::Failed {
+                    error: ui::tilo_actions::ActionFailure {
+                        code: "pairing-failed".into(),
+                        message,
+                        details: None,
+                        retryable: true,
                     },
                 },
+                None => ui::tilo_actions::remote::ReceiptStatus::Completed {
+                    output: ui::tilo_actions::ActionOutput {
+                        value: Some(value),
+                        resources: Vec::new(),
+                    },
+                },
+            };
+            ui::tilo_actions::remote::Pending::ready(Ok(
+                ui::tilo_actions::remote::InvocationReceipt { invocation, status },
             ))
         }
 
@@ -3078,8 +3272,11 @@ mod tests {
             )
         );
         assert_eq!(
-            pane.load_status,
-            "Found Kitchen NAS. Confirm code 123-456 on both devices, then approve."
+            pane.status,
+            MeshStatus::Found {
+                label: "Kitchen NAS".into(),
+                code: "123-456".into(),
+            }
         );
         assert!(pane.pairing_call.is_none(), "discovery has answered");
 
@@ -3107,7 +3304,7 @@ mod tests {
             )
         );
         assert_eq!(asked[1].confirmation, Some(Confirmation::Confirmed));
-        assert_eq!(pane.load_status, "Home server paired");
+        assert_eq!(pane.status, MeshStatus::HomeServerPaired);
         assert!(
             pane.pairing_candidate.is_none(),
             "the paired device is done"
@@ -3160,7 +3357,7 @@ mod tests {
         let read = MeshRead::of(path, false, ui::time::wall());
         let there = DeviceMeshModel::from_read(false, read);
         assert_eq!(here.config_path, there.config_path);
-        assert_eq!(here.load_status, there.load_status);
+        assert_eq!(here.status, there.status);
         assert_eq!(here.config.device_role, there.config.device_role);
         assert_eq!(here.runtime_status, there.runtime_status);
     }

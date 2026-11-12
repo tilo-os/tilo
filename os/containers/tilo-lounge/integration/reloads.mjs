@@ -8,14 +8,16 @@
 // opens, waits for the desk to arrive and draw, then reloads TIMES times
 // (default 20, or TILO_RELOADS). For each reload it prints one line:
 //
-//   RELOAD n=3 result=ok hide=12 handlers=4 unload=0 fetch=310 commit=420 arrived=5200 frame=6100
+//   TIMING reload n=3 result=ok deviceLocks=#0 hide=12 handlers=4 unload=0 fetch=310 connect=0
+//     request=320 response=360 body=380 protocol=h2 commit=420 arrived=5200 frame=6100
 //
 // all in ms: `hide` from the reload asked to the old page's first pagehide
 // listener; `handlers` the time the old page's pagehide listeners took, from
 // the first to one added after the page arrived (so after the runtime's own);
 // `unload` the old document's unload event (the new document's navigation
 // timing); `fetch` the new document's fetchStart, which waits for the old one
-// to let go; `commit` the new document committed (Page.frameNavigated);
+// to let go; `connect`, `request`, `response`, `body` its connection's setup
+// and when it asked, its first byte and its last; `commit` the new document committed (Page.frameNavigated);
 // `arrived` the page says it arrived; `frame` its desk drew a frame. A reload
 // whose tab crashed, or whose page never arrived, is counted and the run goes
 // on in a fresh tab. It fails when any reload crashed or never arrived, and
@@ -36,10 +38,28 @@ mkdirSync(out, {recursive: true});
 // In every document the tab opens: a returning person, the first pagehide
 // listener (registered before any of the page's own), and what the document
 // left for the next one in sessionStorage.
+//
+// The GPU devices the page asks for are kept, so a reload the run marks
+// (every second one, TILO_RELOADS_RELEASE_GPU=0 for none) destroys them in
+// that first pagehide: reloads that do and reloads that don't, side by side on
+// the same machine, say whether an old page's GPU device is what holds the
+// new one back.
 const EARLY = `(() => {
   try { localStorage.setItem('tilo-setup', JSON.stringify({step: 'done'})); } catch {}
+  const devices = [];
+  const ask = globalThis.GPUAdapter?.prototype?.requestDevice;
+  if (ask) {
+    GPUAdapter.prototype.requestDevice = async function (...args) {
+      const device = await ask.apply(this, args);
+      devices.push(device);
+      return device;
+    };
+  }
   addEventListener('pagehide', () => {
     try { sessionStorage.setItem('tilo-reload-hide', String(Date.now())); } catch {}
+    if (sessionStorage.getItem('tilo-reload-release-gpu') === '1') {
+      for (const device of devices) { try { device.destroy(); } catch {} }
+    }
   }, {capture: true});
 })();`;
 // Added once the page arrived, so it runs after the runtime's own listeners.
@@ -59,8 +79,31 @@ const BEFORE = `JSON.stringify((() => {
     hidden: read('tilo-reload-hidden'),
     unload: nav ? nav.unloadEventEnd - nav.unloadEventStart : null,
     fetch: nav ? nav.fetchStart : null,
+    connect: nav && nav.connectEnd > nav.connectStart ? nav.connectEnd - nav.connectStart : 0,
+    request: nav ? nav.requestStart : null,
+    response: nav ? nav.responseStart : null,
+    body: nav ? nav.responseEnd : null,
+    protocol: nav?.nextHopProtocol ?? null,
   };
 })())`;
+// The device keys this browser holds for the page's profile: the locks
+// held on them now (one per tab that holds one), and the keys kept. A reload
+// is the same device only when it takes the key the page before it held: one
+// that finds that key still locked takes the next free one, a new device of
+// the person's with its own certificate and state.
+const DEVICE_LOCKS = `navigator.locks.query().then(state => JSON.stringify(state.held
+  .map(lock => lock.name).filter(name => name.startsWith('tilo-device-custody:'))))`;
+const DEVICE_KEYS = `new Promise(resolve => {
+  const request = indexedDB.open('tilo-device', 1);
+  request.onsuccess = () => {
+    const db = request.result;
+    if (!db.objectStoreNames.contains('custody')) return resolve('[]');
+    const keys = db.transaction('custody').objectStore('custody').getAllKeys();
+    keys.onsuccess = () => resolve(JSON.stringify(keys.result.filter(key => String(key).startsWith('device-key:'))));
+    keys.onerror = () => resolve('[]');
+  };
+  request.onerror = () => resolve('[]');
+})`;
 const ARRIVED = `['done', 'stopped'].includes(document.documentElement.dataset.arrival)
   && document.documentElement.dataset.arrival`;
 const FRAMES = 'globalThis.tiloMount?.state?.()?.frames ?? 0';
@@ -115,6 +158,8 @@ for (let n = 1; n <= times; n += 1) {
   await until(tab, `(${FRAMES}) > 0`, stepLimit(3));
   await tab.evaluate(LATE).catch(() => {});
   committed.delete(tab.sessionId);
+  const release = process.env.TILO_RELOADS_RELEASE_GPU !== '0' && n % 2 === 0;
+  await tab.evaluate(`sessionStorage.setItem('tilo-reload-release-gpu', '${release ? 1 : 0}')`).catch(() => {});
   const asked = Date.now();
   await tab.reload().catch(() => {});
   const came = await until(tab, ARRIVED, stepLimit(6));
@@ -122,19 +167,27 @@ for (let n = 1; n <= times; n += 1) {
   const arrivedAt = Date.now();
   const drew = result === 'ok' ? await until(tab, `(${FRAMES}) > 0`, stepLimit(3)) : null;
   const before = JSON.parse(await tab.evaluate(BEFORE).catch(() => 'null') ?? 'null') ?? {};
+  const locks = JSON.parse(await tab.evaluate(DEVICE_LOCKS).catch(() => '[]') ?? '[]');
   const line = {
     n, result,
+    gpuReleased: release ? 'yes' : 'no',
+    deviceLocks: locks.length ? locks.map(name => name.replace(/^tilo-device-custody:[^#]*/, '') || '#0').join(',') : 'none',
     hide: before.hide ? before.hide - asked : null,
     handlers: before.hidden && before.hide ? before.hidden - before.hide : null,
     unload: before.unload == null ? null : Math.round(before.unload),
     fetch: before.fetch == null ? null : Math.round(before.origin + before.fetch - asked),
+    connect: before.connect == null ? null : Math.round(before.connect),
+    request: before.request == null ? null : Math.round(before.origin + before.request - asked),
+    response: before.response == null ? null : Math.round(before.origin + before.response - asked),
+    body: before.body == null ? null : Math.round(before.origin + before.body - asked),
+    protocol: before.protocol,
     commit: committed.has(tab.sessionId) ? committed.get(tab.sessionId) - asked : null,
     arrived: came ? arrivedAt - asked : null,
     frame: drew ? Date.now() - asked : null,
   };
   lines.push(line);
   counts[{ok: 'ok', crashed: 'crashed', 'never-arrived': 'neverArrived', stopped: 'stopped'}[result]] += 1;
-  console.log(`RELOAD ${Object.entries(line).map(([k, v]) => `${k}=${v ?? '-'}`).join(' ')}`);
+  console.log(`TIMING reload ${Object.entries(line).map(([k, v]) => `${k}=${v ?? '-'}`).join(' ')}`);
   if (result !== 'ok') {
     console.log(`  the page said: ${tab.log.slice(-12).join(' | ').slice(0, 2000)}`);
     console.log(`  the machine: ${machine().text}`);
@@ -143,11 +196,22 @@ for (let n = 1; n <= times; n += 1) {
     ({tab} = await open());
   }
 }
+// Every key this person's reloads made: one device, the first visit's,
+// unless a reload found its key still held and made another.
+const keys = JSON.parse(await tab.evaluate(DEVICE_KEYS).catch(() => '[]') ?? '[]');
+console.log(`TIMING device-keys=${keys.length} (${keys.join(', ')})`);
+if (keys.length > 1) {
+  console.error(`FAIL: ${keys.length} device keys for one person in one tab: a reload found the key the page before it held still locked and became another device`);
+}
+// The commit, with and without the old page's GPU device destroyed as it went.
+const median = values => { const v = values.filter(x => x != null).sort((a, b) => a - b); return v.length ? v[Math.floor(v.length / 2)] : null; };
+const commitOf = released => lines.filter(l => l.result === 'ok' && (l.gpuReleased === 'yes') === released).map(l => l.commit);
+console.log(`TIMING commit-median gpu-released=${median(commitOf(true))} gpu-kept=${median(commitOf(false))} (ms after the reload)`);
 const slowest = [...lines].sort((a, b) => (b.fetch ?? 0) - (a.fetch ?? 0)).slice(0, 3);
 console.log(`TIMING reloads=${times} ok=${counts.ok} crashed=${counts.crashed} never-arrived=${counts.neverArrived} stopped=${counts.stopped}`);
 console.log(`the old page held the navigation longest (fetch ms): ${slowest.map(l => `#${l.n} ${l.fetch}`).join(', ')}`);
 writeFileSync(join(out, 'reloads.json'), JSON.stringify({counts, lines, machine: machine().text}, null, 2));
 await browser.close().catch(() => {});
-const bad = counts.crashed + counts.neverArrived + counts.stopped;
+const bad = counts.crashed + counts.neverArrived + counts.stopped + (keys.length > 1 ? 1 : 0);
 if (bad) console.error(`FAIL: ${bad} of ${times} reloads did not come back (${counts.crashed} crashed, ${counts.neverArrived} never arrived, ${counts.stopped} stopped)`);
 process.exit(bad ? 1 : 0);

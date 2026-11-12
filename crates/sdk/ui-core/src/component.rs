@@ -970,6 +970,11 @@ pub trait Source {
         Vec::new()
     }
 
+    /// Whether the slot `slot` holds anything: a view or a component, built or not.
+    fn holds(&mut self, slot: &str) -> bool {
+        !self.slot_kinds(slot).is_empty()
+    }
+
     /// The rows of the slot `slot` when its host renders them only as they are shown (a loop
     /// over a collection of any length): the widget reads them from there rather than from
     /// [`Self::components`].
@@ -1017,6 +1022,21 @@ pub trait RowSource {
         key: &str,
         read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
     ) -> Result<bool, String>;
+
+    /// Read the rendered row `key` for its own props and what its slots hold, building none of
+    /// its views: what a list reads of a row beside building it (its group, its place in a
+    /// tree, the item it shows), which it asks for every row it holds on every pass. `Ok(false)`
+    /// when it is not rendered.
+    ///
+    /// # Errors
+    /// What `read` returned.
+    fn read_props(
+        &mut self,
+        key: &str,
+        read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
+    ) -> Result<bool, String> {
+        self.read(key, read)
+    }
 
     /// The key of the row showing the resource `id`, rendered or not.
     fn key_presenting(&self, id: &str) -> Option<String>;

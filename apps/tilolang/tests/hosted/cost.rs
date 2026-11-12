@@ -356,6 +356,35 @@ fn at_rest(session: &mut Session, drawn_before: u64) -> Rest {
     rest
 }
 
+/// The window's open taken to rest as a window takes it: the host's turns, and a frame only when
+/// a turn changed what it shows or its tree owes one ([`frame_if_asked`]), until the workspace's
+/// index is whole and nothing is left to do. A frame drawn on every turn regardless is work no
+/// window at rest does.
+fn opened_at_rest(session: &mut Session) {
+    let deadline = std::time::Instant::now() + WAKE_WAIT;
+    let mut quiet = 0_u32;
+    let mut rounds = 0_u32;
+    while quiet < 3 {
+        let changed = session.host.turn();
+        let framed = frame_if_asked(session, changed);
+        let waiting = (!session.index_whole() || session.search_index_pending())
+            && std::time::Instant::now() < deadline;
+        if changed || framed || waiting {
+            quiet = 0;
+        } else {
+            quiet = quiet.saturating_add(1);
+        }
+        if !changed && waiting {
+            session.woken.wait(WAKE_WAIT);
+        }
+        rounds = rounds.saturating_add(1);
+        assert!(
+            rounds < 10_000,
+            "the window never came to rest after opening"
+        );
+    }
+}
+
 /// One interaction, measured from `input` reaching the window to the windows' work at rest with
 /// what it did on screen.
 fn cost(session: &mut Session, label: &'static str, input: impl FnOnce(&mut Session)) -> Cost {
@@ -415,8 +444,8 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 300_000,
             eval_layout_us: 300_000,
             held: Held {
-                optimized_us: 1_600_000,
-                development_us: 7_000_000,
+                optimized_us: 620_000,
+                development_us: 2_400_000,
             },
         },
     ),
@@ -426,8 +455,8 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 8_000,
             eval_layout_us: 8_000,
             held: Held {
-                optimized_us: 40_000,
-                development_us: 120_000,
+                optimized_us: 18_000,
+                development_us: 70_000,
             },
         },
     ),
@@ -437,8 +466,8 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 16_000,
             eval_layout_us: 16_000,
             held: Held {
-                optimized_us: 300_000,
-                development_us: 700_000,
+                optimized_us: 140_000,
+                development_us: 570_000,
             },
         },
     ),
@@ -448,8 +477,8 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 16_000,
             eval_layout_us: 16_000,
             held: Held {
-                optimized_us: 250_000,
-                development_us: 800_000,
+                optimized_us: 145_000,
+                development_us: 500_000,
             },
         },
     ),
@@ -459,8 +488,8 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 16_000,
             eval_layout_us: 16_000,
             held: Held {
-                optimized_us: 150_000,
-                development_us: 500_000,
+                optimized_us: 90_000,
+                development_us: 340_000,
             },
         },
     ),
@@ -470,8 +499,8 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 16_000,
             eval_layout_us: 16_000,
             held: Held {
-                optimized_us: 210_000,
-                development_us: 1_450_000,
+                optimized_us: 90_000,
+                development_us: 470_000,
             },
         },
     ),
@@ -481,8 +510,8 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 8_000,
             eval_layout_us: 8_000,
             held: Held {
-                optimized_us: 50_000,
-                development_us: 200_000,
+                optimized_us: 25_000,
+                development_us: 110_000,
             },
         },
     ),
@@ -580,7 +609,9 @@ fn what_the_interactions_a_person_feels_cost() {
     let storage = kept_index(&route, &chunks, "interactions");
     let start = ui::rt::thread_cpu_time();
     let wall = ui::time::Instant::now();
-    let mut session = on_the_frame_clock(Session::tasks_over_in(&route, chunks, Some(storage)));
+    let mut session =
+        on_the_frame_clock(Session::tasks_over_launched(&route, chunks, Some(storage)));
+    opened_at_rest(&mut session);
     let wall_us = wall.elapsed().as_micros() as u64;
     let cpu_us = since(start, wall.elapsed());
     costs.add(Cost {
@@ -1578,6 +1609,30 @@ fn scrolling_asks_the_app_for_rows_ahead_not_once_a_row() {
     );
 }
 
+/// The glide a wheel notch started, run to where it rests on the frame clock: where the list
+/// stands after a notch is what the notch did, not how far the frames the step measured got
+/// before the window was looked at, which is as far as the machine's speed let them.
+fn glide_out(session: &mut Session) {
+    use ui::time::testing::with_monotonic_time;
+    let mut at = ui::time::Instant::now();
+    for _ in 0..400 {
+        if !session
+            .window
+            .harness()
+            .frame_schedule()
+            .needs_animation_frame
+        {
+            return;
+        }
+        at += ui::time::Duration::from_millis(16);
+        with_monotonic_time(at, || {
+            session.host.turn();
+            session.window.frame();
+        });
+    }
+    panic!("the list's glide never came to rest");
+}
+
 /// Scrolling the list: a wheel notch down and back up, the top row changing each time.
 fn scroll_the_list(session: &mut Session, costs: &mut Costs) {
     let first = top_title(session);
@@ -1590,6 +1645,7 @@ fn scroll_the_list(session: &mut Session, costs: &mut Costs) {
         costs.add(cost(session, "scroll", |session| {
             session.window.scroll(0.0, if down { -3.0 } else { 3.0 });
         }));
+        glide_out(session);
         session.settle();
         let now = top_shown(session);
         assert_ne!(now, top, "the list scrolled");

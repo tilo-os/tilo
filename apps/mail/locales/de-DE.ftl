@@ -225,3 +225,18 @@ mail-folder-trash = Papierkorb
 mail-folder-junk = Spam
 mail-refresh-offline = { $folder } für { $account } lässt sich nicht aktualisieren, solange IMAP offline ist
 mail-first-run-message = E-Mail-Konten werden in den Einstellungen unter Externe Konten hinzugefügt.
+
+## Die Plätze der Fensterleiste
+mail-bulk-done = Fertig
+mail-delete = Löschen
+mail-delete-permanently = Endgültig löschen
+mail-reply = Antworten
+mail-reply-all = Allen antworten
+mail-forward = Weiterleiten
+mail-move-to-inbox = In den Posteingang
+mail-star = Markieren
+mail-add-account = Konto hinzufügen
+mail-new-message = Neue Nachricht
+mail-cancel-sending = Senden abbrechen
+mail-bar-discard-draft = Entwurf verwerfen
+mail-close-keep-draft = Schließen und im Entwurf behalten

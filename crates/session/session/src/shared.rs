@@ -211,7 +211,7 @@ impl Shared {
 
     /// Open what the person chose in the history: the app that holds it,
     /// showing it.
-    fn open_from_history(
+    pub(crate) fn open_from_history(
         &self,
         workspace_id: &tilo_desktop_model::WorkspaceId,
         target: &ui::HistoryResourceTarget,

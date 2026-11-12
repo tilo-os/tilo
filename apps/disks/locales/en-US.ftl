@@ -67,3 +67,6 @@ disks-format-loses-files = Every file on it is erased for good.
 disks-format-loses-files-on = Every file on “{ $label }” is erased for good.
 disks-format-loses-used = The { $size } of files on it are erased for good.
 disks-format-loses-used-on = The { $size } of files on “{ $label }” are erased for good.
+## The window bar's slots
+disks-rescan-drives = Rescan drives
+disks-views = View

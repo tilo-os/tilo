@@ -24,12 +24,16 @@ impl RemoteApp {
                 has_connections,
                 ..
             } => (
-                Some(String::from(match destination {
-                    Destination::Pinned => "Pinned connections",
-                    _ => "Connections",
-                })),
+                Some(match destination {
+                    Destination::Pinned => crate::resource::CATALOG.t("remote-pinned-connections"),
+                    _ => crate::resource::CATALOG.t("remote-connections"),
+                }),
                 if has_connections {
-                    vec![bar.entry("plus", "New connection", Action::NewConnection)]
+                    vec![bar.entry(
+                        "plus",
+                        crate::resource::CATALOG.t("remote-new-connection"),
+                        Action::NewConnection,
+                    )]
                 } else {
                     Vec::new()
                 },
@@ -44,12 +48,16 @@ impl RemoteApp {
                     .navigating(),
                 );
                 (
-                    Some(String::from(if model.editing.is_some() {
-                        "Edit connection"
+                    Some(if model.editing.is_some() {
+                        crate::resource::CATALOG.t("remote-edit-connection")
                     } else {
-                        "New connection"
-                    })),
-                    vec![bar.entry("check", "Save", Action::SaveForm)],
+                        crate::resource::CATALOG.t("remote-new-connection")
+                    }),
+                    vec![bar.entry(
+                        "check",
+                        crate::resource::CATALOG.t("remote-save"),
+                        Action::SaveForm,
+                    )],
                 )
             }
             Content::Surface(id) => {
@@ -83,17 +91,25 @@ impl RemoteApp {
         let mut actions = Vec::new();
         if framebuffer {
             let (icon, name) = if self.session.borrow().scale_to_fit {
-                ("square", "Actual size")
+                ("square", crate::resource::CATALOG.t("remote-actual-size"))
             } else {
-                ("minimize-2", "Fit to window")
+                (
+                    "minimize-2",
+                    crate::resource::CATALOG.t("remote-fit-to-window"),
+                )
             };
             actions.push(self.bar.entry(icon, name, Action::ToggleScale));
-            actions.push(
-                self.bar
-                    .entry("maximize-2", "Full screen", Action::ToggleFullscreen),
-            );
+            actions.push(self.bar.entry(
+                "maximize-2",
+                crate::resource::CATALOG.t("remote-full-screen"),
+                Action::ToggleFullscreen,
+            ));
         }
-        actions.push(self.bar.entry("unlink", "Disconnect", Action::Disconnect));
+        actions.push(self.bar.entry(
+            "unlink",
+            crate::resource::CATALOG.t("remote-disconnect"),
+            Action::Disconnect,
+        ));
         actions
     }
 

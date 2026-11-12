@@ -40,12 +40,12 @@ impl MonitorApp {
         let mut toolbar = self.shell.window_toolbar();
         let state = self.state.borrow();
         toolbar.views = Some(ToolbarViews {
-            name: String::from("View"),
+            name: crate::resource::CATALOG.t("monitor-views"),
             choices: Tab::ALL
                 .iter()
                 .map(|tab| ToolbarView {
                     id: tab.view_id().to_owned(),
-                    label: tab.label().to_owned(),
+                    label: tab.label(),
                 })
                 .collect(),
             chosen: state.tab.view_id().to_owned(),
@@ -65,11 +65,18 @@ impl MonitorApp {
             })
             .collect();
         let mut actions = vec![
-            bar.entry("refresh", "Refresh", BarCommand::Refresh),
+            bar.entry(
+                "refresh",
+                crate::resource::CATALOG.t("monitor-refresh"),
+                BarCommand::Refresh,
+            ),
             ToolbarAction::new(
                 "monitor.cadence",
                 "timer",
-                format!("Update frequency: {}", chosen.label()),
+                crate::resource::CATALOG.t_args(
+                    "monitor-update-frequency",
+                    &[("cadence", ui::i18n::ArgValue::Text(chosen.label()))],
+                ),
             )
             .with_items(cadences),
         ];
@@ -78,20 +85,32 @@ impl MonitorApp {
             && state.shared.borrow().total > 0;
         if lists {
             actions.push(
-                bar.entry("list-tree", "Tree view", BarCommand::TreeMode)
-                    .on(state.tree_mode),
+                bar.entry(
+                    "list-tree",
+                    crate::resource::CATALOG.t("monitor-tree-view"),
+                    BarCommand::TreeMode,
+                )
+                .on(state.tree_mode),
             );
             if state.tree_mode {
                 actions.push(
-                    bar.entry("layers", "Include children", BarCommand::SumChildren)
-                        .on(state.sum_mode == SumMode::SumSubtree)
-                        .in_menu(),
+                    bar.entry(
+                        "layers",
+                        crate::resource::CATALOG.t("monitor-include-children"),
+                        BarCommand::SumChildren,
+                    )
+                    .on(state.sum_mode == SumMode::SumSubtree)
+                    .in_menu(),
                 );
             }
             actions.push(
-                bar.entry("eye", "Kernel threads", BarCommand::KernelThreads)
-                    .on(state.prefs.show_kernel_threads)
-                    .in_menu(),
+                bar.entry(
+                    "eye",
+                    crate::resource::CATALOG.t("monitor-kernel-threads"),
+                    BarCommand::KernelThreads,
+                )
+                .on(state.prefs.show_kernel_threads)
+                .in_menu(),
             );
         }
         ui::widget::NavShell::push_window_actions(&mut toolbar, actions);

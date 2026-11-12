@@ -297,3 +297,13 @@ video-editor-export-title = Video exportieren
 video-editor-start-export = Exportieren
 video-editor-close-export = Schließen
 video-editor-cancel-export = Abbrechen
+
+## Die Plätze der Fensterleiste
+video-editor-hide-inspector = Inspektor ausblenden
+video-editor-show-inspector = Inspektor einblenden
+video-editor-open-project-file = Projektdatei öffnen…
+video-editor-export-project-file = Projektdatei exportieren…
+video-editor-choose-media = Medien auswählen…
+
+## Ein Projekt ohne Namen
+video-editor-untitled = Unbenannt

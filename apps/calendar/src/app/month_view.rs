@@ -76,7 +76,7 @@ impl CellEvent {
     fn of(shown: &crate::shown::Shown<'_>) -> Self {
         Self {
             id: shown.event.id,
-            title: shown.event.display_title().to_string(),
+            title: shown.event.display_title(),
             color: shown.event.color,
             all_day: shown.event.all_day,
             start: shown.start,

@@ -425,14 +425,15 @@ pub fn sidebar(catalog: &Catalog, page: &Page, intents: &Intents) -> NavList {
 /// The content column's title.
 pub fn page_title(catalog: &Catalog, page: &Page) -> String {
     match page {
-        Page::All => "All backups".into(),
+        Page::All => crate::i18n::t("backups-page-all"),
         Page::Source(id) => catalog
             .source(id)
-            .map_or_else(|| "Source".into(), |s| s.name.clone()),
-        Page::Destination(id) => catalog
-            .destination(id)
-            .map_or_else(|| "Destination".into(), |d| d.name.clone()),
-        Page::Retention => "Retention".into(),
+            .map_or_else(|| crate::i18n::t("backups-source"), |s| s.name.clone()),
+        Page::Destination(id) => catalog.destination(id).map_or_else(
+            || crate::i18n::t("backups-page-destination"),
+            |d| d.name.clone(),
+        ),
+        Page::Retention => crate::i18n::t("backups-retention"),
     }
 }
 

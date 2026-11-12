@@ -228,3 +228,18 @@ mail-folder-trash = Trash
 mail-folder-junk = Junk
 mail-refresh-offline = Cannot refresh { $folder } for { $account } while IMAP is offline
 mail-first-run-message = Email accounts are added in Settings, under External Accounts.
+
+## The window bar's slots
+mail-bulk-done = Done
+mail-delete = Delete
+mail-delete-permanently = Delete permanently
+mail-reply = Reply
+mail-reply-all = Reply all
+mail-forward = Forward
+mail-move-to-inbox = Move to Inbox
+mail-star = Star
+mail-add-account = Add account
+mail-new-message = New message
+mail-cancel-sending = Cancel sending
+mail-bar-discard-draft = Discard draft
+mail-close-keep-draft = Close and keep in Drafts

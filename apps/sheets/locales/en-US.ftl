@@ -109,3 +109,11 @@ sheets-comment-someone = Someone
 ## The document settings sheet
 sheets-document-settings = Document settings
 sheets-done = Done
+
+## The window bar's slots
+sheets-file-menu = File
+sheets-format-menu = Format
+sheets-bold = Bold
+sheets-autosum = AutoSum
+sheets-show-formulas = Show formulas
+sheets-show-results = Show calculated results

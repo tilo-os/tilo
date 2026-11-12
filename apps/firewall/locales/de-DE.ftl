@@ -96,3 +96,12 @@ firewall-service-unavailable-hint = Starte firewalld und versuche es dann erneut
 firewall-panic-mode-message = Der gesamte ein- und ausgehende Netzwerkverkehr wird verworfen.
 firewall-stopped-message = Es werden keine Regeln durchgesetzt, bis du die Firewall einschaltest.
 firewall-nothing-dropped-message = Der Kernel hat in den letzten { $minutes } Minuten keine verworfenen oder abgelehnten Pakete protokolliert.
+
+## Die Plätze der Fensterleiste
+firewall-tab-blocked = Blockiert
+firewall-turn-on = Firewall einschalten
+firewall-bar-applying = Die Regeln werden auf das System angewendet
+firewall-bar-apply = Die Regeln auf das System anwenden
+firewall-add-rule = Regel hinzufügen
+firewall-panic-mode = Panikmodus
+firewall-views = Ansicht

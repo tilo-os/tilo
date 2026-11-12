@@ -444,6 +444,9 @@ pub struct NodeSource<'a> {
     /// Whether the views in its slots are built: not when its props are read to take them in
     /// place, where the reconciler reaches the views it has.
     build_views: bool,
+    /// Whether what it reads is remembered as built ([`Adapter::remember`]): not when only its
+    /// props are read, for what a list knows of a row it holds.
+    remembers: bool,
     /// The words of the heading over the rows it reads, where one heads them: a row's day fact
     /// that says the same day as the heading is the heading's to say.
     under: Option<String>,
@@ -462,7 +465,26 @@ impl<'a> NodeSource<'a> {
             description,
             reconciler,
             build_views: true,
+            remembers: true,
             under: None,
+        }
+    }
+
+    /// `node`, standing under `under` as [`Self::under_heading`], its props and what its slots
+    /// hold read alone: nothing built, nothing remembered.
+    pub fn props_of(
+        node: &'a UiNode,
+        description: &'static Description,
+        reconciler: &'a mut Reconciler,
+        under: Option<String>,
+    ) -> Self {
+        Self {
+            node,
+            description,
+            reconciler,
+            build_views: false,
+            remembers: false,
+            under,
         }
     }
 
@@ -797,6 +819,10 @@ impl Source for NodeSource<'_> {
             .collect()
     }
 
+    fn holds(&mut self, slot: &str) -> bool {
+        !slot_nodes(self.node, self.description, slot).is_empty()
+    }
+
     fn rows(&mut self, slot: &str) -> Option<ui::component::SharedRows> {
         let is_rows = self
             .description
@@ -830,9 +856,12 @@ impl Source for NodeSource<'_> {
                 description,
                 reconciler: &mut *self.reconciler,
                 build_views: self.build_views,
+                remembers: self.remembers,
                 under: under.clone(),
             };
-            source.reconciler.adapter().remember(child, description);
+            if source.remembers {
+                source.reconciler.adapter().remember(child, description);
+            }
             read(&mut source)?;
             count = count.saturating_add(1);
         }

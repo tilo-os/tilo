@@ -3906,10 +3906,20 @@ impl Live {
     }
 
     fn recompose(&mut self) {
+        self.reached();
         self.app
             .harness()
             .recompose()
             .expect("contacts frame lays out");
+    }
+
+    /// A test called the surface itself (a selection, an import decision), not
+    /// through an event: reach it through the harness, which says so, so the
+    /// component's next pass runs and shows what it changed.
+    fn reached(&mut self) {
+        self.app
+            .with_widget(|_: &mut ContactsApp| ())
+            .expect("the contacts surface is hosted");
     }
 
     /// Deliver one window event to the app. What it submits applies on

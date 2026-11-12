@@ -1700,6 +1700,16 @@ impl Widget for Panel {
         }
     }
 
+    /// What the card chose is the session's to carry out, whichever way it was chosen: a press
+    /// reaches this panel's own event handling, but an assistive technology's activation goes
+    /// straight to the card's button and none of this panel's events sees it. So the choice is
+    /// taken here, on every pass, as the same choices the presses leave.
+    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+        let changed = self.profile.update(state, path);
+        self.take_choice();
+        changed
+    }
+
     fn traps_focus(&self) -> bool {
         self.profile.traps_focus()
     }

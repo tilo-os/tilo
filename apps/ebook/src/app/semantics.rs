@@ -212,14 +212,14 @@ impl BooksApp {
                         || {
                             CATALOG.t_args(
                                 "ebook-action-press-key",
-                                &[("shortcut", ArgValue::Text(shortcut.label().to_owned()))],
+                                &[("shortcut", ArgValue::Text(shortcut.label()))],
                             )
                         },
                         |error| {
                             CATALOG.t_args(
                                 "ebook-action-shortcut-error",
                                 &[
-                                    ("shortcut", ArgValue::Text(shortcut.label().to_owned())),
+                                    ("shortcut", ArgValue::Text(shortcut.label())),
                                     ("error", ArgValue::Text(error)),
                                 ],
                             )
@@ -229,7 +229,7 @@ impl BooksApp {
                     CATALOG.t_args(
                         "ebook-action-change-shortcut",
                         &[
-                            ("shortcut", ArgValue::Text(shortcut.label().to_owned())),
+                            ("shortcut", ArgValue::Text(shortcut.label())),
                             (
                                 "keys",
                                 ArgValue::Text(

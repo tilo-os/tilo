@@ -109,3 +109,11 @@ sheets-comment-someone = Jemand
 ## Das Blatt mit den Dokumenteinstellungen
 sheets-document-settings = Dokumenteinstellungen
 sheets-done = Fertig
+
+## Die Plätze der Fensterleiste
+sheets-file-menu = Datei
+sheets-format-menu = Format
+sheets-bold = Fett
+sheets-autosum = AutoSumme
+sheets-show-formulas = Formeln anzeigen
+sheets-show-results = Berechnete Ergebnisse anzeigen

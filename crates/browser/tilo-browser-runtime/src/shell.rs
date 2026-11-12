@@ -962,7 +962,9 @@ impl BrowserShell {
                         tilo_desktop::launchpad::LaunchpadAppAction::message_person(&key),
                     );
                 }
-                tilo_session::people::PeopleAsk::Agent { client, ask } => {
+                // A page seats no agent of its own: whoever the card stands for, the ask goes
+                // through the agent's card in Console.
+                tilo_session::people::PeopleAsk::Agent { client, ask, .. } => {
                     self.chrome.shared.ask_app_action(
                         tilo_desktop::launchpad::LaunchpadAppAction::ask_agent(&client, ask),
                     );

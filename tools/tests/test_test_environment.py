@@ -206,7 +206,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
             )
         steps = {name: script["command"][2:] for name, script in scripts.items()}
         self.assertEqual(steps, {"test-runtime": ["runtime"], "headless-audio": ["audio"],
-                                 "ntfs-fixtures": ["ntfs"]})
+                                 "ntfs-fixtures": ["ntfs"], "as-root": ["root"]})
         for script in scripts.values():
             self.assertEqual(script["command"][:2], ["bash", "tools/test-env-setup.sh"])
         rules = {rule["filter"]: rule["setup"] for rule in config["profile"]["ci"]["scripts"]}
@@ -220,7 +220,11 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                      "lounge-siblings",
                                  "package(tilo-session-client) and (binary(passkey_root) or "
                                  "binary(node_workspace))": "page-bundle",
-                                 "package(tilo-ntfs-helper)": "ntfs-fixtures"})
+                                 "package(tilo-ntfs-helper)": "ntfs-fixtures",
+                                 # Only the sandbox's tests that map host ids or
+                                 # make cgroups run as root.
+                                 "package(tilo-sandbox) and (test(/^host_ids::/) or "
+                                 "test(/^limits::/))": "as-root"})
 
     def test_runtime_provides_the_renderer_and_the_promised_capabilities(self) -> None:
         driver = Path(f"/usr/share/vulkan/icd.d/lvp_icd.{os.uname().machine}.json")

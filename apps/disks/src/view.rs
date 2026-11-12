@@ -135,11 +135,11 @@ pub(crate) fn window_toolbar(
     actions.push(ToolbarAction::new(
         RESCAN,
         Icon::Refresh.name(),
-        "Rescan drives",
+        crate::locales::CATALOG.t("disks-rescan-drives"),
     ));
     ui::widget::NavShell::push_window_actions(&mut shell, actions);
     shell.views = (!location.drive.is_empty()).then(|| ToolbarViews {
-        name: "View".to_owned(),
+        name: crate::locales::CATALOG.t("disks-views"),
         choices: Tab::all()
             .into_iter()
             .map(|tab| ToolbarView {

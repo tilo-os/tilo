@@ -51,3 +51,7 @@ code-search-results = { $count } Treffer in { $files } Dateien
 code-search-still-running = { $head }, Suche läuft noch…
 code-search-limit = { $head }, Suchgrenze nach { $files } Dateien erreicht; grenze die Suche ein
 code-search-scanned = { $head }, { $files } Dateien durchsucht
+
+## Die Schaltfläche für das untere Panel in der Fensterleiste
+code-editor-hide-panel = Panel ausblenden
+code-editor-show-panel = Panel einblenden

@@ -64,3 +64,6 @@ weather-now-conditions = Aktuelle Bedingungen
 weather-air-quality = Luftqualität
 weather-notice-retry-message = Prüfe deine Verbindung und versuche es erneut.
 weather-notice-offline-message = Das ist die letzte auf diesem Gerät gespeicherte Vorhersage.
+
+## Die Plätze der Fensterleiste
+weather-refresh-forecast = Vorhersage aktualisieren

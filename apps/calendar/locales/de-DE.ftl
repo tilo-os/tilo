@@ -248,3 +248,13 @@ calendar-editor-repeat = Wiederholung
 calendar-editor-alert = Erinnerung
 calendar-editor-time-zone = Zeitzone
 calendar-editor-priority = Priorität
+
+## Die Plätze der Fensterleiste
+calendar-views = Ansicht
+calendar-previous-month = Voriger Monat
+calendar-next-month = Nächster Monat
+calendar-sync-again = Erneut synchronisieren
+calendar-open-settings = Einstellungen öffnen
+
+## Der Hinweis im leeren Notizfeld eines Termins
+calendar-notes-placeholder = Notizen hinzufügen

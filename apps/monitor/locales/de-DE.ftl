@@ -47,3 +47,15 @@ monitor-memory-swap = Auslagerung
 monitor-section-network = Netzwerk
 monitor-section-disk = Datenträger
 monitor-usage-unavailable-message = Die Nutzung von Prozessor, Arbeitsspeicher, Netzwerk und Datenträgern dieses Computers konnte nicht gelesen werden.
+
+## Die Plätze der Fensterleiste
+monitor-tab-resources = Ressourcen
+monitor-views = Ansicht
+monitor-refresh = Aktualisieren
+monitor-update-frequency = Aktualisierung: { $cadence }
+monitor-tree-view = Baumansicht
+monitor-include-children = Unterprozesse einbeziehen
+monitor-kernel-threads = Kernel-Threads
+monitor-cadence-paused = Pausiert
+monitor-cadence-second = Jede Sekunde
+monitor-cadence-seconds = Alle { $seconds } Sekunden

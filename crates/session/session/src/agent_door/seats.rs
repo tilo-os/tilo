@@ -39,6 +39,13 @@ struct Connection {
     /// The environment's door it came in by, by number: none for the session's own. It ends with
     /// that environment.
     door: Option<u64>,
+    /// The run it works in, by the issue that names it: what every change it makes is stamped
+    /// with, and what taking back its work names. `None` where the workspace confines no agent to
+    /// a run, and what it does is the workspace's as any app's.
+    run: Option<String>,
+    /// The records it changed in that run, each as the app that keeps it and the record: what
+    /// taking back its work undoes.
+    changed: Vec<(String, String)>,
     /// The connection itself, shut when the person stops its seat.
     stream: Option<UnixStream>,
 }
@@ -65,6 +72,8 @@ impl Seats {
                 workspace_id: String::new(),
                 doing: None,
                 door,
+                run: None,
+                changed: Vec::new(),
                 stream: None,
             },
         );
@@ -139,6 +148,59 @@ impl Seats {
             .into_iter()
             .map(|seated| seated.agent)
             .find(|agent| hex::encode(collab_types::presence::stand_in(speaker, agent)) == member)
+    }
+
+    /// Connection `seat` works in the run `run` , the issue that names it: every change it makes
+    /// there is stamped with it, and taking its work back names it.
+    pub(super) fn working_in(&self, seat: u64, run: &str) {
+        if let Some(connection) = self.inner.lock_recover().connections.get_mut(&seat) {
+            connection.run = Some(run.to_owned());
+        }
+    }
+
+    /// Connection `seat` changed `record` of `app` in its run: one of the records taking its work
+    /// back undoes.
+    pub(super) fn changed(&self, seat: u64, app: &str, record: &str) {
+        let step = (app.to_owned(), record.to_owned());
+        let mut inner = self.inner.lock_recover();
+        if let Some(connection) = inner.connections.get_mut(&seat)
+            && !connection.changed.iter().any(|known| known == &step)
+        {
+            connection.changed.push(step);
+        }
+    }
+
+    /// What the agent `agent` works in here, as its connections name it: the run, the records it
+    /// changed in it, and the app it says it works in. `None` for an agent seated here not at all.
+    pub(crate) fn working(&self, agent: &str) -> Option<Working> {
+        let mut working: Option<Working> = None;
+        {
+            let inner = self.inner.lock_recover();
+            for connection in inner
+                .connections
+                .values()
+                .filter(|connection| connection.agent == agent)
+            {
+                let held = working.get_or_insert_with(|| Working {
+                    workspace: connection.workspace_id.clone(),
+                    run: None,
+                    changed: Vec::new(),
+                    app: None,
+                });
+                if held.run.is_none() {
+                    held.run.clone_from(&connection.run);
+                }
+                for step in &connection.changed {
+                    if !held.changed.contains(step) {
+                        held.changed.push(step.clone());
+                    }
+                }
+                if held.app.is_none() {
+                    held.app = connection.doing.as_ref().and_then(|(_, app)| app.clone());
+                }
+            }
+        }
+        working
     }
 
     /// How the desk shows connection `seat` 's agent ("Claude Code in dev #1"), once admitted.
@@ -252,4 +314,18 @@ pub(crate) struct Seated {
     pub(crate) name: String,
     /// What it is doing now, and the app it does it in when it names one.
     pub(crate) doing: Option<(String, Option<String>)>,
+}
+
+/// What the commands on the card of an agent seated here act on: the run it works in and the
+/// records it changed there, in its workspace.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Working {
+    /// The workspace it works in, by id.
+    pub(crate) workspace: String,
+    /// The run, by the issue that names it: `None` where its workspace confines no agent to a run.
+    pub(crate) run: Option<String>,
+    /// The records it changed in that run, each as the app that keeps it and the record.
+    pub(crate) changed: Vec<(String, String)>,
+    /// The app it is working in now, when it says.
+    pub(crate) app: Option<String>,
 }

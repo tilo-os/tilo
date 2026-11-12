@@ -51,9 +51,9 @@ impl QuickEvent {
     pub(crate) fn summary(&self, anchor: NaiveDate) -> String {
         let title = self.title.trim();
         let title = if title.is_empty() {
-            crate::model::UNTITLED_EVENT
+            crate::model::untitled_event()
         } else {
-            title
+            title.to_owned()
         };
         let day = crate::date::relative_label(self.start.date(), anchor);
         if self.all_day_like() {

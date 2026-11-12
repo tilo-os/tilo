@@ -532,21 +532,22 @@ impl Event {
     }
 }
 
-/// Fallback label shown for an event whose title is still empty — a freshly
-/// created event whose title field the user hasn't filled in yet. Kept as a
-/// const so views and the form agree on the same wording.
-pub const UNTITLED_EVENT: &str = "New event";
+/// What the window calls an event nobody has named yet: the title its views
+/// show and the hint its empty title field carries.
+pub fn untitled_event() -> String {
+    crate::resource::t("calendar-a11y-new-event")
+}
 
 impl Event {
-    /// The title to render in views: the user's title, or [`UNTITLED_EVENT`]
-    /// when it is still empty. The stored `title` stays empty so the edit
-    /// form shows its placeholder rather than literal text the user must
-    /// delete.
-    pub fn display_title(&self) -> &str {
+    /// The title to render in views: the user's title, or, while it has none,
+    /// what the window calls an event nobody has named yet. The stored `title`
+    /// stays empty so the edit form shows its placeholder rather than literal
+    /// text the user must delete.
+    pub fn display_title(&self) -> String {
         if self.title.trim().is_empty() {
-            UNTITLED_EVENT
+            untitled_event()
         } else {
-            self.title.as_str()
+            self.title.clone()
         }
     }
 

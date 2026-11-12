@@ -224,7 +224,7 @@ impl PasswordsWindow {
             if let Some(item) = &key.3 {
                 actions.extend([
                     ToolbarAction::new(COPY_SECRET, "copy", item.copy.clone()),
-                    ToolbarAction::new(EDIT_ITEM, "pencil", "Edit"),
+                    ToolbarAction::new(EDIT_ITEM, "pencil", crate::CATALOG.t("passwords-edit")),
                     ToolbarAction::new(
                         FAVORITE,
                         "star",

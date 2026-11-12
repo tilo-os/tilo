@@ -147,7 +147,8 @@ impl AgendaView {
                 Item::Event(shown) => {
                     let event = shown.event;
                     let time = event_time(shown);
-                    let face = event_face(event, &time, theme);
+                    let title = event.display_title();
+                    let face = event_face(event, &title, &time, theme);
                     let h = face.height(ctx.text, theme);
                     let row = Rect::new(x0, y, x1, y + h);
                     if row.y1 > area.y0 && row.y0 < area.y1 {
@@ -243,8 +244,13 @@ fn event_time(shown: &Shown<'_>) -> String {
 }
 
 /// An event row: its calendar colour leads, its time is the meta.
-fn event_face<'a>(event: &'a Event, time: &'a str, theme: &Theme) -> ListRowFace<'a> {
-    let face = ListRowFace::new(event.display_title())
+fn event_face<'a>(
+    event: &'a Event,
+    title: &'a str,
+    time: &'a str,
+    theme: &Theme,
+) -> ListRowFace<'a> {
+    let face = ListRowFace::new(title)
         .leading(RowLeading::Swatch(event.color.color(theme)))
         .meta(time);
     if event.location.is_empty() {
@@ -413,7 +419,8 @@ fn content_height(source: &AgendaSource<'_>, text: &mut TextRenderer, theme: &Th
             }
             Item::Event(shown) => {
                 let time = event_time(shown);
-                event_face(shown.event, &time, theme).height(text, theme)
+                let title = shown.event.display_title();
+                event_face(shown.event, &title, &time, theme).height(text, theme)
             }
             Item::Task(task) => task_face(task, source, theme).height(text, theme),
         };

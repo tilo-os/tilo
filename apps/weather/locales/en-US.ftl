@@ -64,3 +64,6 @@ weather-now-conditions = Current conditions
 weather-air-quality = Air quality
 weather-notice-retry-message = Check your connection and try again.
 weather-notice-offline-message = This is the last forecast saved on this device.
+
+## The window bar's slots
+weather-refresh-forecast = Refresh forecast

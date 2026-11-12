@@ -273,7 +273,7 @@ impl Music {
             };
             return self.empty_page(ctx, body, y, &content, None);
         };
-        let now = ui::time::now();
+        let now = ui::motion::frame_now();
         let theme = ctx.theme;
         let layout = Layout::of(body, look, theme);
         if self.now_playing.flight(now).is_none() {
@@ -346,7 +346,7 @@ impl Music {
 
     /// The cover in flight between the band and the page, over everything.
     pub(super) fn paint_now_playing_flight(&self, ctx: &mut PaintCtx<'_>) {
-        let now = ui::time::now();
+        let now = ui::motion::frame_now();
         let Some((rect, opacity)) = self.now_playing.flight(now) else {
             return;
         };

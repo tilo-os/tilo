@@ -394,12 +394,13 @@ impl BooksApp {
             } else {
                 InputHint::measure_keycap_labels(&labels, ctx.text, theme)
             } + 2.0 * f64::from(theme.tokens.spacing.s3);
+            let title = shortcut.label();
             let row = Self::draw_settings_row(
                 ctx,
                 col.row_span(theme),
                 y,
                 &SettingsRow {
-                    title: shortcut.label(),
+                    title: &title,
                     secondary: None,
                     trailing,
                     separator: i + 1 < ReaderShortcut::ALL.len(),

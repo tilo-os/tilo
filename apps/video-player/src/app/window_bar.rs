@@ -29,7 +29,7 @@ impl PlayerState {
                 self.bar
                     .entry(
                         "folder-open",
-                        "Open video",
+                        crate::i18n::t("video-open-video"),
                         VideoEffect::OpenVideo { path: None },
                     )
                     .enabled(self.portal_open.is_none()),

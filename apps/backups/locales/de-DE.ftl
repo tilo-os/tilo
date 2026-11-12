@@ -136,3 +136,11 @@ backups-schedule-weekly = Jeden { $weekday } um { $time }
 backups-empty-snapshots-hint = Sichere jetzt, um die erste zu erstellen.
 backups-setup-start-hint = Wähle einen Ordner, um von jeder Datei eine Kopie zu behalten, geprüft, damit du weißt, dass sie unversehrt ist.
 backups-setup-destination-hint = Wähle ein Laufwerk oder einen Ordner außerhalb dessen, was du sicherst.
+
+## Die Schaltfläche „Jetzt sichern“ in der Fensterleiste
+backups-bar-back-up-now = Jetzt sichern
+backups-bar-backing-up = Sicherung läuft…
+
+## Wie die Seiten des Fensters heißen
+backups-page-all = Alle Sicherungen
+backups-page-destination = Ziel

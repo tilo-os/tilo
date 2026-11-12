@@ -189,3 +189,7 @@ music-shuffle-off = Turn shuffle off
 music-shuffle-on = Turn shuffle on
 music-show-in-sidebar = Show in sidebar
 music-show-in-player = Show in player
+
+## The window bar's slots
+music-back = Back
+music-new-playlist = New playlist

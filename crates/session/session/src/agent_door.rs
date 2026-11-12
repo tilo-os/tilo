@@ -25,7 +25,7 @@ mod seats;
 mod service_steps;
 
 use environments::Origin;
-pub(crate) use seats::Seats;
+pub(crate) use seats::{Seats, Working};
 pub(crate) use service_steps::invoke_service_step;
 use service_steps::{arguments_of, change_through};
 
@@ -901,6 +901,17 @@ impl Loop {
         }
     }
 
+    /// Take back the answers that let `agent` in: a client whose answer this was is asked again
+    /// the next time it connects, as if the person had never said "always allow". What it works on
+    /// now is ended by whoever asked ([`crate::agent_door::Seats::stop`]).
+    pub(super) fn revoke(&mut self, agent: &str) {
+        self.always
+            .retain(|_, admitted| !same_program(admitted, agent));
+        self.session
+            .retain(|_, admitted| !same_program(admitted, agent));
+        self.store_always();
+    }
+
     /// Keep "Always allow" in this account's private state. The loop does not wait for the disk.
     fn store_always(&self) {
         let Some(path) = self.bindings_path.clone() else {
@@ -989,6 +1000,18 @@ enum Memory {
     Once,
     Session,
     Always,
+}
+
+/// Whether the agent `remembered` is the program the agent `seated` is an instance of. An answer
+/// is remembered for the program by the id its client proposed (`claude-code`), and what the answer
+/// admits is that program at this device, as an instance of its own (`claude-code@host#2`): its own
+/// id begins with the one remembered, at a place or an instance of it.
+fn same_program(remembered: &str, seated: &str) -> bool {
+    let rest = seated.strip_prefix(remembered);
+    match rest {
+        Some(rest) => rest.is_empty() || rest.starts_with(['@', '#']),
+        None => false,
+    }
 }
 
 /// The agent id a client is proposed as: its own name, folded into the canonical form agent ids are
@@ -1726,10 +1749,17 @@ impl SeatAt {
 /// the connection leave before its run ends.
 pub(crate) struct DoorRun {
     host: tilo_action_broker::collab_app_broker::TaskRunHost,
-    _held: crate::door_runs::Held,
+    /// The run itself, held for as long as the connection lasts: dropping it ends what the broker
+    /// still runs of it.
+    held: crate::door_runs::Held,
 }
 
 impl DoorRun {
+    /// The issue that names its run: what the desk's card takes its work back by.
+    fn issue(&self) -> &str {
+        self.held.issue()
+    }
+
     /// Start the run of the agent `admitted` names, admitted by its person at this door: mint its
     /// task agent, hold its run beside the conversations' turns, and join the broker as it.
     /// `Ok(None)` where the workspace does not confine its agents to runs, so it acts on the
@@ -1771,7 +1801,7 @@ impl DoorRun {
         )?;
         let held = runs.doors().open(admitted.workspace, minted.run);
         let host = broker.task_run_host(&minted.presentation)?;
-        Ok(Some(Self { host, _held: held }))
+        Ok(Some(Self { host, held }))
     }
 }
 
@@ -2157,6 +2187,10 @@ impl Host {
             state: self.state.as_ref().map(Arc::downgrade),
             session: Arc::clone(&self.session),
             run: self.run.as_ref().and_then(|run| run.host.record_changes()),
+            seat: self
+                .seat
+                .as_ref()
+                .map(|seat| (Arc::clone(&seat.seats), seat.seat)),
         }
     }
 }
@@ -2506,7 +2540,14 @@ fn serve_admitted(
             // Every admitted agent's connection works in a run of its own: one that cannot start
             // acts on nothing, and the client is told why rather than refused action by action.
             match DoorRun::start(&broker, session.runs.get(), &admitted) {
-                Ok(run) => Ok(host.in_run(run)),
+                Ok(run) => {
+                    // What it works in, as its card's commands name it: the run taking its work
+                    // back names, and the records it changes there.
+                    if let Some(run) = &run {
+                        seats.working_in(seat, run.issue());
+                    }
+                    Ok(host.in_run(run))
+                }
                 Err(why) => {
                     tracing::warn!(%workspace, agent = %seated, %why, "agent door: the agent's run did not start");
                     Err(format!("{}: {why}", word("agent-door-no-run")))
@@ -2615,6 +2656,21 @@ fn awaited_sentence(name: &str, host: &str) -> String {
 mod tests {
     use super::*;
 
+    /// What the person remembers is the program, and every connection it admits is an instance of
+    /// its own: revoking the one takes back the answer of the other, and no other program's.
+    #[test]
+    fn an_answer_remembered_for_a_program_covers_each_instance_of_it() {
+        assert!(same_program("claude-code", "claude-code@host#1"));
+        assert!(same_program("claude-code@host", "claude-code@host#2"));
+        assert!(same_program("claude-code", "claude-code@laptop-3f2a#1"));
+        assert!(same_program("claude-code@host#1", "claude-code@host#1"));
+        assert!(!same_program("claude-code", "codex@host#2"));
+        assert!(
+            !same_program("claude-code", "claude-codex@host#1"),
+            "an id that only begins with the same letters is another program"
+        );
+    }
+
     #[test]
     fn the_door_is_the_seats_own_unless_a_developer_named_one() {
         let seat = path_in(None, Some("/run/user/1000".into()));
@@ -2646,6 +2702,29 @@ mod tests {
         assert_eq!(proposed_agent_id("  Claude   Code 2.1 "), "claude-code-2-1");
         assert_eq!(proposed_agent_id("!!!"), "agent");
         assert_eq!(proposed_agent_id("MCP client"), "mcp-client");
+    }
+
+    /// What the commands on a seated agent's card act on: the run its connection works in and the
+    /// records it changed there, each once, as its seat heard of them.
+    #[test]
+    fn a_seat_keeps_the_run_and_the_records_its_agent_changed() {
+        let seats = Seats::new();
+        let seat = seats.joining(None);
+        seats.admitted(seat, "claude-code@host#1", "Claude Code", ("ws", "Desk"));
+        let seated = seats.working("claude-code@host#1").expect("seated here");
+        assert_eq!(seated.workspace, "ws");
+        assert_eq!(seated.run, None, "nothing of it worked in a run yet");
+        seats.working_in(seat, "tilo.task-run:abc");
+        seats.changed(seat, "so.tilo.notes", "main");
+        seats.changed(seat, "so.tilo.notes", "main");
+        let working = seats.working("claude-code@host#1").expect("seated here");
+        assert_eq!(working.run.as_deref(), Some("tilo.task-run:abc"));
+        assert_eq!(
+            working.changed,
+            vec![("so.tilo.notes".to_owned(), "main".to_owned())],
+            "each record once, however many steps touched it"
+        );
+        assert_eq!(seats.working("codex@host#1"), None, "nobody else");
     }
 
     #[test]
@@ -2781,6 +2860,7 @@ mod tests {
             state: None,
             session: Arc::new(SessionDoors::new(Arc::new(|| {}), "person")),
             run: None,
+            seat: None,
         };
         let started = std::time::Instant::now();
         let read = records.read(

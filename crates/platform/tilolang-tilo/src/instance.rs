@@ -1609,6 +1609,17 @@ impl Instance {
         }
     }
 
+    /// Show what the presses the host ran this frame made ([`Self::press_ran`]) once they are
+    /// in the record: what they opened, drawn, and the window told they ran, in the frame that
+    /// ran them rather than the next, so the window takes all of it in one frame and what the
+    /// person typed after a press goes to what it opened.
+    pub fn show_ran(&mut self) {
+        self.take_open_requests();
+        self.poll_views();
+        self.tell_took();
+        self.flush();
+    }
+
     /// Tell the window how many of its presses ran, when that changed: what they opened was
     /// sent before.
     fn tell_took(&mut self) {

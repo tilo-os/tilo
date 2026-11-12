@@ -336,6 +336,38 @@ impl Activity {
         *self.0.door.borrow_mut() = Some(door);
     }
 
+    /// Take back the work of the run `run` in `workspace`, as the person at the screen: each
+    /// document `steps` names is asked through the session's door, on a thread of its own, as the
+    /// history's own Undo run asks. Answers whether it started; what came of it is in the
+    /// documents, which a person reads there.
+    ///
+    /// # Errors
+    /// The session serves no door to ask, so nothing was undone.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn undo_run(
+        &self,
+        workspace: &str,
+        run: &str,
+        steps: Vec<(String, String)>,
+    ) -> Result<(), String> {
+        let Some(door) = self.0.door.borrow().as_ref().map(Arc::clone) else {
+            return Err(tilo_desktop_surface::i18n::t(
+                "activity-undo-task-unavailable",
+            ));
+        };
+        let woken = Arc::clone(&self.0.woken);
+        let wake = self.0.wake.clone();
+        self.0.undos.start(
+            door,
+            self.0.person.clone(),
+            workspace.to_owned(),
+            uuid::Uuid::new_v4(),
+            run.to_owned(),
+            steps,
+            move || ask_for_frame(&woken, wake.as_ref()),
+        )
+    }
+
     /// Read the output of command runs from `content` .
     #[cfg(target_os = "linux")]
     pub(crate) fn attach_content(&self, content: Arc<crate::content::Plane>) {

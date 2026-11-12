@@ -319,7 +319,7 @@ impl TopBarChrome {
         self.faces_shown = shown;
         self.shown_faces = (0..shown).collect();
         self.collaborator_overflow = more;
-        self.face_rects = rects;
+        self.face_rects = Self::faces_drawn(rects);
         if shown == 0 && badge.is_none() {
             return Rect::ZERO;
         }
@@ -350,6 +350,20 @@ impl TopBarChrome {
             in_call: look.and_then(|look| look.call),
             scale: look.map_or(1.0, |look| look.scale),
         }
+    }
+
+    /// What pressing a face stands for, by the roster id it opens: the bar's own target, so a
+    /// reader presses a face where the pointer does.
+    pub(super) const FACE_TARGET: &'static str = "topbar:face:";
+
+    /// The faces drawn, each where a press reaches it: the disc the stack painted, with the ring
+    /// and the ground drawn around it. Where a face stands is decided once, here, for the pointer
+    /// and for what a reader is told alike.
+    pub(super) fn faces_drawn(rects: Vec<Rect>) -> Vec<Rect> {
+        rects
+            .into_iter()
+            .map(|rect| rect.inflate(ui::presence::Face::REACH, ui::presence::Face::REACH))
+            .collect()
     }
 
     /// A phone-wide bar's one face, ending at `right_x` : the person who did something last,
@@ -403,7 +417,7 @@ impl TopBarChrome {
             theme.tokens.colors.surfaces.base,
         );
         drop(faces);
-        self.face_rects = rects;
+        self.face_rects = Self::faces_drawn(rects);
         let width = stack.width_of(shown.len(), more);
         self.shown_faces = shown;
         if width <= 0.0 {
@@ -696,6 +710,36 @@ mod tests {
             bar.right_side_x() < own.x0 && own.x1 <= bar.tray_pill_rect().x0,
             "their avatar stands right of who is here, before the notifications"
         );
+    }
+
+    /// Each face is one place: the rect a reader is told is the rect a press reaches, the middle
+    /// of which opens that person, and it is a control of its own — so a reader presses the face
+    /// where a person does, never the bar behind it.
+    #[test]
+    fn a_face_is_published_where_a_press_reaches_it() {
+        let tree = desk(&[("ada", "Ada Lovelace"), ("bo", "Bo Brave")]);
+        let (bar, _chrome) = bar_over(&tree, true);
+        let faces = bar.face_accessibility();
+        assert_eq!(faces.len(), 2, "one node per face");
+        for (face, id) in faces.iter().zip(["ada", "bo"]) {
+            let bounds = face.bounds.expect("placed");
+            let rect = Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1);
+            assert_eq!(
+                bar.face_rect(id),
+                Some(rect),
+                "the bar publishes a face where it draws and hit-tests it"
+            );
+            assert_eq!(
+                bar.face_at(rect.center()).as_deref(),
+                Some(id),
+                "a press at {id}'s middle opens {id}"
+            );
+            assert_eq!(
+                face.action_target.as_deref(),
+                Some(format!("{}{id}", TopBarChrome::FACE_TARGET).as_str()),
+                "the face carries its own press"
+            );
+        }
     }
 
     /// A press on someone's face opens who is here at them; the badge opens everyone.

@@ -42,21 +42,7 @@ impl Shared {
         for ask in asked {
             match ask {
                 people::PeopleAsk::Message { key } => self.message_person(&key),
-                people::PeopleAsk::Agent { who, client, ask } => {
-                    // An agent the person admitted at this device's door works on the connection
-                    // they let in here: their Stop ends that connection, as the desk's Stop on its
-                    // seat does. Console knows only the runs of the person's hosted door.
-                    let seated = self
-                        .sync
-                        .as_ref()
-                        .and_then(|sync| self.seats.spoken_as(*sync.publisher().as_bytes(), &who));
-                    match seated {
-                        Some(agent) if ask == tilo_desktop::profile_card::AgentAsk::Stop => {
-                            self.seats.stop(&agent);
-                        }
-                        _ => self.invoke_app_action(LaunchpadAppAction::ask_agent(&client, ask)),
-                    }
-                }
+                people::PeopleAsk::Agent { who, client, ask } => self.agent_ask(&who, &client, ask),
                 people::PeopleAsk::Rename(name) => self.name_self(&name),
                 people::PeopleAsk::Status(status) => self.set_own_status(&status),
                 people::PeopleAsk::Availability(chosen) => {
@@ -346,6 +332,103 @@ impl Shared {
         );
         if let Err(error) = revoked {
             self.answer_failed(&t("action-failed-that-agent"), &error);
+        }
+    }
+
+    /// Carry out what a person's card asked of the agent it shows: an agent this device seats at
+    /// its door is acted on here, where the connection, its workspace and its run are known; one
+    /// it does not seat is the person's hosted door's, whose own card in Console knows it.
+    fn agent_ask(&self, who: &str, client: &str, ask: tilo_desktop::profile_card::AgentAsk) {
+        #[cfg(target_os = "linux")]
+        if let Some(agent) = self.seated_agent(who) {
+            self.seated_agent_ask(&agent, ask);
+            return;
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = who;
+        self.invoke_app_action(LaunchpadAppAction::ask_agent(client, ask));
+    }
+
+    /// What a person's card asked of the agent `agent` this device seats at its door.
+    #[cfg(target_os = "linux")]
+    fn seated_agent_ask(&self, agent: &str, ask: tilo_desktop::profile_card::AgentAsk) {
+        use tilo_desktop::profile_card::AgentAsk;
+        let working = self.seats.working(agent);
+        match ask {
+            // Its card of its own is the one the person is looking at: nothing to open.
+            AgentAsk::Card => {}
+            AgentAsk::Stop => {
+                self.seats.stop(agent);
+            }
+            AgentAsk::UndoRun => self.undo_seated_run(agent, working.as_ref()),
+            AgentAsk::TakeOver => {
+                // The person picks up where it was: its connections end here, and the app it was
+                // working in comes forward, as the history's own opening does.
+                self.seats.stop(agent);
+                self.open_what_it_worked_in(working.as_ref());
+            }
+            AgentAsk::Revoke => {
+                // What let it in here is taken back, and it works here no more: the next client of
+                // that program is asked about, as the first was.
+                if let Some(door) = self.agent_door.borrow_mut().as_mut() {
+                    door.revoke(agent);
+                }
+                self.seats.stop(agent);
+            }
+        }
+    }
+
+    /// The agent this device seats that the presence member `who` speaks for, by its key.
+    #[cfg(target_os = "linux")]
+    fn seated_agent(&self, who: &str) -> Option<String> {
+        let sync = self.sync.as_ref()?;
+        self.seats.spoken_as(*sync.publisher().as_bytes(), who)
+    }
+
+    /// Take back what the agent `agent` did here: its run in the workspace that holds it, undone in
+    /// each record it changed, as the history's own Undo run does.
+    #[cfg(target_os = "linux")]
+    fn undo_seated_run(&self, agent: &str, working: Option<&crate::agent_door::Working>) {
+        let Some(working) = working else {
+            return;
+        };
+        let Some(run) = working.run.as_deref() else {
+            // Its changes were the workspace's own, as any app's: there is no run of it to undo.
+            tracing::info!(%agent, "an agent's card asked to undo a run it did not work in");
+            return;
+        };
+        if let Err(error) = self
+            .activity
+            .undo_run(&working.workspace, run, working.changed.clone())
+        {
+            self.answer_failed(&t("action-failed-that-agent"), &error);
+        }
+    }
+
+    /// Open what the agent `agent` was working in, in its workspace, as the history opens a
+    /// resource: the person continues the work themselves.
+    #[cfg(target_os = "linux")]
+    fn open_what_it_worked_in(&self, working: Option<&crate::agent_door::Working>) {
+        let Some(working) = working else {
+            return;
+        };
+        let Some(app) = working
+            .changed
+            .last()
+            .map(|(app, _)| app.clone())
+            .or_else(|| working.app.clone())
+        else {
+            return;
+        };
+        let target = ui::HistoryResourceTarget {
+            app_id: Some(app.clone()),
+            app_label: Some(crate::app_names::app_name(&app)),
+            id: String::new(),
+            kind: String::new(),
+            label: String::new(),
+        };
+        if let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&working.workspace) {
+            self.open_from_history(&workspace, &target);
         }
     }
 

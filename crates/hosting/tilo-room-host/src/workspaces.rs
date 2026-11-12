@@ -1243,12 +1243,11 @@ impl Workspaces {
             .values()
             .cloned()
             .collect::<Vec<_>>();
-        // What each of them is about to name is this host's own address, which
-        // reaches nobody from outside this network until the endpoint has
-        // connected to its relay.
-        if !workspaces.is_empty() {
-            await_relay(&this.inner.host.endpoint).await;
-        }
+        // An address that names no relay reaches nobody from outside this
+        // network, and a host that kept nothing names its first workspace's
+        // address as soon as its embedder makes one: wait for the relay, so no
+        // workspace learns an address this host must rename.
+        await_relay(&this.inner.host.endpoint).await;
         this.serve_kept(workspaces).await?;
         this.start_following().await;
         Ok(this)

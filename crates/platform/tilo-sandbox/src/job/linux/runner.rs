@@ -367,6 +367,35 @@ impl Child<'_> {
         }
     }
 
+    /// Leave the job killable for memory. A worker the host shields from the
+    /// OOM killer (`oom_score_adj` -1000, as it may a runner or a daemon)
+    /// passes that on, and a job at its `memory.max` then never dies: the
+    /// kernel finds nothing in its cgroup it may kill, and the job hangs at
+    /// its limit. To the OOM killer a job is an ordinary process, or as
+    /// killable as the host made its worker.
+    fn killable_for_memory(&self) {
+        // SAFETY (this block): open, read and write on a C string and stack
+        // buffers, and closing the descriptor opened here.
+        unsafe {
+            let fd = libc::open(
+                c"/proc/self/oom_score_adj".as_ptr(),
+                libc::O_RDWR | libc::O_CLOEXEC,
+            );
+            if fd < 0 && errno() == libc::ENOENT.unsigned_abs() {
+                // No /proc here: nothing shields the job either.
+                return;
+            }
+            self.check(libc::c_long::from(fd), Step::Init, 4);
+            let mut score = [0_u8; 8];
+            if libc::read(fd, score.as_mut_ptr().cast(), score.len()) < 0
+                || (score[0] == b'-' && libc::pwrite(fd, c"0".as_ptr().cast(), 1, 0) < 0)
+            {
+                self.fail(Step::Init, 4, errno());
+            }
+            libc::close(fd);
+        }
+    }
+
     /// Make the staging root, run every mount operation, pivot into the new
     /// root.
     fn build_root(&self) {
@@ -727,6 +756,7 @@ impl Child<'_> {
             unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) };
         }
         Self::reset_signals();
+        self.killable_for_memory();
         self.become_ids();
         self.build_root();
         self.name_and_network();
@@ -1277,6 +1307,7 @@ fn describe_failure(buf: [u8; 12], plan: &Plan) -> SpawnError {
             0 => "starting the job's init (this program, again)".into(),
             1 => "keeping the init's capabilities in the job's namespace".into(),
             3 => "raising the open file limit".into(),
+            4 => "leaving the job killable for memory".into(),
             _ => "reading the job's plan in its init".into(),
         },
         Some(Step::Exec) => {

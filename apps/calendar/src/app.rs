@@ -77,12 +77,6 @@ pub(crate) use store::{Ask, window};
 
 use editor::{Choices, FormRects};
 
-/// Placeholder shown in the empty title field of a new event.
-const TITLE_PLACEHOLDER: &str = "New event";
-/// Placeholder shown in the empty notes editor of an event (dim hint text that
-/// disappears the moment the user types — never seeded as real body text).
-const NOTES_PLACEHOLDER: &str = "Add notes";
-
 /// First-run onboarding shown centered over an empty calendar (no events):
 /// a friendly headline + hint instead of a blank grid.
 const EMPTY_ONBOARDING_TITLE: &str = "No events yet";
@@ -1260,7 +1254,8 @@ impl CalendarApp {
         if let (Some(calendar), Some(id)) = (calendar, id) {
             field.attach(crate::resource::notes_dispatcher(calendar, id));
         }
-        RichTextSurface::field(field).with_placeholder(NOTES_PLACEHOLDER)
+        RichTextSurface::field(field)
+            .with_placeholder(&crate::resource::t("calendar-notes-placeholder"))
     }
 
     // --- CRDT plumbing ---------------------------------------------------
@@ -2904,7 +2899,7 @@ impl CalendarApp {
                     })
             };
             if overlaps {
-                conflicts.push(candidate.display_title().to_string());
+                conflicts.push(candidate.display_title());
             }
         }
         conflicts.sort_unstable();
@@ -3218,7 +3213,7 @@ impl CalendarApp {
                 AccessState::new().focusable(true),
             ),
             Action::OpenEvent(id) => {
-                let label = self.model.event(*id)?.display_title().to_string();
+                let label = self.model.event(*id)?.display_title();
                 (
                     format!("{}:open", crate::actions::event_resource_id(*id)),
                     crate::resource::t_args(
@@ -4701,6 +4696,7 @@ impl CalendarApp {
                     let days = self.timeline_days();
                     let events = self.timeline_render_events(&days);
                     let now = self.now();
+                    let untitled = crate::model::untitled_event();
                     let model = TimelineRenderModel {
                         days: &days,
                         events: &events,
@@ -4709,7 +4705,7 @@ impl CalendarApp {
                             self.today,
                             i64::from(now.hour()) * 60 + i64::from(now.minute()),
                         )),
-                        untitled: TITLE_PLACEHOLDER,
+                        untitled: &untitled,
                     };
                     hits.extend(
                         self.timeline
@@ -4956,7 +4952,7 @@ fn invite_input(requested: &std::rc::Rc<std::cell::Cell<bool>>) -> Box<TextInput
 fn title_field() -> Box<TextInput> {
     Box::new(
         TextInput::local()
-            .with_placeholder(TITLE_PLACEHOLDER)
+            .with_placeholder(crate::model::untitled_event())
             .with_text_role(ui::tokens::TextRole::Heading)
             .with_id("event_title"),
     )

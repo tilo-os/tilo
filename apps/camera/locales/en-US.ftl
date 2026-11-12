@@ -77,3 +77,12 @@ camera-scan-resolution = Resolution
 camera-scan-color = Color
 camera-scan-paper-source = Paper source
 camera-scan-text-language = Text language
+
+## What the window bar says
+camera-document-page = Page { $page } of { $pages }
+camera-capture-mode = Mode
+camera-open-photos = Open Photos
+
+## What a notice's action is called
+camera-try-again = Try again
+camera-refresh = Refresh

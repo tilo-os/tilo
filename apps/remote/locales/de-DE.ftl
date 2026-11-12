@@ -84,3 +84,14 @@ remote-connection-deleted-message = Jemand, mit dem du deine Verbindungen teilst
 remote-empty-pinned-hint = Hefte die Maschinen an, die du am meisten nutzt, damit sie hier bleiben.
 remote-empty-saved-hint = Speichere eine Maschine, um sie über SSH, VNC oder als Tilo-Gerät zu erreichen.
 remote-rdp-unsupported-message = Wähle SSH oder VNC, um diese Maschine weiter zu nutzen.
+
+## Die Plätze der Fensterleiste
+remote-pinned-connections = Angeheftete Verbindungen
+remote-connections = Verbindungen
+remote-new-connection = Neue Verbindung
+remote-edit-connection = Verbindung bearbeiten
+remote-save = Speichern
+remote-actual-size = Originalgröße
+remote-fit-to-window = An Fenster anpassen
+remote-full-screen = Vollbild
+remote-disconnect = Trennen
