@@ -63,6 +63,28 @@ pub mod keys {
         ui::i18n::LabelKey::new("api-tester-delete-environment");
     pub const API_TESTER_DELETE_REQUEST: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("api-tester-delete-request");
+    pub const API_TESTER_EFFECTS_CANCEL_SEND: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("api-tester-effects-cancel-send");
+    pub const API_TESTER_EFFECTS_COPY_RESPONSE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("api-tester-effects-copy-response");
+    pub const API_TESTER_EFFECTS_ENVIRONMENT_MENU: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("api-tester-effects-environment-menu");
+    pub const API_TESTER_EFFECTS_IMPORT_LEGACY: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("api-tester-effects-import-legacy");
+    pub const API_TESTER_EFFECTS_PICK_ENVIRONMENT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("api-tester-effects-pick-environment");
+    pub const API_TESTER_EFFECTS_RENAME_COLLECTION: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("api-tester-effects-rename-collection");
+    pub const API_TESTER_EFFECTS_REQUEST_MENU: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("api-tester-effects-request-menu");
+    pub const API_TESTER_EFFECTS_SEND: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("api-tester-effects-send");
+    pub const API_TESTER_EFFECTS_SEND_SAVED: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("api-tester-effects-send-saved");
+    pub const API_TESTER_EFFECTS_SET_CREDENTIAL: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("api-tester-effects-set-credential");
+    pub const API_TESTER_EFFECTS_SET_SECRET_VALUE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("api-tester-effects-set-secret-value");
     pub const API_TESTER_ENVIRONMENT: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("api-tester-environment");
     pub const API_TESTER_ENVIRONMENT_NAME: ui::i18n::LabelKey =
@@ -183,14 +205,48 @@ pub mod keys {
         ui::i18n::LabelKey::new("api-tester-view-raw");
     pub const API_TESTER_WAITING_RESPONSE: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("api-tester-waiting-response");
+    pub const API_TESTER_WORKSPACE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("api-tester-workspace");
     pub const API_TESTER_WORKSPACE_ACTIVE_ENVIRONMENT: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("api-tester-workspace-active-environment");
+    pub const API_TESTER_WORKSPACE_ADD_REQUEST: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("api-tester-workspace-add-request");
+    pub const API_TESTER_WORKSPACE_ADD_VARIABLE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("api-tester-workspace-add-variable");
     pub const API_TESTER_WORKSPACE_COLLECTIONS: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("api-tester-workspace-collections");
+    pub const API_TESTER_WORKSPACE_DELETE_COLLECTION: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("api-tester-workspace-delete-collection");
+    pub const API_TESTER_WORKSPACE_DELETE_ENVIRONMENT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("api-tester-workspace-delete-environment");
+    pub const API_TESTER_WORKSPACE_DELETE_REQUEST: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("api-tester-workspace-delete-request");
+    pub const API_TESTER_WORKSPACE_DELETE_SENT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("api-tester-workspace-delete-sent");
     pub const API_TESTER_WORKSPACE_ENVIRONMENTS: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("api-tester-workspace-environments");
+    pub const API_TESTER_WORKSPACE_IMPORT_WORKSPACE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("api-tester-workspace-import-workspace");
+    pub const API_TESTER_WORKSPACE_NEW_COLLECTION: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("api-tester-workspace-new-collection");
+    pub const API_TESTER_WORKSPACE_NEW_ENVIRONMENT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("api-tester-workspace-new-environment");
+    pub const API_TESTER_WORKSPACE_NEW_REQUEST: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("api-tester-workspace-new-request");
+    pub const API_TESTER_WORKSPACE_OPEN_REQUEST: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("api-tester-workspace-open-request");
+    pub const API_TESTER_WORKSPACE_OPEN_SENT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("api-tester-workspace-open-sent");
+    pub const API_TESTER_WORKSPACE_RECORD_SENT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("api-tester-workspace-record-sent");
     pub const API_TESTER_WORKSPACE_REQUEST: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("api-tester-workspace-request");
+    pub const API_TESTER_WORKSPACE_SAVE_REQUEST: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("api-tester-workspace-save-request");
+    pub const API_TESTER_WORKSPACE_SAVE_SENT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("api-tester-workspace-save-sent");
+    pub const API_TESTER_WORKSPACE_USE_ENVIRONMENT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("api-tester-workspace-use-environment");
     pub const API_VARIABLES_RESOLVED: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("api-variables-resolved");
     pub const API_VARIABLES_UNRESOLVED: ui::i18n::LabelKey =

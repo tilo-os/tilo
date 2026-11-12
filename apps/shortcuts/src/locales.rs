@@ -49,6 +49,18 @@ pub mod keys {
         ui::i18n::LabelKey::new("shortcuts-discard-button");
     pub const SHORTCUTS_DO_THESE_INSTEAD: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("shortcuts-do-these-instead");
+    pub const SHORTCUTS_DOOR_DELETE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("shortcuts-door-delete");
+    pub const SHORTCUTS_DOOR_DESCRIBE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("shortcuts-door-describe");
+    pub const SHORTCUTS_DOOR_REFINE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("shortcuts-door-refine");
+    pub const SHORTCUTS_DOOR_REFRESH: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("shortcuts-door-refresh");
+    pub const SHORTCUTS_DOOR_RUN: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("shortcuts-door-run");
+    pub const SHORTCUTS_DOOR_SAVE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("shortcuts-door-save");
     pub const SHORTCUTS_DRAFT_FAILED: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("shortcuts-draft-failed");
     pub const SHORTCUTS_DRAFT_IT: ui::i18n::LabelKey =
@@ -238,4 +250,46 @@ pub mod keys {
         ui::i18n::LabelKey::new("shortcuts-variable");
     pub const SHORTCUTS_WHEN_IT_FAILS: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("shortcuts-when-it-fails");
+    pub const SHORTCUTS_WORKBENCH: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("shortcuts-workbench");
+    pub const SHORTCUTS_WORKBENCH_ADD_INPUT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("shortcuts-workbench-add-input");
+    pub const SHORTCUTS_WORKBENCH_ADD_STEP: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("shortcuts-workbench-add-step");
+    pub const SHORTCUTS_WORKBENCH_ALLOW_PROPOSAL: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("shortcuts-workbench-allow-proposal");
+    pub const SHORTCUTS_WORKBENCH_BIND_ARGUMENT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("shortcuts-workbench-bind-argument");
+    pub const SHORTCUTS_WORKBENCH_DISCARD: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("shortcuts-workbench-discard");
+    pub const SHORTCUTS_WORKBENCH_DRAFT_PROPOSAL: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("shortcuts-workbench-draft-proposal");
+    pub const SHORTCUTS_WORKBENCH_DRAFT_SHORTCUT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("shortcuts-workbench-draft-shortcut");
+    pub const SHORTCUTS_WORKBENCH_DUPLICATE_DRAFT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("shortcuts-workbench-duplicate-draft");
+    pub const SHORTCUTS_WORKBENCH_DUPLICATE_SHORTCUT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("shortcuts-workbench-duplicate-shortcut");
+    pub const SHORTCUTS_WORKBENCH_IGNORE_PROPOSAL: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("shortcuts-workbench-ignore-proposal");
+    pub const SHORTCUTS_WORKBENCH_MOVE_STEP: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("shortcuts-workbench-move-step");
+    pub const SHORTCUTS_WORKBENCH_NEW_DRAFT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("shortcuts-workbench-new-draft");
+    pub const SHORTCUTS_WORKBENCH_OPEN_SHORTCUT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("shortcuts-workbench-open-shortcut");
+    pub const SHORTCUTS_WORKBENCH_REMOVE_INPUT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("shortcuts-workbench-remove-input");
+    pub const SHORTCUTS_WORKBENCH_REMOVE_STEP: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("shortcuts-workbench-remove-step");
+    pub const SHORTCUTS_WORKBENCH_REPLACE_STEP: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("shortcuts-workbench-replace-step");
+    pub const SHORTCUTS_WORKBENCH_SET_NESTED: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("shortcuts-workbench-set-nested");
+    pub const SHORTCUTS_WORKBENCH_SET_OUTPUT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("shortcuts-workbench-set-output");
+    pub const SHORTCUTS_WORKBENCH_SET_SCHEDULE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("shortcuts-workbench-set-schedule");
+    pub const SHORTCUTS_WORKBENCH_SET_STEP_POLICY: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("shortcuts-workbench-set-step-policy");
 }

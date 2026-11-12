@@ -41,6 +41,37 @@ pub mod keys {
     pub const CLOCKS_ALERT_OFF: ui::i18n::LabelKey = ui::i18n::LabelKey::new("clocks-alert-off");
     pub const CLOCKS_BEHIND: ui::i18n::LabelKey = ui::i18n::LabelKey::new("clocks-behind");
     pub const CLOCKS_CANCEL: ui::i18n::LabelKey = ui::i18n::LabelKey::new("clocks-cancel");
+    pub const CLOCKS_COLLECTION: ui::i18n::LabelKey = ui::i18n::LabelKey::new("clocks-collection");
+    pub const CLOCKS_COLLECTION_ADD_ALARM: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("clocks-collection-add-alarm");
+    pub const CLOCKS_COLLECTION_ADD_MINUTE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("clocks-collection-add-minute");
+    pub const CLOCKS_COLLECTION_ADD_TIMER: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("clocks-collection-add-timer");
+    pub const CLOCKS_COLLECTION_ADD_WORLD_CLOCK: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("clocks-collection-add-world-clock");
+    pub const CLOCKS_COLLECTION_EDIT_ALARM: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("clocks-collection-edit-alarm");
+    pub const CLOCKS_COLLECTION_LAP: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("clocks-collection-lap");
+    pub const CLOCKS_COLLECTION_PAUSE_STOPWATCH: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("clocks-collection-pause-stopwatch");
+    pub const CLOCKS_COLLECTION_PAUSE_TIMER: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("clocks-collection-pause-timer");
+    pub const CLOCKS_COLLECTION_REMOVE_ALARM: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("clocks-collection-remove-alarm");
+    pub const CLOCKS_COLLECTION_REMOVE_TIMER: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("clocks-collection-remove-timer");
+    pub const CLOCKS_COLLECTION_REMOVE_WORLD_CLOCK: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("clocks-collection-remove-world-clock");
+    pub const CLOCKS_COLLECTION_RESET_STOPWATCH: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("clocks-collection-reset-stopwatch");
+    pub const CLOCKS_COLLECTION_RESUME_TIMER: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("clocks-collection-resume-timer");
+    pub const CLOCKS_COLLECTION_SET_ALARM_ENABLED: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("clocks-collection-set-alarm-enabled");
+    pub const CLOCKS_COLLECTION_START_STOPWATCH: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("clocks-collection-start-stopwatch");
     pub const CLOCKS_CUSTOM_TIMER: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("clocks-custom-timer");
     pub const CLOCKS_DISMISS: ui::i18n::LabelKey = ui::i18n::LabelKey::new("clocks-dismiss");
@@ -51,6 +82,18 @@ pub mod keys {
         ui::i18n::LabelKey::new("clocks-duration-positive");
     pub const CLOCKS_EDIT: ui::i18n::LabelKey = ui::i18n::LabelKey::new("clocks-edit");
     pub const CLOCKS_EDIT_ALARM: ui::i18n::LabelKey = ui::i18n::LabelKey::new("clocks-edit-alarm");
+    pub const CLOCKS_EFFECTS_DISMISS_NOTICE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("clocks-effects-dismiss-notice");
+    pub const CLOCKS_EFFECTS_FLOAT_STOPWATCH: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("clocks-effects-float-stopwatch");
+    pub const CLOCKS_EFFECTS_FLOAT_TIMER: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("clocks-effects-float-timer");
+    pub const CLOCKS_EFFECTS_OPEN_ALARM: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("clocks-effects-open-alarm");
+    pub const CLOCKS_EFFECTS_SHOW: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("clocks-effects-show");
+    pub const CLOCKS_EFFECTS_SNOOZE_ALARM: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("clocks-effects-snooze-alarm");
     pub const CLOCKS_FIELD_HOURS: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("clocks-field-hours");
     pub const CLOCKS_FIELD_MINUTES: ui::i18n::LabelKey =
@@ -82,6 +125,9 @@ pub mod keys {
     pub const CLOCKS_NOTIFY_TIMER: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("clocks-notify-timer");
     pub const CLOCKS_ON: ui::i18n::LabelKey = ui::i18n::LabelKey::new("clocks-on");
+    pub const CLOCKS_ON_DEVICES: ui::i18n::LabelKey = ui::i18n::LabelKey::new("clocks-on-devices");
+    pub const CLOCKS_ON_DEVICES_KEEP: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("clocks-on-devices-keep");
     pub const CLOCKS_ONCE: ui::i18n::LabelKey = ui::i18n::LabelKey::new("clocks-once");
     pub const CLOCKS_ONE_HOUR: ui::i18n::LabelKey = ui::i18n::LabelKey::new("clocks-one-hour");
     pub const CLOCKS_PAUSE: ui::i18n::LabelKey = ui::i18n::LabelKey::new("clocks-pause");
