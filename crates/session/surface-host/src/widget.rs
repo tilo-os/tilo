@@ -121,9 +121,9 @@ pub struct WidgetHost {
     provided: Vec<Option<ui::peniko::ImageData>>,
     /// What the next frame is for, if the tree owes one.
     owed: Owed,
-    /// Moves with every frame the tree drew: what it publishes changes only
-    /// with what it shows, so a reader of its resources reads them again
-    /// only when this moved.
+    /// Moves with every frame the tree drew and every action run on it: what
+    /// it publishes changes only with those, so a reader of its resources
+    /// reads them again only when this moved.
     revision: u64,
     /// The wells the tree's places report to as it lays them out: shared
     /// with the window policy placing the windows they stand for
@@ -499,6 +499,7 @@ impl crate::Published for WidgetHost {
         let started = self
             .host
             .invoke_published(&address.resource, &address.action, arguments);
+        self.revision = self.revision.wrapping_add(1);
         self.owe();
         started
     }
@@ -513,6 +514,7 @@ impl crate::Published for WidgetHost {
 
     fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
         let acted = self.host.perform_a11y_action(target, action).is_ok();
+        self.revision = self.revision.wrapping_add(1);
         self.owe();
         acted
     }

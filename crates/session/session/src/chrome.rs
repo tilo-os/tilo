@@ -354,13 +354,11 @@ fn key(app: &str, summary: &Summary) -> String {
 
 /// What the bar reads of the session besides the desk's tree: the
 /// notifications' state, the machine's own status, the apps' live activities,
-/// the running applications' tray items, and where the session's own
-/// notices go.
+/// and the running applications' tray items.
 pub(crate) struct BarFeeds {
     pub(crate) signals: Rc<NoticeSignals>,
     pub(crate) readings: crate::status::Shared,
     pub(crate) activities: Rc<Activities>,
-    pub(crate) notices: Rc<dyn Told>,
     /// The applications' tray items, when their watcher serves.
     pub(crate) tray: Option<Arc<tilo_tray_host::Tray>>,
     /// The monitors of the displays a fullscreen window owns, as the loop found them this pass.
@@ -421,8 +419,6 @@ pub(crate) struct SessionChrome {
     readings: crate::status::Shared,
     /// The apps' live activities, which the bar's pill names and the floating layer shows as cards.
     activities: Rc<Activities>,
-    /// The person's notices, where a due timer is announced.
-    notices: Rc<dyn Told>,
     /// The running applications' status-notifier items, as their host keeps them.
     tray: Option<Arc<tilo_tray_host::Tray>>,
     /// The monitors of the displays a fullscreen window owns, which the loop takes from the
@@ -456,7 +452,6 @@ impl SessionChrome {
             signals,
             readings,
             activities,
-            notices,
             tray,
             fullscreen,
             shares,
@@ -474,7 +469,6 @@ impl SessionChrome {
             notes,
             readings,
             activities,
-            notices,
             tray,
             fullscreen,
             shares,
@@ -591,8 +585,6 @@ impl ChromeSource for SessionChrome {
     }
 
     fn fill(&self, snapshot: &mut DesktopChromeSnapshot) {
-        // A due event is announced once, here, where the bar reads it.
-        self.activities.announce(&*self.notices);
         snapshot.status = self.readings.borrow().status();
         snapshot.activities = self.activities.pill();
         snapshot.notifications_only = self.notifications_only;

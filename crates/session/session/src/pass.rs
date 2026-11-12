@@ -154,6 +154,8 @@ impl Session {
         self.follow_update();
         // What the services published this pass is what every surface of the machine shows.
         self.shared.follow_status();
+        // A due event the apps published is announced once, on the pass it arrived in.
+        self.shared.activities.announce(&*self.shared.telling());
         self.follow_readout();
         self.shared.show_answered_readouts();
         // The surface apps are answered after the services took in what their devices did, so a

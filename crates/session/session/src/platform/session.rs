@@ -750,7 +750,6 @@ impl Session {
                     signals: Rc::clone(&notice_signals),
                     readings: Rc::clone(&readings),
                     activities: Rc::clone(&activities),
-                    notices: crate::notifications::RoleNotices::of(&notifications),
                     tray: tray.clone(),
                     fullscreen: Rc::clone(&fullscreen),
                     shares: Rc::clone(&window_shares),
@@ -1467,7 +1466,7 @@ impl Session {
             lock_layouts: options.config.keyboard_layouts.clone(),
             lock_layout: Cell::new(0),
             session_actions: options.session_actions,
-            observed: RefCell::new(None),
+            observed: RefCell::default(),
             here_at: Cell::new(0),
             here_seen: Cell::new(0),
             places_seen: RefCell::default(),
@@ -2454,7 +2453,9 @@ impl Session {
         // reads a place. They are read again only once the door moved, and what is offered then
         // is compared with what was offered before, so the broker is told only when the rows
         // themselves moved.
-        if !actions.door_moved(self.shared.doors.revision()) {
+        // A held pointer drags or resizes a window: every frame of it moves the desk, never what
+        // the steps offer, so the rows are read once the person lets go.
+        if self.shared.underway.get().gesture || !actions.door_moved(self.shared.doors.revision()) {
             return;
         }
         let rows = tilo_actions::door::survey_placed(&self.shared.doors.resources());

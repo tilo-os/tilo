@@ -17,8 +17,10 @@ use tilo_desktop::overlays::Overlays;
 use tilo_desktop_surface::DesktopHandle;
 
 /// Where each published part stood when search last read it: the part's
-/// index and its revision and head.
-pub(crate) type Observed = RefCell<Option<Vec<(usize, (u64, u64))>>>;
+/// place in the door and its revision ([`Doors::revision`]).
+///
+/// [`Doors::revision`]: tilo_session_core::door::Doors::revision
+pub(crate) type Observed = RefCell<Vec<(usize, u64)>>;
 
 #[cfg_attr(
     target_arch = "wasm32",
