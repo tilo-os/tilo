@@ -19,9 +19,11 @@ Two windows to type into:
 
 - **an installed app** (`--app so.tilo.notes`, or a tilolang app's id): opened
   through the desktop's own launcher, as a person opens it. Its own editor
-  answers each key with a commit, which is what a person feels. The run clicks
-  into the window first (`--click-at`) so the editor has the caret, and refuses
-  to type when a key changes nothing the app draws.
+  answers each key with a commit, which is what a person feels. The run opens
+  something to type into first (`--open`, an action of the app such as Notes'
+  "New note": a fresh Notes shows no editor), clicks into the window
+  (`--click-at`) so the editor has the caret, and refuses to type when a key
+  changes nothing the app draws.
 - **the synthetic client** (the default): `crates/session/session/examples/
   latency_client.rs`, a window that answers every key with exactly one commit
   and draws nothing else, so the compositor's share of the latency stands alone.
@@ -40,8 +42,10 @@ a private runtime directory. Nothing here touches the desktop this runs from.
     scripts/perf/headless_key_latency.py --label client --client-bin target/release/examples/latency_client
 
     # a native app and a tilolang app, through the desktop
-    scripts/perf/headless_key_latency.py --label native-notes --app so.tilo.notes
-    scripts/perf/headless_key_latency.py --label tilolang-notes --app so.tilo.lang.notes
+    scripts/perf/headless_key_latency.py --label native-notes --app so.tilo.notes \
+        --open "New note" --open-args '{"title": "Latency"}' --click-at 0.5,0.17
+    scripts/perf/headless_key_latency.py --label tilolang-notes --app so.tilo.lang.notes \
+        --tapp notes.tapp --open "New note" --click-at 0.5,0.17
 
     scripts/perf/headless_key_latency.py --compare target/key-latency/*.json
 """
@@ -198,6 +202,19 @@ def placed_window(session, app: str, timeout: float) -> dict:
     raise RuntimeError(f"{app} showed no window to type into")
 
 
+def open_something(session, app: str, title: str, arguments: dict) -> None:
+    """Invoke `app`'s own action named `title`, as a person picks it, so the window shows what
+    keys change."""
+    found = [action for action in session.actions(app)
+             if action.get("provider") != "applications" and action.get("title") == title]
+    if not found:
+        sys.exit(f"[key-latency] {app} offers no action {title!r} to --open")
+    receipt = session.invoke(found[0]["provider"], found[0]["id"], arguments or None)
+    update = receipt.get("receipt", {}).get("update", {})
+    if update.get("state") != "succeeded":
+        sys.exit(f"[key-latency] {app}'s {title!r} did not succeed: {update}")
+
+
 def app_frames(session, app: str) -> int:
     """How many frames the app's window has committed: a rise is a key it answered."""
     return max((int(row.get("frames") or 0) for row in session.windows()
@@ -248,6 +265,9 @@ def measure(args: argparse.Namespace) -> dict:
             print(f"[key-latency] {args.app} window {window.get('title')!r}", flush=True)
             # The window has the keyboard, but its editor has to have the caret before a key
             # changes anything it draws: a click where the person types puts it there.
+            if args.open:
+                open_something(session, args.app, args.open, json.loads(args.open_args))
+                time.sleep(1.0)
             across, down = (float(part) for part in args.click_at.split(","))
             placed = placed_window(session, args.app, args.app_timeout)
             left, top, width, height = (int(value) for value in placed["rect"])
@@ -257,9 +277,10 @@ def measure(args: argparse.Namespace) -> dict:
             session.key("a")
             time.sleep(0.5)
             if app_frames(session, args.app) <= frames_before:
-                sys.exit(f"[key-latency] a key changed nothing {args.app} drew: its editor has "
-                         f"no caret at --click-at {args.click_at}; name another point of the "
-                         "window, as fractions of its width and height")
+                sys.exit(f"[key-latency] a key changed nothing {args.app} drew: nothing it shows "
+                         f"takes text at --click-at {args.click_at}; --open an action that shows "
+                         "an editor, or name another point of the window, as fractions of its "
+                         "width and height")
         else:
             client = start_client(args, session, os.environ)
             ready = wait_line(client, args.app_timeout)
@@ -349,6 +370,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--settle", type=float, default=2.0)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--app-timeout", type=float, default=120.0)
+    parser.add_argument("--open", metavar="TITLE",
+                        help="an action of --app invoked before typing, so the window shows "
+                             "something to type into (Notes: \"New note\")")
+    parser.add_argument("--open-args", default="{}", metavar="JSON",
+                        help="the arguments --open's action takes, as a JSON object")
     parser.add_argument("--click-at", default="0.5,0.5", metavar="ACROSS,DOWN",
                         help="where in the app's window to click before typing, as fractions of "
                              "its width and height, so the editor has the caret (default 0.5,0.5)")
