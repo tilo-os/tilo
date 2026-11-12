@@ -43,12 +43,7 @@ pub const BOTH: Directions = Directions {
 /// relay is one on this machine's loopback, so nothing here reaches the
 /// internet.
 pub async fn endpoint(key: &SigningKey) -> iroh::Endpoint {
-    iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .relay_mode(iroh::RelayMode::Custom(test_relay::loopback().relays))
-        .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
-        .bind()
-        .await
-        .unwrap()
+    test_relay::endpoint(iroh::SecretKey::from_bytes(&key.to_bytes())).await
 }
 
 /// An endpoint whose key is the device's own, dialling as whoever was handed

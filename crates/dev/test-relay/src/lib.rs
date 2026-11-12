@@ -11,6 +11,11 @@
 //!
 //! A host runs on its own thread with its own runtime, so a test may start one from inside a
 //! runtime or beside one, and the relay's work keeps running beside the test's.
+//!
+//! Beside its packet relay, a relay out on the internet answers QUIC address discovery, which is
+//! how an endpoint learns where a relay sees it from and takes that relay as home. This crate
+//! serves that on this machine too, so a test's endpoints pick their relay at once instead of
+//! waiting out a probe that nothing answers.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -20,9 +25,9 @@
     reason = "test support: a fixture that cannot start is the test's failure, and the host's relay is kept alive until the test ends"
 )]
 
-use std::sync::OnceLock;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc;
+use std::sync::{Arc, OnceLock, mpsc};
 
 use ed25519_dalek::SigningKey;
 use tilo_endpoint_reachability::EndpointRelays;
@@ -311,11 +316,68 @@ pub fn relay_through_loopback_in(config_home: &std::path::Path) {
     drop(store);
 }
 
+/// The trust this crate's endpoints bind with: the system's, and the certificate the address
+/// discovery service on this machine presents.
+fn discovery_trust() -> iroh::tls::CaTlsConfig {
+    static DISCOVERY: OnceLock<iroh::tls::CaTlsConfig> = OnceLock::new();
+    DISCOVERY.get_or_init(serve_discovery).clone()
+}
+
+/// Serve QUIC address discovery on this machine's loopback, on the port iroh's endpoints ask every
+/// relay for it, and answer what a device of this machine trusts to reach it.
+///
+/// An endpoint asks each relay where that relay sees it from, and takes the relay that answers as
+/// its home — the relay its address then names. A relay that answers nothing leaves the endpoint
+/// waiting out the probe (three seconds) before it settles on any relay, and a host's own address,
+/// which it signs only once it is reached through one, waits with it.
+///
+/// One service answers a machine: a port another process already answers is left to it, since what
+/// a service answers is where it sees the endpoint from, whoever started it.
+fn serve_discovery() -> iroh::tls::CaTlsConfig {
+    let (certificates, server_config) =
+        iroh_relay::server::testing::self_signed_tls_certs_and_config();
+    let mut quic = iroh_relay::server::QuicConfig::new(SocketAddr::from((
+        Ipv4Addr::LOCALHOST,
+        iroh_relay::defaults::DEFAULT_RELAY_QUIC_PORT,
+    )));
+    quic.server_config = Some(server_config);
+    let mut config = iroh_relay::server::ServerConfig::default();
+    config.quic = Some(quic);
+
+    let (ready, started) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("test relay: address discovery".to_owned())
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .expect("the discovery service's runtime");
+            runtime.block_on(async move {
+                let Ok(serving) = iroh_relay::server::Server::spawn(config).await else {
+                    ready.send(false).expect("the service is awaited");
+                    return;
+                };
+                ready.send(true).expect("the service is awaited");
+                // The service is this machine's until the process ends: dropping it closes it.
+                let _serving = serving;
+                std::future::pending::<()>().await;
+            });
+        })
+        .expect("the discovery service's thread starts");
+    // The service listens before any endpoint asks it anything.
+    started.recv().expect("the service is awaited");
+    iroh::tls::CaTlsConfig::custom_server_cert_verifier(Arc::new(move |_provider| {
+        tilo_net::server_verifier_also_trusting(certificates.clone()).map_err(std::io::Error::other)
+    }))
+}
+
 /// An endpoint of `key`'s relaying through this machine's loopback relay: a device that dials, or
 /// is dialled, as a device outside a test dials through its person's relays.
 pub async fn endpoint(key: iroh::SecretKey) -> iroh::Endpoint {
     iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .relay_mode(relay_mode())
+        .ca_tls_config(discovery_trust())
         .secret_key(key)
         .bind()
         .await
@@ -397,7 +459,9 @@ impl Host {
 
 #[cfg(test)]
 mod tests {
-    use super::{loopback_url, relay_through_loopback_in};
+    use std::time::Duration;
+
+    use super::{endpoint, endpoint_key, loopback_url, relay_through_loopback_in};
 
     /// A profile seeded with this machine's relay reads it back as its device's relays: what a
     /// session started on that profile binds with.
@@ -411,5 +475,19 @@ mod tests {
             settings_store::relay::RELAY.get_in(store.as_ref()),
             settings_store::relay::Relays::Own(loopback_url())
         );
+    }
+
+    /// An endpoint picks this machine's relay as its home at once, because the address discovery
+    /// service answers where the relay sees it from: without one it waits out the probe first.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_endpoint_picks_this_machines_relay_at_once() {
+        let endpoint = endpoint(endpoint_key(9)).await;
+        let addr = tilo_endpoint_reachability::relay_addr(&endpoint, Duration::from_secs(1)).await;
+        assert_eq!(
+            addr.relay_urls().next().map(ToString::to_string),
+            Some(loopback_url()),
+            "the endpoint names this machine's relay as its home"
+        );
+        endpoint.close().await;
     }
 }
