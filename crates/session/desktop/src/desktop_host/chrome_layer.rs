@@ -705,9 +705,7 @@ impl DesktopChrome {
                 }
                 self.switcher.set_hover(card);
                 if let Some(at) = card {
-                    self.asks
-                        .borrow_mut()
-                        .push(DesktopAsk::Switcher(SwitcherAsk::Hover(at)));
+                    self.ask(DesktopAsk::Switcher(SwitcherAsk::Hover(at)));
                 }
             }
             WindowEvent::MouseInput {
@@ -725,7 +723,7 @@ impl DesktopChrome {
                     None => Some(SwitcherAsk::Dismiss),
                 };
                 if let Some(ask) = ask {
-                    self.asks.borrow_mut().push(DesktopAsk::Switcher(ask));
+                    self.ask(DesktopAsk::Switcher(ask));
                 }
             }
             _ => {}
@@ -767,6 +765,13 @@ impl DesktopChrome {
     /// What the person asked of the host since the last call.
     pub fn take_asks(&mut self) -> Vec<DesktopAsk> {
         std::mem::take(&mut *self.asks.borrow_mut())
+    }
+
+    /// Queue `ask` for the host, and ask it for the pass that answers it
+    /// ([`super::ask`]): the bar's choices are carried out on the host's next pass, not whenever it
+    /// happens to draw next.
+    fn ask(&self, asked: DesktopAsk) {
+        super::ask(&self.handle, &self.asks, asked);
     }
 
     /// Put the chrome's asks in `asks` , shared with a host that reads them outside the widget tree
@@ -927,7 +932,7 @@ impl DesktopChrome {
             ChromeIntent::PutOffAvatarAsk => {
                 self.handle.put_off_personal_ask();
             }
-            other => self.asks.borrow_mut().push(DesktopAsk::Intent(other)),
+            other => self.ask(DesktopAsk::Intent(other)),
         }
     }
 
@@ -1016,7 +1021,7 @@ impl DesktopChrome {
     fn apply_workspace_choice(&mut self, choice: WorkspaceMenuChoice) {
         match choice {
             WorkspaceMenuChoice::Action(id) => {
-                self.asks.borrow_mut().push(DesktopAsk::HostAction(id));
+                self.ask(DesktopAsk::HostAction(id));
             }
             WorkspaceMenuChoice::Overview => {
                 if !self.overview.is_open() {
@@ -1167,25 +1172,19 @@ impl DesktopChrome {
                 None
             }
             OverviewPick::RevokeGrant(grant) => {
-                self.asks
-                    .borrow_mut()
-                    .push(DesktopAsk::RevokeAgentGrant(grant.clone()));
+                self.ask(DesktopAsk::RevokeAgentGrant(grant.clone()));
                 None
             }
             OverviewPick::OpenAgent(client) => {
-                self.asks
-                    .borrow_mut()
-                    .push(DesktopAsk::OpenAgent(client.clone()));
+                self.ask(DesktopAsk::OpenAgent(client.clone()));
                 None
             }
             OverviewPick::AccountSettings => {
-                self.asks.borrow_mut().push(DesktopAsk::AccountSettings);
+                self.ask(DesktopAsk::AccountSettings);
                 None
             }
             OverviewPick::HostAction(id) => {
-                self.asks
-                    .borrow_mut()
-                    .push(DesktopAsk::HostAction(id.clone()));
+                self.ask(DesktopAsk::HostAction(id.clone()));
                 None
             }
             OverviewPick::AboutTilo => {
@@ -1263,7 +1262,7 @@ impl DesktopChrome {
             return Err(crate::i18n::t("desktop-only-workspace"));
         }
         let left = self.take_workspace_off(id)?;
-        self.asks.borrow_mut().push(DesktopAsk::LeftWorkspace(left));
+        self.ask(DesktopAsk::LeftWorkspace(left));
         Ok(())
     }
 
@@ -1295,9 +1294,7 @@ impl DesktopChrome {
         let (workspace, name) = named;
         if confirmed != Some(true) {
             // The person answers first: nothing of it goes until they do.
-            self.asks
-                .borrow_mut()
-                .push(DesktopAsk::DeleteWorkspace { slot: id, name });
+            self.ask(DesktopAsk::DeleteWorkspace { slot: id, name });
             return Ok(());
         }
         let name = self.take_workspace_off(Some(id))?;
@@ -1306,9 +1303,7 @@ impl DesktopChrome {
         }
         // Whoever asked for it — the menu, the settings, an agent — the host hears of the deletion
         // the same way, from the desk that made it.
-        self.asks
-            .borrow_mut()
-            .push(DesktopAsk::DeletedWorkspace { workspace, name });
+        self.ask(DesktopAsk::DeletedWorkspace { workspace, name });
         Ok(())
     }
 
@@ -1435,7 +1430,7 @@ impl DesktopChrome {
         let name = crate::workspace_names::made(Some(&name), &tree.workspaces);
         let workspace = WorkspaceId::new();
         let slot = WorkspaceSlot(self.handle.mint_id());
-        self.asks.borrow_mut().push(DesktopAsk::BranchWorkspace {
+        self.ask(DesktopAsk::BranchWorkspace {
             source,
             slot,
             workspace,
@@ -2115,9 +2110,7 @@ impl DesktopChrome {
                 Some(true)
             }
             ChromeEffect::JoinWorkspace => {
-                self.asks
-                    .borrow_mut()
-                    .push(DesktopAsk::HostAction(JOIN_WORKSPACE.to_owned()));
+                self.ask(DesktopAsk::HostAction(JOIN_WORKSPACE.to_owned()));
                 Some(true)
             }
             ChromeEffect::LeaveWorkspace { workspace } => {
@@ -2140,9 +2133,7 @@ impl DesktopChrome {
                 Some(true)
             }
             ChromeEffect::WorkspaceSettings => {
-                self.asks
-                    .borrow_mut()
-                    .push(DesktopAsk::HostAction(WORKSPACE_SETTINGS.to_owned()));
+                self.ask(DesktopAsk::HostAction(WORKSPACE_SETTINGS.to_owned()));
                 Some(true)
             }
             _ => None,
@@ -2216,7 +2207,7 @@ impl Widget for DesktopChrome {
         }
         changed |= self.tilo_menu.settle();
         if let Some(action) = self.tilo_menu.take_action() {
-            self.asks.borrow_mut().push(DesktopAsk::HostAction(action));
+            self.ask(DesktopAsk::HostAction(action));
             changed = true;
         }
         if let Some(choice) = self.workspace_menu.take_choice() {

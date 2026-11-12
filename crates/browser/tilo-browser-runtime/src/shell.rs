@@ -661,6 +661,7 @@ impl BrowserShell {
         let wake = Arc::clone(&sources.wake);
         let session = Arc::clone(&sources.session);
         let caller = sources.caller.clone();
+        handle.set_wake(desk_wake(&wake, &shared));
         let (chrome, intents) = page_chrome(&handle, &offers, &wake, sources);
         let source = Rc::new(HostChrome::new(Rc::clone(&chrome)));
         let tree = handle.read(Clone::clone);
@@ -1693,6 +1694,22 @@ impl BrowserShell {
             }
         }
     }
+}
+
+/// What the desk asks of the page when what it queued waits for the host's next pass — the card a
+/// person chose on the empty desk, the search its own "Open an app" opens, a command from an
+/// agent. The desk is host work the next frame takes, which is also the frame that presents what
+/// that pass did, so the wake marks the work and asks for the frame: a desk left to itself would
+/// carry the choice out whenever an unrelated frame came, seconds or a minute later.
+fn desk_wake(wake: &Arc<dyn Fn() + Send + Sync>, shared: &crate::desktop::Shared) -> Rc<dyn Fn()> {
+    let wake = Arc::clone(wake);
+    let shared = shared.clone();
+    Rc::new(move || {
+        shared
+            .woken
+            .store(true, std::sync::atomic::Ordering::Release);
+        wake();
+    })
 }
 
 /// The launchpad's words in the page: what Tilo is and that work is kept

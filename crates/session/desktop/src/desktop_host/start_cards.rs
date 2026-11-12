@@ -266,10 +266,11 @@ impl Widget for EmptyWorkspace {
     fn settle(&mut self, _edits: &mut ui::widget::Edits<'_>, _path: &ui::automerge::ObjId) {
         for pad in &self.pads {
             match pad.launchpad.take_press() {
-                Some(LaunchpadPress::Card(card)) => self
-                    .asks
-                    .borrow_mut()
-                    .push(DesktopAsk::HostAction(card.host_id())),
+                Some(LaunchpadPress::Card(card)) => super::ask(
+                    &self.handle,
+                    &self.asks,
+                    DesktopAsk::HostAction(card.host_id()),
+                ),
                 Some(LaunchpadPress::OpenApp) => {
                     self.handle.open_search(Scope::WindowGroup(None), None);
                 }

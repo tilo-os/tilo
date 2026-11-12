@@ -220,6 +220,10 @@ impl ApplicationHandler<u64> for Runner {
             if let Some(failure) = m.gpu.as_ref().and_then(Gpu::failure) {
                 m.frame_failed(id, failure);
             } else {
+                // What asked for this frame waits for the desk's next pass: the pump that takes it
+                // runs in the frame asked for here, so a redraw that found nothing else to do would
+                // leave it waiting for the next unrelated wake.
+                m.pending = true;
                 m.window.request_redraw();
             }
             Ok(())
@@ -326,6 +330,15 @@ impl ApplicationHandler<u64> for Runner {
                         event,
                         WindowEvent::KeyboardInput { .. } | WindowEvent::MouseInput { .. }
                     ) {
+                        // The desk took the input, and what it asked of the host for it — a card
+                        // chosen on the empty desk, a menu's row, a command — is carried out on its
+                        // next pass. That pass runs in the frame asked for here and only here: a
+                        // frame the desk's widgets asked for runs theirs, and one a press itself
+                        // asked for may find none, leaving the choice waiting for whatever frame
+                        // the page came to next.
+                        if let Some(desktop) = &m.desktop {
+                            desktop.shared.wake();
+                        }
                         m.present_after_input();
                     } else {
                         m.pending = true;
