@@ -273,6 +273,11 @@ export async function mountDesktop(target,options={}) {
   const writeClipboard=text=>globalThis.navigator?.clipboard?.writeText
     ?globalThis.navigator.clipboard.writeText(text)
     :Promise.reject(new Error('this page cannot reach the clipboard'));
+  // Why this page has no app files, once it is known it has none: the
+  // browser keeps none for it (a private window, or site data turned off).
+  // Every status says so, so a page reading the last one knows (the bar's
+  // line is `connection-status.mjs`'s).
+  let noFiles;
   const report=data=>{
     // A finished copy is the app's to show, in its own window; the page only speaks it.
     if(data.clipboard==='copied')status.show('Copied to system clipboard',{spoken:true,again:true});
@@ -280,7 +285,7 @@ export async function mountDesktop(target,options={}) {
     if(data.clipboard==='failed')status.show(data.clipboardError||'Could not copy. Try the keyboard Copy shortcut.',{again:true});
     if(data.desktopCommand){const row=data.desktopCommand;status.show(row.state==='succeeded'?'Desktop change saved':row.state==='submitting'||row.state==='accepted'?'Saving desktop change…':row.state==='failed'||row.state==='rejected'?`Desktop change refused: ${row.error??'unavailable'}`:`Desktop change awaiting confirmation: ${row.error??row.state}`);}
     if(data.desktopErrors?.length)status.show(`Desktop request unavailable: ${data.desktopErrors.at(-1)}`);
-    options.onStatus?.(data);
+    options.onStatus?.(noFiles?{files:'unavailable',filesError:noFiles,...data}:data);
   };
   const navigationFocus={errors(){},update(){},close(){}};
   const presentationWaiters=new Set();
@@ -593,8 +598,13 @@ export async function mountDesktop(target,options={}) {
     mark('storage');
     if(closed||!registry.current(token)){await acquired.release();throw Error("mount disposed");}
     storage=acquired;
-    // Apps' own files (OPFS) are mirrored before any app reads them.
-    const [assets,entries]=await Promise.all([startupFonts,storage.hydrate(),runtime.mirror_files(config.profile)]);
+    // Apps' own files (OPFS) are mirrored before any app reads them. A
+    // browser that keeps none for this page (a private window, or site data
+    // turned off) refuses the whole tree rather than one file: the page goes
+    // on, its records are elsewhere, and it tells the person that files of
+    // their own cannot be kept here instead of failing to start.
+    const [assets,entries,files]=await Promise.all([startupFonts,storage.hydrate(),runtime.mirror_files(config.profile)]);
+    if(files){noFiles=files;console.warn('no app files on this page:',files);}
     mark('assets');
     if(!registry.current(token))throw Error('mount disposed');
     // WebKit's GPU process holds the page's load-time surfaces for a moment;

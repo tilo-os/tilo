@@ -35,7 +35,7 @@ const tick=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
 // What the desk answers to `desktop_input_ownership`: the semantics tree's keyboard owner path, who
 // that is, and the field an input method is helping.
 const holding=(holder,{purpose='Text',ime=true,field='field'}={})=>({owner:`/${holder}/${field}[0]`,holder,ime:ime?{x:0,y:0,width:2,height:20,purpose}:null});
-async function fixture({standalone=false,models,providerManagement,app}={}){
+async function fixture({standalone=false,models,providerManagement,app,files}={}){
  const document=new Node('document');document.body=new Node('body');document.append(document.body);document.activeElement=document.body;document.createElement=tag=>new Node(tag);globalThis.document=document;
  Object.defineProperty(globalThis,'navigator',{configurable:true,value:{gpu:{},platform:'Mac'}});
  globalThis.KeyboardEvent=DomEvent;globalThis.FocusEvent=DomEvent;globalThis.WheelEvent=class extends DomEvent{constructor(type,init){super(type,{deltaX:0,deltaY:0,deltaMode:0,...init});}};globalThis.PointerEvent=class extends DomEvent{constructor(type,init){super(type,{clientX:0,clientY:0,pointerId:1,pointerType:'mouse',buttons:0,...init});}};globalThis.fetch=async url=>{
@@ -44,7 +44,7 @@ async function fixture({standalone=false,models,providerManagement,app}={}){
  };
  let allocated=false,ownershipReads=0;let state=holding('writer');const delivered=[],windowFocus=[];let update;
  // Winit's web backend reports the canvas's own focus and blur as the window's.
- const runtime=runtimeFake({provide_startup_font(){},mount(canvas,_config,_entries,callback){this.config=JSON.parse(_config);update=callback;for(const type of ['focus','blur'])canvas.addEventListener(type,()=>windowFocus.push(type));setTimeout(()=>{allocated=true;callback(JSON.stringify({phase:'gpu-pending'}));queueMicrotask(()=>callback(JSON.stringify({phase:'presented',frames:1})));},0);return 1;},close:()=>[],refresh_storage_lease(){},load_storage(){},mirror_files:async()=>{},load_application:async()=>true,flush_files:async()=>{},storage_write_hook(){},provide_settings:()=>false,drain_storage:()=>[],retry_storage:()=>0,acknowledge_storage(){},pending_writes:()=>[],asset_requests:()=> '[]',modifiers(){},ime:(...args)=>delivered.push(args.slice(1)),clipboard_event:(_id,kind)=>{delivered.push([kind]);return true;},
+ const runtime=runtimeFake({provide_startup_font(){},mount(canvas,_config,_entries,callback){this.config=JSON.parse(_config);update=callback;for(const type of ['focus','blur'])canvas.addEventListener(type,()=>windowFocus.push(type));setTimeout(()=>{allocated=true;callback(JSON.stringify({phase:'gpu-pending'}));queueMicrotask(()=>callback(JSON.stringify({phase:'presented',frames:1})));},0);return 1;},close:()=>[],refresh_storage_lease(){},load_storage(){},mirror_files:async()=>files,load_application:async()=>true,flush_files:async()=>{},storage_write_hook(){},provide_settings:()=>false,drain_storage:()=>[],retry_storage:()=>0,acknowledge_storage(){},pending_writes:()=>[],asset_requests:()=> '[]',modifiers(){},ime:(...args)=>delivered.push(args.slice(1)),clipboard_event:(_id,kind)=>{delivered.push([kind]);return true;},
 
   // The desk's live answer: who holds the keyboard, and the field an input method is helping.
   desktop_input_ownership:()=>{ownershipReads++;if(!allocated)throw Error('Desktop closed');return standalone?undefined:JSON.stringify(state);},
@@ -59,10 +59,10 @@ async function fixture({standalone=false,models,providerManagement,app}={}){
   .replace("import {acquireStorage} from './storage.mjs';","const acquireStorage=async()=>globalThis.__hostFixture.storage;")
   .replace(/from '(\.\/[^']+)'/g,(_all,path)=>`from '${new URL(path,import.meta.url).href}'`);
  const {mountDesktop}=await import(`data:text/javascript;base64,${Buffer.from(`${source}\n// ${Math.random()}`).toString('base64')}`);
- const target=new Node('div');document.body.append(target);const host=await mountDesktop(target,{app:app??(standalone?'writer':'desktop'),models,providerManagement});await tick();
+ const target=new Node('div');document.body.append(target);const statuses=[];const host=await mountDesktop(target,{app:app??(standalone?'writer':'desktop'),models,providerManagement,onStatus:status=>statuses.push(status)});await tick();
  // A status's `ime` is the presented frame's field, which the desk's own answer reports from then on.
  const updateStatus=status=>{if('ime' in status)state={...state,ime:status.ime??null};return update(JSON.stringify(status));};
- return {host,runtime,document,delivered,windowFocus,disposeRuntime(){allocated=false;},get state(){return state;},set state(value){state=value;},get ownershipReads(){return ownershipReads;},update:updateStatus};
+ return {host,runtime,document,delivered,windowFocus,statuses,disposeRuntime(){allocated=false;},get state(){return state;},set state(value){state=value;},get ownershipReads(){return ownershipReads;},update:updateStatus};
 }
 test('model bootstrap stays mount scoped and forwards only its transport binding',async()=>{
  const models={endpoint:'https://models.example.test',sessionToken:'mount-one',profileId:'profile-one',modelId:'model-one',extra:'not a transport field'};
@@ -75,6 +75,23 @@ test('model bootstrap stays mount scoped and forwards only its transport binding
  const unbound=await fixture();
  assert.equal(unbound.runtime.config.models,undefined);
  await unbound.host.cleanup();
+});
+test('a browser that keeps no app files still mounts, and the page is told why',async()=>{
+ // A private window, or one whose site data is off, refuses the whole file
+ // tree: the desktop must draw there anyway, and say what its apps cannot do.
+ const cause='This browser keeps no files for this page: a private window, or site data turned off.';
+ const without=await fixture({files:cause});
+ assert.ok(without.runtime.config,'the desktop mounted without app files');
+ without.update({phase:'presented',frames:1});await tick();
+ const presented=without.statuses.at(-1);
+ assert.equal(presented.phase,'presented');
+ assert.equal(presented.files,'unavailable');
+ assert.equal(presented.filesError,cause,'the bar keeps the cause for the console');
+ await without.host.cleanup();
+ const kept=await fixture();
+ kept.update({phase:'presented',frames:1});await tick();
+ assert.equal('files' in kept.statuses.at(-1),false,'a page that keeps files says nothing about them');
+ await kept.host.cleanup();
 });
 
 test('administration bootstrap is explicit, mount-local and separate from inference',async()=>{

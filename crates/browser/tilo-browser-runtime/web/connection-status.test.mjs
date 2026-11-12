@@ -52,6 +52,15 @@ test('a desktop that stopped drawing is said in the person’s words, with its c
   assert.match(reading.detail, /device lost/);
 });
 
+test('a page whose browser keeps no files says so once, though its desktop drew', () => {
+  const reading = connectionStatus({...well, desktop: {phase: 'presented', files: 'unavailable', filesError: 'This browser keeps no files for this page: a private window, or site data turned off.'}});
+  assert.equal(reading.state, 'files');
+  assert.equal(reading.sentence, 'This window keeps no files, so apps here can’t store files of their own. Open Tilo in a normal window to work with them.');
+  assert.match(reading.detail, /a private window/);
+  // The store's own trouble is worse: it is the page's records, not its files.
+  assert.equal(connectionStatus({...well, saved: false, desktop: {phase: 'presented', files: 'unavailable'}}).state, 'saving');
+});
+
 test('nothing is said before the desktop drew, or before a peer session is ready', () => {
   assert.equal(connectionStatus({...well, desktop: null}).state, 'connecting');
   assert.equal(connectionStatus({...well, mounted: false}).state, 'connecting');
