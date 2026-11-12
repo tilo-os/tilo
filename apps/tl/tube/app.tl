@@ -495,7 +495,7 @@ view video_grid(videos: List<Video>, empty: Text) {
 
 /// How long the video runs, as a card says it.
 fn item_clock(v: Video) -> Text {
-    if v.live { say("Live") } else { clock(v.duration) }
+    if v.live { std.say("Live") } else { clock(v.duration) }
 }
 
 /// What the last search found: the channels, the playlists, then the videos. The field at the

@@ -60,6 +60,12 @@ impl Checker<'_> {
                             }
                         };
                     }
+                    // `std.say("Morning: {n} done")`: words the code writes for a person, which
+                    // is the library's word and not a bare name, since a package's own `say`
+                    // action takes that one (words.rs, i18n.md §2).
+                    if name.name == "say" {
+                        return self.builtin_say(args, span);
+                    }
                 }
                 // `random.int(lo, hi)`: a draw, which the invocation records (effects.md).
                 if matches!(&base.kind, ExprKind::Ident(ns) if ns == RANDOM)
@@ -216,7 +222,6 @@ impl Checker<'_> {
             "meta" => return self.builtin_meta(args, span),
             "cases" => return self.builtin_cases(args, span),
             "phrase" => return self.builtin_phrase(args, span),
-            "say" => return self.builtin_say(args, span),
             "preview_rows" => return self.builtin_preview_rows(args, span),
             "entry_parts" => return self.builtin_entry_parts(args, span),
             "invoke" => return self.builtin_invoke(args, span),
@@ -226,6 +231,16 @@ impl Checker<'_> {
         }
         if prims::prim(name).is_some() {
             self.err("E061", name_span, format!("`{name}` is a UI primitive; it builds UI and can only be written as a statement of a view"));
+            return Ex::error();
+        }
+        // A bare `say` is a name a package may take for its own action, so the words marker
+        // is the library's (`std.say`). Reaching here means the package declares neither.
+        if name == "say" {
+            self.err(
+                "E014",
+                name_span,
+                "the words marker is `std.say(\"Morning: 3 done\")`, in the library's namespace, since a bare `say` is a name a package can take for an action of its own",
+            );
             return Ex::error();
         }
         let mut names: Vec<&str> = env

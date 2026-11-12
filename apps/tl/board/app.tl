@@ -39,7 +39,7 @@ migration action place_cards(b: Board) {
 
 /// Adds a column at the right of the board.
 primary action new_column(b: Board) -> Column (icon: .plus, label: "New column") {
-    b.columns.insert(Column(title: say("Untitled")))
+    b.columns.insert(Column(title: std.say("Untitled")))
 }
 
 /// Adds a card at the foot of a column, under the title typed in the entry that adds there: a

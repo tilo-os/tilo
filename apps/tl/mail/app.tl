@@ -460,7 +460,7 @@ destructive action delete_label(m: Mail, l: Label) (icon: .trash) {
 action cancel_later(d: Draft) (icon: .undo_2, label: "Cancel scheduled send") {
     require d.sent and not d.recalled "It is not waiting to go"
     require delivery(d)?.state != "sent" "It went already"
-    withdraw(d, say("Scheduled send cancelled"))
+    withdraw(d, std.say("Scheduled send cancelled"))
     d.sent = false
     d.recalled = true
 }
@@ -563,7 +563,7 @@ primary action send(d: Draft) uses time proposal compose(d) (icon: .send) {
 action undo_send(d: Draft) (icon: .undo_2, label: "Undo send") {
     require d.sent and not d.recalled "It has not been sent"
     require delivery(d)?.state != "sent" "It went already"
-    withdraw(d, say("Taken back before it went"))
+    withdraw(d, std.say("Taken back before it went"))
     d.sent = false
     d.recalled = true
 }
@@ -611,11 +611,11 @@ fn label_query(name: Text) -> Text {
 fn place_title(m: Mail, query: Text) -> Text {
     // No query is the window on every conversation: the place the sidebar calls All mail.
     if query.is_empty() {
-        say("All mail")
+        std.say("All mail")
     } else {
         filters(Thread).find(f -> f.query == query)?.label
             ?? m.labels.find(l -> label_query(l.name) == query)?.name
-            ?? say("All mail")
+            ?? std.say("All mail")
     }
 }
 
@@ -848,21 +848,23 @@ view draft_row(d: Draft) {
 /// why, taken back, or not known.
 fn delivery_says(d: Draft) -> Text {
     if d.recalled {
-        say("Taken back, and a draft again")
+        std.say("Taken back, and a draft again")
     } else if let s = delivery(d) {
         if s.state == "sent" {
-            say("Sent")
+            std.say("Sent")
         } else if s.state == "sending" {
-            say("Sending")
+            std.say("Sending")
         } else if s.state == "rejected" {
-            say("Not sent: {s.reason}")
+            std.say("Not sent: {s.reason}")
         } else if s.state == "unknown" {
-            say("Not known whether it was sent")
+            std.say("Not known whether it was sent")
         } else if s.state == "held" {
-            say("Sending in a moment")
+            std.say("Sending in a moment")
         } else if s.reason == "" {
-            say("Waiting to send")
-        } else { say("Waiting to go online: {s.reason}") }
+            std.say("Waiting to send")
+        } else {
+            std.say("Waiting to go online: {s.reason}")
+        }
     } else { "" }
 }
 

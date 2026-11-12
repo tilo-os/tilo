@@ -96,6 +96,13 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   Metadata writes such a record with its app id (`so.tilo.notes.File`), since the bare name reads
   back as the language's. Declaring a name that writes a type (`List`, `Option`, `Result`, …) is
   refused at the declaration: `List<T>` is the grammar's, not a name.
+- **The words marker is `std.say`, not a bare name.** `std.say("Morning: {n} done")` marks a
+  literal as words a person reads, so the compiler writes it into the package's catalogue. It is
+  the library's name (`stdlib::NS`) like `std.RichText` and `std.Identifier`, because a bare `say`
+  is a verb an app takes for an action of its own: a chat app's `action say(t: Talk, s: Text)`
+  posts a line. No built-in name may take a word an app naturally declares (a language that takes
+  it makes the app's own action a compile error); the bare name stays the package's, and the
+  marker is a call of the library's, so the call site is never ambiguous.
 
 - Declaration ids come from `app.ids` by qualified name: `Album`, `Album.title`, `play`,
   `view#anchor`. Types start uppercase, everything else lowercase, so names never collide. UI call

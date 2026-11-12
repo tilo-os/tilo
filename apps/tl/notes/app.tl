@@ -666,7 +666,7 @@ fn file_name(n: Note) -> Text {
         .replace("\n", "-")
         .replace("<", "-")
         .replace(">", "-")
-    if safe == "" or safe == "." or safe == ".." { say("Note") } else { safe }
+    if safe == "" or safe == "." or safe == ".." { std.say("Note") } else { safe }
 }
 
 /// The page each note `n` links to is written at, by the note's id: what its links name, so a

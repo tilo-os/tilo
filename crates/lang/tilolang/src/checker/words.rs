@@ -77,9 +77,10 @@ impl Checker<'_> {
             .unwrap_or_else(|| self.st.view_id.clone())
     }
 
-    /// `say("Morning: {n} done")`: words the code writes for a person to read, such as the title
-    /// of a record it makes, as a message of the declaration it is written in. They read in the
-    /// language of whoever runs the code, with each interpolation its argument.
+    /// `std.say("Morning: {n} done")`: words the code writes for a person to read, such as the
+    /// title of a record it makes, as a message of the declaration it is written in. They read in
+    /// the language of whoever runs the code, with each interpolation its argument. It is the
+    /// library's word, not a bare name, so a package's own action can be called `say`.
     pub(super) fn builtin_say(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         match args {
             [ast::Arg { name: None, value }] if matches!(value.kind, ExprKind::Str(_)) => {
@@ -90,7 +91,7 @@ impl Checker<'_> {
                 self.err(
                     "E022",
                     span,
-                    "`say` takes the words in quotes, as a person reads them: `say(\"Morning: {n} done\")`",
+                    "`std.say` takes the words in quotes, as a person reads them: `std.say(\"Morning: {n} done\")`",
                 );
                 for a in args {
                     let _ = self.expr(&a.value, None);
