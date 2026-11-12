@@ -71,7 +71,9 @@ tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 # The action broker's half every host runs: what a step is taken by, the step seam, the route.
 tilo-broker-core = { path = "../../collab/broker-core" }
 tilo-desktop-surface = { path = "../desktop-surface" }
-tilo-desktop-search = { path = "../desktop-search" }
+# Settings' pages are every desktop's own, the page's included: its search offers them wherever
+# the session runs.
+tilo-desktop-search = { path = "../desktop-search", features = ["settings"] }
 settings-store = { path = "../../system/settings-store" }
 # Following the directories search's lists are read from.
 tilo-files = { path = "../../platform/tilo-files" }

@@ -1249,8 +1249,6 @@ fn search_options(
             &settings_store::load_section(tilo_desktop_search::preferences::SECTION),
         ),
         places: tilo_desktop_search::providers::places::RecentPlaces::default(),
-        // The settings pages are this desktop's own: the session offers them to search itself.
-        settings: None,
         // The records the workspaces on this device hold, read now and followed as the apps of
         // those workspaces name more.
         records: Some(tilo_session::Records::of(cli::data_home())),

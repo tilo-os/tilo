@@ -1304,17 +1304,12 @@ impl Session {
             crate::notifications::RoleNotices::of(&notifications),
         );
 
-        // The settings pages are this desktop's own: every session it runs offers them to search.
-        let mut search_options = options.search;
-        if search_options.settings.is_none() {
-            search_options.settings = Some(Arc::new(crate::lists::DesktopSettings));
-        }
         // The apps search lists are this device's lists, the same ones the action door lists and
         // names apps from: an app a person sees is one app, whoever reads it.
         // What the session opens an app through, kept for the notices that name a place too.
         let action_apps = options.apps.clone();
         let search = Rc::new(SessionSearch::new(
-            search_options,
+            options.search,
             Some(Arc::new(options.lists.clone()) as Arc<dyn crate::platform::apps::Apps>),
             &options.person,
             options.apps,

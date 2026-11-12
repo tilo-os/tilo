@@ -1,13 +1,13 @@
 //! The desktop's search in a session: the shared desktop search ([`tilo_desktop_search`]) the desk
 //! opens, over what is published and what the session's services answer, each row run by its
 //! address. A native desktop and the page both host this one role.
-//! The desk lists the windows, the people and the desktop's own commands. The session adds what
-//! only a device has: the apps installed here and the machine's own (with the person's switch),
-//! Settings' pages, the store's catalogue, what apps hold (the content index), the person's files,
-//! where their windows were, the actions open apps publish through the action host and the jobs it
-//! runs, and the session's own published actions. A chosen row the session carries out: its own
-//! action through its own published surface, an app's through the action host by address (the app
-//! started first when it is closed), an app's start, an address.
+//! The desk lists the windows, the people and the desktop's own commands. The search adds what a
+//! session offers beyond the desk: Settings' pages, the apps this host lists and the machine's own
+//! (with the person's switch), the store's catalogue, what apps hold (the content index), the
+//! person's files, where their windows were, the actions open apps publish through the action host
+//! and the jobs it runs, and the session's own published actions. A chosen row the session carries
+//! out: its own action through its own published surface, an app's through the action host by
+//! address (the app started first when it is closed), an app's start, an address.
 
 #![cfg_attr(
     target_arch = "wasm32",
@@ -21,7 +21,6 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::platform::apps::Settings;
 use crate::platform::apps::{Apps, Reading};
 use crate::platform::indexes::Indexes;
 use crate::records::Records;
@@ -44,6 +43,7 @@ use tilo_desktop_search::providers::host_apps;
 use tilo_desktop_search::providers::jobs::{JobEntry, Jobs};
 use tilo_desktop_search::providers::places::{Continue, Place, RecentPlaces};
 use tilo_desktop_search::providers::records as record_rows;
+use tilo_desktop_search::providers::settings::Settings;
 use tilo_desktop_search::providers::waiting::Waiting;
 use tilo_desktop_search::{
     DESKTOP_APP, Held, InvokeTarget, LaunchPlace, SearchPreferences, Source, Target, Usage,
@@ -61,6 +61,16 @@ pub trait AppActions {
     fn published(&self, workspace: &str) -> Vec<PublishedActions>;
     /// The invocations the action host follows for the person.
     fn jobs(&self) -> Vec<JobEntry>;
+    /// Whether this host carries out `target` itself rather than leaving it to the desk.
+    ///
+    /// A host that starts windows carries out every row: it reaches an app's window whether the
+    /// app is open or closed, and opens a launch where the person asked it. A host that arranges
+    /// its own windows answers only the rows that reach an app's own window
+    /// ([`Target::Invoke`]) — a page opens the app for those — and leaves the launches, the
+    /// addresses and the stopped runs to the desk, which arranges them.
+    fn performs(&self, _target: &Target) -> bool {
+        true
+    }
     /// Run the action `target` names with `arguments`; an app's own action
     /// starts the app first when it is closed, the workspace's `open` of an
     /// app starts it.
@@ -115,8 +125,6 @@ pub struct SearchOptions {
     /// What apps hold and what the person's files say, as this host indexes them; `None` where the
     /// host keeps no index.
     pub indexes: Option<Arc<dyn Indexes>>,
-    /// The settings this host offers search, where it has any.
-    pub settings: Option<Arc<dyn Settings>>,
     /// The sources the person switched off.
     pub preferences: SearchPreferences,
     /// Where the person's windows were.
@@ -135,7 +143,7 @@ struct Kept {
     content: Option<Held>,
     files: Option<Held>,
     /// Settings' pages and the store's catalogue, for the workspace they were built for.
-    workspace: Option<(String, Held, Held)>,
+    workspace: Option<(String, Held, Option<Held>)>,
 }
 
 /// The programs the person downloaded, as the registry last read them, and the session's published
@@ -167,8 +175,6 @@ pub struct SessionSearch {
     models: Option<Arc<dyn crate::platform::Models>>,
     /// What apps hold and what the person's files say, as this session reads them.
     indexes: Option<Arc<dyn crate::platform::indexes::Index>>,
-    /// The settings this host offers search.
-    settings: Option<Arc<dyn Settings>>,
     /// The sources the person switched off, as kept: what the next search leaves out, and what a
     /// switch from search changes.
     preferences: RefCell<SearchPreferences>,
@@ -247,7 +253,6 @@ impl SessionSearch {
     ) -> Self {
         let SearchOptions {
             indexes,
-            settings,
             preferences,
             places,
             records,
@@ -272,7 +277,6 @@ impl SessionSearch {
             kept: RefCell::new(kept),
             models,
             indexes: indexed,
-            settings,
             apps,
             records,
             own: RefCell::default(),
@@ -428,7 +432,7 @@ impl SessionSearch {
             Held::new(Waiting::new(workspace, self.notifications.borrow().clone())),
             Held::new(continue_places),
         ];
-        sources.extend(settings);
+        sources.push(settings);
         sources.extend(catalogue);
         sources.extend(kept.host_apps.clone());
         {
@@ -627,24 +631,27 @@ impl SessionSearch {
         latest
     }
 
-    /// Settings and the catalogue for `workspace` , built once per workspace and reading of the
-    /// host's apps.
-    fn for_workspace(&self, workspace: &str) -> (Option<Held>, Option<Held>) {
+    /// Settings' pages and the catalogue for `workspace` , built once per workspace and reading of
+    /// the host's apps.
+    ///
+    /// Every session runs Settings, so every search over one offers its pages: a computer's and a
+    /// page's alike, each listing the pages it has ([`settings_store::index::Page::here`]). The
+    /// settings the session publishes as actions that change them where they stand are left to
+    /// those actions.
+    fn for_workspace(&self, workspace: &str) -> (Held, Option<Held>) {
         let reading = self.current_reading();
         let mut kept = self.kept.borrow_mut();
         if let Some((built, settings, catalogue)) = &kept.workspace
             && built == workspace
         {
-            return (Some(settings.clone()), Some(catalogue.clone()));
+            return (settings.clone(), catalogue.clone());
         }
-        let settings = self
-            .settings
-            .as_ref()
-            .map(|settings| settings.source(workspace, &self.own.borrow()));
+        // What a setting people look for by name is set to is an action of its own, published by
+        // the settings service under the setting's own resource: those rows are the change, so the
+        // page is not offered beside them.
+        let settings = Held::new(Settings::of_published(workspace, &self.own.borrow()));
         let catalogue = reading.as_ref().and_then(|read| read.catalogue(workspace));
-        if let (Some(settings), Some(catalogue)) = (&settings, &catalogue) {
-            kept.workspace = Some((workspace.to_owned(), settings.clone(), catalogue.clone()));
-        }
+        kept.workspace = Some((workspace.to_owned(), settings.clone(), catalogue.clone()));
         (settings, catalogue)
     }
 
@@ -909,10 +916,12 @@ impl SearchHost for SessionSearch {
 
     fn performs(&self, target: &Target) -> bool {
         match target {
-            Target::Invoke(invoke) => invoke.app == DESKTOP_APP || self.apps.is_some(),
-            Target::Launch { .. } | Target::Cancel { .. } | Target::Open { .. } => {
-                self.apps.is_some()
-            }
+            // The desk's own actions are the session's to run, by address.
+            Target::Invoke(invoke) if invoke.app == DESKTOP_APP => true,
+            Target::Invoke(_)
+            | Target::Launch { .. }
+            | Target::Cancel { .. }
+            | Target::Open { .. } => self.apps.as_ref().is_some_and(|apps| apps.performs(target)),
             // What the person switched off is kept with their settings,
             // which only the session holds.
             Target::Prefer { .. } => true,

@@ -12,7 +12,6 @@ use tilo_desktop_search::providers::AppEntry;
 use tilo_desktop_search::providers::catalogue::StoreCatalogue;
 use tilo_desktop_search::providers::host_apps::HostAppEntry;
 use tilo_desktop_search::providers::host_apps::HostApps;
-use tilo_desktop_search::providers::settings::Settings;
 use tilo_files::native::Watched;
 
 use runtime_portal::tools::{
@@ -504,29 +503,6 @@ impl crate::platform::apps::Reading for Listed {
             self.0.catalogue.clone(),
             workspace,
         )))
-    }
-}
-
-/// The settings this desktop offers search: the pages of the person's own settings.
-pub(crate) struct DesktopSettings;
-
-impl crate::platform::apps::Settings for DesktopSettings {
-    fn source(
-        &self,
-        workspace: &str,
-        published: &[tilo_actions::ActionDescriptor],
-    ) -> tilo_desktop_search::Held {
-        // Settings the settings service changes in place are found as its actions.
-        let in_place: std::collections::HashSet<String> = published
-            .iter()
-            .filter_map(|action| {
-                tilo_settings_service::setting_of(action.address.resource.as_str())
-                    .map(str::to_owned)
-            })
-            .collect();
-        tilo_desktop_search::Held::new(Settings::changing_in_place(workspace, &|id| {
-            in_place.contains(id)
-        }))
     }
 }
 

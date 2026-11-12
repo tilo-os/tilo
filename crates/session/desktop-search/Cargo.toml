@@ -18,8 +18,8 @@ lazy-search = []
 # The session's on-disk indexes: what apps publish of their content, and
 # the bodies of the person's files. Native only.
 indexes = ["dep:tilo-action-policy", "dep:tilo-files", "dep:tilo-lock", "dep:tilo-paths", "dep:tilo-reference", "dep:tempfile", "dep:tilo-search", "dep:tracing", "dep:walkdir"]
-# Settings' pages and the settings on them, from Settings' own index.
-# Native only.
+# Settings' pages and the settings on them, from Settings' own index: the page
+# finds the pages its own Settings shows.
 settings = ["dep:settings-store"]
 # The apps a person can get, from the catalogue the Store reads. Native
 # only.

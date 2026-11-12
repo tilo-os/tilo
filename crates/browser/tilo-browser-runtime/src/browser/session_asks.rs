@@ -4,11 +4,33 @@
 
 use super::{Desktop, Mount};
 
+/// The rows the page asks to run in an app's own window, which is not up yet: search's own rows
+/// beside the ones a window asks of another app. Each runs in that window once it is up, as a
+/// window's ask does ([`Mount::reveal_opened`]).
+#[derive(Clone, Default)]
+pub(crate) struct Reveals(
+    std::rc::Rc<std::cell::RefCell<Vec<tilo_desktop_surface::session::Reveal>>>,
+);
+
+impl Reveals {
+    /// Ask for `reveal` to run in its app's window once the window is up.
+    pub(crate) fn ask(&self, reveal: tilo_desktop_surface::session::Reveal) {
+        self.0.borrow_mut().push(reveal);
+    }
+
+    /// The asks made since this was last taken.
+    fn take(&self) -> Vec<tilo_desktop_surface::session::Reveal> {
+        std::mem::take(&mut *self.0.borrow_mut())
+    }
+}
+
 /// What the desktop's session asked of the page and is not done yet.
 pub(super) struct Asks {
     /// What the windows it opened are to show, each until it is shown or
     /// gives up waiting for its window.
     reveals: std::cell::RefCell<Vec<Opening>>,
+    /// The rows the page's search asks to run in an app's window, before they wait for it.
+    asked: Reveals,
     /// The peer replicating the workspace, through whose workspaces door the windows'
     /// asks of nodes of the workspace's tree go.
     peer: Option<u32>,
@@ -21,9 +43,15 @@ impl Asks {
     pub(super) fn new(peer: Option<u32>) -> Self {
         Self {
             reveals: std::cell::RefCell::default(),
+            asked: Reveals::default(),
             peer,
             permitted: std::sync::Arc::default(),
         }
+    }
+
+    /// The queue the page's own rows are asked on, for the host that carries them here.
+    pub(super) fn reveals(&self) -> Reveals {
+        self.asked.clone()
     }
 
     /// The peer replicating the workspace, if the page has one.
@@ -170,6 +198,7 @@ impl Mount {
                 .openings
                 .take_reveals()
                 .into_iter()
+                .chain(desktop.asks.asked.take())
                 .filter(|reveal| {
                     // An open of the app's own resource is its window.
                     reveal.action != tilo_actions::remote::APPLICATION_OPEN_ACTION

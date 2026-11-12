@@ -1345,6 +1345,7 @@ fn present_desktop(
         Arc::new(move || {
             let _ = search_wake.send_event(id);
         }),
+        asks.reveals(),
     );
     Ok(Presentation {
         root: Root::Desktop(Box::new(shell)),
@@ -3119,6 +3120,7 @@ use frame_loop::watch_first_frame;
 use prepare::{desktop_inputs, host_offers, serve_history, serve_session};
 use publication::{FrameChange, SemanticPresentationTarget, emit_text};
 use scene::scene_within_limits;
+pub(crate) use session_asks::Reveals;
 mod retained;
 use retained::Retained;
 #[cfg(debug_assertions)]
