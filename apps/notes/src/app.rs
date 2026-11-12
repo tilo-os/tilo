@@ -463,6 +463,10 @@ pub struct NotesApp {
     /// surface is attached. A notebook shown before (or without) it is read
     /// only.
     dispatcher: Option<ui::framework::Dispatcher<crate::resource::Notebook>>,
+    /// The notebook's published actions, once hosted: what the window's
+    /// controls are bound to, so a press there and an agent's invocation of
+    /// the same action are one action.
+    notebook_actions: Option<ui::framework::Actions<crate::resource::Notebook>>,
     /// The framework's live notebook, once hosted: an edit's own result is
     /// read from it, which reads only what the edit changed.
     live: Option<ui::framework::Live<crate::resource::Notebook>>,
@@ -714,20 +718,41 @@ impl NotesApp {
         ]
     }
 
-    /// The page tree's header actions: New note.
-    fn page_tree_header_actions(header: &Rc<HeaderRequests>) -> Vec<ui::widget::Element> {
-        let header = Rc::clone(header);
-        vec![Box::new(
-            Button::icon_only(
-                NEW_NOTE_BUTTON_ID,
-                ui::icons::Icon::Plus,
-                &CATALOG.t("notes-affordance-new-note"),
-            )
-            .on_view(move || header.new_note.set(true)),
-        )]
+    /// The page tree's header actions: New note. The button presses the
+    /// notebook's own New note, so what a person clicks there and what an
+    /// agent invokes are one action; a window whose notebook offers none (the
+    /// person may not add notes) declares no button.
+    fn page_tree_header_actions(
+        notebook: Option<&ui::framework::Actions<crate::resource::Notebook>>,
+    ) -> Vec<ui::widget::Element> {
+        let made = notebook.and_then(|actions| {
+            actions.invocation(crate::notebook::Notebook::NEW_NOTE.with(
+                crate::notebook::notebook::NewNote {
+                    title: crate::notebook::UNTITLED.to_owned(),
+                    parent: None,
+                },
+            ))
+        });
+        // The button is no view request: its press *is* the action.
+        made.into_iter()
+            .map(|binding| {
+                Box::new(
+                    Button::icon_only(
+                        NEW_NOTE_BUTTON_ID,
+                        ui::icons::Icon::Plus,
+                        &CATALOG.t("notes-affordance-new-note"),
+                    )
+                    .on_action(binding),
+                ) as ui::widget::Element
+            })
+            .collect()
     }
 
-    fn build_shell(columns: &Columns, header: &Rc<HeaderRequests>) -> NavShell {
+    fn build_shell(
+        columns: &Columns,
+        header: &Rc<HeaderRequests>,
+        notebook: Option<&ui::framework::Actions<crate::resource::Notebook>>,
+    ) -> NavShell {
         let actions = Self::content_header_actions(header);
         // Maximized, the header lives in the window's bar: the note has the
         // whole window until the person reaches for the top edge.
@@ -738,7 +763,7 @@ impl NotesApp {
             .content(Box::new(columns.content.slot()))
             .sidebar_header(
                 CATALOG.t("notes-title"),
-                Self::page_tree_header_actions(header),
+                Self::page_tree_header_actions(notebook),
             )
             .content_header("", actions)
     }
@@ -747,7 +772,7 @@ impl NotesApp {
         let initial_route = workspace.selected();
         let columns = Columns::default();
         let header = Rc::new(HeaderRequests::default());
-        let shell = Self::build_shell(&columns, &header);
+        let shell = Self::build_shell(&columns, &header, None);
 
         let mut app = Self {
             workspace,
@@ -801,6 +826,7 @@ impl NotesApp {
             projection_adopted: false,
             presented: false,
             dispatcher: None,
+            notebook_actions: None,
             live: None,
             people: None,
             active_tag_filter: None,
@@ -1799,10 +1825,19 @@ impl NotesApp {
         actions: ui::framework::Actions<crate::resource::Notebook>,
         live: ui::framework::Live<crate::resource::Notebook>,
     ) {
-        self.main.attach_notebook(dispatcher.clone(), actions);
+        self.main
+            .attach_notebook(dispatcher.clone(), actions.clone());
         self.sidebar.attach_notebook(dispatcher.clone());
+        self.sidebar.attach_actions(actions.clone());
         self.dispatcher = Some(dispatcher);
         self.live = Some(live);
+        // The page tree's header holds New note, which presses the action the
+        // notebook just came with: the shell was built before the notebook was
+        // here, so declare the button now.
+        self.notebook_actions = Some(actions);
+        let tree = Self::page_tree_header_actions(self.notebook_actions.as_ref());
+        self.shell
+            .set_sidebar_header(CATALOG.t("notes-title"), tree);
     }
 
     /// What opens a note the framework names by its item: a search hit, an
@@ -2019,9 +2054,25 @@ impl NotesApp {
         }
     }
 
-    /// Follow what the window's own submissions landed: open the note it
-    /// made, and say what it deleted. Only the answer to the submission is
-    /// taken — a newer landing of anything else leaves these waiting.
+    /// Open the note this window made, once the projection shows it.
+    fn open_made(&mut self) {
+        let Some(made) = self
+            .made
+            .filter(|made| self.workspace.get(made.page()).is_some())
+        else {
+            return;
+        };
+        self.made = None;
+        if made.naming {
+            self.naming_page = Some(made.page());
+        }
+        self.select_page(made.page());
+        if self.shell.geometry().sidebar == SidebarPlacement::Drawer {
+            self.set_drawer_open(false);
+        }
+    }
+
+    /// Say what the window deleted, once the notebook keeps the deletion.
     fn follow_landed(&mut self) {
         let Some(landed) = self
             .dispatcher
@@ -2037,28 +2088,6 @@ impl NotesApp {
                 .as_ref()
                 .is_some_and(|answer| answer.action == action)
         };
-        if let Some(made) = self.made
-            && revision != made.after()
-        {
-            self.made = None;
-            if answered(made.action()) {
-                let page = answer.as_ref().and_then(|answer| {
-                    answer
-                        .minted()
-                        .into_iter()
-                        .find_map(|id| crate::notebook::page_of(&id))
-                });
-                if let Some(page) = page.filter(|page| self.workspace.get(*page).is_some()) {
-                    if made.naming {
-                        self.naming_page = Some(page);
-                    }
-                    self.select_page(page);
-                    if self.shell.geometry().sidebar == SidebarPlacement::Drawer {
-                        self.set_drawer_open(false);
-                    }
-                }
-            }
-        }
         if let Some((gone, notice)) = self.gone.clone()
             && revision != gone.after()
         {
@@ -2664,6 +2693,9 @@ impl ui::application_view::ApplicationViewState for NotesApp {
         if let Some(dispatcher) = &self.dispatcher {
             self.sidebar.attach_notebook(dispatcher.clone());
         }
+        if let Some(actions) = &self.notebook_actions {
+            self.sidebar.attach_actions(actions.clone());
+        }
         self.active_tag_filter = active_tag;
         self.bound_page = self.workspace.selected();
         self.pending_open.clear();
@@ -2784,12 +2816,56 @@ fn refresh_outline(app: &mut NotesApp) {
     }
 }
 
+/// The controls this window offers press the notebook's published actions.
+/// What one of them was admitted to do is followed here, so the window opens
+/// the note it made — an agent's note is made beside the person's view, never
+/// in front of it.
+impl ui::widget::controls::ActionControls for NotesApp {
+    fn on_control_invocation_result(
+        &mut self,
+        address: &ui::tilo_actions::ActionAddress,
+        result: &ui::widget::controls::ControlResult,
+    ) {
+        if let Some(action) = making_action(address) {
+            // The press said whether the note it makes names its title first;
+            // the answer says which note it made.
+            let naming = self.sidebar.take_title_first(action);
+            if let Ok(started) = result
+                && let Some(answer) = started.clone().completed()
+                && let Some(page) = answer
+                    .resources
+                    .iter()
+                    .filter_map(|made| made.rsplit('/').next())
+                    .find_map(|id| crate::notebook::page_of(&ui::tilo_resource::Id::from_raw(id)))
+            {
+                self.sidebar.note_made(page, naming);
+                self.self_dirty = true;
+            }
+        }
+        for child in self.children_mut() {
+            ui::widget::controls::on_control_invocation_result(child, address, result);
+        }
+    }
+}
+
+/// The notebook action `address` names, when it makes a note this window opens.
+fn making_action(address: &ui::tilo_actions::ActionAddress) -> Option<&'static str> {
+    [
+        crate::notebook::Notebook::NEW_NOTE.id(),
+        crate::notebook::Notebook::NEW_CHILD.id(),
+        crate::notebook::Notebook::DUPLICATE.id(),
+    ]
+    .into_iter()
+    .find(|action| *action == address.action.as_str())
+}
+
 impl Widget for NotesApp {
     ui::provides!(
         dyn ui::resources::PublishesResources,
         dyn ui::presence::capability::PublishesPresence,
         dyn ui::application_view::ApplicationViewState,
-        dyn ui::undo::UndoControl
+        dyn ui::undo::UndoControl,
+        dyn ui::widget::controls::ActionControls
     );
 
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
@@ -2906,6 +2982,7 @@ impl Widget for NotesApp {
         }
         // What the window's own submissions made or removed, now that the
         // projection shows it.
+        self.open_made();
         self.follow_landed();
         self.record_current_route();
         self.ensure_editor_bound(state);
@@ -3548,17 +3625,10 @@ impl NotesApp {
         true
     }
 
-    /// What the shell's header buttons asked for: a new root note, or the
-    /// note's actions anchored to their button. A button can be pressed by
-    /// pointer, keyboard or assistive technology, so this runs from `sync`
-    /// as well as after input.
+    /// What the shell's header buttons asked for: the note's actions anchored
+    /// to their button. A button can be pressed by pointer, keyboard or
+    /// assistive technology, so this runs from `sync` as well as after input.
     fn drain_header_requests(&mut self) {
-        if self.header.new_note.take() {
-            // As Ctrl+N does: the new note opens with its title taking the
-            // keyboard, so the name comes first.
-            self.sidebar.new_note(None, true);
-            self.self_dirty = true;
-        }
         if self.header.note_menu.take() {
             self.open_note_menu_from_button();
         }

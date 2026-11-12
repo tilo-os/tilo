@@ -61,7 +61,7 @@ impl NotesApp {
             self.shell.set_sidebar_toggle_in_window_bar(hosted);
             // New note is the page tree's, hosted or not.
             let tree_actions = if adds {
-                Self::page_tree_header_actions(&self.header)
+                Self::page_tree_header_actions(self.notebook_actions.as_ref())
             } else {
                 Vec::new()
             };
