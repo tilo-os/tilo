@@ -544,6 +544,20 @@ fn the_eyedropper_and_the_bucket_wait_for_their_pictures() {
     assert!(art.marks.last().unwrap().id.starts_with("fill"));
 }
 
+/// Where the thread can wait for the GPU there is no picture between frames:
+/// the click's own frame fills the area it read.
+#[test]
+fn the_bucket_fills_in_the_click_s_frame_where_the_thread_can_wait() {
+    let mut desk = Desk::open();
+    let before = desk.art().marks.len();
+    desk.key("g");
+    desk.click(760.0, 600.0);
+    desk.app.harness().poll_frame().unwrap();
+    let art = desk.art();
+    assert_eq!(art.marks.len(), before + 1, "the bucket filled the area");
+    assert!(art.marks.last().unwrap().id.starts_with("fill"));
+}
+
 #[test]
 fn a_brush_stroke_is_one_paint() {
     let mut desk = Desk::open();

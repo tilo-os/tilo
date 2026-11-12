@@ -373,6 +373,7 @@ canvas-save-failed = Speichern fehlgeschlagen: { $why }
 canvas-chooser-gone = die Dateiauswahl ging weg
 canvas-files-failed = Dateien konnten nicht antworten: { $why }
 canvas-picture-failed = Das Bild wurde nicht hinzugefügt: { $why }
+canvas-write-refused = Das Bild wurde nicht geändert: { $why }
 canvas-export-edited = { $title } bearbeitet
 
 canvas-rendering-artwork = Das Bild wird gerendert…
