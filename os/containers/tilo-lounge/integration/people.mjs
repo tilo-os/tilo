@@ -1491,8 +1491,10 @@ try {
 
     // The page's own sheet, the same one a desk shows: the role a link brings
     // someone in at, chosen before the link is made.
+    // The sheet is up once its choices stand where a person presses them:
+    // its title names the sheet without standing anywhere of its own.
     if (!await press(a.tab, 'Invite')) await failed("the bar's invite button could not be pressed", a.tab);
-    await waitFor(a.tab, 'Invite people', 'the invite sheet');
+    await waitFor(a.tab, 'Commenter', "the invite sheet's Commenter part");
     if (!await press(a.tab, 'Commenter')) await failed('the invite sheet offers no Commenter part', a.tab);
     await until(a.tab, `JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? {}).includes('add comments, but cannot edit it')`,
       "the sheet's chosen role under the choice", 60_000);
