@@ -48,11 +48,16 @@ const browserArgs = [
 
 const finish = async (code, message) => {
   if (message) report.error = message;
-  for (const {name, tab} of tabs) {
+  for (const {name, tab, browser} of tabs) {
     writeFileSync(join(out, `${name}.log`), (tab.log ?? []).join('\n'));
     const shot = await tab.screenshot().catch(() => null);
     if (shot) writeFileSync(join(out, `${name}.png`), shot);
     report[`${name}Text`] = await pageText(tab);
+    // Where the browser says the tab is, and whether the page answers at all:
+    // a tab mid-navigation or wedged answers nothing the reads below can show.
+    report[`${name}At`] = await browser.send('Target.getTargetInfo', {targetId: tab.targetId})
+      .then(reply => reply.result?.targetInfo?.url ?? reply.error?.message, error => error.message).catch(() => '');
+    report[`${name}Answers`] = await tab.evaluate('document.readyState', {timeout: 5_000}).catch(error => `no: ${error.message}`);
     // What the page kept of the workspaces it entered and the hosts it is a
     // member of: which way it took in on its next load.
     report[`${name}People`] = await tab.evaluate(`JSON.stringify(globalThis.tiloMount?.people?.() ?? null)`).catch(() => '');
@@ -69,7 +74,7 @@ const finish = async (code, message) => {
       const lines = (tab.log ?? []).slice(-60);
       if (lines.length) console.error(`--- ${name} said:\n${lines.join('\n')}`);
     }
-    for (const {name} of tabs) console.error(`--- ${name} kept: ${report[`${name}Kept`]}\n--- ${name} people: ${report[`${name}People`]}\n--- ${name} channels: ${report[`${name}Channels`]}`);
+    for (const {name} of tabs) console.error(`--- ${name} at ${report[`${name}At`]}, answering ${report[`${name}Answers`]}\n--- ${name} kept: ${report[`${name}Kept`]}\n--- ${name} people: ${report[`${name}People`]}\n--- ${name} channels: ${report[`${name}Channels`]}`);
     console.error(`FAIL: ${message}`);
   }
   console.log(JSON.stringify(report));
@@ -157,20 +162,36 @@ const visit = async name => {
   const browser = await launch({args: browserArgs});
   browsers.push(browser);
   const tab = await browser.tab({firstRun: true});
-  tabs.push({name, tab});
+  tabs.push({name, tab, browser});
   // The tab's whole console and every request that failed, beside the
   // errors the harness keeps: a step that stops leaves what led to it.
   tab.log ??= [];
   const asked = new Map();
+  // Where the tab went and why: each navigation it was asked for (and by
+  // what), each it took, a dialog that would hold one, and a renderer that
+  // died. A tab that stops answering leaves which of these came last.
+  const visitedAt = Date.now();
+  const at = () => `${((Date.now() - visitedAt) / 1000).toFixed(1)}s`;
+  const address = url => String(url ?? '').replace(/([?&](pair|invite)=)[^&#]*/g, '$1…').slice(0, 300);
   browser.on(({sessionId, method, params}) => {
     if (sessionId !== tab.sessionId) return;
-    if (method === 'Network.requestWillBeSent') asked.set(params.requestId, params.request.url);
-    else if (method === 'Network.loadingFailed') tab.log.push(`NET ${asked.get(params.requestId) ?? params.requestId}: ${params.errorText}`);
+    if (method === 'Network.requestWillBeSent') {
+      asked.set(params.requestId, params.request.url);
+      if (params.type === 'Document') tab.log.push(`${at()} PAGE asked for ${address(params.request.url)}`);
+    } else if (method === 'Network.loadingFailed') tab.log.push(`${at()} NET ${asked.get(params.requestId) ?? params.requestId}: ${params.errorText}`);
+    else if (method === 'Page.frameRequestedNavigation' && params.frameId === tab.targetId) {
+      tab.log.push(`${at()} PAGE navigation requested (${params.reason}, ${params.disposition}) to ${address(params.url)}`);
+    } else if (method === 'Page.frameNavigated' && !params.frame.parentId) tab.log.push(`${at()} PAGE now at ${address(params.frame.url)}`);
+    else if (method === 'Page.navigatedWithinDocument') tab.log.push(`${at()} PAGE moved within to ${address(params.url)}`);
+    else if (method === 'Page.javascriptDialogOpening') tab.log.push(`${at()} PAGE dialog ${params.type}: ${params.message}`);
+    else if (method === 'Inspector.targetCrashed') tab.log.push(`${at()} PAGE the renderer crashed`);
+    else if (method === 'Page.loadEventFired') tab.log.push(`${at()} PAGE loaded`);
     else if (method === 'Runtime.consoleAPICalled' && !['error', 'warning'].includes(params.type)) {
       tab.log.push(`${params.type.toUpperCase()} ${params.args.map(a => a.value ?? a.description ?? '').join(' ')}`.slice(0, 600));
     }
   });
   await tab.send('Network.enable', {}).catch(() => {});
+  await tab.send('Inspector.enable', {}).catch(() => {});
   await tab.send('Emulation.setDeviceMetricsOverride', {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false}).catch(() => {});
   await tab.send('Browser.grantPermissions', {origin: new URL(site).origin,
     permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']}).catch(() => {});
@@ -215,15 +236,29 @@ const commandOf = prompt => {
   if (!match) return null;
   return {code: match[1], site: match[2] ?? null};
 };
-// The steps the tab shows, as it shows them.
+// The steps the tab shows, as it shows them: each line the list ever held,
+// kept in the page the moment the list changes. Read by polling, a step the
+// page drew and replaced (or the screen left with) between two reads was
+// never seen; and the list, hidden once the screen says the agent is in,
+// reads as one run-together line.
 const followSteps = async (tab, until) => {
-  const seen = [];
   const deadline = Date.now() + 180_000;
+  await tab.evaluate(`(() => {
+    const seen = globalThis.__gateSteps ??= [];
+    const read = () => {
+      for (const item of document.querySelectorAll('#first-run-steps li')) {
+        const line = item.textContent.trim();
+        if (line && !seen.includes(line)) seen.push(line);
+      }
+    };
+    globalThis.__gateStepsWatch ??= new MutationObserver(read);
+    globalThis.__gateStepsWatch.observe(document.documentElement, {subtree: true, childList: true, characterData: true});
+    read();
+  })()`).catch(error => fail(`the tab's steps could not be followed: ${error.message}`));
   for (;;) {
-    const text = await tab.evaluate(`document.getElementById('first-run-steps')?.innerText ?? ''`).catch(() => '');
-    for (const line of text.split('\n').map(line => line.trim()).filter(Boolean)) if (!seen.includes(line)) seen.push(line);
-    if (await tab.evaluate(until).catch(() => false)) return seen;
-    if (Date.now() > deadline) return seen;
+    const {seen, done} = await tab.evaluate(`({seen: globalThis.__gateSteps ?? [], done: !!(${until})})`)
+      .catch(() => ({seen: [], done: false}));
+    if (done || Date.now() > deadline) return seen;
     await sleep(200);
   }
 };
