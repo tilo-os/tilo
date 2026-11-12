@@ -17,9 +17,9 @@ use crate::join_answer::{JoinWorkspaces, WorkspaceTxn};
 use crate::join_ledger::{GovernanceMessages, Governed, JoinError, JoinLedger, Signer};
 use crate::owner_commit::{CommitBinding, CommitTarget, OwnerCommitReceipt};
 use crate::replica::Replica;
-use collab_types::signer::DeviceSigner as _;
-use ed25519_dalek::SigningKey;
+use collab_types::signer::DeviceSigner;
 use std::future::Future;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tilo_user_identity::DeviceCert;
 
@@ -199,24 +199,27 @@ impl WorkspaceTxn for OwnerWorkspace<'_> {
 #[derive(Clone)]
 pub struct OwnerJoinWorkspaces {
     owner: NativeWorkspaceOwner,
-    key: SigningKey,
+    signer: Arc<dyn DeviceSigner>,
 }
 
 impl std::fmt::Debug for OwnerJoinWorkspaces {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("OwnerJoinWorkspaces")
-            .field("device", &hex::encode(self.key.verifying_key().as_bytes()))
+            .field("device", &hex::encode(self.signer.device_public_key()))
             .finish_non_exhaustive()
     }
 }
 
 impl OwnerJoinWorkspaces {
-    /// Answer joins for `owner`'s workspaces as the device whose signing key is
-    /// `key`, the device its commits are made as.
+    /// Answer joins for `owner`'s workspaces as the device `signer` is the
+    /// custody of, the device its commits are made as.
     #[must_use]
-    pub fn new(owner: NativeWorkspaceOwner, key: SigningKey) -> Self {
-        Self { owner, key }
+    pub fn new(owner: NativeWorkspaceOwner, signer: impl DeviceSigner + 'static) -> Self {
+        Self {
+            owner,
+            signer: Arc::new(signer),
+        }
     }
 }
 
@@ -253,8 +256,8 @@ impl OwnerJoinWorkspaces {
 }
 
 impl JoinWorkspaces for OwnerJoinWorkspaces {
-    fn key(&self) -> &SigningKey {
-        &self.key
+    fn signer(&self) -> &dyn DeviceSigner {
+        &*self.signer
     }
 
     fn nonce(&self) -> Result<[u8; 32], JoinError> {

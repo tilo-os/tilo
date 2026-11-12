@@ -154,14 +154,11 @@ async fn once(
     if super::hosted_by(&hint, &own) && reach.own_host.is_none() {
         return Outcome::Wait;
     }
-    let Ok(key) = identity.signing_key() else {
-        return Outcome::Failed;
-    };
     let dial = |via: TransportHint, reach: Reach| {
-        let key = key.clone();
+        let signer = Arc::clone(&identity.signer);
         async move {
             reach
-                .session(connect, &via, key)
+                .session(connect, &via, signer)
                 .await
                 .map(|linked| Dialled { linked, via })
         }

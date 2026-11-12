@@ -14,7 +14,7 @@ pub type Committed = (OwnerCommitRequest, OwnerCommitReceipt);
 /// How many times one signed turn runs before it gives up: each run signs what the one before it
 /// asked, so a turn whose signatures sign over earlier ones (a membership operation on top of the
 /// one it just wrote) runs once per link of that chain.
-const SIGNED_RUNS: usize = 16;
+pub(crate) const SIGNED_RUNS: usize = 16;
 
 /// This device's signatures as one owner turn takes them: what its signer signed for an earlier
 /// run of the same turn answers at once; anything else answers with a blank signature, and is kept
@@ -27,6 +27,33 @@ pub(crate) struct Signatures {
 }
 
 impl Signatures {
+    /// The signatures of one turn of `signer`, none given yet.
+    pub(crate) fn of(signer: &dyn collab_types::signer::DeviceSigner) -> Self {
+        Self {
+            device: signer.device_public_key(),
+            signed: parking_lot::Mutex::default(),
+            wanted: parking_lot::Mutex::default(),
+        }
+    }
+
+    /// Have `signer` sign what the last run asked for, for the next run to answer at once.
+    /// Answers whether the run asked for any: a run that asked for none is the turn's last.
+    pub(crate) async fn sign_wanted(
+        &self,
+        signer: &dyn collab_types::signer::DeviceSigner,
+    ) -> Result<bool, String> {
+        let wanted = std::mem::take(&mut *self.wanted.lock());
+        let asked = !wanted.is_empty();
+        for message in wanted {
+            let signature = signer
+                .sign(message.clone())
+                .await
+                .map_err(|error| error.to_string())?;
+            self.signed.lock().insert(message, signature);
+        }
+        Ok(asked)
+    }
+
     /// Whether this run signed only with signatures the signer gave: a run that did not commits
     /// nothing, and runs again once they are signed.
     pub(crate) fn settled(&self) -> Result<(), String> {
@@ -38,7 +65,7 @@ impl Signatures {
     }
 }
 
-const UNSIGNED: &str = "the device signer signs this change outside the owner's turn";
+pub(crate) const UNSIGNED: &str = "the device signer signs this change outside the owner's turn";
 
 /// Run `turn`, a change of this device that signs as it goes, with `signer`, this device's
 /// custody of its key: a run that asks for a signature `signer` has not given yet commits
@@ -53,23 +80,11 @@ pub(crate) async fn signed_turn<T>(
     signer: &dyn collab_types::signer::DeviceSigner,
     mut turn: impl FnMut(&Signatures) -> Result<T, String>,
 ) -> Result<T, String> {
-    let signatures = Signatures {
-        device: signer.device_public_key(),
-        signed: parking_lot::Mutex::default(),
-        wanted: parking_lot::Mutex::default(),
-    };
+    let signatures = Signatures::of(signer);
     for _ in 0..SIGNED_RUNS {
         let ran = turn(&signatures);
-        let wanted = std::mem::take(&mut *signatures.wanted.lock());
-        if wanted.is_empty() {
+        if !signatures.sign_wanted(signer).await? {
             return ran;
-        }
-        for message in wanted {
-            let signature = signer
-                .sign(message.clone())
-                .await
-                .map_err(|error| error.to_string())?;
-            signatures.signed.lock().insert(message, signature);
         }
     }
     Err(UNSIGNED.into())

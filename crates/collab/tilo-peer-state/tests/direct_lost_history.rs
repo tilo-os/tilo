@@ -188,9 +188,9 @@ async fn a_record_write_sent_without_the_one_it_builds_on_is_applied() {
     });
     // The later one, built on it, is all `b` hears.
     let later = record_change(a, key, "sent");
-    a.publish(|a, key, now| {
+    a.publish(|a| {
         a.publication_mut()
-            .publish_incremental(APP, RECORD, later, key, now)
+            .publish_incremental(APP, RECORD, later, key, SystemTime::now())
     })
     .unwrap();
 

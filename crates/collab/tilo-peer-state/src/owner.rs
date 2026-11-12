@@ -41,7 +41,7 @@ pub mod testing;
 mod tests;
 mod vouched;
 mod workspace_membership;
-mod write;
+pub(crate) mod write;
 
 pub use certified::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
 pub use document_read::{

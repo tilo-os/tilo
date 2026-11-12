@@ -105,7 +105,7 @@ struct MemoryWorkspaces {
 }
 
 impl JoinWorkspaces for MemoryWorkspaces {
-    fn key(&self) -> &SigningKey {
+    fn signer(&self) -> &dyn collab_types::signer::DeviceSigner {
         &self.key
     }
 

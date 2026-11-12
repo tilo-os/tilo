@@ -388,7 +388,7 @@ impl Engine {
         {
             Ok(store) => Some(tilo_peer_state::direct::Owning::new(
                 owner,
-                engine.identity.signing_key()?,
+                Arc::clone(&engine.identity.signer),
                 Arc::new(store),
             )),
             Err(error) => {

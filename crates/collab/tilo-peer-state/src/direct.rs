@@ -36,7 +36,7 @@ use crate::frames::{MAX_FRAME_BYTES, OUTGOING, REFUSED, bump, from_device};
 pub use crate::replica::Replica;
 use crate::store::{self, Budget, Cursor, Frame, Store};
 use crate::{NeighbourMsg, StatePeer, TransportOrigin};
-use ed25519_dalek::SigningKey;
+use collab_types::signer::DeviceSigner;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointAddr};
@@ -320,7 +320,8 @@ struct Inner {
     /// Where this device's engine owns the workspace: frames are admitted into
     /// its live replica and published as they land.
     admission: Option<Admission>,
-    key: SigningKey,
+    /// This device's custody of its key, which signs what the link writes.
+    signer: Arc<dyn DeviceSigner>,
     /// The sealed history this device keeps for the workspace, when it is a
     /// store device.
     store: Option<Arc<Store>>,
@@ -393,30 +394,27 @@ struct Hearing {
 impl std::fmt::Debug for DirectSync {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DirectSync")
-            .field(
-                "device",
-                &hex::encode(self.0.key.verifying_key().as_bytes()),
-            )
+            .field("device", &hex::encode(self.0.signer.device_public_key()))
             .finish_non_exhaustive()
     }
 }
 
 impl DirectSync {
-    /// Share `replica`, the replica of the device whose signing key is `key`
-    /// (and whose iroh endpoint's secret key it is).
+    /// Share `replica`, the replica of the device `signer` is the custody of
+    /// (and whose key its iroh endpoint's secret key is).
     #[must_use]
-    pub fn new(replica: StatePeer, key: SigningKey) -> Self {
-        Self::over(Replica::new(replica), key)
+    pub fn new(replica: StatePeer, signer: impl DeviceSigner + 'static) -> Self {
+        Self::over(Replica::new(replica), signer)
     }
 
     /// Sync `replica`, which other parts of the engine read as well: the
     /// action plane authorizes against the state this link admits into.
     #[must_use]
-    pub fn over(replica: Replica, key: SigningKey) -> Self {
+    pub fn over(replica: Replica, signer: impl DeviceSigner + 'static) -> Self {
         Self(Arc::new(Inner {
             replica,
             admission: None,
-            key,
+            signer: Arc::new(signer),
             store: None,
             outgoing: broadcast::channel(OUTGOING).0,
             heard: broadcast::channel(OUTGOING).0,
@@ -438,7 +436,7 @@ impl DirectSync {
         Inner {
             replica: self.0.replica.clone(),
             admission: self.0.admission.clone(),
-            key: self.0.key.clone(),
+            signer: Arc::clone(&self.0.signer),
             store: self.0.store.clone(),
             outgoing: self.0.outgoing.clone(),
             heard: self.0.heard.clone(),
@@ -533,14 +531,17 @@ impl DirectSync {
         self.0.replica.read(read)
     }
 
-    /// Make a local change with the device's key, e.g.
+    /// Make a local change the caller signed, e.g.
     /// `publication_mut().publish_incremental`, keep the message it returns at
     /// this device's store, send it to every open link, and return it.
+    ///
+    /// # Errors
+    /// `write` refused.
     pub fn publish(
         &self,
-        write: impl FnOnce(&mut StatePeer, &SigningKey, SystemTime) -> Result<NeighbourMsg, String>,
+        write: impl FnOnce(&mut StatePeer) -> Result<NeighbourMsg, String>,
     ) -> Result<NeighbourMsg, String> {
-        let message = write(&mut self.0.replica.lock(), &self.0.key, tilo_clock::wall())?;
+        let message = write(&mut self.0.replica.lock())?;
         self.0.changed.send_modify(bump);
         self.keep(&message, false);
         self.outgoing(Authored {
@@ -549,6 +550,30 @@ impl DirectSync {
             published: true,
         });
         Ok(message)
+    }
+
+    /// Make `change` to the replica in one signed turn of the device's signer:
+    /// each run changes a copy of the replica as it stands, and only a run that
+    /// asked for no signature the signer had not given yet replaces it. The
+    /// signer signs between runs, with the replica unlocked.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the replica stays held until the change replaces the state it was made from"
+    )]
+    async fn signed_change<T>(
+        &self,
+        mut change: impl FnMut(&mut StatePeer, &dyn DeviceSigner, SystemTime) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let now = tilo_clock::wall();
+        crate::owner::write::signed_turn(&*self.0.signer, |signed| {
+            let mut replica = self.0.replica.lock();
+            let mut candidate = replica.clone();
+            let changed = change(&mut candidate, signed, now)?;
+            signed.settled()?;
+            *replica = candidate;
+            Ok(changed)
+        })
+        .await
     }
 
     /// Ticks whenever the replica changed, by a local change or a frame a
@@ -880,7 +905,7 @@ impl DirectSync {
     /// The device key this link signs for.
     #[must_use]
     pub fn device(&self) -> [u8; 32] {
-        self.0.key.verifying_key().to_bytes()
+        self.0.signer.device_public_key()
     }
 
     /// Serve the connection a device dialled this one: its first frame names
@@ -1154,9 +1179,9 @@ impl DirectSync {
     /// device of another person cannot sign checkpoints others' writes
     /// depend on; its own writes reach the other device live.
     async fn catch_up(&self) -> Result<Vec<Authored>, String> {
-        let device = self.0.key.verifying_key().to_bytes();
-        let (mut messages, owned) = {
-            let mut replica = self.0.replica.lock();
+        let device = self.device();
+        let (hello, bootstraps) = {
+            let replica = self.0.replica.lock();
             let cert = replica
                 .certificates()
                 .into_iter()
@@ -1167,32 +1192,34 @@ impl DirectSync {
                 .into_iter()
                 .filter(|entry| entry.user_public_key == cert.user_public_key)
                 .collect();
-            let mut messages = vec![NeighbourMsg::IdentityHello {
+            let hello = NeighbourMsg::IdentityHello {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(cert),
                 revocations,
-            }];
-            let bootstraps = replica.has_governance() && replica.signed_by_owner(&device);
-            if bootstraps && self.0.admission.is_none() {
-                messages.extend(
-                    replica
-                        .publication_mut()
-                        .bootstrap_messages(&self.0.key, tilo_clock::wall())?,
-                );
-            }
-            drop(replica);
-            (messages, self.0.admission.as_ref().filter(|_| bootstraps))
+            };
+            (
+                hello,
+                replica.has_governance() && replica.signed_by_owner(&device),
+            )
         };
+        let mut messages = vec![hello];
         // The snapshots take numbers of this device's own sequence: where its engine owns the
         // workspace they are its commit, made through the owner, so its next write numbers after
         // them.
-        if let Some(admission) = owned {
-            messages.extend(
+        match &self.0.admission {
+            _ if !bootstraps => {}
+            Some(admission) => messages.extend(
                 admission
                     .owner
-                    .commit_bootstrap(admission.workspace, &self.0.key, tilo_clock::wall())
+                    .commit_bootstrap(admission.workspace, &*self.0.signer, tilo_clock::wall())
                     .await?,
-            );
+            ),
+            None => messages.extend(
+                self.signed_change(|peer, signer, now| {
+                    peer.publication_mut().bootstrap_messages(signer, now)
+                })
+                .await?,
+            ),
         }
         Ok(messages
             .into_iter()
@@ -1317,7 +1344,7 @@ impl DirectSync {
     async fn judge(&self, author: [u8; 32], message: NeighbourMsg, retained: bool) -> Heard {
         match &self.0.admission {
             Some(admission) => self.admit_owned(admission, author, message, retained).await,
-            None => self.admit_local(author, message, retained),
+            None => self.admit_local(author, message, retained).await,
         }
     }
 
@@ -1382,7 +1409,7 @@ impl DirectSync {
             .keep_verdicts(
                 admission.workspace,
                 &[(&message, &report)],
-                &self.0.key,
+                &*self.0.signer,
                 now,
             )
             .await
@@ -1409,7 +1436,7 @@ impl DirectSync {
     /// Take `message` into this device's own replica: whether it is the
     /// workspace's governor decides there too, and what it refuses is filed
     /// where the write's author reads why.
-    fn admit_local(&self, author: [u8; 32], message: NeighbourMsg, retained: bool) -> Heard {
+    async fn admit_local(&self, author: [u8; 32], message: NeighbourMsg, retained: bool) -> Heard {
         let origin = if retained {
             TransportOrigin::RetainedRelayDelta(author)
         } else {
@@ -1421,54 +1448,43 @@ impl DirectSync {
         let own = matches!(message, NeighbourMsg::AppDocument { .. })
             .then(|| self.certificate().ok())
             .flatten();
-        let mut replica = self.0.replica.lock();
-        let now = tilo_clock::wall();
-        let mut landed = false;
-        let report = match replica.receive_from_report(origin, message.clone(), now) {
-            Ok(report) => {
-                landed = report.changed || report.metadata_changed;
-                // The verdicts cleared are this device's own, filed under its
-                // own certificate: the carrier's says who sent the frame, not
-                // whose verdicts a landed write clears.
-                if landed
-                    && let Some(own) = &own
-                    && let Err(error) =
-                        replica
-                            .workspace_mut()
-                            .clear_landed_write(own, &message, &self.0.key, now)
-                {
-                    tracing::warn!(%error, "a landed write's verdict was not cleared");
-                }
-                Ok(report)
+        let received = self
+            .0
+            .replica
+            .lock()
+            .receive_from_report(origin, message.clone(), tilo_clock::wall())
+            .map_err(|reason| reason.to_string());
+        let mut landed = received
+            .as_ref()
+            .is_ok_and(|report| report.changed || report.metadata_changed);
+        // The verdict is this device's own, filed under its own certificate:
+        // a document write the workspace refuses is filed where its author
+        // reads why it is not here, and a landed one clears the verdicts it
+        // lands on. The carrier's certificate says who sent the frame, not
+        // whose verdicts these are. Any other frame is the link's alone to
+        // drop.
+        if let Some(own) = own.filter(|_| received.is_err() || landed) {
+            let filed = self
+                .signed_change(|peer, signer, now| match &received {
+                    Ok(_) => peer
+                        .workspace_mut()
+                        .clear_landed_write(&own, &message, signer, now),
+                    Err(reason) => peer
+                        .workspace_mut()
+                        .refuse_write(&own, &message, reason, signer, now),
+                })
+                .await;
+            match filed {
+                Ok(filed) => landed |= filed,
+                Err(error) => tracing::warn!(%error, "a write's verdict was not kept"),
             }
-            Err(reason) => {
-                // A document write the workspace refuses is its author's
-                // verdict, filed by this device under its own certificate
-                // where the author reads why its write is not here. Any other
-                // frame is the link's alone to drop.
-                if let Some(own) = &own {
-                    let filed = replica.workspace_mut().refuse_write(
-                        own,
-                        &message,
-                        &reason.to_string(),
-                        &self.0.key,
-                        now,
-                    );
-                    landed = filed.unwrap_or_else(|error| {
-                        tracing::warn!(%error, "a refused write's verdict was not filed");
-                        false
-                    });
-                }
-                Err(reason.to_string())
-            }
-        };
-        drop(replica);
+        }
         Heard {
             author,
             message,
             landed,
             retained,
-            report,
+            report: received,
             fresh: true,
         }
     }
@@ -1508,7 +1524,7 @@ impl DirectSync {
     /// This device's certificate in the replica's roster: the one its key signs
     /// for.
     fn certificate(&self) -> Result<tilo_user_identity::DeviceCert, String> {
-        let device = self.0.key.verifying_key().to_bytes();
+        let device = self.device();
         self.0
             .replica
             .lock()
@@ -1667,7 +1683,7 @@ impl ProtocolHandler for Serving {
 #[derive(Clone)]
 pub struct Owning {
     owner: crate::owner::NativeWorkspaceOwner,
-    key: SigningKey,
+    signer: Arc<dyn DeviceSigner>,
     store: Arc<Store>,
     serving: Serving,
     /// Who takes what the members' links bring ([`Self::hear`]).
@@ -1681,28 +1697,29 @@ impl std::fmt::Debug for Owning {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("Owning")
-            .field("device", &hex::encode(self.key.verifying_key().as_bytes()))
+            .field("device", &hex::encode(self.signer.device_public_key()))
             .field("serving", &self.serving)
             .finish_non_exhaustive()
     }
 }
 
 impl Owning {
-    /// Answer for `owner`'s workspaces as the device whose signing key is
-    /// `key`, keeping the frames of each at `store`.
+    /// Answer for `owner`'s workspaces as the device `signer` is the custody
+    /// of, keeping the frames of each at `store`.
     #[must_use]
     pub fn new(
         owner: crate::owner::NativeWorkspaceOwner,
-        key: SigningKey,
+        signer: impl DeviceSigner + 'static,
         store: Arc<Store>,
     ) -> Self {
+        let signer: Arc<dyn DeviceSigner> = Arc::new(signer);
         let serving = Serving::new();
         // What this device commits to a workspace it hosts itself reaches the
         // members linked to it now, as this device's frame; the workspace keeps
         // no custody for it and holds no link to a host. Nothing is kept for a
         // member linked later: the workspace's own state is what its link's
         // catch-up hands it.
-        let device = key.verifying_key().to_bytes();
+        let device = signer.device_public_key();
         let linked = serving.clone();
         let kept_here = owner.observe_kept_here(Arc::new(
             move |workspace: tilo_desktop_model::WorkspaceId, message: &NeighbourMsg| {
@@ -1711,7 +1728,7 @@ impl Owning {
         ));
         Self {
             owner,
-            key,
+            signer,
             store,
             serving,
             sinks: Arc::default(),
@@ -1760,11 +1777,7 @@ impl Owning {
             .channel_workspace()
             .and_then(tilo_desktop_model::WorkspaceId::parse)
         {
-            self.carry(
-                workspace,
-                self.key.verifying_key().to_bytes(),
-                message.clone(),
-            );
+            self.carry(workspace, self.signer.device_public_key(), message.clone());
         }
     }
 
@@ -1785,7 +1798,7 @@ impl Owning {
         if let Some(link) = self.serving.link(workspace) {
             return Ok(link);
         }
-        let link = DirectSync::over(self.owner.replica(held)?, self.key.clone())
+        let link = DirectSync::over(self.owner.replica(held)?, Arc::clone(&self.signer))
             .hearing(Hearing {
                 workspace: held,
                 sinks: Arc::clone(&self.sinks),
@@ -2037,6 +2050,7 @@ async fn read_authored(recv: &mut RecvStream) -> Result<Option<Authored>, String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::SigningKey;
     use tilo_user_identity::{
         DeviceCapabilities, DeviceCert, RevocationEntry, RevocationList, RevocationReason,
         sign_device_cert, sign_revocation_entry,

@@ -1345,7 +1345,7 @@ impl WorkspaceTxn for HeldWorkspace<'_> {
 /// change is committed under the workspace's lock and published before the
 /// lock is released.
 impl JoinWorkspaces for Workspaces {
-    fn key(&self) -> &SigningKey {
+    fn signer(&self) -> &dyn collab_types::signer::DeviceSigner {
         &self.inner.host.key
     }
 
