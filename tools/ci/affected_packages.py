@@ -28,7 +28,7 @@ import re
 import subprocess
 import sys
 import tomllib
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 # Direct CLI execution and importlib-based policy tests both load the same graph.
 TOOLS = Path(__file__).resolve().parents[1]
@@ -96,6 +96,7 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/macos_apps.py": "tools/tests/test_dev_macos_workflows.py",
     "tools/ci/workspace_graph.py": "tools/tests/test_ci_select.py",
     "tools/ci/recorded_test_time.json": "tools/tests/test_ci_select.py",
+    "tools/ci/recorded_build_bytes.json": "tools/tests/test_ci_select.py",
     "tools/rust_feedback.py": "tools/tests/test_rust_feedback.py",
     "tools/ci/run_scoped_tests.py": "tools/tests/test_ci_scoped_tests.py",
     "tools/ci/native-mold-linker.sh": "tools/tests/test_ci_native_mold.py",
@@ -236,6 +237,10 @@ REVERSE_TEST_COST_BUDGET = SHARD_COST_BUDGET
 # of structural cost. Only shard balancing uses these numbers.
 TEST_SECONDS = Path(__file__).with_name("recorded_test_time.json")
 TEST_SECOND_WEIGHT = 2
+# Bytes a test job's build writes per package (tools/ci/recorded_build_bytes.py).
+# Like the test seconds above, this record only moves packages between shards:
+# it never changes which packages are selected or tested.
+TEST_BYTES = Path(__file__).with_name("recorded_build_bytes.json")
 # A package without a recorded time (new since the last refresh) is assumed to
 # test for about as long as the upper quartile of recorded packages, so a new
 # service suite does not ride along as free weight on an already full shard.
@@ -267,6 +272,34 @@ DEDICATED_TEST_WEIGHT = 1_000
 # them), so a shard that carries it asks for the large class at any size.
 LARGE_TEST_SHARD_COST = 2 * SHARD_COST_BUDGET
 LARGE_TEST_PACKAGES = frozenset({"shell"})
+# What one test job may write and use, measured on the large class (36 GiB
+# cgroup limit, about 105 GiB of free store): a whole-workspace shard of 113
+# packages reached memory.peak = memory.max (213k max events) and filled its
+# store until a mold link failed with "Disk full?" after 732 s, while the
+# smaller shards beside it passed. A shard is therefore bounded by the bytes
+# its build writes and by the memory its concurrent jobs need, not by how many
+# packages it names. 70 GiB leaves the store room for the image, the app
+# binaries certification links and the goldens; 28 GiB leaves the class's
+# 36 GiB room for the page cache and the suites themselves.
+TEST_SHARD_STORE_BYTES = 70 * 1024**3
+TEST_SHARD_MEMORY_BYTES = 28 * 1024**3
+# The native class gives a test job a 50 GiB store and 16 GiB of memory. A
+# shard whose measured build stays inside this keeps the native class; past it
+# the shard asks for the large one.
+NATIVE_TEST_SHARD_BYTES = 30 * 1024**3
+# Peak memory one concurrent compile/link job needs, from the same run: 36 GiB
+# reached with eight jobs on x86_64, and the arm64 slot runs four inside the
+# same ceiling.
+TEST_JOB_BYTES = {"x86_64": 4_608 * 1024**2, "aarch64": 9 * 1024**3}
+# Jobs each class runs when memory allows; the planner reduces them to stay
+# inside TEST_SHARD_MEMORY_BYTES. These are the counts the classes were tuned
+# to before memory was bounded per shard.
+TEST_CLASS_JOBS = {
+    "runner": {"x86_64": 4},
+    "runner-arm64": {"aarch64": 1},
+    "runner-large": {"x86_64": 8},
+    "runner-large-arm64": {"aarch64": 4},
+}
 # Suites whose tests fsync heavily: fs's durability, checked-restore and
 # release-matrix tests over real FUSE (with fs-native), and the
 # host suites that commit a durable Store, owner journal or relay journal on
@@ -300,6 +333,70 @@ def expected_test_seconds(name: str, test_seconds: dict[str, int] | None) -> int
     if not test_seconds:
         return 0
     return test_seconds.get(name, UNRECORDED_TEST_SECONDS)
+
+
+class BuildFootprint(NamedTuple):
+    """What a test job's build writes, from tools/ci/recorded_build_bytes.json.
+
+    ``baseline`` is what every test job writes before workspace code: the
+    external dependency tree, build-script output and fingerprints.
+    ``packages`` maps a package to the bytes of its own library and of its test
+    binaries: a shard writes the libraries of everything it depends on and the
+    test binaries of the packages it tests. ``None`` sizes mean no measurement.
+    """
+    baseline: int | None = None
+    unrecorded: tuple[int, int] = (0, 0)
+    packages: dict[str, tuple[int, int]] = {}
+
+    def of(self, name: str) -> tuple[int, int]:
+        """(library bytes, test bytes) for one package."""
+        return self.packages.get(name, self.unrecorded)
+
+    def shard(self, tested: set[str], closure: set[str]) -> int | None:
+        """The bytes a shard of `tested` packages writes, or None unmeasured.
+
+        `closure` holds the workspace packages the shard's build links, which
+        is what its libraries cost to build. A package in `tested` also writes
+        its test binaries.
+        """
+        if self.baseline is None:
+            return None
+        return (self.baseline
+                + sum(self.of(name)[0] for name in closure)
+                + sum(self.of(name)[1] for name in tested))
+
+
+def recorded_build_bytes(path: Path | None = None) -> BuildFootprint:
+    """Measured what a test job's build writes, per package and before them.
+
+    Absent data yields no readings (``None`` sizes): the planner then balances
+    on time alone, as a checkout without the record always could.
+    """
+    path = path or TEST_BYTES
+    if not path.is_file():
+        return BuildFootprint()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or set(data) != {"baseline", "unrecorded", "packages"}:
+        raise ValueError(f"{path} must have exactly baseline, unrecorded and packages")
+
+    def sizes(value: object) -> tuple[int, int]:
+        if (not isinstance(value, dict) or set(value) != {"libraries", "tests"}
+                or not all(type(part) is int and part >= 0 for part in value.values())):
+            raise ValueError(f"{path} must measure libraries and tests in whole bytes")
+        return value["libraries"], value["tests"]
+
+    packages = data["packages"]
+    if isinstance(packages, dict):
+        packages = {name: sizes(value) for name, value in packages.items()}
+    else:
+        raise ValueError(f"{path} must map package names to their sizes")
+    if type(data["baseline"]) is not int or data["baseline"] <= 0:
+        raise ValueError(f"{path}: baseline must be a positive number of bytes")
+    unrecorded = sizes(data["unrecorded"])
+    if min(unrecorded) <= 0:
+        # A package the record does not know must never count as free weight.
+        raise ValueError(f"{path}: unrecorded must measure positive bytes")
+    return BuildFootprint(data["baseline"], unrecorded, packages)
 
 
 def manifest_at(root: Path, revision: str) -> dict[str, tuple[str, str]] | None:
@@ -756,11 +853,17 @@ def direct_dependants_within_budget(
 
 def balance(names: set[str], packages: dict[str, dict], shard_count: int,
             test_seconds: dict[str, int] | None = None,
-            apart: tuple[frozenset[str], ...] = ()) -> list[dict]:
+            apart: tuple[frozenset[str], ...] = (),
+            written: Callable[[set[str]], int | None] | None = None,
+            capacity: int = TEST_SHARD_STORE_BYTES) -> list[dict]:
     """Spread packages over shards by structural cost plus recorded test time.
 
     Packages of different `apart` sets never share a shard while another
-    shard can take them.
+    shard can take them. When `written` measures what a shard's build writes,
+    no shard takes a package that would push it past `capacity`: the balancer
+    opens further shards for the rest, so the partition follows the build's
+    bytes rather than how many packages it names. A package that alone exceeds
+    the capacity keeps a shard of its own; a package cannot be split.
     """
     if not names:
         return []
@@ -774,10 +877,26 @@ def balance(names: set[str], packages: dict[str, dict], shard_count: int,
         return any(name in group and any(other in rival for other in shard["names"])
                    for group in apart for rival in apart if rival is not group)
 
+    def fits(shard: dict, name: str) -> bool:
+        if written is None:
+            return True
+        size = written(set(shard["names"]) | {name})
+        return size is None or size <= capacity
+
     shards = [{"names": [], "cost": 0, "weight": 0}
               for _ in range(max(1, min(shard_count, len(names))))]
     for name in sorted(names, key=lambda n: (-weight(n), n)):
         candidates = [shard for shard in shards if not clashes(name, shard)] or shards
+        roomy = [shard for shard in candidates if fits(shard, name)]
+        if roomy:
+            candidates = roomy
+        else:
+            # Nothing has room. A package that alone exceeds the capacity
+            # takes an empty shard and stays whole: it cannot be split.
+            candidates = [shard for shard in candidates if not shard["names"]]
+            if not candidates:
+                candidates = [{"names": [], "cost": 0, "weight": 0}]
+                shards.append(candidates[0])
         shard = min(candidates, key=lambda item: (item["weight"], len(item["names"])))
         shard["names"].append(name)
         shard["cost"] += package_cost(packages[name])
@@ -825,12 +944,30 @@ def useful_test_shard_count(names: set[str], test_seconds: dict[str, int],
                max(1, len(names)), time_limited)
 
 
-def test_shard_runner(shard: dict, arch: str) -> str:
-    """The class a test shard asks for: large when its links exceed the native one."""
+def test_shard_runner(shard: dict, arch: str,
+                      written: Callable[[set[str]], int | None] | None = None) -> str:
+    """The class a test shard asks for: large when it has outgrown the native one.
+
+    The native class gives a test job 16 GiB and a 50 GiB store; a shard whose
+    measured build writes more than that, or whose links exceed the native
+    class, asks for the large one.
+    """
     names = set(shard["packages"].split()[1::2])
-    if shard["estimated_cost"] > LARGE_TEST_SHARD_COST or names & LARGE_TEST_PACKAGES:
+    size = written(names) if written is not None else None
+    if (shard["estimated_cost"] > LARGE_TEST_SHARD_COST or names & LARGE_TEST_PACKAGES
+            or (size is not None and size > NATIVE_TEST_SHARD_BYTES)):
         return LARGE_RUNNERS[arch]
     return NATIVE_RUNNERS[arch]
+
+
+def test_build_jobs(runner: str, arch: str) -> int:
+    """Compile/link jobs a test job may run without reaching its memory limit.
+
+    Each concurrent job peaks at TEST_JOB_BYTES, so the class's job count is
+    reduced to what TEST_SHARD_MEMORY_BYTES holds. A class always keeps one.
+    """
+    class_jobs = TEST_CLASS_JOBS.get(runner, {}).get(arch, 1)
+    return max(1, min(class_jobs, TEST_SHARD_MEMORY_BYTES // TEST_JOB_BYTES[arch]))
 
 
 def android_apps(packages: dict[str, dict]) -> set[str]:
@@ -896,6 +1033,7 @@ def make_plan(
     suite_manifest: path_suites.Manifest | None = None,
     all_suites: bool = False,
     test_seconds: dict[str, int] | None = None,
+    build_bytes: BuildFootprint | None = None,
     only: dict | None = None,
 ) -> dict:
     """Plan the check jobs for `changes`.
@@ -905,6 +1043,7 @@ def make_plan(
     other package and suite gave the same result on that run.
     """
     packages, by_dir = package_maps(metadata, root)
+    build_bytes = build_bytes if build_bytes is not None else recorded_build_bytes()
     resolved_inputs = {path: resolved for path, resolved in (resolved_inputs or {}).items()
                        if path in changes}
     reverse = reverse_dependencies(packages, root)
@@ -1076,23 +1215,29 @@ def make_plan(
                          **qualified_native.placement(root, set(shard["packages"].split()[1::2]), arch)}
             check_rows.append({**shard, "arch": arch, "runner": runner, "check_runner": runner, **placement})
     # Test shards cover the tested packages and scoped readers, split by
-    # recorded test time. Packages too heavy to share a job get their own
-    # shards, which start first; the rest balance around them. Arm shards are
-    # balanced as one set (MAX_TEST_SHARDS_ARM).
+    # recorded test time and bounded by what each job's build writes. Packages
+    # too heavy to share a job get their own shards, which start first; the
+    # rest balance around them. Arm shards are balanced as one set
+    # (MAX_TEST_SHARDS_ARM).
     test_units = (tested | scoped_tests.keys()) & selected
+    build_edges = dependency_edges(packages)
+
+    def shard_bytes(names: set[str]) -> int | None:
+        """What a test job carrying `names` writes: its links plus its own tests."""
+        return build_bytes.shard(names, closure(names, build_edges.linked))
 
     def test_shards_for(arch: str) -> list[dict]:
         if arch == "aarch64":
             shards = balance(test_units, packages,
                              useful_test_shard_count(test_units, test_seconds or {},
                                                      MAX_TEST_SHARDS_ARM),
-                             test_seconds, TEST_SHARD_APART)
+                             test_seconds, TEST_SHARD_APART, shard_bytes)
         else:
             dedicated = dedicated_test_shards(tested & selected, packages, test_seconds)
             shared_units = test_units - {shard["packages"].split()[1] for shard in dedicated}
             shards = dedicated + balance(
                 shared_units, packages, useful_test_shard_count(shared_units, test_seconds or {}),
-                test_seconds, TEST_SHARD_APART)
+                test_seconds, TEST_SHARD_APART, shard_bytes)
         for index, shard in enumerate(shards, 1):
             shard["shard"] = index
         if selected and not shards:
@@ -1117,12 +1262,15 @@ def make_plan(
                      **qualified_native.placement(root, shard_names, arch)}
         certify = any(Path(packages[name]["manifest_path"]).resolve().parent.parent == root.resolve() / "apps"
                       and name != "agent" for name in test_names)
-        # The shard's own class: a whole-workspace shard, or one carrying the
-        # tree's largest test link, needs memory the native class does not have
-        # (test_shard_runner).
-        runner = test_shard_runner(shard, arch)
+        # The shard's own class: a shard whose build outgrows the native
+        # class's store, or that carries the tree's largest test link, needs
+        # the large one (test_shard_runner). Its jobs are then sized so the
+        # peak of its concurrent links stays inside the class's memory.
+        runner = test_shard_runner(shard, arch, shard_bytes)
         return {**shard, "arch": arch, "runner": runner, "check_runner": runner, **placement,
                 "certify": certify,
+                "estimated_build_bytes": shard_bytes(shard_names),
+                "build_jobs": test_build_jobs(runner, arch),
                 "test_packages": " ".join(f"-p {name}" for name in test_names),
                 "scoped_tests": json.dumps(scoped, separators=(",", ":")) if scoped else ""}
 

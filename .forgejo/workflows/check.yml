@@ -375,28 +375,19 @@ jobs:
   test:
     if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && needs.select.outputs.rust_required == 'true' }}
     needs: [builder, select]
-    # Linking a shard's test binaries is the memory peak of the whole check:
-    # the kernel killed a whole-workspace shard's build on both architectures
-    # at the native class's 16 GiB job limit (exit 137, ~100 packages each).
-    # The planner therefore names the class in `matrix.runner`:
-    # tools/ci/affected_packages.py asks for runner-large / runner-large-arm64
-    # when a shard's own links exceed the native class (a whole-workspace
-    # shard, or one carrying the tree's largest test link).
+    # Compiling and linking a shard's tests is the memory peak of the whole
+    # check, and its build is the store peak: a whole-workspace shard filled
+    # runner-large's store until a mold link failed with "Disk full?", and its
+    # peak memory sat at the class's 36 GiB limit. The planner therefore sizes
+    # both: `matrix.runner` names the class the shard's measured build needs
+    # and `matrix.build_jobs` the compile/link jobs that stay inside the
+    # class's memory (tools/ci/affected_packages.py, tools/ci/recorded_build_bytes.json).
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     outputs:
       cleanup-shared-libraries: ${{ steps.cleanup.outputs.shared-libraries }}
     env:
-      # Compiling and linking a shard's tests is the memory peak of the check.
-      # The native x86 class's 16 GiB job limit took a 22-package shard at
-      # eight concurrent links (killed 678 s in, exit 137: apps/agent,
-      # tilo-relay and tilo-room-host together), so the native class keeps
-      # four; the large class (36 GiB) keeps eight. The native ARM slot has
-      # memory for one of the largest test links but not four, and the large
-      # ARM slot four: ci-nightly builds the whole arm workspace that way.
-      CARGO_BUILD_JOBS: >-
-        ${{ (contains(matrix.runner, 'large') && (matrix.arch == 'aarch64' && '4' || '8'))
-            || (matrix.arch == 'aarch64' && '1' || '4') }}
+      CARGO_BUILD_JOBS: ${{ matrix.build_jobs }}
     strategy:
       fail-fast: false
       max-parallel: 8
