@@ -817,6 +817,10 @@ fn opening_a_workspace_with_no_index_reads_its_chunks_once() {
     let mut session = Session::tasks_over_launched(&route, chunks, Some(storage));
     session.wait_index();
     let ready_us = since(start, wall.elapsed());
+    // The window reads its rows from the first step of the index while the rest of the record is
+    // derived off the frame: what the open builds over, and what it reads, is counted once it is
+    // whole, not when its first step lands.
+    session.settle();
     let wall_us = wall.elapsed().as_micros() as u64;
     assert!(session.builds() > 0, "the first open builds the index");
     assert_eq!(
@@ -835,7 +839,7 @@ fn opening_a_workspace_with_no_index_reads_its_chunks_once() {
         "a cold open reads every chunk the record names, once"
     );
     eprintln!(
-        "cold open at {SEEDED} tasks over {} chunks: CPU {:.2} ms, wall {:.2} ms",
+        "cold open at {SEEDED} tasks over {} chunks: first rows {:.2} ms of CPU, whole {:.2} ms",
         held.len(),
         ready_us as f64 / 1000.0,
         wall_us as f64 / 1000.0
