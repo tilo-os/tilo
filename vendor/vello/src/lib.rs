@@ -108,7 +108,6 @@
 
 #[cfg(feature = "wgpu")]
 mod bump_budget;
-mod debug;
 #[cfg(feature = "wgpu")]
 mod image_source;
 mod recording;
@@ -126,7 +125,6 @@ pub mod low_level {
     //!
     //! These APIs have not been carefully designed, and might not be powerful enough for this use case.
 
-    pub use crate::debug::DebugLayers;
     pub use crate::recording::{
         BindType, BufferProxy, Command, ImageFormat, ImageProxy, Recording, ResourceBindings,
         ResourceId, ResourceProxy, ShaderId,
@@ -160,11 +158,9 @@ pub use vello_shaders::SOURCE_FINGERPRINT as SHADER_FINGERPRINT;
 
 use low_level::ShaderId;
 #[cfg(feature = "wgpu")]
-use low_level::{BumpAllocators, FullShaders, Recording, Render};
+use low_level::{FullShaders, Recording, Render};
 use thiserror::Error;
 
-#[cfg(feature = "wgpu")]
-use debug::DebugLayers;
 #[cfg(feature = "wgpu")]
 use vello_encoding::Resolver;
 #[cfg(feature = "wgpu")]
@@ -341,12 +337,6 @@ pub enum Error {
     #[cfg(feature = "wgpu")]
     #[error("Failed to async map a buffer")]
     BufferAsyncError(#[from] wgpu::BufferAsyncError),
-    /// Failed to download an internal buffer for debug visualization.
-    #[cfg(feature = "wgpu")]
-    #[cfg(feature = "debug_layers")]
-    #[error("Failed to download internal buffer '{0}' for visualization")]
-    DownloadError(&'static str),
-
     #[cfg(feature = "wgpu")]
     #[error("wgpu Error from scope")]
     WgpuErrorFromScope(#[from] wgpu::Error),
@@ -440,8 +430,6 @@ pub struct Renderer {
     last_area_ppt8_selected: bool,
     /// Recorded-pass telemetry for the latest synchronous ordinary submission.
     last_clip_single_group_selected: bool,
-    #[cfg(feature = "debug_layers")]
-    debug: debug::DebugRenderer,
     #[cfg(feature = "wgpu-profiler")]
     #[doc(hidden)] // End-users of Vello should not have `wgpu-profiler` enabled.
     /// The profiler used with events for this renderer. This is *not* treated as public API.
@@ -1301,13 +1289,6 @@ impl Default for RendererOptions {
 }
 
 #[cfg(feature = "wgpu")]
-struct RenderResult {
-    bump: Option<BumpAllocators>,
-    #[cfg(feature = "debug_layers")]
-    captured: Option<render::CapturedBuffers>,
-}
-
-#[cfg(feature = "wgpu")]
 struct SparseTileUpload {
     buffer: wgpu::Buffer,
     capacity_bytes: u64,
@@ -1909,10 +1890,6 @@ impl Renderer {
         engine: WgpuEngine,
         shaders: FullShaders,
     ) -> Result<Self> {
-        #[cfg(feature = "debug_layers")]
-        let mut engine = engine;
-        #[cfg(feature = "debug_layers")]
-        let debug = debug::DebugRenderer::new(device, wgpu::TextureFormat::Rgba8Unorm, &mut engine);
         let mut budget = bump_budget::BudgetTracker::new();
         budget.set_device_limits(&device.limits());
 
@@ -1937,8 +1914,6 @@ impl Renderer {
             last_canonical_segment_order_selected: false,
             last_area_ppt8_selected: false,
             last_clip_single_group_selected: false,
-            #[cfg(feature = "debug_layers")]
-            debug,
             #[cfg(feature = "wgpu-profiler")]
             profiler: GpuProfiler::new(device, GpuProfilerSettings::default())?,
             #[cfg(feature = "wgpu-profiler")]
@@ -2928,7 +2903,6 @@ impl Renderer {
             params,
             self.budget.budget(),
             measure,
-            false,
             None,
             defer_bump_readback,
             zero_gradient,
@@ -3037,7 +3011,6 @@ impl Renderer {
             params,
             self.budget.budget(),
             measure,
-            false,
             None,
             defer_bump_readback,
             zero_gradient,
@@ -3133,7 +3106,6 @@ impl Renderer {
             params,
             self.budget.budget(),
             measure,
-            false,
             None,
             defer,
             zero,
@@ -3295,7 +3267,6 @@ impl Renderer {
             params,
             self.budget.budget(),
             measure,
-            false,
             None,
             defer,
             zero,
@@ -3896,8 +3867,6 @@ impl Renderer {
         let mut engine = WgpuEngine::new(self.options.use_cpu, self.options.pipeline_cache.clone());
         // We choose not to initialise these shaders in parallel, to ensure the error scope works correctly
         let shaders = shaders::full_shaders(device, &mut engine, &self.options)?;
-        #[cfg(feature = "debug_layers")]
-        let debug = debug::DebugRenderer::new(device, wgpu::TextureFormat::Rgba8Unorm, &mut engine);
         let error = scope.pop().await;
         if let Some(error) = error {
             return Err(error.into());
@@ -3905,228 +3874,7 @@ impl Renderer {
         self.engine = engine;
         self.image_atlas = None;
         self.shaders = shaders;
-        #[cfg(feature = "debug_layers")]
-        {
-            self.debug = debug;
-        }
         Ok(())
-    }
-
-    /// Renders a scene to the target texture using an async pipeline.
-    ///
-    /// Almost all consumers should prefer [`Self::render_to_texture`].
-    ///
-    /// The return value is the value of the `BumpAllocators` in this rendering, which is currently used
-    /// for debug output.
-    ///
-    /// This return type is not stable, and will likely be changed when a more principled way to access
-    /// relevant statistics is implemented
-    #[cfg_attr(docsrs, doc(hidden))]
-    #[deprecated(
-        note = "render_to_texture should be preferred, as the _async version has no stability guarantees"
-    )]
-    pub async fn render_to_texture_async(
-        &mut self,
-        device: &Device,
-        queue: &Queue,
-        scene: &Scene,
-        texture: &TextureView,
-        params: &RenderParams,
-        debug_layers: DebugLayers,
-    ) -> Result<Option<BumpAllocators>> {
-        self.last_canonical_segment_order_selected = false;
-        self.last_area_ppt8_selected = false;
-        self.last_clip_single_group_selected = false;
-        if cfg!(not(feature = "debug_layers")) && !debug_layers.is_empty() {
-            static HAS_WARNED: AtomicBool = AtomicBool::new(false);
-            if !HAS_WARNED.swap(true, std::sync::atomic::Ordering::Release) {
-                log::warn!(
-                    "Requested debug layers {debug_layers:?} but `debug_layers` feature is not enabled"
-                );
-            }
-        }
-
-        let result = self
-            .render_to_texture_async_internal(device, queue, scene, texture, params)
-            .await?;
-
-        #[cfg(feature = "debug_layers")]
-        {
-            let mut recording = Recording::default();
-            let target_proxy = recording::ImageProxy::new(
-                params.width,
-                params.height,
-                recording::ImageFormat::Rgba8,
-            );
-            if let Some(captured) = result.captured {
-                let bump = result.bump.as_ref().unwrap();
-                // TODO: We could avoid this download if `DebugLayers::VALIDATION` is unset.
-                let downloads = DebugDownloads::map(&self.engine, &captured, bump).await?;
-                self.debug.render(
-                    &mut recording,
-                    target_proxy,
-                    &captured,
-                    bump,
-                    params,
-                    &downloads,
-                    debug_layers,
-                );
-
-                // TODO: this sucks. better to release everything in a helper
-                // TODO: it would be much better to have a way to safely destroy a buffer.
-                self.engine.free_download(captured.lines);
-                captured.release_buffers(&mut recording);
-            }
-            let external_resources = [ExternalResource::Image(target_proxy, texture)];
-            self.engine.run_recording(
-                device,
-                queue,
-                &recording,
-                &external_resources,
-                "render_to_texture_async debug layers",
-                #[cfg(feature = "wgpu-profiler")]
-                &mut self.profiler,
-            )?;
-        }
-
-        #[cfg(feature = "wgpu-profiler")]
-        {
-            self.profiler.end_frame().unwrap();
-            if let Some(result) = self
-                .profiler
-                .process_finished_frame(queue.get_timestamp_period())
-            {
-                self.profile_result = Some(result);
-            }
-        }
-
-        Ok(result.bump)
-    }
-
-    async fn render_to_texture_async_internal(
-        &mut self,
-        device: &Device,
-        queue: &Queue,
-        scene: &Scene,
-        texture: &TextureView,
-        params: &RenderParams,
-    ) -> Result<RenderResult> {
-        let mut render = Render::new();
-        render.set_clip_single_group_allowed(false);
-        let mut recording = Recording::default();
-        let mut packed_scene = Vec::new();
-        let encoding = scene.encoding();
-        self.budget.set_viewport(params.width, params.height);
-        let capture_debug = cfg!(feature = "debug_layers");
-        // Debug layers require these counters. Otherwise only the adaptive
-        // GPU path pays for the awaited readback; pinned and CPU-dispatch
-        // rendering do not need it for sizing.
-        let measure_bump =
-            capture_debug || (!self.options.use_cpu && self.budget.wants_measurement());
-        let zero_gradient = if self.engine.zero_gradient_reuse_enabled() {
-            Some(self.engine.ensure_zero_gradient(device, queue))
-        } else {
-            None
-        };
-        render.render_encoding_coarse(
-            encoding,
-            &mut self.resolver,
-            &self.shaders,
-            &mut self.image_atlas,
-            &mut recording,
-            &mut packed_scene,
-            params,
-            self.budget.budget(),
-            measure_bump,
-            capture_debug,
-            None,
-            false,
-            zero_gradient,
-        );
-        let target = render.out_image();
-        let bump_buf = render.bump_buf();
-        #[cfg(feature = "debug_layers")]
-        let captured = render.take_captured_buffers();
-        self.engine.run_recording(
-            device,
-            queue,
-            &recording,
-            &[],
-            "t_async_coarse",
-            #[cfg(feature = "wgpu-profiler")]
-            &mut self.profiler,
-        )?;
-
-        let mut bump: Option<BumpAllocators> = None;
-        let mapped_and_unmapped = if let Some(download) = self.engine.get_download(bump_buf) {
-            let buf_slice = download.slice(..);
-            let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
-            buf_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
-            receiver.receive().await.expect("channel was closed")?;
-            let mapped = buf_slice.get_mapped_range();
-            bump = Some(bytemuck::pod_read_unaligned(&mapped));
-            drop(mapped);
-            download.unmap();
-            true
-        } else {
-            false
-        };
-        // Size later frames from this one. Re-running coarse for the current
-        // frame is not attempted; a failure can therefore affect this output,
-        // and convergence can require more than one subsequent render.
-        if let Some(bump) = bump.as_ref()
-            && self.budget.observe_now(bump)
-        {
-            self.engine.clear_pool();
-        }
-        if mapped_and_unmapped {
-            self.engine.recycle_bump_download(bump_buf);
-        } else {
-            self.engine.free_download(bump_buf);
-        }
-        // Maybe clear to reuse allocation?
-        let mut recording = Recording::default();
-        render.record_fine(&self.shaders, &mut recording);
-        let external_resources = [ExternalResource::Image(target, texture)];
-        self.engine.run_recording(
-            device,
-            queue,
-            &recording,
-            &external_resources,
-            "t_async_fine",
-            #[cfg(feature = "wgpu-profiler")]
-            &mut self.profiler,
-        )?;
-        Ok(RenderResult {
-            bump,
-            #[cfg(feature = "debug_layers")]
-            captured,
-        })
-    }
-}
-#[cfg(all(feature = "debug_layers", feature = "wgpu"))]
-pub(crate) struct DebugDownloads<'a> {
-    pub lines: wgpu::BufferSlice<'a>,
-}
-
-#[cfg(all(feature = "debug_layers", feature = "wgpu"))]
-impl<'a> DebugDownloads<'a> {
-    pub async fn map(
-        engine: &'a WgpuEngine,
-        captured: &render::CapturedBuffers,
-        bump: &BumpAllocators,
-    ) -> Result<DebugDownloads<'a>> {
-        use vello_encoding::LineSoup;
-
-        let Some(lines_buf) = engine.get_download(captured.lines) else {
-            return Err(Error::DownloadError("linesoup"));
-        };
-
-        let lines = lines_buf.slice(..bump.lines as u64 * size_of::<LineSoup>() as u64);
-        let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
-        lines.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
-        receiver.receive().await.expect("channel was closed")?;
-        Ok(Self { lines })
     }
 }
 
@@ -4141,6 +3889,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::low_level::BumpAllocators;
     use crate::{
         kurbo::{Affine, BezPath, Point, Rect},
         peniko::{

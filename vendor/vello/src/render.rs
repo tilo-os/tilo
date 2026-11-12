@@ -255,18 +255,6 @@ pub struct Render {
     clip_single_group: bool,
     fine_resources: Option<FineResources>,
     mask_buf: Option<ResourceProxy>,
-
-    #[cfg(feature = "debug_layers")]
-    captured_buffers: Option<CapturedBuffers>,
-}
-
-#[cfg(feature = "debug_layers")]
-impl Drop for Render {
-    fn drop(&mut self) {
-        if self.captured_buffers.is_some() {
-            unreachable!("Render captured buffers without freeing them");
-        }
-    }
 }
 
 /// Resources produced by pipeline, needed for fine rasterization.
@@ -304,31 +292,6 @@ fn free_transient_gradient(
 ) {
     if gradient_image_is_transient {
         recording.free_resource(gradient_image);
-    }
-}
-
-/// A collection of internal buffers that are used for debug visualization when the
-/// `debug_layers` feature is enabled. The contents of these buffers remain GPU resident
-/// and must be freed directly by the caller.
-///
-/// Some of these buffers are also scheduled for a download to allow their contents to be
-/// processed for CPU-side validation. These buffers are documented as such.
-#[cfg(feature = "debug_layers")]
-pub struct CapturedBuffers {
-    pub sizes: vello_encoding::BufferSizes,
-
-    /// Buffers that remain GPU-only
-    pub path_bboxes: BufferProxy,
-
-    /// Buffers scheduled for download
-    pub lines: BufferProxy,
-}
-
-#[cfg(feature = "debug_layers")]
-impl CapturedBuffers {
-    pub fn release_buffers(self, recording: &mut Recording) {
-        recording.free_buffer(self.path_bboxes);
-        recording.free_buffer(self.lines);
     }
 }
 
@@ -399,7 +362,6 @@ pub(crate) fn render_encoding_full(
         params,
         budget,
         measure,
-        false,
         None,
         defer_bump_readback,
         zero_gradient,
@@ -464,7 +426,6 @@ pub(crate) fn render_encoding_sparse_fine(
         params,
         budget,
         measure,
-        false,
         coarse_tiles,
         coarse_opaque_prune_requested,
         solid_fuse_requested,
@@ -550,7 +511,6 @@ pub(crate) fn render_encoding_sparse_fine_with_ptcl_capture(
         params,
         budget,
         false,
-        false,
         coarse_tiles,
         false,
         solid_fuse_requested,
@@ -607,8 +567,6 @@ impl Render {
             clip_single_group: false,
             fine_resources: None,
             mask_buf: None,
-            #[cfg(feature = "debug_layers")]
-            captured_buffers: None,
         }
     }
 
@@ -617,47 +575,6 @@ impl Render {
     /// exercise this opt-in coarse permutation.
     pub(crate) fn set_clip_single_group_allowed(&mut self, allowed: bool) {
         self.clip_single_group_allowed = allowed;
-    }
-
-    /// Prepare a recording for the coarse rasterization phase.
-    ///
-    /// `budget` is how much bump-allocated scratch to reserve; see
-    /// [`vello_encoding::BumpBudget`].
-    ///
-    /// `measure_bump` downloads the atomic bump counters used for dynamic
-    /// memory sizing. `capture_debug` additionally retains the debug-layer
-    /// buffers for the caller; it must later take and release those buffers.
-    pub fn render_encoding_coarse(
-        &mut self,
-        encoding: &Encoding,
-        resolver: &mut Resolver,
-        shaders: &FullShaders,
-        persistent_image_atlas: &mut Option<ImageProxy>,
-        recording: &mut Recording,
-        packed: &mut Vec<u8>,
-        params: &RenderParams,
-        budget: &vello_encoding::BumpBudget,
-        measure_bump: bool,
-        capture_debug: bool,
-        coarse_tiles: Option<&[u32]>,
-        defer_bump_readback: bool,
-        zero_gradient: Option<ImageProxy>,
-    ) {
-        self.render_encoding_coarse_with_dispatch(
-            encoding,
-            resolver,
-            shaders,
-            persistent_image_atlas,
-            recording,
-            packed,
-            params,
-            budget,
-            measure_bump,
-            capture_debug,
-            coarse_tiles.map(SparseCoarseDispatch::Legacy),
-            defer_bump_readback,
-            zero_gradient,
-        );
     }
 
     pub(crate) fn render_encoding_coarse_with_dispatch(
@@ -671,7 +588,6 @@ impl Render {
         params: &RenderParams,
         budget: &vello_encoding::BumpBudget,
         measure_bump: bool,
-        capture_debug: bool,
         coarse_tiles: Option<SparseCoarseDispatch<'_>>,
         defer_bump_readback: bool,
         zero_gradient: Option<ImageProxy>,
@@ -686,7 +602,6 @@ impl Render {
             params,
             budget,
             measure_bump,
-            capture_debug,
             coarse_tiles,
             false,
             false,
@@ -728,7 +643,6 @@ impl Render {
             params,
             budget,
             false,
-            false,
             coarse_tiles,
             false,
             false,
@@ -753,7 +667,6 @@ impl Render {
         params: &RenderParams,
         budget: &vello_encoding::BumpBudget,
         measure_bump: bool,
-        capture_debug: bool,
         coarse_tiles: Option<SparseCoarseDispatch<'_>>,
         coarse_opaque_prune_requested: bool,
         solid_fuse_requested: bool,
@@ -1419,29 +1332,8 @@ impl Render {
             finish_bump_readback(recording, *bump_buf.as_buf().unwrap(), measure_bump);
         }
 
-        #[cfg(feature = "debug_layers")]
-        {
-            if capture_debug {
-                let path_bboxes = *path_bbox_buf.as_buf().unwrap();
-                let lines = *lines_buf.as_buf().unwrap();
-                recording.download(lines);
-
-                self.captured_buffers = Some(CapturedBuffers {
-                    sizes: cpu_config.buffer_sizes,
-                    path_bboxes,
-                    lines,
-                });
-            } else {
-                recording.free_resource(path_bbox_buf);
-                recording.free_resource(lines_buf);
-            }
-        }
-        #[cfg(not(feature = "debug_layers"))]
-        {
-            let _ = capture_debug;
-            recording.free_resource(path_bbox_buf);
-            recording.free_resource(lines_buf);
-        }
+        recording.free_resource(path_bbox_buf);
+        recording.free_resource(lines_buf);
     }
 
     /// Canonicalize every full fine tile after path tiling has produced its
@@ -2186,10 +2078,6 @@ impl Render {
         )
     }
 
-    #[cfg(feature = "debug_layers")]
-    pub fn take_captured_buffers(&mut self) -> Option<CapturedBuffers> {
-        self.captured_buffers.take()
-    }
 }
 
 #[cfg(all(test, feature = "wgpu"))]
@@ -2432,7 +2320,6 @@ mod tests {
             },
             &vello_encoding::BumpBudget::INITIAL,
             false,
-            false,
             None,
             false,
             None,
@@ -2520,7 +2407,6 @@ mod tests {
                 },
                 &vello_encoding::BumpBudget::INITIAL,
                 true,
-                false,
                 None,
                 true,
                 None,
@@ -2789,7 +2675,6 @@ mod tests {
             },
             &vello_encoding::BumpBudget::INITIAL,
             false,
-            false,
             dispatch,
             false,
             false,
@@ -2929,7 +2814,6 @@ mod tests {
             },
             &vello_encoding::BumpBudget::INITIAL,
             false,
-            false,
             dispatch,
             false,
             false,
@@ -3011,7 +2895,6 @@ mod tests {
             },
             &vello_encoding::BumpBudget::INITIAL,
             false,
-            false,
             None,
             false,
             None,
@@ -3073,7 +2956,6 @@ mod tests {
             },
             &vello_encoding::BumpBudget::INITIAL,
             false,
-            false,
             dispatch,
             false,
             None,
@@ -3131,7 +3013,6 @@ mod tests {
             },
             &vello_encoding::BumpBudget::INITIAL,
             false,
-            false,
             dispatch,
             false,
             None,
@@ -3161,7 +3042,6 @@ mod tests {
             &mut packed,
             &params,
             &vello_encoding::BumpBudget::INITIAL,
-            false,
             false,
             None,
             false,
@@ -3242,7 +3122,6 @@ mod tests {
                 antialiasing_method: AaConfig::Area,
             },
             &vello_encoding::BumpBudget::INITIAL,
-            false,
             false,
             dispatch,
             requested,
@@ -3365,7 +3244,6 @@ mod tests {
                 antialiasing_method: AaConfig::Area,
             },
             &vello_encoding::BumpBudget::INITIAL,
-            false,
             false,
             dispatch,
             opaque_prune_requested,
@@ -3691,7 +3569,6 @@ mod tests {
             },
             &vello_encoding::BumpBudget::INITIAL,
             true,
-            false,
             None,
             defer,
             None,
@@ -3727,7 +3604,6 @@ mod tests {
                 antialiasing_method: AaConfig::Area,
             },
             &vello_encoding::BumpBudget::INITIAL,
-            false,
             false,
             None,
             false,
@@ -3796,7 +3672,6 @@ mod tests {
                 antialiasing_method: AaConfig::Area,
             },
             &vello_encoding::BumpBudget::INITIAL,
-            false,
             false,
             None,
             false,

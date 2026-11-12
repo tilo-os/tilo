@@ -379,7 +379,6 @@ doc = false
 "futures-channel-0_3_32" = { package = "futures-channel", version = "^0.3.32", default-features = false, features = ["alloc", "default", "futures-sink", "sink", "std"] }
 "futures-core-0_3_32" = { package = "futures-core", version = "^0.3.32", default-features = false, features = ["alloc", "default", "std", "unstable"] }
 "futures-executor-0_3_32" = { package = "futures-executor", version = "^0.3.32", default-features = false, features = ["default", "std"] }
-"futures-intrusive-0_5_0" = { package = "futures-intrusive", version = "^0.5.0", default-features = false, features = ["alloc", "default", "parking_lot", "std"] }
 "futures-io-0_3_32" = { package = "futures-io", version = "^0.3.32", default-features = false, features = ["default", "std"] }
 "futures-lite-2_6_1" = { package = "futures-lite", version = "^2.6.1", default-features = false, features = ["alloc", "default", "fastrand", "futures-io", "parking", "race", "std"] }
 "futures-sink-0_3_32" = { package = "futures-sink", version = "^0.3.32", default-features = false, features = ["alloc", "default", "std"] }
@@ -1864,7 +1863,6 @@ doc = false
 "futures-channel-0_3_32" = { package = "futures-channel", version = "^0.3.32", default-features = false, features = ["alloc", "default", "futures-sink", "sink", "std"] }
 "futures-core-0_3_32" = { package = "futures-core", version = "^0.3.32", default-features = false, features = ["alloc", "default", "std", "unstable"] }
 "futures-executor-0_3_32" = { package = "futures-executor", version = "^0.3.32", default-features = false, features = ["default", "std"] }
-"futures-intrusive-0_5_0" = { package = "futures-intrusive", version = "^0.5.0", default-features = false, features = ["alloc", "default", "parking_lot", "std"] }
 "futures-io-0_3_32" = { package = "futures-io", version = "^0.3.32", default-features = false, features = ["default", "std"] }
 "futures-lite-2_6_1" = { package = "futures-lite", version = "^2.6.1", default-features = false, features = ["alloc", "default", "fastrand", "futures-io", "parking", "race", "std"] }
 "futures-macro-0_3_32" = { package = "futures-macro", version = "^0.3.32", default-features = false, features = [] }
@@ -2995,7 +2993,6 @@ doc = false
 "futures-channel-0_3_32" = { package = "futures-channel", version = "^0.3.32", default-features = false, features = ["alloc", "default", "futures-sink", "sink", "std"] }
 "futures-core-0_3_32" = { package = "futures-core", version = "^0.3.32", default-features = false, features = ["alloc", "default", "std", "unstable"] }
 "futures-executor-0_3_32" = { package = "futures-executor", version = "^0.3.32", default-features = false, features = ["default", "std"] }
-"futures-intrusive-0_5_0" = { package = "futures-intrusive", version = "^0.5.0", default-features = false, features = ["alloc", "default", "parking_lot", "std"] }
 "futures-io-0_3_32" = { package = "futures-io", version = "^0.3.32", default-features = false, features = ["default", "std"] }
 "futures-lite-2_6_1" = { package = "futures-lite", version = "^2.6.1", default-features = false, features = ["alloc", "default", "fastrand", "futures-io", "parking", "race", "std"] }
 "futures-sink-0_3_32" = { package = "futures-sink", version = "^0.3.32", default-features = false, features = ["alloc", "default", "std"] }
@@ -4479,7 +4476,6 @@ doc = false
 "futures-channel-0_3_32" = { package = "futures-channel", version = "^0.3.32", default-features = false, features = ["alloc", "default", "futures-sink", "sink", "std"] }
 "futures-core-0_3_32" = { package = "futures-core", version = "^0.3.32", default-features = false, features = ["alloc", "default", "std", "unstable"] }
 "futures-executor-0_3_32" = { package = "futures-executor", version = "^0.3.32", default-features = false, features = ["default", "std"] }
-"futures-intrusive-0_5_0" = { package = "futures-intrusive", version = "^0.5.0", default-features = false, features = ["alloc", "default", "parking_lot", "std"] }
 "futures-io-0_3_32" = { package = "futures-io", version = "^0.3.32", default-features = false, features = ["default", "std"] }
 "futures-lite-2_6_1" = { package = "futures-lite", version = "^2.6.1", default-features = false, features = ["alloc", "default", "fastrand", "futures-io", "parking", "race", "std"] }
 "futures-macro-0_3_32" = { package = "futures-macro", version = "^0.3.32", default-features = false, features = [] }
