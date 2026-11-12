@@ -1947,6 +1947,105 @@ fn a_window_is_shared_by_naming_the_tab_it_is_shown_in() {
     );
 }
 
+/// Two devices that hold one workspace each list the other's windows already, as windows open on
+/// another device: the desk's own record says so before anything is shared. A share of such a
+/// window is pictured in the tab that stood for it, and when the share ends that tab stays, since
+/// the window is still open there and this session never put the tab on the desk.
+#[test]
+fn a_window_the_desk_already_lists_is_pictured_in_its_tab_and_keeps_it_when_the_share_ends() {
+    tilo_window_share::flatpak_share::read_encoders();
+    let salt = tilo_desktop_model::ids::device_salt_of_key(device(0x61).as_bytes());
+    let mut host = member_minting_under(
+        0x61,
+        desk(
+            TileContent::LocalApp {
+                app_id: APP.to_owned(),
+                label: "Notes".to_owned(),
+                note: String::new(),
+            },
+            tilo_desktop_model::ids::compose_id(salt, 1),
+        ),
+        salt,
+    );
+    let mut window = Some(mapped(&mut host.session, APP));
+    let tab = tab_of(&host.session, APP);
+    let mut viewer = member_minting_under(
+        0x62,
+        desk(
+            TileContent::PeerWindow {
+                app_id: APP.to_owned(),
+                label: "Notes".to_owned(),
+                note: String::new(),
+                missing: None,
+            },
+            tab,
+        ),
+        1,
+    );
+    assert!(
+        matches!(
+            tile_of(&viewer.session, tab),
+            Some(TileContent::PeerWindow { .. })
+        ),
+        "the other device lists the window as one open elsewhere"
+    );
+
+    share(&mut host, APP, tab);
+    until(&mut host, &mut window, &mut viewer, |host, _, _| {
+        !rows(&shares(&host.session), "sharing").is_empty()
+    });
+    carry_governance(&host.session, &viewer.session);
+    heard(&viewer, 0x61, "Framework");
+
+    // The picture comes into the tab that stood for the window, with nobody asking for it by hand.
+    let wanted = tab.to_string();
+    until(&mut host, &mut window, &mut viewer, |_, viewer, _| {
+        rows(&shares(&viewer.session), "received")
+            .iter()
+            .any(|stream| {
+                stream["tab"].as_str() == Some(wanted.as_str())
+                    && stream["pictured"].as_bool() == Some(true)
+            })
+    });
+    assert!(
+        matches!(
+            tile_of(&viewer.session, tab),
+            Some(TileContent::PeerWindow { .. })
+        ),
+        "the tab is still the one the desk listed"
+    );
+
+    // The share ends: the picture goes, and the tab the desk listed stays.
+    host.session
+        .invoke(
+            SHARES_RESOURCE,
+            "stop",
+            &arguments(serde_json::json!({ "tab": tab.to_string() })),
+        )
+        .expect("the share is stopped");
+    until(&mut host, &mut window, &mut viewer, |host, _, _| {
+        !host.session.handle().read(|tree| {
+            tree.workspaces[0]
+                .policy
+                .grants
+                .iter()
+                .any(|grant| is_of_share(grant, &window_share_id(tab)))
+        })
+    });
+    carry_governance(&host.session, &viewer.session);
+    until(&mut host, &mut window, &mut viewer, |_, viewer, _| {
+        let reading = shares(&viewer.session);
+        rows(&reading, "watching").is_empty() && rows(&reading, "received").is_empty()
+    });
+    assert!(
+        matches!(
+            tile_of(&viewer.session, tab),
+            Some(TileContent::PeerWindow { .. })
+        ),
+        "the window is still open on its device, and the tab that says so stays on this desk"
+    );
+}
+
 /// The window of another device shown on `session` 's desk as `tab` , with the key of the device
 /// that hosts it: what a person sees there.
 fn hosted(session: &Session, tab: u64) -> Option<String> {

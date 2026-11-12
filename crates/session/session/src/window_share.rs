@@ -867,9 +867,17 @@ impl WindowShares {
                 continue;
             };
             self.watching.remove(&(governed.workspace, tab));
-            self.end_tab(desk, tab, TAB_GONE);
-            remove_governed_tile(tree, tab, governed.strip.then_some(StripId(tab)));
-            changed = true;
+            // Only a tile the governance put on the desk goes with the share. A tab the desk
+            // already listed for the window, as one open on another device, is the desk's own
+            // record of it and stays: the window is still open there, and its picture alone ends.
+            if hosted_window(tree, tab).is_some() {
+                self.end_tab(desk, tab, TAB_GONE);
+                remove_governed_tile(tree, tab, governed.strip.then_some(StripId(tab)));
+                changed = true;
+            } else {
+                self.end_tab(desk, tab, SENDER_STOPPED);
+                self.changed();
+            }
         }
         changed
     }
