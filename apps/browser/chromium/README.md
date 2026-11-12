@@ -191,23 +191,28 @@ requests. Navigation waits for document-start script registration and the prior
 native lifecycle, and replacements stop the prior load without crediting its
 callbacks to a new action.
 
-A tab holds no page until its first address. The host loads nothing into it
-(no `about:blank`), so its session history is the engine's initial entry alone,
-which the first navigation replaces as it commits. The first page is therefore
-the history's first entry from its first script on: `history.length` is 1, the
-page's own `history.back()` goes nowhere, `history` reports no `back`, `back`
-does nothing and `navigation_history` has nothing behind the page. Nothing is
-removed from the history after a page committed, so there is no moment at
-which a script could see more. A tab's first events are those of its first
-address: no `uri`, `loaded` or `history` comes for a blank page before it.
+A tab holds no page until its first address. The host creates its browser
+with a load it refuses itself (`data:,`, refused in `OnBeforeBrowse` before any
+document), so nothing commits: the tab's session history is the engine's
+initial entry alone, and the first navigation replaces that entry as it
+commits. The first page is therefore the history's first entry from its first
+script on: `history.length` is 1, the page's own `history.back()` goes nowhere,
+`history` reports no `back`, `back` does nothing and `navigation_history` has
+nothing behind the page. Nothing is removed from the history after a page
+committed, so there is no moment at which a script could see more. No `uri`
+or `loaded` comes for a tab before those of its first address.
 
-Loading nothing would leave the tab's frame without a renderer, and the
-renderer answers the DevTools commands a first navigation waits for. The host
-therefore starts the frame on the engine's empty first document before it
-attaches DevTools: it has the tab run `javascript:void(0)`, for which the
-engine starts the renderer of a tab that has loaded nothing, and which is no
-navigation. A popup needs none of this: it comes from its opener with a live
-frame, and its first navigation replaces its initial entry in the same way.
+The refused load is there for the renderer: the engine starts a new tab's
+renderer only for a navigation, and the renderer answers the DevTools commands
+a first navigation waits for (the document-start scripts). The engine picks
+and starts the frame's renderer as it creates the navigation, before it asks
+the host; refused there, the navigation leaves the renderer on the empty
+document every frame begins with, unused, so the first page loads in it. An
+address that needs no request (`about:blank`) could not be refused: the engine
+asks about none. A popup needs none of this: it comes from its opener with a
+live frame, and its first navigation replaces its initial entry in the same
+way.
+
 `tests/first_page_history.py` opens some 250 tabs, one after another and
 several at once, and fails if the first script of any first page saw more
 than the page itself or its tab could go back; it also prints what opening a

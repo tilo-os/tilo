@@ -295,6 +295,23 @@ bool private_mode=false;
 // else that would leave the document is refused.
 bool sealed_documents=false;
 bool SealedDocumentUrl(const std::string& url) { return url.rfind("data:",0)==0 || url=="about:blank"; }
+// What the host creates every tab's browser with. It is never loaded: the
+// host refuses it as the engine asks (Client::OnBeforeBrowse), before any
+// document. Its one effect is that the engine starts the tab's renderer for
+// it, on the empty document every frame begins with. A tab therefore holds no
+// page until its first address, its session history is the engine's initial
+// entry alone, and the first navigation replaces that entry as it commits:
+// the first page is the history's first entry from its first script on
+// (history.length is 1, and nothing is behind it for the page or the person),
+// with nothing taken out of the history afterwards.
+//
+// The renderer has to be there before the first address, because it answers
+// the DevTools commands a first navigation waits for (the document-start
+// scripts), and the engine starts a new tab's renderer only for a navigation.
+// An address that needs no request (about:blank) cannot be refused, since the
+// engine asks about none; this one names an empty document and needs no
+// network either.
+constexpr char kTabStart[]="data:,";
 std::string service_session_id;
 bool service_session_consumed=false;
 // Extension management over Chromium's DevTools pipe (see devtools_bridge.h).
@@ -902,35 +919,6 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
     browser_=browser;
-    // A popup comes from its opener with a live frame and its page on the
-    // way. A tab the host opened has neither yet: CreateTab starts it.
-    if(opener_) SetUp();
-  }
-  // A tab the host opened holds no page until its first address: nothing is
-  // loaded into it, so its session history is the engine's initial entry
-  // alone, which the first navigation replaces as it commits. The first page
-  // is therefore the history's first entry from its first script on:
-  // history.length is 1 and nothing is behind it, for the page or the person.
-  // Nothing is taken out of the history afterwards, so no script can run
-  // before that happened.
-  //
-  // Loading nothing would leave the frame without a renderer, and the
-  // renderer answers the DevTools commands a first navigation waits for (the
-  // document-start scripts). So the frame is brought to life here, on the
-  // engine's empty first document: the engine starts the renderer of a tab
-  // that has loaded nothing to run a javascript: address in it
-  // (NavigationControllerImpl::HandleRendererDebugURL), and running one is
-  // no navigation. It comes before SetUp attaches DevTools, whose agent
-  // learns that a frame it met without a renderer has one only from a
-  // navigation, and after OnAfterCreated, where CEF defers every load.
-  void Start() {
-    if(!browser_) return;
-    browser_->GetMainFrame()->LoadURL("javascript:void(0)");
-    bootstrap_settled_=true;navigation_busy_=false;
-    SetUp();
-  }
-  void SetUp() {
-    auto browser=browser_;
     if(id_==1 && tilo::StartupDiagnostics::Enabled()){startup_diagnostics_=new tilo::StartupDiagnostics(browser);startup_diagnostics_->Attach();}
     request_filter->Begin(browser->GetIdentifier(),"about:blank");
     site_clear_=new tilo::SiteClear(browser,[this](int request,const std::string& origin,uint64_t generation,bool success,const std::string& message){SiteResult(request,origin,generation,"clear",success,message);});site_clear_->Attach();
@@ -1036,6 +1024,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(closing && clients.empty())CefQuitMessageLoop();
   }
   bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefRefPtr<CefRequest> request,bool user_gesture,bool redirect) override {
+    // The load a tab was created with goes no further (kTabStart): refused
+    // here it commits nothing, and nothing has loaded to say so of.
+    if(!opener_ && !tab_start_refused_ && frame->IsMain() && request->GetURL()==kTabStart) { tab_start_refused_=true;main_navigation_finished_=true;return true; }
     // What a person allows is issued again from the answer (departures.h): a
     // redirect of a request already let go is not held a second time.
     if(!redirect && HoldsNavigation(frame,request)) return true;
@@ -2319,8 +2310,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   std::string credential_committed_origin_;
   bool main_navigation_finished_=false;
   // bootstrap_settled_: the load the browser began with is over. A popup
-  // begins with the page its opener gave it; a tab the host opened begins
-  // with none (Start).
+  // begins with the page its opener gave it; a tab the host opened, with the
+  // load the host refuses (kTabStart).
+  bool tab_start_refused_=false;
   bool bootstrap_settled_=false,navigation_busy_=true,navigation_dispatched_=false,navigation_started_=false,navigation_aborting_=false;
   std::string navigation_target_;
   std::optional<int> navigation_owner_;
@@ -2413,9 +2405,7 @@ void CreateTab(int id) {
   // A sealed document runs no script, whatever the document says.
   if(sealed_documents) settings.javascript=STATE_DISABLED;
   TraceGeometry("create-begin",id);
-  // No first address: the tab holds no page until it is sent to one (Client::Start).
-  if(!CefBrowserHost::CreateBrowserSync(window,client,"",settings,nullptr,shared_context)) {clients.erase(id);CloseHost();}
-  else client->Start();
+  if(!CefBrowserHost::CreateBrowserSync(window,client,kTabStart,settings,nullptr,shared_context)) {clients.erase(id);CloseHost();}
   TraceGeometry("create-return",id);
 }
 void Dispatch(CefRefPtr<CefDictionaryValue> d) {
