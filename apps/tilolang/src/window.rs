@@ -156,6 +156,12 @@ impl Platform for InProcess {
         i64::from(ui::clock::local_now().offset().local_minus_utc())
     }
 
+    /// The person's zone by name, so a day begins and a repeating item keeps its hour across a
+    /// change of clocks, as the toolkit's dates read them.
+    fn zone_name(&self) -> Option<String> {
+        ui::time::local_zone_name()
+    }
+
     /// The day the person's region starts its week on, as the toolkit's dates start it.
     fn week_start(&self) -> i64 {
         i64::from(

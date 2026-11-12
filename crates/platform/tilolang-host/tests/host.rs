@@ -2784,3 +2784,87 @@ fn the_palette_makes_a_task_and_asks_the_form_for_a_moment() {
     a_reminder_asks_when(&mut host, &mut window);
     the_moment_picked_answers_the_reminder(&mut host, &mut window, &task);
 }
+
+/// The day the task `task` is due, as its record holds it.
+fn due_of(hosted: &Hosted, task: &Value) -> Option<String> {
+    let Value::Ref(task) = task else {
+        panic!("a task is a resource: {task:?}")
+    };
+    let instance = hosted.instance();
+    let host = instance.host().expect("the runtime");
+    match host.runtime().read(&task.target, "due").expect("its day") {
+        Value::Opt(Some(day)) => match *day {
+            Value::Text(day) => Some(day),
+            other => panic!("a day: {other:?}"),
+        },
+        Value::Opt(None) => None,
+        other => panic!("a day: {other:?}"),
+    }
+}
+
+/// A task typed into Today's entry is due the person's today, and so stands under the day their
+/// window heads Today: nine in the evening where they are is already the next day in UTC, and
+/// their day, not UTC's, is the one their list is of.
+#[test]
+fn a_task_typed_into_todays_entry_is_due_the_persons_today() {
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "a_task_typed_into_todays_entry_is_due_the_persons_today",
+        || {
+            // 11 November, nine in the evening in Los Angeles: the 12th in UTC.
+            let mut zone = tilo_test_env::ScopedEnv::new();
+            zone.set("TZ", "America/Los_Angeles");
+            let _clock = tilo_clock::testing::hold_wall_everywhere(
+                tilo_clock::testing::OwnProcess::of_a_test_in_its_own_process(),
+                tilo_clock::UNIX_EPOCH + tilo_clock::Duration::from_secs(1_794_459_600),
+            );
+            let (app, bundle) = shipped(&shipped_dir().join("tasks"));
+            assert_eq!(app, TASKS);
+            let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", &app, bundle);
+            settle(&mut host, &mut window);
+            let entry = node_with(
+                window.root.as_ref().expect("the window shows"),
+                "placeholder",
+                "New task for today",
+            )
+            .expect("Today's entry stands at the list's foot")
+            .clone();
+            let event = entry
+                .events
+                .get_key_value("submit")
+                .expect("the entry submits what is typed into it")
+                .0
+                .clone();
+            window.send(&[ToApp::Fire {
+                lane: Lane::Root,
+                key: entry.key,
+                event,
+                value: Some(patch::Value::text("File the report")),
+            }]);
+            settle(&mut host, &mut window);
+            let held = host.instances().next().expect("the instance runs");
+            let tasks = tasks_of(held);
+            let [task] = tasks.as_slice() else {
+                panic!("the entry made one task: {tasks:?}");
+            };
+            let due = due_of(held, task);
+            assert_eq!(
+                due.as_deref(),
+                Some("2026-11-11"),
+                "a task typed in their evening is due on their today, not UTC's tomorrow"
+            );
+            // The day a row is grouped under is the day the window heads by its own clock
+            // (`ui::clock::today()`): the day it is due. They are one day, so the row heads
+            // Today and stands in Today's list.
+            let headed_by =
+                chrono::DateTime::<chrono::Local>::from(tilo_clock::to_std(tilo_clock::wall()))
+                    .date_naive()
+                    .to_string();
+            assert_eq!(
+                due.as_deref(),
+                Some(headed_by.as_str()),
+                "and it stands under the day their window heads Today"
+            );
+        },
+    );
+}

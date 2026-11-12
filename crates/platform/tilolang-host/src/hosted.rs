@@ -66,6 +66,12 @@ fn sync_record(host: &Host, record: &InstanceRecord) {
     host.sync_from(record.doc());
 }
 
+/// The person's date and time now: the device's clock, which is the one their window reads, so a
+/// day an instance writes and a day their window heads a row by are the same day.
+fn local_now() -> chrono::DateTime<chrono::Local> {
+    chrono::DateTime::<chrono::Local>::from(tilo_clock::to_std(tilo_clock::wall()))
+}
+
 /// Who invokes, as the runtime reads the invoker the broker admitted.
 #[must_use]
 fn caller_of(invoker: &ActionInvoker) -> Caller {
@@ -341,7 +347,34 @@ impl Platform for HostPlatform {
     }
 
     fn now(&self) -> String {
-        chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+        local_now()
+            .with_timezone(&chrono::Utc)
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string()
+    }
+
+    /// The zone the person's clock stands in, which their day begins in: the device's, as their
+    /// window's dates read it, so a day an action writes is the day their window shows it under.
+    fn zone(&self) -> i64 {
+        i64::from(local_now().offset().local_minus_utc())
+    }
+
+    /// The person's zone by name, so a day begins and a repeating item keeps its hour across a
+    /// change of clocks, as their window's dates do.
+    fn zone_name(&self) -> Option<String> {
+        tilo_clock::local_zone_name()
+    }
+
+    /// The day the person's region starts its week on, as they chose it in Settings: the same
+    /// first day their window's dates start a week on.
+    fn week_start(&self) -> i64 {
+        i64::from(
+            self.formats
+                .get()
+                .first_day
+                .weekday()
+                .num_days_from_monday(),
+        )
     }
 
     /// The clock the person reads: the one they chose in Settings, which the session handed the
@@ -356,20 +389,14 @@ impl Platform for HostPlatform {
     /// A day or a time of day in a sentence, in the person's styles and their language: the zone
     /// its times read in is the one this host's clock answers in, so a sentence and a view agree.
     fn shown(&self, kind: &str, value: &str) -> String {
-        let zone = self.zone();
-        let now = chrono::DateTime::<chrono::Utc>::from_timestamp(
-            chrono::Utc::now().timestamp().saturating_add(zone),
-            0,
-        )
-        .map(|at| at.naive_utc())
-        .unwrap_or_default();
+        let now = local_now();
         tilo_formats::shown(
             kind,
             value,
             self.formats.get(),
-            now.date(),
-            now,
-            zone,
+            now.date_naive(),
+            now.naive_local(),
+            i64::from(now.offset().local_minus_utc()),
             &*self.phrases,
         )
     }
