@@ -301,8 +301,8 @@ fn an_uncommitted_document_keeps_every_frame_loud() {
     assert_eq!(polled(&mut frame, &seen), Quiet::No);
 }
 
-/// Every public `&mut self` entry point of [`FrameHarness`] (and every
-/// crate-visible one) starts by invalidating local state, or says in its own
+/// Every public `&mut self` entry point of [`FrameHarness`], and every
+/// `pub(crate)` one, starts by invalidating local state, or says in its own
 /// doc comment why it cannot leave a frame stale:
 ///
 /// ```text
