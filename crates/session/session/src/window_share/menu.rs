@@ -10,6 +10,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use serde_json::Value;
 use tilo_desktop_model::TabId;
 use tilo_desktop_surface::{DesktopHandle, WorkspaceShare, WorkspaceShares};
 
@@ -25,16 +26,20 @@ impl WindowShares {
         let reading = self.reading();
         let tab = tab.to_string();
         let of_tab = |rows: &str| {
-            reading[rows]
-                .as_array()
+            reading
+                .get(rows)
+                .and_then(Value::as_array)
                 .into_iter()
                 .flatten()
-                .find(|row| row["tab"].as_str() == Some(tab.as_str()))
+                .find(|row| row.get("tab").and_then(Value::as_str) == Some(tab.as_str()))
         };
         match of_tab("sharing") {
             Some(shared) => WorkspaceShare {
                 shared: true,
-                viewers: shared["viewers"].as_array().map_or(0, Vec::len),
+                viewers: shared
+                    .get("viewers")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len),
             },
             None => WorkspaceShare {
                 shared: of_tab("starting").is_some(),
