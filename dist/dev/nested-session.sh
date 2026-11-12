@@ -116,9 +116,6 @@ while (($#)); do
     esac
 done
 
-for tool in jq bwrap readelf python3 sha256sum; do
-    command -v "$tool" >/dev/null || die "$tool is required on PATH"
-done
 host_runtime=${XDG_RUNTIME_DIR:-}
 host_display=
 # --print-runtime starts nothing, so it asks for no display.
@@ -141,21 +138,8 @@ if ((!headless && !print_runtime)); then
     fi
 fi
 
-selected=()
-for app in $apps; do
-    [[ $app == files ]] && app=file-explorer
-    if [[ ! -f $repo_root/apps/$app/tilo-app.toml ]]; then
-        die "no app named $app under apps/"
-    fi
-    [[ " $built_apps " == *" $app "* ]] \
-        || die "$app is not built for the nested session; add it to dist/dev/nested-session-build.sh"
-    selected+=("$app")
-done
-
 state=$(realpath -m "$state")
 [[ $state != "$HOME" && $state != / ]] || die "refusing state directory $state"
-mkdir -p "$state"
-chmod 700 "$state"
 # The compositor's own runtime directory: private sockets, services and the
 # control socket, under a login runtime directory so it stays on tmpfs and
 # per-user. Never under the state directory: a unix socket's path holds 108
@@ -180,7 +164,28 @@ if [[ -z $runtime_base ]]; then
     say "no XDG_RUNTIME_DIR: the session's runtime directory is under $runtime_base"
 fi
 runtime=$runtime_base/tilo-nested-$(printf '%s' "$state" | sha256sum | cut -c1-12)
+# Where the session's sockets go is a pure answer, so asking it takes no
+# tools, no build, no display and no state: a tool that reaches into a session
+# asks here and gets the same path the session itself will use.
 ((print_runtime)) && { printf '%s\n' "$runtime"; exit 0; }
+
+for tool in jq bwrap readelf python3 sha256sum; do
+    command -v "$tool" >/dev/null || die "$tool is required on PATH"
+done
+
+selected=()
+for app in $apps; do
+    [[ $app == files ]] && app=file-explorer
+    if [[ ! -f $repo_root/apps/$app/tilo-app.toml ]]; then
+        die "no app named $app under apps/"
+    fi
+    [[ " $built_apps " == *" $app "* ]] \
+        || die "$app is not built for the nested session; add it to dist/dev/nested-session-build.sh"
+    selected+=("$app")
+done
+
+mkdir -p "$state"
+chmod 700 "$state"
 pidfile=$state/session.pid
 if [[ -f $pidfile ]] && kill -0 "$(<"$pidfile")" 2>/dev/null; then
     die "a nested session for $state is already running (pid $(<"$pidfile"))"
