@@ -590,6 +590,73 @@ class CopyLanguageTests(unittest.TestCase):
                 "value is copy like any other; what it resolved through its own "
                 "catalogue, or holds in its own words, is not")
 
+    def test_a_field_a_structs_own_type_paints_is_copy_inline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "impl<'a> HudItem<'a> {",
+                "    fn face(&self, rect: Rect) -> ButtonFace<'_> {",
+                "        match (self.label.is_empty(), self.icon) {",
+                "            (true, Some(icon)) => ButtonFace::icon_only(rect, icon, self.name),",
+                "            (_, None) => ButtonFace::new(rect, self.label),",
+                "            _ => ButtonFace::new(rect, self.label),",
+                "        }",
+                "    }",
+                "}",
+                "fn sample(&self) -> Note {",
+                '    let note = Note { title: "Quiet hours".into() };',
+                "    note",
+                "}",
+                "fn draw(&mut self) {",
+                "    let items = vec![",
+                '        HudItem { label: "", icon: Some(Icon::Timer), name: "Self-timer" },',
+                '        HudItem { label: "", icon: Some(Icon::Grid), name: "Composition" },',
+                '        Note { title: "Quiet hours" },',
+                "    ];",
+                "    self.draw_cluster(&items);",
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Self-timer", "Composition"],
+                "a struct literal the type itself paints the field of is copy however "
+                "it is built, a hyphenated word included; a type that paints no field "
+                "keeps its own content")
+
+    def test_a_name_with_one_job_says_which_word_is_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn copy_line(text: &str) -> Box<dyn Widget> {",
+                "    Box::new(Text::new(text).with_role(TextRole::Body))",
+                "}",
+                "fn layout_line(outline: &str) -> String {",
+                '    format!("- {outline}")',
+                "}",
+                "fn panel(&self) -> Node {",
+                '    let row = copy_line("Keep the address");',
+                '    let token = layout_line("dialog confirm");',
+                '    Node::new(Role::Panel).with_description(copy_line("Delete address?"))',
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Keep the address", "Delete address?"],
+                "a name a crate gives one job says which of its arguments is the word "
+                "a person reads, so the English handed to it is found")
+
     def test_the_tree_passes(self):
         self.assertEqual(
             copy.check(copy.ROOT, copy.GLOSSARY, copy.BASELINE, copy.SAVE_EXCEPTIONS,

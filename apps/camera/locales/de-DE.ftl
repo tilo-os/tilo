@@ -49,6 +49,7 @@ camera-a11y-choose-camera = Kamera auswählen
 camera-a11y-scan-page = Dokumentseite scannen
 camera-a11y-apply-crop = Zuschnitt anwenden
 camera-a11y-cancel-crop = Zuschnitt verwerfen
+camera-a11y-switch-camera-plain = Kamera wechseln
 
 ## What the window shows
 camera-scan-kind = Art
@@ -68,3 +69,4 @@ camera-settings-mirror = Frontkamera spiegeln
 camera-settings-geotag = Aufnahmeort mit Fotos speichern
 camera-timer-3s = 3 Sekunden
 camera-timer-10s = 10 Sekunden
+camera-countdown-cancel-hint = Tippe auf den Auslöser, um abzubrechen

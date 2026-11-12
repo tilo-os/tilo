@@ -83,9 +83,13 @@ Two more ways a word reaches a window without the constructor coming first:
   migration, so this check reads the positions above for now.
 - as a struct field named like copy, where a `let` binds the struct and a copy
   builder reads the field back (`let row = Row { title: "Open settings", … };
-  Text::new(row.title)`). A fixture's sample data is bound to nothing a
-  constructor reads, and a field that only holds a person's own content is
-  never read that way, so neither counts;
+  Text::new(row.title)`), or where the struct's own type paints the field
+  through `self` (`HudItem { name: "Resolution", … }` written straight into a
+  `vec!` a drawing method is handed, with
+  `ButtonFace::icon_only(rect, icon, self.name)` in the type's `impl`). A
+  fixture's sample data is bound to nothing a constructor reads and its type
+  paints no field, and a field that only holds a person's own content is never
+  read that way, so none of them counts;
 - as a resource's or an action's title (`ResourceSpec::new(…, "History
   paused")`, `.unavailable(…, "Open a web page first")`): the action directory
   and the palette show those as the rows a person reads before invoking
@@ -1087,13 +1091,13 @@ def prose_words(value: str) -> bool:
     `english_words` is tuned to what a builder is handed; a function's return
     value is as often its own name (`CameraApp`) or a machine word
     (`demo.thing`). A single token counts only when it is one capitalised word
-    (`Inbox`, `Paused`); anything with a space is words.
+    (`Inbox`, `Paused`, `Self-timer`); anything with a space is words.
     """
     if not english_words(value):
         return False
     word = value.strip()
     if re.fullmatch(r"[A-Za-z][A-Za-z0-9_.:-]*", word):
-        return re.fullmatch(r"[A-Z][a-z]+", word) is not None
+        return re.fullmatch(r"[A-Z][a-z]+(?:-[a-z]+)*", word) is not None
     return True
 
 
@@ -1238,6 +1242,84 @@ def read_at(code: str, ranges: list[tuple[int, int]], name: str, field: str) -> 
     return any(pattern.search(code[begin:end]) for begin, end in ranges)
 
 
+# What a type's own method hands a field to when it paints the struct: the
+# toolkit's labelled button face takes its label as the second argument, the
+# icon-only one its accessible name as the third.
+FIELD_PAINTERS = TEXT_CONSTRUCTORS + (
+    ("ButtonFace::new(", 1),
+    ("ButtonFace::icon_only(", 2),
+)
+
+# The type an `impl` block is for: `impl<'a> HudItem<'a>`, `impl Trait for Row`.
+IMPL = re.compile(r"\bimpl(?:<[^>{]*>)?\s+(?:[^;{}\n]*?\bfor\s+)?([A-Z][A-Za-z0-9_]*)")
+
+# A struct literal: `HudItem {`, `Row::<T> {`.
+STRUCT_LITERAL = re.compile(r"(?<![\w:])([A-Z][A-Za-z0-9_]*)\s*(?:::\s*<[^<>]*>\s*)?\{")
+
+
+def painted_fields(code: str) -> set[tuple[str, str]]:
+    """`(type, field)` for each struct field a type's own method paints
+    (`ButtonFace::icon_only(rect, icon, self.name)`).
+
+    A field read off `self` where the type draws itself is painted wherever
+    the struct is built, however it is built.
+    """
+    found: set[tuple[str, str]] = set()
+    for block in IMPL.finditer(code):
+        brace = code.find("{", block.end())
+        if brace < 0:
+            continue
+        end = rust_source.matching(code, brace)
+        for call, index in FIELD_PAINTERS:
+            at = code.find(call, brace, end)
+            while at >= 0:
+                begin, close = argument(code, at + len(call), index)
+                if begin < close:
+                    read = re.fullmatch(r"self\s*\.\s*([a-z_][a-z0-9_]*)",
+                                        code[begin:close].strip())
+                    if read:
+                        found.add((block.group(1), read.group(1)))
+                at = code.find(call, at + len(call), end)
+    return found
+
+
+def painted_literal_fields(code: str, starts: list[int],
+                           by_start: dict[int, rust_source.Literal],
+                           kept: str, painted: set[tuple[str, str]]
+                           ) -> list[rust_source.Literal]:
+    """The words an inline struct literal gives a field its own type paints.
+
+    `HudItem { name: "Resolution", … }` written straight into a `vec!` a
+    drawing function is handed says the words as surely as one a `let` binds,
+    so the type's paint decides, not a local's name.
+    """
+    found = []
+    for literal in STRUCT_LITERAL.finditer(code):
+        open_brace = literal.end() - 1
+        close = rust_source.matching(code, open_brace) - 1
+        fields = {field for kind, field in painted if kind == literal.group(1)}
+        if not fields:
+            continue
+        for part_begin, part_end in top_level_parts(code, open_brace + 1, close):
+            piece = code[part_begin:part_end]
+            colon = piece.find(":")
+            if colon < 0 or piece[:colon].strip() not in fields:
+                continue
+            at = bisect.bisect_left(starts, part_begin + colon + 1)
+            if at >= len(starts):
+                continue
+            word = by_start[starts[at]]
+            if word.start >= part_end or kept[word.start] != "x":
+                continue
+            if not wrapped(code, part_begin + colon + 1, word.start):
+                continue
+            if not converted(code, word.end, part_end):
+                continue
+            if prose_words(word.value):
+                found.append(word)
+    return found
+
+
 def words_returned_in(code: str, begin: int, end: int,
                       returning: dict[str, list[tuple[str, int, str]]]
                       ) -> list[tuple[str, int, str]]:
@@ -1274,6 +1356,7 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
                 by_crate.setdefault(crate, []).append(path)
     helpers: dict[str, dict[str, set[int]]] = {}
     returning: dict[str, dict[str, list[tuple[str, int, str]]]] = {}
+    fields: dict[str, set[tuple[str, str]]] = {}
     found = []
     for path in sources:
         unit = path.relative_to(root).as_posix()
@@ -1286,7 +1369,7 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
         builders = tuple(b for b in COPY_BUILDERS if b in text) if builder_unit else ()
         wire = tuple(b for b in WIRE_MESSAGE_BUILDERS if b in text) if builder_unit else ()
         labels = builder_unit and ACTION_LABEL.search(text) is not None
-        if (not builders and not wire and not labels
+        if (not builders and not wire and not labels and "ButtonFace::" not in text
                 and not any(call in text for call, _ in TEXT_CONSTRUCTORS + SPEC_BUILDERS)):
             continue
         code, literals = rust_source.lex(text)
@@ -1380,6 +1463,17 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
                     found.append((path.relative_to(root).as_posix(),
                                   rust_source.line_number(text, literal.start),
                                   literal.value))
+            if crate not in fields:
+                fields[crate] = set()
+                for other in by_crate[crate]:
+                    source = other.read_text(errors="replace")
+                    if "ButtonFace::" in source:
+                        fields[crate] |= painted_fields(rust_source.lex(source)[0])
+            for literal in painted_literal_fields(code, starts, by_start, kept,
+                                                  fields[crate]):
+                found.append((path.relative_to(root).as_posix(),
+                              rust_source.line_number(text, literal.start),
+                              literal.value))
         for literal in dict.fromkeys(hits):
             found.append((
                 path.relative_to(root).as_posix(),
