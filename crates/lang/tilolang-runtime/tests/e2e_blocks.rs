@@ -1,12 +1,8 @@
 //! Agent blocks compiled against a loaded package and evaluated by the runtime.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::{
         AmStore, BlockOutput, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Value,
     };

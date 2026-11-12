@@ -2,12 +2,8 @@
 //! and in views, and view state bound to controls.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::{
         AmStore, EditOutcome, EnumValue, Principal, ResourceRef, Runtime, SimpleAuthority, Value,
     };

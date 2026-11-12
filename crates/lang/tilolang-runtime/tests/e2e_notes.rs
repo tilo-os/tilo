@@ -1,12 +1,8 @@
 //! The notes app (`apps/tl/notes/app.tl`) end to end: a notebook whose notes are a tree.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::rich::RichValue;
     use tilolang_runtime::{
         AmStore, EditOutcome, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, UiNode, Value,

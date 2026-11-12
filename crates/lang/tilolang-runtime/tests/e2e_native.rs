@@ -2,12 +2,8 @@
 //! with a count each, a row view, and the choice and facts a document shows.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::{AmStore, ResourceRef, Runtime, SimpleAuthority, UiNode, Value};
 
     const SOURCE: &str = r#"app so.tilo.notes "Notes" (icon: .bookmark)

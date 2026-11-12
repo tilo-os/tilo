@@ -2,12 +2,8 @@
 //! and round, and a list of text or numbers joins, sums and averages.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::{AmStore, InvokeOutcome, Runtime, Value};
 
     const SOURCE: &str = "app so.tilo.text \"Text\"\n\

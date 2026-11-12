@@ -4,15 +4,11 @@
 //! the boundaries that read it. A view that read no time never asks to be woken.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::{AmStore, ResourceRef, Runtime, SimpleAuthority, UiNode, Value};
 
     const SOURCE: &str = r#"app so.tilo.days "Days"

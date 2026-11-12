@@ -1,12 +1,8 @@
 //! The counter end to end, limits, rollback and the trust boundary of a module.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use serde_json::json;
     use tilolang_runtime::{
         AmStore, EngineLimits, InvokeOutcome, Patch, Runtime, RuntimeError, SignatureKind,
@@ -352,18 +348,20 @@ fn a_packages_catalogues_reach_the_runtimes_words() {
     }
 
     let catalogues = vec![("de-DE".to_owned(), "d-inc = Erhöhen\n".to_owned())];
-    let mut wasm = common::counter_wasm();
+    let mut wasm = crate::common::counter_wasm();
     tilolang::meta::append_locales(&mut wasm, &catalogues);
 
     let before = Taken::default();
     let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
     rt.set_words(before.clone());
-    rt.load_package(&wasm, common::counter_meta()).unwrap();
+    rt.load_package(&wasm, crate::common::counter_meta())
+        .unwrap();
     assert_eq!(*before.0.borrow(), catalogues);
 
     let after = Taken::default();
     let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
-    rt.load_package(&wasm, common::counter_meta()).unwrap();
+    rt.load_package(&wasm, crate::common::counter_meta())
+        .unwrap();
     rt.set_words(after.clone());
     assert_eq!(*after.0.borrow(), catalogues);
 
@@ -372,6 +370,7 @@ fn a_packages_catalogues_reach_the_runtimes_words() {
     let window = Taken::default();
     let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
     rt.set_words(window.clone());
-    rt.reload_package(&wasm, common::counter_meta()).unwrap();
+    rt.reload_package(&wasm, crate::common::counter_meta())
+        .unwrap();
     assert_eq!(*window.0.borrow(), catalogues);
 }

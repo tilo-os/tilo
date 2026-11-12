@@ -3,12 +3,8 @@
 //! items change.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang::pred::{CmpOp, Lit, Operand, Pred};
     use tilolang_runtime::query::{Clock, Query, Term, find, resolve};
     use tilolang_runtime::{AmStore, ResourceRef, Runtime, SimpleAuthority, UiNode, Value};
