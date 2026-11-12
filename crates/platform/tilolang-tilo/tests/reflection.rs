@@ -23,7 +23,7 @@ root Talk
 
 default view talk for Talk
 
-action say(t: Talk, said: Text) -> Line {
+action write(t: Talk, said: Text) -> Line {
     t.lines.insert(Line(said: said, ))
 }
 
@@ -81,8 +81,8 @@ view talk(t: Talk) {
 
 scenario "a morning" {
     let t = root Talk
-    invoke(say(t, "Morning!"), by: person("Mia"), at: 2026-06-29T07:02Z)
-    invoke(say(t, "Hi Mia"), by: person("Leo"), at: 2026-06-29T07:20Z)
+    invoke(write(t, "Morning!"), by: person("Mia"), at: 2026-06-29T07:02Z)
+    invoke(write(t, "Hi Mia"), by: person("Leo"), at: 2026-06-29T07:20Z)
     invoke(stamp(t), by: person("Leo"), at: 2026-06-29T07:20Z)
 }
 "#;
@@ -123,7 +123,7 @@ fn versions_name_who_made_them_when_and_by_which_action_on_every_replica() {
     let line = call(
         &ada,
         "ada",
-        "say",
+        "write",
         vec![Value::resource(&talk), Value::text("hello")],
     );
     ada.commit();
@@ -204,7 +204,7 @@ fn the_last_version_is_the_latest_on_every_replica_whichever_order_they_arrive_i
     let line = call(
         &ada,
         "ada",
-        "say",
+        "write",
         vec![Value::resource(&talk), Value::text("hello")],
     );
     ada.commit();
@@ -245,7 +245,7 @@ fn the_last_version_is_the_same_whichever_change_reaches_a_replica_first() {
         let line = call(
             &ada,
             "ada",
-            "say",
+            "write",
             vec![Value::resource(&talk), Value::text("hello")],
         );
         ada.commit();
@@ -296,7 +296,7 @@ fn every_replica_reads_one_history_and_its_steps_whichever_order_changes_arrive_
         let line = call(
             &ada,
             "ada",
-            "say",
+            "write",
             vec![Value::resource(&talk), Value::text("hello")],
         );
         ada.commit();
@@ -389,7 +389,7 @@ fn of_changes_within_one_second_the_last_version_is_the_one_made_last() {
     let line = call(
         &ada,
         "ada",
-        "say",
+        "write",
         vec![Value::resource(&talk), Value::text("hello")],
     );
     ada.commit();
@@ -615,7 +615,7 @@ fn a_field_names_the_version_that_last_changed_it() {
     let line = call(
         &ada,
         "ada",
-        "say",
+        "write",
         vec![Value::resource(&talk), Value::text("hello")],
     );
     ada.commit();
@@ -663,7 +663,7 @@ fn undo_puts_a_field_back_to_the_version_that_last_changed_it() {
     let line = call(
         &ada,
         "ada",
-        "say",
+        "write",
         vec![Value::resource(&talk), Value::text("hello")],
     );
     ada.commit();

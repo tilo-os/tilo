@@ -24,7 +24,7 @@ type Line {
 
 default view workspace for Workspace
 
-action say(r: Workspace, text: Text) {
+action write(r: Workspace, text: Text) {
     r.lines.insert(Line(text: text, author: invoker))
 }
 
@@ -182,7 +182,7 @@ view two(r: Workspace) {
     fn the_drawer_offers_the_conversations_people_newest_first() {
         let (rt, app, open, _) = setup();
         rt.set_members(membership(), None);
-        let say = app.action("say");
+        let write = app.action("write");
         let mut v = rt
             .open_view(&ada(), &app.view("workspace"), vec![Value::resource(&open)])
             .unwrap();
@@ -190,7 +190,7 @@ view two(r: Workspace) {
             rt.invoke_action(
                 &who,
                 (
-                    say.as_str(),
+                    write.as_str(),
                     vec![Value::resource(&open), Value::text("hello")],
                 ),
             )
@@ -220,12 +220,12 @@ view two(r: Workspace) {
     fn the_drawer_offers_as_many_people_as_the_view_asks_for() {
         let (rt, app, open, _) = setup();
         rt.set_members(membership(), None);
-        let say = app.action("say");
+        let write = app.action("write");
         for who in [ada(), bo(), planner()] {
             rt.invoke_action(
                 &who,
                 (
-                    say.as_str(),
+                    write.as_str(),
                     vec![Value::resource(&open), Value::text("hello")],
                 ),
             )
@@ -245,14 +245,14 @@ view two(r: Workspace) {
     fn who_spoke_is_read_from_a_bounded_window_of_the_conversations_items() {
         let (rt, app, open, _) = setup();
         rt.set_members(membership(), None);
-        let say = app.action("say");
+        let write = app.action("write");
         let mut v = rt
             .open_view(&ada(), &app.view("workspace"), vec![Value::resource(&open)])
             .unwrap();
         rt.invoke_action(
             &bo(),
             (
-                say.as_str(),
+                write.as_str(),
                 vec![Value::resource(&open), Value::text("the first word")],
             ),
         )
@@ -261,7 +261,7 @@ view two(r: Workspace) {
             rt.invoke_action(
                 &ada(),
                 (
-                    say.as_str(),
+                    write.as_str(),
                     vec![Value::resource(&open), Value::text("and on")],
                 ),
             )

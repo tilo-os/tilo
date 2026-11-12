@@ -58,7 +58,7 @@ action post_count(b: Board) -> Int {
 }
 
 /// Posts plain text.
-action say(b: Board, text: Text) -> Post {
+action say_text(b: Board, text: Text) -> Post {
     b.posts.insert(Post(body: RichText(text)))
 }
 

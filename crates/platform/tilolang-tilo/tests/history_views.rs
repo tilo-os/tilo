@@ -901,7 +901,7 @@ fn two_people_typing_one_rich_body_each_entry_shows_its_authors_change() {
         &ada,
         "ada",
         RICHTEXT_APP,
-        "say",
+        "say_text",
         vec![Value::resource(&board), Value::text("Oat milk and bread")],
     );
     ada.commit();
@@ -1010,7 +1010,7 @@ fn entry_work(paragraphs: usize) -> (u64, u64, usize) {
         &ada,
         "ada",
         RICHTEXT_APP,
-        "say",
+        "say_text",
         vec![
             Value::resource(&board),
             Value::text(vec![paragraph; paragraphs].join("\n")),
