@@ -1981,9 +1981,13 @@ impl InstallerApp {
         self.reset_viewport();
         self.install_state = InstallState::Running;
         self.install_launched = true;
-        self.status_lines = vec![format!(
-            "Starting install to {disk} for user {user} ({}).",
-            opts.filesystem
+        self.status_lines = vec![crate::setup::strings::t_args(
+            "installer-status-install-start",
+            &[
+                ("disk", ArgValue::Text(disk.clone())),
+                ("user", ArgValue::Text(user.clone())),
+                ("filesystem", ArgValue::Text(opts.filesystem.to_string())),
+            ],
         )];
         self.recovery_key = None;
         self.recovery_key_copied = false;
@@ -4942,7 +4946,7 @@ mod tests {
     #[test]
     fn the_media_step_is_one_install_button_and_review_repeats_it() {
         let title = crate::setup::strings::t("installer-media-title");
-        let description = crate::setup::strings::t("installer-media-note");
+        let note = crate::setup::strings::t("installer-media-note");
         let chosen_copy = crate::setup::strings::t("installer-media-chosen");
         let mut app = InstallerApp::for_shot(Step::Media);
         let _ = build(&mut app);
@@ -4954,10 +4958,10 @@ mod tests {
             "nothing is chosen yet"
         );
         for absent in ["RPM Fusion", "Cisco", "patent", "licence"] {
-            assert!(!description.contains(absent), "{absent}");
+            assert!(!note.contains(absent), "{absent}");
         }
         assert!(
-            find_accessible(composed, &description).is_some(),
+            find_accessible(composed, &note).is_some(),
             "the rendered codec control must expose the formats source explanation"
         );
         let resources = app.published();
@@ -4970,7 +4974,7 @@ mod tests {
             install
                 .description
                 .as_deref()
-                .is_some_and(|description| description.contains(&description)),
+                .is_some_and(|description| description.contains(&note)),
             "{:?}",
             install.description
         );

@@ -2679,3 +2679,9 @@ imager-download-sentence-failed = The download did not finish.
 imager-download-sentence-released = The verified download is kept on this computer. Nothing has been installed.
 imager-download-sentence-discarded = Unfinished download data was removed. Completed parts may stay.
 imager-download-sentence-handoff-failed = The verified download is kept; the installation stopped.
+
+## What the wizard reports about the target it was given
+installer-status-install-start = Starting the install to { $disk } for user { $user } ({ $filesystem }).
+installer-blocked-no-such-disk = No disk { $device } is listed; refresh the list.
+installer-error-unknown-filesystem = Unknown filesystem: { $filesystem }
+installer-keyboard-map-name = { $layout } keyboard layout

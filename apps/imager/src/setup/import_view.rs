@@ -2300,7 +2300,7 @@ impl ImportApp {
                 path.file_name()
                     .map(|name| name.to_string_lossy().into_owned())
             })
-            .unwrap_or_else(|| operation_state_label(state).to_string());
+            .unwrap_or_else(|| operation_state_label(state));
         let summary = state_summary(state);
         let mut row = ListRow::new(format!("import.operation.{index}.summary"), folder)
             .icon(Icon::Folder)

@@ -1352,13 +1352,14 @@ def returned_words(code: str, starts: list[int],
     return found
 
 
-FILE_WORDS: dict[str, dict[str, list[tuple[str, int, str]]]] = {}
+FILE_WORDS: dict[tuple[str, int, int], dict[str, list[tuple[str, int, str]]]] = {}
 
 
 def file_returning_words(root: Path, path: Path) -> dict[str, list[tuple[str, int, str]]]:
     """Per function name of one file, the words it hands back, with where they
     are written. A file is read once however many crates build on it."""
-    key = str(path)
+    held = path.stat()
+    key = (str(path), held.st_mtime_ns, held.st_size)
     if key in FILE_WORDS:
         return FILE_WORDS[key]
     table: dict[str, list[tuple[str, int, str]]] = {}
@@ -1389,9 +1390,8 @@ def file_returning_words(root: Path, path: Path) -> dict[str, list[tuple[str, in
     return table
 
 
-def returning_words(root: Path, paths: list[Path],
-                    called: set[str] | None = None
-                    ) -> dict[str, list[tuple[str, int, str]]]:
+def returning_words(root: Path,
+                    paths: list[Path]) -> dict[str, list[tuple[str, int, str]]]:
     """Per function name of one crate, the words it hands back, with where they
     are written.
 
@@ -1406,8 +1406,6 @@ def returning_words(root: Path, paths: list[Path],
     every: dict[str, bool] = {}
     for path in paths:
         for name, words in file_returning_words(root, path).items():
-            if called is not None and name not in called:
-                continue
             every[name] = every.get(name, True) and bool(words)
             table.setdefault(name, []).extend(words)
     return {name: sorted(set(words)) for name, words in table.items() if every[name]}
@@ -1593,50 +1591,6 @@ def word_constant_table(root: Path,
     return {name: sorted(set(words)) for name, words in table.items()}
 
 
-CALLED_NAME = re.compile(r"\b([a-z_][A-Za-z0-9_]*)\s*\(")
-PATH_DEPENDENCY = re.compile(r'path\s*=\s*"([^"]+)"')
-
-
-def called_names(paths: list[Path]) -> set[str]:
-    """Every name called by the code in `paths`."""
-    named: set[str] = set()
-    for path in paths:
-        named.update(CALLED_NAME.findall(path.read_text(errors="replace")))
-    return named
-
-
-def dependency_sources(root: Path, crate: str, called: set[str]) -> list[Path]:
-    """The sources of the local crates `crate` builds on that define one of the
-    functions it calls.
-
-    A window asks a backend method for the words it paints (`Disk::label()`,
-    `Step::title()`), and those words are written in the crate that holds the
-    method. Only a file that defines a called name is read, so a large
-    dependency tree costs little.
-    """
-    manifest = root / crate / "Cargo.toml"
-    if not manifest.is_file() or not called:
-        return []
-    found = []
-    for match in PATH_DEPENDENCY.finditer(manifest.read_text(errors="replace")):
-        target = (root / crate / match.group(1)).resolve()
-        if not target.is_dir() or not target.is_relative_to(root):
-            continue
-        relative = target.relative_to(root)
-        if "src" not in relative.parts and not (target / "src").is_dir():
-            continue
-        for path in sorted(target.rglob("*.rs")):
-            within = path.relative_to(root)
-            if ("src" not in within.parts or "target" in within.parts
-                    or any(part.startswith(".") for part in within.parts)
-                    or rust_source.is_test_file(within)):
-                continue
-            text = path.read_text(errors="replace")
-            if any(f"fn {name}" in text for name in called):
-                found.append(path)
-    return found
-
-
 def words_returned_in(code: str, begin: int, end: int,
                       returning: dict[str, list[tuple[str, int, str]]]
                       ) -> list[tuple[str, int, str]]:
@@ -1649,7 +1603,8 @@ def words_returned_in(code: str, begin: int, end: int,
     found = []
     for name, words in returning.items():
         pattern = re.compile(HELPER_CALL.format(name=re.escape(name)))
-        if any(begin <= hand.start() < end for hand in pattern.finditer(code, begin)):
+        if any(begin <= hand.start() < end
+               for hand in pattern.finditer(code, begin, end)):
             found.extend(words)
     return found
 
@@ -1887,12 +1842,7 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
         if window:
             if crate not in helpers:
                 helpers[crate] = helper_table(by_crate[crate])
-                called = called_names(by_crate[crate])
-                returning[crate] = returning_words(
-                    root,
-                    by_crate[crate] + dependency_sources(root, crate, called),
-                    called,
-                )
+                returning[crate] = returning_words(root, by_crate[crate])
                 naming[crate] = named_tuple_words(root, by_crate[crate])
                 constants[crate] = word_constant_table(root, by_crate[crate])
             ranges = []

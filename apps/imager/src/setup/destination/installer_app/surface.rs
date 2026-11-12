@@ -228,7 +228,10 @@ impl InstallerApp {
                     || {
                         Some((
                             "no_disk",
-                            format!("No disk {device} is listed; refresh disks"),
+                            t_args(
+                                "installer-blocked-no-such-disk",
+                                &[("device", ArgValue::Text(device.clone()))],
+                            ),
                         ))
                     },
                     |disk| self.disk_blocked(disk),
@@ -894,7 +897,12 @@ impl InstallerApp {
                     .disks
                     .iter()
                     .position(|disk| disk.name == device)
-                    .ok_or_else(|| format!("No disk {device} is listed; refresh disks"))?;
+                    .ok_or_else(|| {
+                        t_args(
+                            "installer-blocked-no-such-disk",
+                            &[("device", ArgValue::Text(device.clone()))],
+                        )
+                    })?;
                 let usable = self
                     .disks
                     .get(index)
@@ -1094,7 +1102,12 @@ impl InstallerApp {
                 let index = FILESYSTEMS
                     .iter()
                     .position(|candidate| *candidate == filesystem)
-                    .ok_or_else(|| format!("Unknown filesystem {filesystem:?}"))?;
+                    .ok_or_else(|| {
+                        t_args(
+                            "installer-error-unknown-filesystem",
+                            &[("filesystem", ArgValue::Text(filesystem.clone()))],
+                        )
+                    })?;
                 if self.supported_filesystems.get(index) != Some(&true) {
                     return Err(format!(
                         "{} cannot boot from this image's initramfs",

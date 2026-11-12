@@ -1731,7 +1731,7 @@ installer-blocked-read-only = Dieser Datenträger ist durch Hardware oder Richtl
 installer-blocked-begin-no-target = Wähle einen Datenträger (und bei „Daneben“ einen Bereich), bevor du installierst.
 installer-blocked-begin-recovery = Bestätige zuerst, dass du deinen Wiederherstellungsschlüssel sicherst.
 installer-action-confirm-calendars = Ausgewählte Kalender bestätigen
-installer-item-region = { $size } frei bei { $start }
+installer-item-region = { $size } frei ab { $start }
 installer-item-storage = Installationsziel
 installer-item-storage-erase = Den ausgewählten Datenträger löschen
 installer-item-review = Prüfen und installieren
@@ -1824,3 +1824,9 @@ imager-download-sentence-failed = Der Download wurde nicht fertig.
 imager-download-sentence-released = Der geprüfte Download bleibt auf diesem Computer. Es wurde nichts installiert.
 imager-download-sentence-discarded = Unfertige Download-Daten wurden entfernt. Fertige Teile können bleiben.
 imager-download-sentence-handoff-failed = Der geprüfte Download bleibt erhalten; die Installation wurde beendet.
+
+## What the wizard reports about the target it was given
+installer-status-install-start = Die Installation auf { $disk } für { $user } beginnt ({ $filesystem }).
+installer-blocked-no-such-disk = Der Datenträger { $device } ist nicht aufgeführt; aktualisiere die Liste.
+installer-error-unknown-filesystem = Unbekanntes Dateisystem: { $filesystem }
+installer-keyboard-map-name = Tastaturbelegung { $layout }
