@@ -440,21 +440,44 @@ impl ViewStorage {
         me: Option<&str>,
         payload: &[u8],
     ) -> Result<tilo_actions::ActionOutput, String> {
+        let me = self
+            .person
+            .as_ref()
+            .map(super::person::PersonState::me)
+            .or(me);
+        super::record::answer(&self.answering_doors(), me, payload)
+    }
+
+    /// Answer a `read` of one of those records, named `record`
+    /// ([`tilo_resource::read::record_spec`]).
+    pub(crate) fn record_read(
+        &self,
+        record: &str,
+        payload: &[u8],
+    ) -> Result<tilo_actions::ActionOutput, String> {
+        let door = self
+            .answering_doors()
+            .into_iter()
+            .find(|door| door.id() == record)
+            .ok_or_else(|| format!("no record `{record}` is open here"))?;
+        Ok(tilo_actions::ActionOutput {
+            value: Some(door.read(payload)?),
+            resources: Vec::new(),
+        })
+    }
+
+    /// The person's records and settings sections the window answers for:
+    /// another provider runs what it keeps; the window never does.
+    fn answering_doors(&self) -> Vec<Rc<dyn RecordDoor>> {
         let mut doors = self
             .person
             .as_ref()
             .map(super::person::PersonState::doors)
             .unwrap_or_default();
         doors.extend(self.section_doors.borrow().iter().cloned());
-        // Another provider runs what it keeps; the window never does.
         let kept_by = self.kept_by.borrow();
         doors.retain(|door| !kept_by.contains_key(door.id()));
-        let me = self
-            .person
-            .as_ref()
-            .map(super::person::PersonState::me)
-            .or(me);
-        super::record::answer(&doors, me, payload)
+        doors
     }
 
     /// The settings section `T` held as a record, opened on first use: with

@@ -4441,6 +4441,28 @@
   },
   {
     "resource": "person:canvas.recent-artworks",
+    "action": "read",
+    "resource_kind": "canvas.recent-artworks",
+    "label": "Read the content",
+    "description": "What this holds as typed data: with no item, the resource and the ids of what it contains; with an item id, that item's content. With version, read frozen historical content and its exact heads without changing the live resource.",
+    "operation": "View",
+    "params": [
+      {
+        "name": "item",
+        "ty": "text",
+        "description": "A nested resource's id, as the first read lists it (default: the whole resource)",
+        "nullable": true
+      },
+      {
+        "name": "version",
+        "ty": "text",
+        "description": "A change id, exact causal frontier, or checkpoint name (default: current)",
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "person:canvas.recent-artworks",
     "action": "redo",
     "resource_kind": "canvas.recent-artworks",
     "label": "Redo",

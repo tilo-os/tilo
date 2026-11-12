@@ -29,13 +29,24 @@ pub struct Watched {
 #[resource(
     kind = "test.watched",
     label = "Watch history",
-    app = "so.tilo.test-queue"
+    app = "so.tilo.test-queue",
+    read_content = Watched::read_document
 )]
 impl Watched {
     /// Remember that a video was watched.
     #[action]
     pub fn watch(&mut self, cx: &mut ActionCx, video: String) {
         self.videos.push(cx.id(), video);
+    }
+}
+
+impl Watched {
+    /// What was watched, as its fields.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_app::tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_app::tilo_resource::read::fields(self, item)
     }
 }
 
@@ -446,5 +457,54 @@ fn a_record_a_view_opens_without_the_app_declaring_it_is_not_the_persons() {
         opened.get("person"),
         None,
         "the declaration decides what is the person's, not the open: {opened:?}"
+    );
+}
+
+#[test]
+fn an_agent_reads_the_persons_own_record_now_and_at_a_version() {
+    let mut app = TestApp::<QueueApp>::for_person(&ada()).unwrap();
+    let watched = app.person::<Watched>().unwrap();
+    watched.invoke(&Watched::WATCH.with("first")).unwrap();
+    let after_first = watched
+        .record()
+        .read(|doc| {
+            let heads = doc.clone().get_heads();
+            heads
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("+")
+        })
+        .unwrap();
+    watched.invoke(&Watched::WATCH.with("second")).unwrap();
+    app.harness().relayout();
+
+    let read = app
+        .call_on("person:test.watched", "read", serde_json::json!({}))
+        .unwrap()
+        .expect("a read answers what the record holds");
+    let now = read.to_string();
+    assert!(
+        now.contains("first") && now.contains("second"),
+        "the read holds both: {now}"
+    );
+
+    let past = app
+        .call_on(
+            "person:test.watched",
+            "read",
+            serde_json::json!({ "version": after_first }),
+        )
+        .unwrap()
+        .expect("a read of a version answers what it held");
+    let then = past["content"].to_string();
+    assert!(
+        then.contains("first") && !then.contains("second"),
+        "the version holds the first only: {past}"
+    );
+    assert_eq!(
+        videos(&watched),
+        ["first", "second"],
+        "reads change nothing"
     );
 }

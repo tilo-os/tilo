@@ -176,10 +176,10 @@ pub(crate) trait TypedRoot {
         declarations: Box<dyn Any>,
     ) -> tilo_actions::ResourceSpec;
 
-    /// [`Resource::read_content`].
+    /// [`tilo_resource::read::content`].
     ///
     /// # Errors
-    /// As [`Resource::read_content`].
+    /// As [`tilo_resource::read::content`].
     fn read_content(
         &self,
         state: &dyn Any,
@@ -502,7 +502,7 @@ impl<R: Resource> TypedRoot for Typed<R> {
     ) -> Result<serde_json::Value, String> {
         let state =
             state_of::<R>(state).ok_or_else(|| "the resource is not readable here".to_owned())?;
-        R::read_content(state, doc, item)
+        tilo_resource::read::content::<R>(state, doc, item)
     }
 
     fn facts(&self, state: &dyn Any, doc: &AutoCommit) -> Result<serde_json::Value, String> {

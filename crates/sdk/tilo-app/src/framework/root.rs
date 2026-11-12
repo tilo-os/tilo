@@ -48,7 +48,8 @@ mod typed;
 mod widget;
 use live_head::LiveHead;
 pub(crate) use read::READ_TYPE;
-use read::{offer_document_reads, offer_item_reads, read, read_spec};
+pub(crate) use read::answer as answer_read;
+use read::{offer_document_reads, offer_item_reads, read};
 pub(crate) use search::{
     BodyText, IndexedEntries, LiveSearch, ResourceSearch, field_weight, index_entry,
 };
@@ -323,7 +324,7 @@ pub fn reserved_action_ids() -> Vec<String> {
     .map(str::to_owned)
     .collect();
     ids.push(open_spec().id.clone());
-    ids.push(read_spec().id.clone());
+    ids.push(tilo_resource::read::spec(None).id.clone());
     ids.push(facts::FACTS.to_owned());
     ids.push(tilo_resource::share::SHARE_LINK.to_owned());
     ids.push(tilo_resource::share::SHARE_INVITE_LINK.to_owned());
@@ -1216,7 +1217,7 @@ fn framework_specs() -> Rc<FrameworkSpecs> {
         }
         let specs = Rc::new(FrameworkSpecs {
             native: with_native_presentations(ResourceSpec::new("", "", "")).actions,
-            read: read_spec(),
+            read: tilo_resource::read::spec(None),
             facts: facts::facts_spec(),
             history: super::history::specs(),
         });
@@ -1660,11 +1661,9 @@ impl RootModel for ResourceRoot {
         // broker, whichever resource offers it.
         handlers.insert(tilo_actions::remote::ApplicationLaunch::TYPE.to_owned());
         // A resource reads itself when it says it does, and its items from
-        // its record's table when it does not (`offer_item_reads`): the read
-        // it publishes is always one it answers.
-        if self.resource.readable || self.resource.record_table.is_some() {
-            handlers.insert(READ_TYPE.to_owned());
-        }
+        // its record's table when it does not (`offer_item_reads`); a record
+        // kept beside it that reads itself is read through it too.
+        handlers.insert(READ_TYPE.to_owned());
         if self.resource.facts {
             handlers.insert(facts::FACTS_TYPE.to_owned());
         }
@@ -1742,6 +1741,11 @@ impl RootModel for ResourceRoot {
                 ui_core::host_operation::ResourceOperationStart::Completed(output),
             ));
         }
+        if let Some(output) = self.start_record_operation(op, doc)? {
+            return Ok(Some(
+                ui_core::host_operation::ResourceOperationStart::Completed(output),
+            ));
+        }
         if (self.resource.readable || self.resource.record_table.is_some())
             && let Some(request) = op.unscoped()
             && request.type_id == READ_TYPE
@@ -1803,11 +1807,6 @@ impl RootModel for ResourceRoot {
                 ),
             ));
         }
-        if let Some(output) = self.start_record_operation(op, doc)? {
-            return Ok(Some(
-                ui_core::host_operation::ResourceOperationStart::Completed(output),
-            ));
-        }
         // An effect reads the resource as the document stands, though no
         // frame has run since a collaborator's change arrived.
         if let Err(error) = self.typed.sync(doc) {
@@ -1832,7 +1831,8 @@ impl RootModel for ResourceRoot {
 impl ResourceRoot {
     /// The record-level requests every framework app answers the same way:
     /// its history at a version, an operation on one of its records or its
-    /// chain of parts, and the person's own record history.
+    /// chain of parts, the person's own record history, and a read of a
+    /// record kept beside its own.
     fn start_record_operation(
         &self,
         op: &ui_core::host_operation::ResourceOperation<'_>,
@@ -1851,6 +1851,10 @@ impl ResourceRoot {
                 .chain_action(self.dispatch.me(), request.payload, doc)?
         } else if request.type_id == super::person::HISTORY_TYPE {
             self.storage.person_history(request.payload)?
+        } else if request.type_id == READ_TYPE
+            && let Some(record) = tilo_resource::read::record_of(request.payload)
+        {
+            self.storage.record_read(&record, request.payload)?
         } else {
             return Ok(None);
         };
