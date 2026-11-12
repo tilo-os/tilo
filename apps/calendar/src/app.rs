@@ -506,7 +506,7 @@ impl CalendarApp {
             task_popover: None,
             task_due_picker: DatePicker::new(today)
                 .with_today(today)
-                .with_accessible_name(crate::resource::t("calendar-a11y-task-due")),
+                .with_accessible_name(crate::resource::t("calendar-a11y-choose-task-due")),
             choices: Box::new(Choices::new()),
             form: FormRects::default(),
             modal: None,
@@ -583,7 +583,7 @@ impl CalendarApp {
         self.anchor = today;
         self.event_popovers = EventPopovers::new(today);
         self.task_due_picker = DatePicker::new(today)
-            .with_accessible_name(crate::resource::t("calendar-a11y-task-due"));
+            .with_accessible_name(crate::resource::t("calendar-a11y-choose-task-due"));
         self.dirty = true;
     }
 
@@ -2973,25 +2973,25 @@ impl CalendarApp {
             ),
             Action::Today => (
                 "calendar.today".into(),
-                "Go to today".into(),
+                crate::resource::t("calendar-a11y-today"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::Prev => (
                 "calendar.previous".into(),
-                "Previous period".into(),
+                crate::resource::t("calendar-a11y-previous"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::Next => (
                 "calendar.next".into(),
-                "Next period".into(),
+                crate::resource::t("calendar-a11y-next"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::NewEvent => (
                 "calendar.new-event".into(),
-                "New event".into(),
+                crate::resource::t("calendar-a11y-new-event"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
@@ -3009,7 +3009,7 @@ impl CalendarApp {
             ),
             Action::NewTask => (
                 "calendar.new-task".into(),
-                "New task".into(),
+                crate::resource::t("calendar-a11y-new-task"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
@@ -3100,28 +3100,31 @@ impl CalendarApp {
                     .text()
                     .is_some_and(|status| status == crate::resource::t("calendar-sync-failed"))
                 {
-                    "Retry calendar synchronization".into()
+                    crate::resource::t("calendar-a11y-retry-sync")
                 } else {
-                    "Sync calendars".into()
+                    crate::resource::t("calendar-a11y-sync")
                 },
                 Role::Button,
                 AccessState::new().focusable(true).disabled(self.syncing()),
             ),
             Action::Export => (
                 "calendar.export".into(),
-                "Export calendar".into(),
+                crate::resource::t("calendar-a11y-export"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::Import => (
                 "calendar.import".into(),
-                "Import calendar".into(),
+                crate::resource::t("calendar-a11y-import"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::PickDate(day) | Action::OpenDay(day) => (
                 format!("calendar.date:{day}:open"),
-                format!("Open {}", date::fmt_day_long(*day)),
+                crate::resource::t_args(
+                    "calendar-a11y-open-day",
+                    &[("day", ui::i18n::ArgValue::Text(date::fmt_day_long(*day)))],
+                ),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
@@ -3188,19 +3191,19 @@ impl CalendarApp {
             ),
             Action::DiscardDraft(id) => (
                 format!("{}:discard", crate::actions::event_resource_id(*id)),
-                "Discard new event".into(),
+                crate::resource::t("calendar-a11y-discard-draft"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::DeleteTask(id) => (
                 format!("{}:delete", crate::actions::task_resource_id(*id)),
-                "Delete task".into(),
+                crate::resource::t("calendar-a11y-delete-task"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::ToggleAllDay => (
                 "calendar.event:all-day".into(),
-                "All-day event".into(),
+                crate::resource::t("calendar-a11y-all-day"),
                 Role::Switch,
                 AccessState::new().focusable(true).checked(matches!(
                     self.selection,
@@ -3209,64 +3212,64 @@ impl CalendarApp {
             ),
             Action::FocusField(FormField::Title) => (
                 "calendar.event:title".into(),
-                "Edit event title".into(),
+                crate::resource::t("calendar-a11y-event-title"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::FocusField(FormField::Location) => (
                 "calendar.event:location".into(),
-                "Edit event location".into(),
+                crate::resource::t("calendar-a11y-event-location"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::FocusField(FormField::Invite) => (
                 "calendar.event:invite".into(),
-                "Invite attendee by email".into(),
+                crate::resource::t("calendar-a11y-event-invite"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::OpenPopover(FormPopover::StartDate) => (
                 "calendar.event:start-date".into(),
-                "Choose event start date".into(),
+                crate::resource::t("calendar-a11y-start-date"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::OpenPopover(FormPopover::EndDate) => (
                 "calendar.event:end-date".into(),
-                "Choose event end date".into(),
+                crate::resource::t("calendar-a11y-end-date"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::OpenPopover(FormPopover::StartTime) => (
                 "calendar.event:start-time".into(),
-                "Choose event start time".into(),
+                crate::resource::t("calendar-a11y-start-time"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::OpenPopover(FormPopover::EndTime) => (
                 "calendar.event:end-time".into(),
-                "Choose event end time".into(),
+                crate::resource::t("calendar-a11y-end-time"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::OpenTaskPopover(TaskPopover::Due) => (
                 "calendar.task.due".into(),
-                "Choose task due date".into(),
+                crate::resource::t("calendar-a11y-choose-task-due"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::DismissTaskPopover => (
                 "calendar.task.picker.dismiss".into(),
-                "Dismiss task picker".into(),
+                crate::resource::t("calendar-a11y-dismiss-picker"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::ShiftTaskDueMonth(delta) => (
                 format!("calendar.task.due.month:{delta}"),
                 if *delta < 0 {
-                    "Previous due-date month".into()
+                    crate::resource::t("calendar-a11y-due-previous-month")
                 } else {
-                    "Next due-date month".into()
+                    crate::resource::t("calendar-a11y-due-next-month")
                 },
                 Role::Button,
                 AccessState::new().focusable(true),
@@ -3277,8 +3280,13 @@ impl CalendarApp {
                     due.map_or_else(|| "none".into(), |day| day.to_string())
                 ),
                 due.map_or_else(
-                    || "Clear task due date".into(),
-                    |day| format!("Set task due date to {}", date::fmt_day_long(day)),
+                    || crate::resource::t("calendar-a11y-clear-due"),
+                    |day| {
+                        crate::resource::t_args(
+                            "calendar-a11y-set-due",
+                            &[("day", ui::i18n::ArgValue::Text(date::fmt_day_long(day)))],
+                        )
+                    },
                 ),
                 Role::RadioButton,
                 AccessState::new().focusable(true).checked(

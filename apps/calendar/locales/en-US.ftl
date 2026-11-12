@@ -194,3 +194,31 @@ calendar-location-placeholder = Add location
 
 ## Window and accessibility copy
 calendar-a11y-task-due = Task due date
+
+## What a control reads out
+calendar-a11y-today = Go to today
+calendar-a11y-previous = Previous period
+calendar-a11y-next = Next period
+calendar-a11y-new-event = New event
+calendar-a11y-new-task = New task
+calendar-a11y-retry-sync = Retry calendar synchronisation
+calendar-a11y-sync = Sync calendars
+calendar-a11y-export = Export calendar
+calendar-a11y-import = Import calendar
+calendar-a11y-open-day = Open { $day }
+calendar-a11y-discard-draft = Discard new event
+calendar-a11y-delete-task = Delete task
+calendar-a11y-all-day = All-day event
+calendar-a11y-event-title = Edit event title
+calendar-a11y-event-location = Edit event location
+calendar-a11y-event-invite = Invite attendee by email
+calendar-a11y-start-date = Choose event start date
+calendar-a11y-end-date = Choose event end date
+calendar-a11y-start-time = Choose event start time
+calendar-a11y-end-time = Choose event end time
+calendar-a11y-choose-task-due = Choose task due date
+calendar-a11y-dismiss-picker = Dismiss task picker
+calendar-a11y-due-previous-month = Previous due-date month
+calendar-a11y-due-next-month = Next due-date month
+calendar-a11y-clear-due = Clear task due date
+calendar-a11y-set-due = Set task due date to { $day }

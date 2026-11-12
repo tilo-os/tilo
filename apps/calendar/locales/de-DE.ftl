@@ -194,3 +194,31 @@ calendar-location-placeholder = Ort hinzufügen
 
 ## Fenster- und Barrierefreiheits-Texte
 calendar-a11y-task-due = Fällig am
+
+## Was ein Bedienelement vorliest
+calendar-a11y-today = Zum heutigen Tag
+calendar-a11y-previous = Vorheriger Zeitraum
+calendar-a11y-next = Nächster Zeitraum
+calendar-a11y-new-event = Neuer Termin
+calendar-a11y-new-task = Neue Aufgabe
+calendar-a11y-retry-sync = Kalender-Abgleich wiederholen
+calendar-a11y-sync = Kalender abgleichen
+calendar-a11y-export = Kalender exportieren
+calendar-a11y-import = Kalender importieren
+calendar-a11y-open-day = { $day } öffnen
+calendar-a11y-discard-draft = Neuen Termin verwerfen
+calendar-a11y-delete-task = Aufgabe löschen
+calendar-a11y-all-day = Ganztägiger Termin
+calendar-a11y-event-title = Titel des Termins bearbeiten
+calendar-a11y-event-location = Ort des Termins bearbeiten
+calendar-a11y-event-invite = Person per E-Mail einladen
+calendar-a11y-start-date = Startdatum des Termins wählen
+calendar-a11y-end-date = Enddatum des Termins wählen
+calendar-a11y-start-time = Startzeit des Termins wählen
+calendar-a11y-end-time = Endzeit des Termins wählen
+calendar-a11y-choose-task-due = Fälligkeit der Aufgabe wählen
+calendar-a11y-dismiss-picker = Aufgabenauswahl schließen
+calendar-a11y-due-previous-month = Vorheriger Fälligkeitsmonat
+calendar-a11y-due-next-month = Nächster Fälligkeitsmonat
+calendar-a11y-clear-due = Fälligkeit der Aufgabe entfernen
+calendar-a11y-set-due = Fälligkeit der Aufgabe auf { $day } setzen
