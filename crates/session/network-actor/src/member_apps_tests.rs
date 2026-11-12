@@ -109,7 +109,7 @@ fn invitation(
         .issue_invitation(
             workspace,
             administrator,
-            IssueInvitationRequest {
+            &IssueInvitationRequest {
                 request_id,
                 role: MemberRole::Editor,
                 recipient_user_public_key: None,
@@ -117,7 +117,7 @@ fn invitation(
                 expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
                 inviter_name: None,
             },
-            vec![transport],
+            &[transport],
             key,
             SystemTime::now(),
         )
@@ -323,7 +323,7 @@ async fn a_members_change_reaches_the_apps_of_the_device_it_entered_through() {
         "Here",
         &host_cert,
         &host_key,
-        Some(hint(here, &host_endpoint, &host_cert, &host_key)),
+        Some(&hint(here, &host_endpoint, &host_cert, &host_key)),
         now,
     )
     .expect("the workspace is founded here");
@@ -332,7 +332,7 @@ async fn a_members_change_reaches_the_apps_of_the_device_it_entered_through() {
         "Elsewhere",
         &far_cert,
         &far_key,
-        Some(hint(elsewhere, &far_endpoint, &far_cert, &far_key)),
+        Some(&hint(elsewhere, &far_endpoint, &far_cert, &far_key)),
         now,
     )
     .expect("the workspace is founded on the separate host");
