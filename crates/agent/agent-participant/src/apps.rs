@@ -1017,15 +1017,7 @@ fn genesis(
         .map_err(|e| launch(&e))?
         .initialize_seeded(
             |doc| kind.initialize(doc).map_err(|error| error.to_string()),
-            |doc| {
-                ui::framework::seed_record_in_workspace(
-                    kind.kind(),
-                    doc,
-                    creator,
-                    DEVICE,
-                    workspace,
-                )
-            },
+            |doc| ui::framework::seed_record(kind.kind(), doc, creator, DEVICE),
         )
         .map_err(|e| launch(&e))?;
     records

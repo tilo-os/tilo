@@ -282,21 +282,6 @@ pub(super) fn command_bytes(command: &SdkCommand) -> Option<usize> {
             meter.finish()
         }
 
-        SdkCommand::Initialize { route, request, .. } => {
-            let mut meter = ByteMeter(Some(std::mem::size_of::<SdkCommand>()));
-            meter.string_capacity(&route.app_id);
-            if let Some(record) = &route.record {
-                meter.string_capacity(record);
-            }
-            if let runtime_collab::committed_document::Request::Initialize {
-                kind, document, ..
-            } = request
-            {
-                meter.string_capacity(kind);
-                meter.add(document.capacity());
-            }
-            meter.finish()
-        }
         SdkCommand::Hello(hello) => {
             let mut meter = ByteMeter(Some(std::mem::size_of::<SdkCommand>()));
             meter.string_capacity(&hello.route.app_id);

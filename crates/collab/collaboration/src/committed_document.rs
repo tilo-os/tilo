@@ -231,30 +231,6 @@ impl Reads {
     pub(crate) fn legacy_for_test(&self, key: &str) {
         self.legacy(key).unwrap();
     }
-    #[cfg(any(test, feature = "test-support"))]
-    #[allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "a fixture for the toolkit's tests"
-    )]
-    pub(crate) fn stage_for_test(&self, key: &str, read: CommittedDocument) {
-        let ready = self.pending(key).unwrap();
-        self.stage(key, &ready, read).unwrap();
-    }
-    #[cfg(any(test, feature = "test-support"))]
-    #[allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "a fixture for the toolkit's tests"
-    )]
-    pub(crate) fn refresh_for_test(&self, key: &str, read: CommittedDocument) {
-        let applied = self.1.lock().unwrap().get(key).unwrap().merged.clone();
-        assert!(applied.load(Ordering::Acquire));
-        self.clear_stage(key, &applied);
-        self.stage_for_test(key, read);
-    }
     pub(super) fn publishable(&self, key: &str) -> bool {
         if self.closed() {
             return false;
@@ -494,9 +470,6 @@ pub struct CommittedDocument {
     /// so its confirming read follows the merge at once.
     merge_wake: Arc<tokio::sync::Notify>,
     valid: Arc<AtomicBool>,
-    creation: Option<runtime_collab::committed_document::CreationReceipt>,
-    revision: [u8; 32],
-    initialized: Arc<AtomicBool>,
     /// Set when these are only the changes since the revision with these
     /// heads: they apply only to an owner document holding every one.
     base: Option<Arc<[automerge::ChangeHash]>>,
@@ -512,39 +485,6 @@ impl std::fmt::Debug for CommittedDocument {
     }
 }
 impl CommittedDocument {
-    pub fn creation_workspace(
-        &self,
-    ) -> Option<&runtime_collab::committed_document::CreationWorkspace> {
-        self.is_current().then_some(())?;
-        if self.initialized.load(Ordering::Acquire) {
-            return None;
-        }
-        self.creation.as_ref().map(|receipt| &receipt.workspace)
-    }
-    pub(crate) fn initialization_request(
-        &self,
-        kind: &str,
-        document: Vec<u8>,
-    ) -> Result<Request, String> {
-        if self.creation_workspace().is_none() {
-            return Err("original application creation receipt unavailable".into());
-        }
-        let receipt = self
-            .creation
-            .as_ref()
-            .ok_or("creation receipt unavailable")?;
-        let request = Request::Initialize {
-            token: receipt.token,
-            revision: self.revision,
-            kind: kind.into(),
-            document,
-        };
-        request.encode().map_err(str::to_owned)?;
-        Ok(request)
-    }
-    pub(crate) fn initialized(&self) {
-        self.initialized.store(true, Ordering::Release);
-    }
     pub fn with_mutation<T>(
         &self,
         apply: impl FnOnce(&collab_types::DocumentMutation) -> T,
@@ -611,9 +551,6 @@ impl CommittedDocument {
             merged: Arc::new(AtomicBool::new(false)),
             merge_wake: Arc::new(tokio::sync::Notify::new()),
             valid: Arc::new(AtomicBool::new(true)),
-            creation: None,
-            revision: [0; 32],
-            initialized: Arc::new(AtomicBool::new(false)),
             base: base.map(Into::into),
             refused: Arc::new(AtomicBool::new(false)),
         }
@@ -1205,9 +1142,6 @@ mod tests {
             merged: Arc::new(AtomicBool::new(false)),
             merge_wake: Arc::new(tokio::sync::Notify::new()),
             valid: Arc::new(AtomicBool::new(true)),
-            creation: None,
-            revision: [0; 32],
-            initialized: Arc::new(AtomicBool::new(false)),
             base: None,
             refused: Arc::new(AtomicBool::new(false)),
         };
@@ -1378,7 +1312,7 @@ async fn read_capture(
     })
     .await
 }
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub(super) async fn read_capture_using(
     first: Reply,
     budget: &ByteBudget,
@@ -1405,10 +1339,6 @@ async fn capture_using(
     wait: CaptureWait,
     mut send: impl AsyncFnMut(Request) -> Result<Reply, String>,
 ) -> Result<(CommittedDocument, [u8; 32]), CaptureFailure> {
-    let (first, creation) = match first {
-        Reply::Created { receipt, chunk } => (chunk.into_reply(), Some(receipt)),
-        reply => (reply, None),
-    };
     // Reserve before the full-document destination allocation. Every clone of
     // the event retains this one shared reservation until the last owner drops.
     let (first_id, first_token, total) = match &first {
@@ -1507,9 +1437,6 @@ async fn capture_using(
             merged: Arc::new(AtomicBool::new(false)),
             merge_wake: Arc::new(tokio::sync::Notify::new()),
             valid: Arc::new(AtomicBool::new(true)),
-            creation,
-            revision: assembly.revision,
-            initialized: Arc::new(AtomicBool::new(false)),
             base: assembly
                 .base
                 .map(|base| base.into_iter().map(automerge::ChangeHash).collect()),
@@ -1752,16 +1679,14 @@ pub(super) async fn install(
     // unavailable, said once each time it becomes so.
     let mut absent = false;
     let (initial, revision) = match first {
-        Reply::Chunk { .. } | Reply::Created { .. } => {
-            match read_capture(channel, first, CaptureWait::Join).await {
-                Ok((read, revision)) => (Some(read), Some(revision)),
-                Err(CaptureFailure::Capacity(bytes)) => {
-                    waiting = Some(Waiting::Capacity(bytes));
-                    (None, None)
-                }
-                Err(error) => return Err(error.to_string()),
+        Reply::Chunk { .. } => match read_capture(channel, first, CaptureWait::Join).await {
+            Ok((read, revision)) => (Some(read), Some(revision)),
+            Err(CaptureFailure::Capacity(bytes)) => {
+                waiting = Some(Waiting::Capacity(bytes));
+                (None, None)
             }
-        }
+            Err(error) => return Err(error.to_string()),
+        },
         Reply::Unavailable => (None, None),
         Reply::Busy => {
             waiting = Some(Waiting::Turn);
@@ -2094,8 +2019,8 @@ fn reply_kind(reply: &Reply) -> &'static str {
         Reply::Unchanged { .. } => "unchanged from another revision",
         Reply::Chunk { .. } => "chunk",
         Reply::Cancelled => "cancelled",
-        Reply::Created { .. } => "created",
-        Reply::Initialized { .. } => "initialized",
+        Reply::RetiredCreated => "created",
+        Reply::RetiredInitialized => "initialized",
         Reply::PrivateWindowBinding { .. } => "private window binding",
         Reply::RetiredStale => "retired stale",
         Reply::Changes { .. } => "changes",

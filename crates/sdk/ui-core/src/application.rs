@@ -122,7 +122,6 @@ pub struct HostContext {
     views: Rc<InstanceViewStore>,
     record: RecordCheckout,
     reservation: Option<RecordReservation>,
-    initialization: Option<crate::collaboration::native_initial::RecordInitialization>,
     permissions: SharedPermissions,
     author: UserId,
     host_person: UserId,
@@ -641,12 +640,6 @@ impl HostContext {
                 (checkout.clone(), None)
             }
         };
-        let initialization = crate::collaboration::native_initial::take_initialization(
-            &package,
-            views.workspace_id(),
-            &record,
-        )
-        .map_err(|error| LaunchError::Record(RecordOpenError::Initialization(error)))?;
         // Another replica's change to the window's records (a collaborator's
         // edit, a workspace's bot posting) wakes the window to show it.
         let wake_scope = WakeScope::new();
@@ -659,7 +652,6 @@ impl HostContext {
             views,
             record,
             reservation,
-            initialization,
             permissions,
             host_person: author.clone(),
             author,
@@ -1024,28 +1016,10 @@ impl HostContext {
         initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
         seed: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<(), RecordOpenError> {
-        if let Some(initialization) = self.initialization.as_ref() {
-            self.records.initialize_admitted_record(
-                &self.record,
-                initialization,
-                initialize,
-                seed,
-            )?;
-            self.initialization = None;
-            return Ok(());
-        }
         let reservation = self.reservation.as_mut().ok_or(RecordOpenError::Busy)?;
         reservation.initialize_seeded(initialize, seed)?;
         self.reservation = None;
         Ok(())
-    }
-    /// The host-derived original creation scope, absent on every ordinary restore.
-    pub fn creation_workspace(
-        &self,
-    ) -> Option<&runtime_collab::committed_document::CreationWorkspace> {
-        self.initialization
-            .as_ref()
-            .and_then(|initialization| initialization.workspace())
     }
     fn envelope(&self, view: View, application: Option<ApplicationLocalView>) -> SavedInstanceView {
         SavedInstanceView {

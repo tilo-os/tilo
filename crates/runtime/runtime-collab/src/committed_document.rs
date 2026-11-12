@@ -33,8 +33,6 @@ fn valid_snapshot_text(text: &str) -> bool {
 pub const CHUNK_BYTES: usize = 64 * 1024;
 pub const MAX_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_WIRE_BYTES: usize = CHUNK_BYTES + 128;
-/// Bootstrap is deliberately bounded independently of ordinary document reads.
-pub const MAX_INITIALIZATION_BYTES: usize = CHUNK_BYTES;
 /// The most heads a [`Reply::Changes`] names as its base. A document edited
 /// concurrently by more writers than this is read whole instead.
 pub const MAX_CHANGES_BASE: usize = 8;
@@ -42,75 +40,6 @@ pub const MAX_CHANGES_BASE: usize = 8;
 /// that piece with its base stays within [`MAX_WIRE_BYTES`] as a
 /// [`Reply::Chunk`] does. The rest follows through [`Request::Next`].
 pub const CHANGES_FIRST_BYTES: usize = CHUNK_BYTES - MAX_CHANGES_BASE * 32;
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CreationWorkspace {
-    pub id: String,
-    pub name: String,
-}
-impl CreationWorkspace {
-    pub fn valid(&self) -> bool {
-        self.id.len() == 36
-            && self.id.bytes().enumerate().all(|(index, byte)| {
-                if [8, 13, 18, 23].contains(&index) {
-                    byte == b'-'
-                } else {
-                    byte.is_ascii_hexdigit()
-                }
-            })
-            && self.id.bytes().any(|byte| byte != b'0' && byte != b'-')
-            && !self.name.is_empty()
-            && self.name.len() <= 256
-            && !self.name.chars().any(char::is_control)
-    }
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CreationReceipt {
-    pub token: [u8; 16],
-    pub workspace: CreationWorkspace,
-}
-/// A first capture chunk. Kept nonrecursive so untrusted wire decoding has no
-/// attacker-controlled nesting depth.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CreationChunk {
-    pub capture: u64,
-    pub revision: [u8; 32],
-    pub total: u32,
-    pub bytes: Vec<u8>,
-    pub token: [u8; 16],
-}
-impl CreationChunk {
-    pub fn into_reply(self) -> Reply {
-        Reply::Chunk {
-            capture: self.capture,
-            revision: self.revision,
-            total: self.total,
-            offset: 0,
-            bytes: self.bytes,
-            token: self.token,
-        }
-    }
-    /// Extract only the first bounded capture chunk.
-    pub fn from_reply(reply: Reply) -> Result<Self, &'static str> {
-        let Reply::Chunk {
-            capture,
-            revision,
-            total,
-            offset: 0,
-            bytes,
-            token,
-        } = reply
-        else {
-            return Err("creation requires first capture chunk");
-        };
-        Ok(Self {
-            capture,
-            revision,
-            total,
-            bytes,
-            token,
-        })
-    }
-}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Request {
     Open {
@@ -125,12 +54,10 @@ pub enum Request {
         capture: u64,
         token: [u8; 16],
     },
-    Initialize {
-        token: [u8; 16],
-        revision: [u8; 32],
-        kind: String,
-        document: Vec<u8>,
-    },
+    /// Retired: a record is made by its first write, never by an
+    /// initialization request. Kept in place so later requests keep their
+    /// tags.
+    RetiredInitialize,
     /// Read only the host-retained window instance for this live connection.
     PrivateWindowBinding,
     /// Hold until an `Open { known_revision }` would answer anything but
@@ -179,14 +106,13 @@ pub enum Reply {
         token: [u8; 16],
     },
     Cancelled,
-    /// Only the original first materialization on this admitted channel.
-    Created {
-        receipt: CreationReceipt,
-        chunk: CreationChunk,
-    },
-    Initialized {
-        revision: [u8; 32],
-    },
+    /// Retired: the creation receipt of a record's first materialization,
+    /// whose first write makes it whole. Kept in place so later replies keep
+    /// their tags.
+    RetiredCreated,
+    /// Retired: the answer to an initialization request, which no record
+    /// takes. Kept in place so later replies keep their tags.
+    RetiredInitialized,
     /// No instance means this connection has no native private control binding.
     PrivateWindowBinding {
         instance: Option<u64>,
@@ -241,7 +167,7 @@ impl Request {
     }
     /// Decode exactly one bounded, valid request.
     pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
-        if bytes.len() > MAX_INITIALIZATION_BYTES + 512 {
+        if bytes.len() > MAX_WIRE_BYTES {
             return Err("committed read request too large");
         }
         let (value, tail): (Self, _) =
@@ -259,6 +185,7 @@ impl Request {
             | Self::PrivateWindowBinding
             | Self::Await { .. }
             | Self::OpenChanges { .. }
+            | Self::RetiredInitialize
             | Self::Leave => true,
             Self::Next {
                 capture,
@@ -266,19 +193,6 @@ impl Request {
                 token,
             } => *capture != 0 && *token != [0; 16] && (*offset as usize) < MAX_DOCUMENT_BYTES,
             Self::Cancel { capture, token } => *capture != 0 && *token != [0; 16],
-            Self::Initialize {
-                token,
-                kind,
-                document,
-                ..
-            } => {
-                *token != [0; 16]
-                    && !kind.is_empty()
-                    && kind.len() <= 256
-                    && !kind.chars().any(char::is_control)
-                    && !document.is_empty()
-                    && document.len() <= MAX_INITIALIZATION_BYTES
-            }
         }
     }
 }
@@ -307,17 +221,6 @@ impl Reply {
             Self::ConnectionSnapshot(snapshot) => snapshot.valid(),
             Self::PrivateWindowBinding { instance } => {
                 instance.is_none_or(|instance| instance != 0)
-            }
-            Self::Created { receipt, chunk } => {
-                receipt.token != [0; 16]
-                    && receipt.workspace.valid()
-                    && chunk.capture != 0
-                    && chunk.token != [0; 16]
-                    && chunk.total != 0
-                    && chunk.total as usize <= MAX_DOCUMENT_BYTES
-                    && !chunk.bytes.is_empty()
-                    && chunk.bytes.len() <= CHUNK_BYTES
-                    && chunk.bytes.len() <= chunk.total as usize
             }
             Self::Chunk {
                 capture,
@@ -400,62 +303,6 @@ mod tests {
         assert!(Reply::decode(&trailing).is_err());
     }
 
-    #[test]
-    fn initialization_wire_bounds_and_first_creation_receipt_are_explicit() {
-        let workspace = CreationWorkspace {
-            id: "7851d1ef-c4fa-4d23-aa65-5ad85f80a6af".into(),
-            name: "Owner's workspace".into(),
-        };
-        let reply = Reply::Created {
-            receipt: CreationReceipt {
-                token: [7; 16],
-                workspace,
-            },
-            chunk: CreationChunk {
-                capture: 1,
-                revision: [3; 32],
-                total: 1,
-                bytes: vec![1],
-                token: [4; 16],
-            },
-        };
-        assert_eq!(Reply::decode(&reply.encode().unwrap()).unwrap(), reply);
-        let request = Request::Initialize {
-            token: [7; 16],
-            revision: [3; 32],
-            kind: "chat.workspace".into(),
-            document: vec![1; MAX_INITIALIZATION_BYTES],
-        };
-        assert_eq!(
-            Request::decode(&request.encode().unwrap()).unwrap(),
-            request
-        );
-        for (token, kind, document) in [
-            ([0; 16], "chat.workspace", vec![1]),
-            ([7; 16], "", vec![1]),
-            ([7; 16], "chat.workspace", Vec::new()),
-            (
-                [7; 16],
-                "chat.workspace",
-                vec![1; MAX_INITIALIZATION_BYTES + 1],
-            ),
-        ] {
-            assert!(
-                Request::Initialize {
-                    token,
-                    revision: [3; 32],
-                    kind: kind.into(),
-                    document
-                }
-                .encode()
-                .is_err()
-            );
-        }
-        let mut trailing = reply.encode().unwrap();
-        trailing.push(0);
-        assert!(Reply::decode(&trailing).is_err());
-        assert!(CreationChunk::from_reply(Reply::Initialized { revision: [3; 32] }).is_err());
-    }
     #[test]
     fn private_binding_wire_is_bounded_append_only_and_has_no_selected_identity() {
         assert_eq!(
