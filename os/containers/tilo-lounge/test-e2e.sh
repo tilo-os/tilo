@@ -238,12 +238,10 @@ verify_records_read() {
 # run_flow FLOW: FLOW in a session of its own, bounded by its limit.
 declare -A flow_started=() flow_of=()
 running=()
-flow_pids=()
 run_flow() {
   flow_started[$1]=$(date +%s)
   setsid timeout -k 5 "$limit" bash "$0" --flow "$1" > "$work/$1.log" 2>&1 &
   flow_of[$!]=$1
-  flow_pids+=("$!")
   running+=("$!")
 }
 # await_flow: the next flow to end, in the order they end, so each one's
