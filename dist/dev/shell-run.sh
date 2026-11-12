@@ -34,7 +34,7 @@
 #   --no-build    use the binaries already in target/debug
 #   --no-apps     start without the seeded apps, as a bare session does
 #   --size WxH    the headless output's size (default 1280x800)
-#   --window      show the session in a window on this Wayland desktop (still drawn by lavapipe)
+#   --window      show the session in a window on this Wayland desktop, drawn on its GPU
 #   --model-record FILE  give the person this model provider (`tilo-model-gateway
 #                 provision-provider --record` JSON) once the session is up
 #   --dev-rust-views  seed a Rust app's sample resources and views too (Tube's channels and
@@ -150,18 +150,21 @@ builds=("$bin" "$thin")
 [[ -d $repo_root/target/tilolang-runtime ]] && builds+=("$repo_root/target/tilolang-runtime")
 "$repo_root/dist/dev/build-provenance.sh" verify "${builds[@]}"
 
-# Lavapipe's loader manifest: the session, and everything it starts, loads this
+# Lavapipe's loader manifest: a headless session, and everything it starts, loads this
 # driver alone, and an empty TILO_DMABUF_DEVICE advertises no render node, so
-# nothing opens /dev/dri.
-lavapipe=
-for dir in /etc/vulkan/icd.d /usr/share/vulkan/icd.d /usr/local/share/vulkan/icd.d; do
-    for icd in "$dir/lvp_icd.$(uname -m).json" "$dir/lvp_icd.json"; do
-        [[ -z $lavapipe && -f $icd ]] && lavapipe=$icd
+# nothing opens /dev/dri. A session in a window draws on this desktop's GPU, as any of
+# its windows does: its window is the host's EGL surface, which lavapipe cannot draw.
+if ((!window)); then
+    lavapipe=
+    for dir in /etc/vulkan/icd.d /usr/share/vulkan/icd.d /usr/local/share/vulkan/icd.d; do
+        for icd in "$dir/lvp_icd.$(uname -m).json" "$dir/lvp_icd.json"; do
+            [[ -z $lavapipe && -f $icd ]] && lavapipe=$icd
+        done
     done
-done
-[[ -n $lavapipe ]] || die "Mesa's lavapipe is not installed (no lvp_icd.json under */vulkan/icd.d)"
-export VK_DRIVER_FILES=$lavapipe VK_ICD_FILENAMES=$lavapipe WGPU_ADAPTER_NAME=llvmpipe
-export TILO_DMABUF_DEVICE=
+    [[ -n $lavapipe ]] || die "Mesa's lavapipe is not installed (no lvp_icd.json under */vulkan/icd.d)"
+    export VK_DRIVER_FILES=$lavapipe VK_ICD_FILENAMES=$lavapipe WGPU_ADAPTER_NAME=llvmpipe
+    export TILO_DMABUF_DEVICE=
+fi
 
 # One scratch directory holds everything; its runtime directory is short, as a
 # socket path must be.
