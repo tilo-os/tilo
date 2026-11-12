@@ -220,6 +220,10 @@ fn revoke_with_minted(state: &mut State, id: &str, now_ms: u64) -> Vec<String> {
     state
         .tokens
         .retain(|_, token| token.kind == TokenKind::Key || !revoked.contains(&token.grant));
+    // Its webhooks read as the key, so they go with it.
+    state
+        .webhooks
+        .retain(|_, hook| !revoked.contains(&hook.grant));
     revoked
 }
 
@@ -307,6 +311,26 @@ struct State {
     /// How many agent runs each person has started through the server, so the
     /// next one is numbered after them ("Claude Code #3").
     runs: HashMap<String, u64>,
+    /// The webhooks keys made, by id.
+    #[serde(default)]
+    webhooks: HashMap<String, Webhook>,
+}
+
+/// Where a workspace's events are posted for a key ([`crate::v1::webhooks`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Webhook {
+    pub id: String,
+    /// The key that made it, which its events are read as: revoked, it stops.
+    pub grant: String,
+    pub workspace: String,
+    pub url: String,
+    /// The kinds posted; all when empty.
+    pub events: Vec<String>,
+    pub path: Option<String>,
+    /// What deliveries are signed with.
+    pub secret: String,
+    /// Where its stream was last delivered up to.
+    pub cursor: Option<String>,
 }
 
 /// The server's memory, kept in one private file when it has a path.
@@ -387,6 +411,61 @@ impl Store {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         )
+    }
+
+    /// Keep `webhook`.
+    ///
+    /// # Errors
+    /// The store could not be written.
+    pub fn add_webhook(&self, webhook: Webhook) -> io::Result<()> {
+        self.change(|state| {
+            state.webhooks.insert(webhook.id.clone(), webhook);
+        })
+    }
+
+    /// Forget `grant`'s webhook `id` in `workspace`: whether it was there.
+    ///
+    /// # Errors
+    /// The store could not be written.
+    pub fn remove_webhook(&self, grant: &str, workspace: &str, id: &str) -> io::Result<bool> {
+        self.change(|state| {
+            let theirs = state
+                .webhooks
+                .get(id)
+                .is_some_and(|hook| hook.grant == grant && hook.workspace == workspace);
+            theirs && state.webhooks.remove(id).is_some()
+        })
+    }
+
+    /// The webhooks, each grant's in `workspace`, or every one.
+    #[must_use]
+    pub fn webhooks(&self, of: Option<(&str, &str)>) -> Vec<Webhook> {
+        self.read(|state| {
+            let mut hooks: Vec<Webhook> = state
+                .webhooks
+                .values()
+                .filter(|hook| {
+                    of.is_none_or(|(grant, workspace)| {
+                        hook.grant == grant && hook.workspace == workspace
+                    })
+                })
+                .cloned()
+                .collect();
+            hooks.sort_by(|a, b| a.id.cmp(&b.id));
+            hooks
+        })
+    }
+
+    /// The webhook `id` was delivered up to `cursor`.
+    ///
+    /// # Errors
+    /// The store could not be written.
+    pub fn webhook_delivered(&self, id: &str, cursor: &str) -> io::Result<()> {
+        self.change(|state| {
+            if let Some(hook) = state.webhooks.get_mut(id) {
+                hook.cursor = Some(cursor.to_owned());
+            }
+        })
     }
 
     /// Register a public client.

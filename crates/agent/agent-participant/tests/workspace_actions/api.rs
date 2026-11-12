@@ -135,18 +135,15 @@ impl Mcp<'_> {
 /// and the reply.
 pub(super) async fn upload(mcp: &Mcp<'_>, workspace: &str, body: &[u8]) -> (u16, Value) {
     let bearer = format!("Bearer {}", mcp.token);
-    let mut pairs = vec![
+    let pairs = [
         ("authorization", bearer.as_str()),
         ("content-type", "application/pdf"),
     ];
-    if let Some(session) = &mcp.session {
-        pairs.push((tilo_api::session::SESSION_HEADER, session.as_str()));
-    }
     json_of(
         mcp.api
             .dispatch(
-                &hyper::Method::PUT,
-                &format!("/w/{workspace}/content"),
+                &hyper::Method::POST,
+                &format!("/v1/workspaces/{workspace}/uploads"),
                 "",
                 &headers(&pairs),
                 body,

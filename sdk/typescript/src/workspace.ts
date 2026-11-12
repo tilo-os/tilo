@@ -44,19 +44,14 @@ export class Files {
   async upload(data: Uint8Array | ArrayBuffer | Blob, name: string | null = null): Promise<string> {
     const workspace = await this.workspace.id();
     const transport = this.workspace.client.transport;
-    const session = transport.session(workspace);
-    if (session.id === null) {
-      await session.open();
-    }
     const bytes =
       data instanceof Blob
         ? new Uint8Array(await data.arrayBuffer())
         : data instanceof Uint8Array
           ? data
           : new Uint8Array(data);
-    const response = await transport.request("PUT", `/w/${workspace}/content`, {
+    const response = await transport.request("POST", `/v1/workspaces/${workspace}/uploads`, {
       data: bytes,
-      session: session.id,
     });
     let body: Record<string, unknown> = {};
     try {

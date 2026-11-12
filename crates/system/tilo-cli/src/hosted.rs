@@ -5,8 +5,8 @@
 //! endpoints (`/mcp` for the account, `/w/<workspace>/mcp` for one workspace),
 //! asking for the typed answer, so a script sees what an agent sees. Making
 //! workspaces and keys are actions on the account (`account/workspaces#create`,
-//! `account/keys#mint`). A file goes in as one upload (`PUT
-//! /w/<workspace>/content`), and the reference it answers is what actions take.
+//! `account/keys#mint`). A file goes in as one upload (`POST
+//! /v1/workspaces/<workspace>/uploads`), and the reference it answers is what actions take.
 //!
 //! The key comes from `TILO_API_KEY`, and the API server from `--api` or
 //! `TILO_API_URL` (`https://mcp.tilo.sh`). `tilo keys create` gets a key: it
@@ -612,7 +612,7 @@ pub fn files(api: Option<&str>, json: bool, workspace: &str, cmd: FilesCmd) -> E
         let workspace = client.workspace(workspace).await?;
         let response = client
             .http
-            .put(format!("{}/w/{workspace}/content", client.api))
+            .post(format!("{}/v1/workspaces/{workspace}/uploads", client.api))
             .bearer_auth(&client.key)
             .timeout(Duration::from_secs(10 * 60))
             .body(bytes)

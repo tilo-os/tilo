@@ -103,6 +103,72 @@ pub struct Session {
     pub(crate) last_used: Mutex<Instant>,
 }
 
+/// One tool call of a run: what an MCP client's `tools/call` and every route
+/// of the API make ([`Session::call`]).
+#[derive(Debug)]
+pub struct Call {
+    /// The workspace it acts in; `None` for the account, or for the one
+    /// workspace a run for one workspace acts in.
+    pub workspace: Option<String>,
+    /// The tool: `tilo_ls`, `tilo_read`, `tilo_do`, `tilo_status`, …
+    pub tool: &'static str,
+    pub arguments: Value,
+    /// The run it is a step of, `{"id", "title"}`, when the caller names one.
+    pub run: Option<Value>,
+}
+
+/// Why a call answered nothing typed: the request itself was refused, before
+/// any tool ran.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallError {
+    /// The typed code: `not_found`, `beyond_scope`, `rate_limited`,
+    /// `invalid_request` or `unavailable`.
+    pub code: &'static str,
+    pub message: String,
+    pub retry_after_ms: Option<u64>,
+}
+
+impl CallError {
+    fn beyond_scope() -> Self {
+        Self {
+            code: "beyond_scope",
+            message: "this key reaches another workspace only".into(),
+            retry_after_ms: None,
+        }
+    }
+
+    fn unanswered() -> Self {
+        Self {
+            code: "unavailable",
+            message: "the workspace answered nothing".into(),
+            retry_after_ms: None,
+        }
+    }
+
+    /// The JSON-RPC `error` a session answered, typed.
+    fn of(error: &Value) -> Self {
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("the call was refused")
+            .to_owned();
+        let retry_after_ms = error
+            .pointer("/data/retry_after_ms")
+            .and_then(Value::as_u64);
+        let code = match error.get("code").and_then(Value::as_i64) {
+            _ if retry_after_ms.is_some() => crate::account::RATE_LIMITED,
+            Some(-32602) if message.contains("no such workspace") => "not_found",
+            Some(-32602 | -32600 | -32700 | -32601) => "invalid_request",
+            _ => "unavailable",
+        };
+        Self {
+            code,
+            message,
+            retry_after_ms,
+        }
+    }
+}
+
 /// A JSON-RPC error reply.
 #[must_use]
 pub fn error(id: &Value, code: i64, message: &str) -> Value {
@@ -511,6 +577,44 @@ impl Session {
             };
         }
         Reply::one(answer)
+    }
+
+    /// Answer `call` with its typed answer: the one way every call is made,
+    /// whether an MCP client's `tools/call` or a route of the API (`crate::v1`).
+    ///
+    /// # Errors
+    /// The run reaches no such workspace, or the call was malformed.
+    pub async fn call(&self, call: Call) -> Result<Value, CallError> {
+        let mut arguments = match call.arguments {
+            Value::Null => json!({}),
+            arguments => arguments,
+        };
+        match (self.pinned(), call.workspace.as_deref()) {
+            (Some(pinned), Some(asked)) if pinned != asked => {
+                return Err(CallError::beyond_scope());
+            }
+            (None, Some(workspace)) => {
+                if let Some(fields) = arguments.as_object_mut() {
+                    fields.insert(WORKSPACE_ARGUMENT.into(), json!(workspace));
+                }
+            }
+            _ => {}
+        }
+        let mut meta = Map::new();
+        meta.insert("structured".into(), json!(true));
+        if let Some(run) = call.run {
+            meta.insert("run".into(), run);
+        }
+        let request = json!({"jsonrpc": "2.0", "id": "api", "method": "tools/call",
+            "params": {"name": call.tool, "arguments": arguments, "_meta": {"so.tilo.mcp": meta}}});
+        let reply = self.handle(request).await;
+        let Some(message) = reply.messages.into_iter().last() else {
+            return Err(CallError::unanswered());
+        };
+        if let Some(error) = message.get("error") {
+            return Err(CallError::of(error));
+        }
+        Ok(message.get("result").cloned().unwrap_or_default())
     }
 
     /// Call the workspace tool `name` with `arguments` in `workspace`, in

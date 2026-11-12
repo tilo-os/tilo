@@ -348,7 +348,6 @@ describe("acting", () => {
 
     expect(content).toBe("tilo.content:14");
     expect(house.uploads.length).toBe(1);
-    expect(house.uploadSessions.at(-1)).not.toBeNull();
 
     const imported = await workspace.do(`${PDF}#import-pdf-content`, { content, name: "passport.pdf" });
     expect(imported).toEqual({ imported: content });

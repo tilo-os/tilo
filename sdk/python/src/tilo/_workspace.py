@@ -335,11 +335,8 @@ class Workspace:
     async def _upload(self, data: bytes) -> str:
         workspace = await self._id()
         transport = self.client.transport
-        session = transport.session(workspace)
-        if session.id is None:
-            await session.open()
         response = await transport.request(
-            "PUT", f"/w/{workspace}/content", data=data, session=session.id
+            "POST", f"/v1/workspaces/{workspace}/uploads", data=data
         )
         body: Mapping[str, Any] = {}
         try:

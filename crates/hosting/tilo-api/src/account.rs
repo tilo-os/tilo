@@ -536,19 +536,7 @@ impl Server {
         };
         match path {
             "account/workspaces#list" => self.account_workspaces(key).await,
-            "account/workspaces#create" => {
-                let Some(name) = field("name") else {
-                    return failed(
-                        "invalid_arguments",
-                        "`name` is required",
-                        "pass args {name: \"Applicant: Jane Doe\"}",
-                    );
-                };
-                match self.relay.create(key, name).await {
-                    Ok(created) => Outcome::Ok(json!({"workspace": created})),
-                    Err(error) => refused(&error),
-                }
-            }
+            "account/workspaces#create" => self.create_workspace(key, args).await,
             "account/workspaces#delete" => {
                 let Some(workspace) = field("workspace") else {
                     return failed(
@@ -623,6 +611,31 @@ impl Server {
                 format!("the account has no action {other}"),
                 "tilo_ls account lists its actions",
             ),
+        }
+    }
+
+    /// Make the workspace `args` names (`name`, and `id` when the caller chose
+    /// one) as `key`.
+    async fn create_workspace(&self, key: &Connection, args: &Value) -> Outcome {
+        let Some(name) = args
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        else {
+            return failed(
+                "invalid_arguments",
+                "`name` is required",
+                "pass args {name: \"Applicant: Jane Doe\"}",
+            );
+        };
+        let id = match chosen_id(args) {
+            Ok(id) => id,
+            Err(refused) => return refused,
+        };
+        match self.relay.create(key, name, id).await {
+            Ok(created) => Outcome::Ok(json!({"workspace": created})),
+            Err(error) => refused(&error),
         }
     }
 
@@ -777,6 +790,22 @@ impl Server {
             ),
         }
     }
+}
+
+/// The id a caller chose for a workspace it makes (`id`), so that a retry
+/// asks for the same one: none when it chose none.
+fn chosen_id(args: &Value) -> Result<Option<uuid::Uuid>, Outcome> {
+    args.get("id")
+        .and_then(Value::as_str)
+        .map(uuid::Uuid::parse_str)
+        .transpose()
+        .map_err(|_| {
+            failed(
+                "invalid_arguments",
+                "`id` is a workspace id (a UUID)",
+                "leave `id` out to make a new workspace",
+            )
+        })
 }
 
 /// A key for the workspace `id` alone, named `name`, certified by `key`: a

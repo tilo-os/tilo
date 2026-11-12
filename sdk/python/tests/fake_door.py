@@ -86,7 +86,6 @@ class FakeDoor:
         self.contents: dict[str, bytes] = {}
         # The most bytes one tilo_get answers, small so a test sees paging.
         self.piece = 4
-        self.upload_sessions: list[str | None] = []
         self.keys: list[dict[str, Any]] = [
             {
                 "grant": "g-root",
@@ -132,7 +131,7 @@ class FakeDoor:
 
     async def handle(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
-        if request.method == "PUT" and path.endswith("/content"):
+        if request.method == "POST" and path.endswith("/uploads"):
             return self.upload(request)
         if path == "/keys/new":
             return self.new_key(request)
@@ -145,7 +144,6 @@ class FakeDoor:
             return self.refuse(401, "unauthorized", "send a key")
         self.uploads.append(request.content)
         self.contents[f"tilo.content:{len(request.content)}"] = request.content
-        self.upload_sessions.append(request.headers.get("mcp-session-id"))
         return httpx.Response(
             201, json={"content": f"tilo.content:{len(request.content)}", "size": len(request.content)}
         )

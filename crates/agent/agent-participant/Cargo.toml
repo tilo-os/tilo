@@ -190,7 +190,7 @@ tilo-runtime = { path = "../../runtime/tilo-runtime" }
 iroh.workspace = true
 # The session client's test support (its host fixture), included by path.
 tilo-net = { path = "../../platform/tilo-net" }
-hyper = { version = "1", features = ["client", "http1"] }
+hyper = { version = "1", features = ["client", "http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 tokio-rustls.workspace = true

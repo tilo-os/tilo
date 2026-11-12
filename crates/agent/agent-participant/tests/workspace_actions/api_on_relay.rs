@@ -17,7 +17,7 @@ use tilo_relay_protocol::workspaces::WorkspaceRole;
 use tilo_user_identity::{DeviceCert, SignInProof};
 
 /// A reply's status and JSON body.
-pub async fn json_of(reply: hyper::Response<http_body_util::Full<bytes::Bytes>>) -> (u16, Value) {
+pub async fn json_of(reply: tilo_api::Reply) -> (u16, Value) {
     use http_body_util::BodyExt as _;
     let status = reply.status().as_u16();
     let body = reply.into_body().collect().await.unwrap().to_bytes();

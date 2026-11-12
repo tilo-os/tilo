@@ -77,7 +77,6 @@ export class FakeDoor {
   contents = new Map<string, Uint8Array>();
   /** The most bytes one tilo_get answers, small so a test sees paging. */
   piece = 4;
-  uploadSessions: (string | null)[] = [];
   keys: Answer[] = [
     {
       grant: "g-root",
@@ -125,7 +124,7 @@ export class FakeDoor {
     const path = parsed.pathname;
     const method = init?.method ?? "GET";
     const headers = (init?.headers ?? {}) as Record<string, string>;
-    if (method === "PUT" && path.endsWith("/content")) {
+    if (method === "POST" && path.endsWith("/uploads")) {
       return this.upload(init, headers);
     }
     if (path === "/keys/new") {
@@ -153,7 +152,6 @@ export class FakeDoor {
       body instanceof Uint8Array ? body : new TextEncoder().encode(String(body ?? ""));
     this.uploads.push(bytes);
     this.contents.set(`tilo.content:${bytes.length}`, bytes);
-    this.uploadSessions.push(headers["mcp-session-id"] ?? null);
     return json({ content: `tilo.content:${bytes.length}`, size: bytes.length }, 201);
   }
 

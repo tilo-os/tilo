@@ -204,9 +204,9 @@ impl Relay {
             .map_err(RelayError::from)
     }
 
-    /// Make the person's workspace called `name` as `connection`. A person
-    /// has any number of workspaces of their own, sharing what the host
-    /// keeps for them.
+    /// Make the person's workspace called `name` as `connection`, under `id`
+    /// when the caller chose one. A person has any number of workspaces of
+    /// their own, sharing what the host keeps for them.
     ///
     /// The grant enters it only once a run acts there ([`Relay::enter`]): a
     /// backend that makes a workspace per customer keeps hundreds, and its
@@ -218,11 +218,12 @@ impl Relay {
         &self,
         connection: &Connection,
         name: &str,
+        id: Option<uuid::Uuid>,
     ) -> Result<Workspace, RelayError> {
-        // A fresh id: the relay makes the workspace under that id, or
-        // refuses one more than the person's plan keeps rather than
-        // answering one they have.
-        let fresh = uuid::Uuid::new_v4().to_string();
+        // The relay makes the workspace under this id, or answers the one it
+        // made under it before (a retried create), or refuses one more than
+        // the person's plan keeps rather than answering one they have.
+        let fresh = id.unwrap_or_else(uuid::Uuid::new_v4).to_string();
         let mut arguments = Map::new();
         arguments.insert("name".into(), json!(name));
         arguments.insert("room".into(), json!(fresh));

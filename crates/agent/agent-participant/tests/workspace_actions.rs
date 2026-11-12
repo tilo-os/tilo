@@ -44,6 +44,9 @@ pub mod api_on_relay;
 #[path = "workspace_actions/api_questions.rs"]
 mod api_questions;
 #[cfg(test)]
+#[path = "workspace_actions/api_v1.rs"]
+mod api_v1;
+#[cfg(test)]
 #[path = "workspace_actions/chat_post.rs"]
 mod chat_post;
 #[cfg(test)]

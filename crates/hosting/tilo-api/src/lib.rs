@@ -38,6 +38,7 @@ pub mod relay;
 pub mod session;
 pub mod sign_in;
 pub mod store;
+pub mod v1;
 
 use grant_key::GrantKey;
 use http_body_util::{BodyExt, Full, Limited};
@@ -64,6 +65,8 @@ const MAX_SESSIONS: usize = 4_096;
 const MAX_SESSIONS_PER_GRANT: usize = 64;
 const SESSION_IDLE: Duration = Duration::from_secs(6 * 60 * 60);
 const MAX_PENDING: usize = 4_096;
+/// The prefix of a key's API run in the session table.
+const API_SESSION: &str = "api ";
 /// How long a person has to sign in and decide.
 const PENDING_LIFETIME_MS: u64 = 15 * 60 * 1000;
 
@@ -158,8 +161,12 @@ pub struct Server {
     page_tokens: Mutex<HashMap<String, String>>,
     /// The keys approved for a poller, by the poll secret's digest.
     approved_keys: Mutex<HashMap<String, keys::Approval>>,
-    /// Reaches the site, to see that its sign-in page is served.
+    /// Reaches the site (to see that its sign-in page is served) and the
+    /// URLs webhooks post to.
     http: tilo_net::Client,
+    /// What the API keeps besides the store: remembered answers, webhook
+    /// deliveries.
+    v1: v1::State,
     /// Whether the site serves the sign-in page every approval lands on, as
     /// last seen and when ([`Self::sign_in_page`]).
     sign_in_seen: Mutex<Option<(std::time::Instant, Result<(), String>)>>,
@@ -168,7 +175,16 @@ pub struct Server {
 /// How long what the site answered for its sign-in page is trusted.
 const SIGN_IN_SEEN_FOR: Duration = Duration::from_secs(60);
 
-type Reply = Response<Full<Bytes>>;
+/// What every answer's body is: whole, or a stream (server-sent events).
+pub type Body = http_body_util::combinators::BoxBody<Bytes, std::convert::Infallible>;
+
+/// One answer of the server.
+pub type Reply = Response<Body>;
+
+/// `bytes` as a whole body.
+pub fn body(bytes: impl Into<Bytes>) -> Body {
+    Full::new(bytes.into()).boxed()
+}
 
 impl Server {
     /// # Errors
@@ -200,6 +216,7 @@ impl Server {
             page_tokens: Mutex::default(),
             approved_keys: Mutex::default(),
             sign_in_seen: Mutex::default(),
+            v1: v1::State::default(),
         }))
     }
 
@@ -241,7 +258,7 @@ impl Server {
     /// Answer one HTTP request.
     pub async fn respond(self: &Arc<Self>, request: Request<Incoming>) -> Reply {
         let (parts, body) = request.into_parts();
-        let uploading = content::upload_target(&parts.method, parts.uri.path()).is_some();
+        let uploading = v1::uploads(&parts.method, parts.uri.path());
         let limit = if uploading {
             content::MAX_CONTENT_BYTES
         } else {
@@ -301,8 +318,20 @@ impl Server {
             (&Method::POST, "/sign-in") => self.signed_in(body),
             (&Method::POST, oauth::TOKEN_PATH) => self.token(body),
             (&Method::POST, oauth::REVOKE_PATH) => self.revoke(body).await,
-            (method, path) if let Some(workspace) = content::upload_target(method, path) => {
-                self.upload(&workspace, headers, body).await
+            // Boxed: the API's calls hold much across their waits, which the
+            // other routes' futures need not carry.
+            (method, path) if v1::serves(path) => {
+                Box::pin(v1::respond(
+                    self,
+                    &v1::Request {
+                        method,
+                        path,
+                        query,
+                        headers,
+                        body,
+                    },
+                ))
+                .await
             }
             (&Method::POST, keys::NEW_PATH) => self.new_key(body),
             (&Method::POST, keys::POLL_PATH) => self.poll_key(body),
@@ -1004,6 +1033,68 @@ impl Server {
 }
 
 impl Server {
+    /// The grant whose key `headers` carry, or the refusal saying why there
+    /// is none.
+    pub(crate) fn grant_of(&self, headers: &hyper::HeaderMap) -> Result<store::Grant, Box<Reply>> {
+        match bearer(headers).map(|token| self.store.access(token, now_ms())) {
+            Some(Ok(grant)) => Ok(grant),
+            Some(Err(denied)) => Err(Box::new(json_reply(
+                StatusCode::UNAUTHORIZED,
+                &denial(denied),
+            ))),
+            None => Err(Box::new(json_reply(
+                StatusCode::UNAUTHORIZED,
+                &json!({"error": {
+                    "code": "unauthorized",
+                    "message": "send a key: Authorization: Bearer <key>",
+                    "next_steps": ["create one with `tilo keys create`"],
+                }}),
+            ))),
+        }
+    }
+
+    /// `grant`'s run for the calls of the API: one per key, named for it
+    /// ("Visa backend #3"), opened the first time and kept with the key's
+    /// other sessions, so revoking the key ends it.
+    pub(crate) async fn api_session(
+        self: &Arc<Self>,
+        grant: &store::Grant,
+    ) -> Result<Arc<Session>, v1::errors::ApiError> {
+        let id = format!("{API_SESSION}{}", grant.id);
+        let open = lock(&self.sessions)
+            .get(&id)
+            .filter(|session| session.connection().is_live())
+            .cloned();
+        if let Some(open) = open {
+            return Ok(open);
+        }
+        let unavailable =
+            |why: String| v1::errors::ApiError::new("unavailable", why).next("try again shortly");
+        let number = self
+            .store
+            .next_run(&grant.person)
+            .map_err(|_| unavailable("this key cannot act now".to_owned()))?;
+        let label = format!("{} #{number}", grant.client_name);
+        let opened = Arc::new(
+            self.new_session(grant, grant.scope.clone(), label)
+                .await
+                .map_err(unavailable)?,
+        );
+        let initialize = json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "tilo-api", "version": env!("CARGO_PKG_VERSION")},
+        }});
+        if let Err(refused) = opened.initialize(&initialize).await {
+            let why = refused
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("the workspace refused");
+            return Err(unavailable(why.to_owned()));
+        }
+        lock(&self.sessions).insert(id, Arc::clone(&opened));
+        Ok(opened)
+    }
+
     /// A new run of `grant` acting in `scope`, named `label`: the grant's own
     /// session with the relay, and for a minted grant the session of the
     /// grant that minted it, which asks for its invitation.
@@ -1103,11 +1194,11 @@ fn session_reply(
         [only] => json_reply(StatusCode::OK, only),
         [.., last] if !accepts_events(headers) => json_reply(StatusCode::OK, last),
         messages => {
-            let body = messages.iter().fold(String::new(), |mut body, message| {
-                let _ = write!(body, "event: message\ndata: {message}\n\n");
-                body
+            let body_text = messages.iter().fold(String::new(), |mut text, message| {
+                let _ = write!(text, "event: message\ndata: {message}\n\n");
+                text
             });
-            let mut response = Response::new(Full::new(Bytes::from(body)));
+            let mut response = Response::new(body(body_text));
             response.headers_mut().insert(
                 header::CONTENT_TYPE,
                 HeaderValue::from_static("text/event-stream"),
@@ -1198,7 +1289,7 @@ pub(crate) fn denial(denied: store::Denied) -> Value {
 }
 
 fn json_reply(status: StatusCode, value: &Value) -> Reply {
-    let mut response = Response::new(Full::new(Bytes::from(value.to_string())));
+    let mut response = Response::new(body(value.to_string()));
     *response.status_mut() = status;
     response.headers_mut().insert(
         header::CONTENT_TYPE,
@@ -1208,13 +1299,13 @@ fn json_reply(status: StatusCode, value: &Value) -> Reply {
 }
 
 fn text(status: StatusCode, message: &str) -> Reply {
-    let mut response = Response::new(Full::new(Bytes::from(message.to_owned())));
+    let mut response = Response::new(body(message.to_owned()));
     *response.status_mut() = status;
     response
 }
 
 fn html(status: StatusCode, page: &str) -> Reply {
-    let mut response = Response::new(Full::new(Bytes::from(page.to_owned())));
+    let mut response = Response::new(body(page.to_owned()));
     *response.status_mut() = status;
     let headers = response.headers_mut();
     headers.insert(
@@ -1268,6 +1359,7 @@ fn redirect(location: &str) -> Reply {
 pub async fn serve(server: Arc<Server>, listener: tokio::net::TcpListener) {
     use hyper::service::service_fn;
     use hyper_util::rt::TokioIo;
+    v1::webhooks::Deliveries::start_all(&server);
     loop {
         let Ok((stream, _)) = listener.accept().await else {
             continue;

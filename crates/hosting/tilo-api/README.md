@@ -1,6 +1,13 @@
 # tilo-api
 
-The Tilo API server. An agent connects with one line, for example
+The Tilo API server: Tilo's API, `/v1`, JSON over HTTP
+([`docs/developers/api.md`](../../../docs/developers/api.md), described by
+[`docs/api/openapi.json`](../../../docs/api/openapi.json)), and the same calls
+for agents over MCP at `/mcp`. Every `/v1` route is a call of the key's run
+(`session::Session::call`), the very tool call an agent makes, answered typed
+(`v1`): one implementation, two faces.
+
+An agent connects with one line, for example
 
 ```sh
 claude mcp add --transport http tilo https://mcp.tilo.sh
