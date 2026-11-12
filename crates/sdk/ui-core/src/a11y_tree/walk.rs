@@ -78,6 +78,28 @@ pub(crate) trait A11yVisitor: Sized {
     );
 }
 
+/// The words a parent holds for the child at `index` of its
+/// [`children`](Widget::children) ([`Widget::accessibility_child_name`],
+/// [`Widget::accessibility_child_description`]), said of `access`: its name
+/// where the child has none of its own (or only found one, the value it
+/// shows), its description where the child describes nothing. Every view of
+/// the tree resolves a child the same way, so what a screen reader hears is
+/// what an agent reads and what the audit certifies.
+pub(crate) fn with_slot_words(access: &mut AccessNode, slot: Option<&(&dyn Widget, usize)>) {
+    let Some((parent, index)) = slot else {
+        return;
+    };
+    if access.name.is_none() || access.name_found {
+        if let Some(name) = parent.accessibility_child_name(*index) {
+            access.name = Some(name);
+            access.name_found = false;
+        }
+    }
+    if access.description.is_none() {
+        access.description = parent.accessibility_child_description(*index);
+    }
+}
+
 /// Walk `w` and everything under it into `parent`.
 pub(crate) fn walk<const BOUND: bool, V: A11yVisitor>(
     v: &mut V,

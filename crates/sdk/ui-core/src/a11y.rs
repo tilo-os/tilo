@@ -312,6 +312,15 @@ pub enum Politeness {
     Assertive,
 }
 
+/// Whether a flag is unset: what serde skips in an inspection patch.
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
+const fn not(value: &bool) -> bool {
+    !*value
+}
+
 /// The per-widget *local* accessibility semantics returned by
 /// [`Widget::accessibility`](crate::widget::Widget::accessibility);
 /// `name`/`description` must already be **FTL-resolved** strings (via
@@ -329,6 +338,14 @@ pub struct AccessNode {
     pub action_target: Option<String>,
     /// The primary label a screen reader announces.
     pub name: Option<String>,
+    /// `name` is a fallback the widget found for itself (the value it shows)
+    /// rather than words given for it. A parent that holds the control's
+    /// words ([`Widget::accessibility_child_name`](crate::widget::Widget::accessibility_child_name))
+    /// names it instead; a widget that sets a name of its own leaves this
+    /// `false`. Sent only when it is the one case that has it, so the
+    /// inspection patch stays a keystroke's worth of bytes.
+    #[serde(default, skip_serializing_if = "not")]
+    pub name_found: bool,
     pub description: Option<String>,
     /// Never populated for [`protected`](AccessState::protected) elements.
     pub value: Option<String>,
@@ -441,6 +458,7 @@ impl AccessNode {
             semantic_key: None,
             action_target: None,
             name: None,
+            name_found: false,
             description: None,
             value: None,
             value_length: None,
@@ -566,6 +584,15 @@ impl AccessNode {
     /// Handy when an empty label should collapse to `None`.
     pub fn with_optional_name(mut self, name: Option<String>) -> Self {
         self.name = name;
+        self
+    }
+
+    /// [`Self::with_name`] for a name the widget found for itself, the value
+    /// it shows: a parent that holds the control's words says its own
+    /// ([`Self::name_found`]).
+    pub fn with_found_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self.name_found = true;
         self
     }
 

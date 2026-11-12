@@ -49,7 +49,7 @@ pub(crate) use component_nodes::component_record;
 pub(crate) use node_identity::AdmittedNodeNames;
 use node_identity::WidgetNodeMap;
 use reading_order::ReadingOrder;
-use walk::{A11yVisitor, Visit, walk, walk_synthetic};
+use walk::{A11yVisitor, Visit, walk, walk_synthetic, with_slot_words};
 
 /// A widget hosted inside its parent's synthetic tree: the synthetic path below the child it
 /// hangs off ([`Widget::accessibility_child_path`]), and whether that child *is* the widget's
@@ -1562,7 +1562,7 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
     fn open(
         &mut self,
         w: &dyn Widget,
-        _slot: Option<(&dyn Widget, usize)>,
+        slot: Option<(&dyn Widget, usize)>,
         parent: &mut Level,
     ) -> Visit<PendingWidget, Level> {
         // Under a parent without a durable identity nothing is durable, and
@@ -1579,9 +1579,10 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
             Some(SharedAccessNode { node, children }) => (Some(node), children),
             None => (w.accessibility(), Vec::new()),
         };
-        let Some(access) = access else {
+        let Some(mut access) = access else {
             return Visit::Collapse;
         };
+        with_slot_words(&mut access, slot.as_ref());
         let id = if let Some(key) = &access.semantic_key {
             SemanticId::keyed(&parent.id, key)
         } else if let Some(t) = taffy_id {

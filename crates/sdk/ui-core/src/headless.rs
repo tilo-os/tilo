@@ -294,6 +294,7 @@ pub(crate) fn widget_inspection_json(widget: &dyn Widget) -> String {
         widget,
         "",
         &mut HashMap::new(),
+        None,
     ))
     .unwrap_or_default()
 }
@@ -6073,23 +6074,28 @@ impl FrameHarness {
         let mut root = if let Some(palette) = self.caller_palette_inspection() {
             palette
         } else if let Some(history) = &self.history {
-            let mut presentation = collect_inspection(history.as_ref(), "", &mut sibling_counts);
+            let mut presentation =
+                collect_inspection(history.as_ref(), "", &mut sibling_counts, None);
             if let Some(palette) = self.action_palette.as_deref().filter(|p| p.is_presented()) {
-                presentation
-                    .children
-                    .push(collect_inspection(palette, "", &mut sibling_counts));
+                presentation.children.push(collect_inspection(
+                    palette,
+                    "",
+                    &mut sibling_counts,
+                    None,
+                ));
             } else if history.live_visible() {
                 presentation.children.push(collect_inspection(
                     self.root.as_ref(),
                     "",
                     &mut sibling_counts,
+                    None,
                 ));
             }
             presentation
         } else if let Some(palette) = self.action_palette.as_deref().filter(|p| p.is_presented()) {
-            collect_inspection(palette, "", &mut sibling_counts)
+            collect_inspection(palette, "", &mut sibling_counts, None)
         } else {
-            collect_inspection(self.root.as_ref(), "", &mut sibling_counts)
+            collect_inspection(self.root.as_ref(), "", &mut sibling_counts, None)
         };
         // The window's row of slots, first in reading order, under nothing
         // that covers the whole window.
@@ -6180,7 +6186,7 @@ impl FrameHarness {
         // host draws around a registered document owner, is toolkit UI and is
         // audited with the toolkit, not with every app that has a history.
         let application = if self.history.is_some() {
-            collect_inspection(self.root.as_ref(), "", &mut HashMap::new())
+            collect_inspection(self.root.as_ref(), "", &mut HashMap::new(), None)
         } else {
             self.inspection().root
         };

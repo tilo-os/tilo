@@ -948,13 +948,7 @@ impl<const BOUND: bool> A11yVisitor for TreeWalk<'_, BOUND> {
             self.walk_counter = self.walk_counter.saturating_add(1);
             return Visit::Collapse;
         };
-        if access.description.is_none() {
-            access.description =
-                slot.and_then(|(parent, index)| parent.accessibility_child_description(index));
-        }
-        if access.name.is_none() {
-            access.name = slot.and_then(|(parent, index)| parent.accessibility_child_name(index));
-        }
+        crate::a11y_tree::walk::with_slot_words(&mut access, slot.as_ref());
         let id = match (&route, taffy_id) {
             (Some((owner, path)), None) => {
                 child_route_node_id(widget_node_id(Some(*owner), 0), path)
@@ -1655,6 +1649,23 @@ mod tests {
         let update = build_tree_update(&row, &node_map, None, 1.0);
         let field = only(&update, AkRole::TextInput);
         assert_eq!(field.label(), Some("Name shown to others"));
+    }
+
+    /// A chooser that finds a name in the value it shows is named by the row
+    /// that holds it instead, and keeps saying what it is set to.
+    #[test]
+    fn a_rows_chooser_is_named_by_the_row_and_not_by_its_value() {
+        let mut row = crate::widget::ListRow::new("currency", "Currency").trailing(Box::new(
+            crate::widget::Dropdown::from_state(
+                vec!["EUR".to_owned(), "USD".to_owned()],
+                &crate::LocalState::new("EUR".to_owned()),
+            ),
+        ));
+        let (_taffy, node_map, _root) = lay_out(&mut row);
+        let update = build_tree_update(&row, &node_map, None, 1.0);
+        let chooser = only(&update, AkRole::ComboBox);
+        assert_eq!(chooser.label(), Some("Currency"));
+        assert_eq!(chooser.value(), Some("EUR"));
     }
 
     /// A row wraps its slider in a box of its own for the width every slider
