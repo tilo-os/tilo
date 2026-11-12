@@ -362,3 +362,35 @@ store-app-tilo = Tilo app
 store-app-flatpak = Flatpak app
 store-app-flatpak-from = Flatpak app from { $source }
 store-app-flatpak-from-version = Flatpak app from { $source }, version { $version }
+
+## Actions
+
+store-catalog = App Store
+store-catalog-record-moderation-case = Record moderation case
+store-effect-inspect-catalogue = Inspect catalogue
+store-effect-refresh = Refresh catalogue
+store-effect-update-all = Update all apps
+store-effect-set-search = Search apps
+store-effect-show-view = Show a Store view
+store-effect-show-more = Show more apps
+store-effect-unblock-app = Unblock app
+store-effect-browse-remote = Browse a Flatpak repository
+store-effect-set-category = Show category
+store-effect-clear-filters = Clear the search
+store-effect-show-details = Show app details
+store-effect-show-runtime-details = Review an app's runtime
+store-effect-install-runtime = Install the signed runtime
+store-effect-set-technical-details = Toggle technical details
+store-effect-import-package = Review a local package
+store-effect-open-reference = Open a Flatpak reference
+store-effect-show-catalogue = Back to apps
+store-effect-show-remotes = Show Flatpak remotes
+store-effect-show-trust = Show trust and moderation
+store-effect-open-link = Open a web page
+store-effect-pin = Keep on device
+store-effect-add-bot = Add a directory bot
+store-effect-refresh-remotes = Refresh remotes
+store-effect-add-remote = Add Flatpak remote
+store-effect-remove-remote = Remove remote
+store-effect-prepare-moderation = Prepare a report
+store-effect-submit-report = Submit signed report

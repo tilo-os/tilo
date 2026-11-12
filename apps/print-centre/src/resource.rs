@@ -69,7 +69,6 @@ impl PrintDefaults {
 
 #[resource(
     kind = "print-centre.defaults",
-    label = "Print Centre",
     read_content = PrintDefaults::read_document
 )]
 impl PrintDefaults {}
@@ -189,12 +188,14 @@ pub enum PrintCentreEffect {
     ///
     /// Documents wait until it is resumed.
     #[effect(job)]
+    #[effect(label = "print-centre-pause-printer")]
     PausePrinter {
         #[param("The printer's queue name")]
         printer: String,
     },
     /// Resume printer.
     #[effect(job)]
+    #[effect(label = "print-centre-resume-printer")]
     ResumePrinter {
         #[param("The printer's queue name")]
         printer: String,
@@ -207,6 +208,7 @@ pub enum PrintCentreEffect {
     },
     /// Print again.
     #[effect(job)]
+    #[effect(label = "print-centre-print-again")]
     RetryDocument {
         #[param("The print job's id")]
         job: String,
@@ -232,11 +234,13 @@ pub enum PrintCentreEffect {
     /// Shows the page before the one under review, so a wrong page is caught
     /// before anything is sent.
     #[effect(view)]
+    #[effect(label = "print-centre-previous-page")]
     PreviousPrintPage,
     /// Next document page.
     ///
     /// Shows the page after the one under review.
     #[effect(view)]
+    #[effect(label = "print-centre-next-page")]
     NextPrintPage,
     /// Choose a printing option.
     ///
@@ -273,9 +277,11 @@ pub enum PrintCentreEffect {
     /// Scans a page with the chosen scanner and settings and recognizes its
     /// text.
     #[effect(job)]
+    #[effect(label = "print-centre-scan-page")]
     ScanPage,
     /// Scan another page.
     #[effect(view)]
+    #[effect(label = "print-centre-scan-another")]
     ScanAnother,
     /// Previous scanned page.
     #[effect(view)]

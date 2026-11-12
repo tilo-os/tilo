@@ -111,6 +111,7 @@ pub enum MailEffect {
     /// Shows a loaded message without changing its read state: asking to
     /// inspect a message never sends a read receipt.
     #[effect(view, row)]
+    #[effect(label = "mail-preview")]
     Inspect { message: String },
     /// Read message
     ///
@@ -123,18 +124,22 @@ pub enum MailEffect {
     ReadMessage { message: String },
     /// Reply
     #[effect(view, row)]
+    #[effect(label = "mail-reply")]
     Reply { message: String },
     /// Reply all
     #[effect(view, row)]
+    #[effect(label = "mail-reply-all")]
     ReplyAll { message: String },
     /// Forward
     #[effect(view, row)]
+    #[effect(label = "mail-forward")]
     Forward { message: String },
     /// Save attachment
     ///
     /// Saves a downloaded attachment where the person chooses on this
     /// device.
     #[effect(row, job, cancellable)]
+    #[effect(label = "mail-save-attachment")]
     Save { message: String, index: usize },
     /// Load remote images
     ///
@@ -235,6 +240,7 @@ pub enum MailEffect {
     /// Opens one of the message's links (as Read message lists them) in the
     /// Browser.
     #[effect(view, row)]
+    #[effect(label = "mail-link-open")]
     OpenLink {
         message: String,
         #[param("A link of the message, as Read message lists it")]

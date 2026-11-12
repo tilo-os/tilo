@@ -440,7 +440,6 @@ impl ArtworkRecents {
 
 #[resource(
     kind = "canvas.recent-artworks",
-    label = "Recent artworks",
     read_content = ArtworkRecents::read_document
 )]
 impl ArtworkRecents {

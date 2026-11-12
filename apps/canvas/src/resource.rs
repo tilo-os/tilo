@@ -680,7 +680,6 @@ impl Artwork {
 /// as read, and is refused whole when any part of it is.
 #[resource(
     kind = "canvas.artwork",
-    label = "Artwork",
     app = "so.tilo.canvas",
     initialize = Artwork::genesis,
     load = Artwork::loaded,
@@ -777,7 +776,7 @@ impl Artwork {
     ///
     /// Add a layer on top (or above another). Give it a medium (see media) to
     /// paint in oil or watercolour; without one it holds crisp vector art.
-    #[action]
+    #[action(label = "canvas-command-add-layer")]
     pub fn add_layer(
         &mut self,
         cx: &mut ActionCx,
@@ -918,7 +917,7 @@ impl Artwork {
     /// Start a blank artwork (one undo away). size: screen, a4, letter,
     /// square, poster, icon (landscape turns it). start: paper, white,
     /// watercolour, oil, panel, dark.
-    #[action]
+    #[action(label = "canvas-command-new-artwork")]
     pub fn new_artwork(&mut self, #[param(flatten)] new: BlankArtwork) -> Result<(), Refusal> {
         crate::actions::replace(self, &new.file()?)
     }

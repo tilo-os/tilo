@@ -90,6 +90,7 @@ pub enum DiscordEffect {
     /// Bridge for this server: the same setup the workspace's operator gives on
     /// the command line, through the workspace's own actions, which decide
     /// whether this person may add bots.
+    #[effect(label = "discord-bridge-server")]
     BridgeServer {
         #[param(secret)]
         token: String,

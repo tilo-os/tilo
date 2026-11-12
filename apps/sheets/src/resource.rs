@@ -433,7 +433,6 @@ fn upgrade(
 
 #[resource(
     kind = "sheets.workbook",
-    label = "Workbook",
     children = Workbook::annotations,
     search = Workbook::search,
     read_content = Workbook::read_cells,
@@ -450,7 +449,7 @@ impl Workbook {
     /// one step that answers the cells it wrote; a new workbook's untouched
     /// blank Sheet1 gives way to it, while every other sheet, a renamed
     /// blank one included, is kept.
-    #[action(answers)]
+    #[action(answers, label = "sheets-add-sheet")]
     pub fn new_sheet(
         &mut self,
         cx: &mut ActionCx,
@@ -962,7 +961,7 @@ impl Workbook {
     }
 
     /// Delete a chart.
-    #[action(destructive, item = sheets)]
+    #[action(destructive, item = sheets, label = "sheets-delete-chart")]
     pub fn delete_chart(
         &mut self,
         sheet: &Id,
@@ -1046,7 +1045,7 @@ impl Workbook {
     }
 
     /// Reply to a comment.
-    #[action(item = comments)]
+    #[action(item = comments, label = "sheets-reply-comment")]
     pub fn reply(
         &mut self,
         cx: &mut ActionCx,
@@ -1065,7 +1064,7 @@ impl Workbook {
     }
 
     /// Edit a comment's text.
-    #[action(item = comments)]
+    #[action(item = comments, label = "sheets-edit-comment")]
     pub fn edit_comment(
         &mut self,
         comment: &Id,
@@ -1080,7 +1079,7 @@ impl Workbook {
     }
 
     /// Delete a comment.
-    #[action(destructive, item = comments)]
+    #[action(destructive, item = comments, label = "sheets-delete-comment")]
     pub fn delete_comment(&mut self, comment: &Id) -> Result<(), Refusal> {
         self.comments
             .remove(comment)

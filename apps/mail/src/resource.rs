@@ -314,7 +314,6 @@ impl DraftState {
 
 #[resource(
     kind = "mail.mailbox",
-    label = "Mail",
     params = mailbox,
     children = Mail::places,
     search = Mail::search,
@@ -345,7 +344,7 @@ impl Mail {
     /// Archive messages
     ///
     /// Moves messages to the Archive together.
-    #[action]
+    #[action(label = "mail-folder-archive")]
     pub fn archive(
         &mut self,
         #[param("Ids of the messages")] messages: Vec<String>,
@@ -381,7 +380,7 @@ impl Mail {
     ///
     /// Deletes messages already in the Trash for good: all of them, or none
     /// when one is no longer there.
-    #[action(destructive)]
+    #[action(destructive, label = "mail-delete-permanently")]
     pub fn purge(
         &mut self,
         #[param("Ids of the messages, every one in the Trash")] messages: Vec<String>,
@@ -473,7 +472,7 @@ impl Mail {
     ///
     /// Saves a message being written as its draft: who it goes to, what it
     /// says and carries, keeping the body being written and its notes.
-    #[action]
+    #[action(label = "mail-compose-save-draft")]
     pub fn save_draft(
         &mut self,
         #[param("The message as written")] message: DraftData,
@@ -541,7 +540,7 @@ impl Mail {
     /// picture) to a message being written, under the name given. Save
     /// the draft's text first: saving the draft again keeps only the
     /// attachments it names. At most 16 attachments of 32 MiB each.
-    #[action(label = "Attach to draft", prepare = prepare_attachment)]
+    #[action(prepare = prepare_attachment)]
     pub fn attach(
         &mut self,
         #[param("The file another step handed over, by its content address", content)]
@@ -578,7 +577,7 @@ impl Mail {
     }
 
     /// Discard draft
-    #[action(destructive)]
+    #[action(destructive, label = "mail-bar-discard-draft")]
     pub fn discard_draft(
         &mut self,
         #[param("The draft, by id; the composer's own draft when omitted")] draft: Option<String>,
@@ -678,7 +677,7 @@ impl Mail {
     ///
     /// Takes a message out of the outbox unsent: one still waiting, or one
     /// its server refused.
-    #[action]
+    #[action(label = "mail-cancel-sending")]
     pub fn cancel_send(
         &mut self,
         outbox: &mut Outbox<Outgoing>,

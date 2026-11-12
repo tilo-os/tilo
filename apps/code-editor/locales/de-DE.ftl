@@ -58,3 +58,52 @@ code-editor-show-panel = Panel einblenden
 
 ## Das Scroll-Element der Codeansicht
 code-editor-line-start = Zeilenanfang
+
+## Actions
+
+code-editor-effect-show-file = Datei öffnen
+code-editor-effect-reveal = Ort anzeigen
+code-editor-effect-open-file = Datei öffnen
+code-editor-effect-open-folder = Projektordner öffnen
+code-editor-effect-new-buffer = Neue Datei
+code-editor-effect-save = Datei speichern
+code-editor-effect-save-as = Speichern unter
+code-editor-effect-save-all = Alle speichern
+code-editor-effect-format-file = Datei formatieren
+code-editor-effect-revert-file = Datei zurücksetzen
+code-editor-effect-find = In der Datei suchen
+code-editor-effect-replace = In der Datei ersetzen
+code-editor-effect-search-project = Projekt durchsuchen
+code-editor-effect-go-to-line = Zu Zeile springen
+code-editor-effect-duplicate-line = Zeile duplizieren
+code-editor-effect-move-line-up = Zeile nach oben
+code-editor-effect-move-line-down = Zeile nach unten
+code-editor-effect-delete-line = Zeile löschen
+code-editor-effect-toggle-comment = Zeilenkommentar umschalten
+code-editor-effect-toggle-bottom-panel = Untere Leiste umschalten
+code-editor-effect-next-theme = Farbschema wechseln
+code-editor-effect-go-to-problems = Probleme anzeigen
+code-editor-effect-go-to-search = Suchergebnisse anzeigen
+code-editor-effect-go-to-terminal = Terminal anzeigen
+code-editor-effect-toggle-sidebar = Seitenleiste umschalten
+code-editor-effect-toggle-language-servers = Sprachserver umschalten
+code-editor-effect-toggle-format-on-save = Formatieren beim Speichern umschalten
+code-editor-effect-read-text = Dateitext lesen
+code-editor-project = Code-Editor
+code-editor-project-new-file = Neue Datei
+code-editor-project-new-folder = Neuer Ordner
+code-editor-project-rename = Umbenennen
+code-editor-project-move-entry = Bewegen
+code-editor-project-replace-text = Text ersetzen
+code-editor-project-replace-range = Bereich ersetzen
+code-editor-project-delete = Löschen
+code-editor-project-record-entry = Eintrag erfassen
+code-editor-project-record-text = Text erfassen
+code-editor-project-record-target = Terminalziel erfassen
+code-editor-project-record-relay-session = Terminal-Relay-Sitzung erfassen
+code-editor-project-claim-pane = Terminalbereich übernehmen
+code-editor-project-run = Im Terminal ausführen
+code-editor-project-rerun = Im Terminal erneut ausführen
+code-editor-project-rerun-test = Test im Terminal erneut ausführen
+code-editor-project-stop = Im Terminal stoppen
+code-editor-project-record-run = Terminallauf erfassen

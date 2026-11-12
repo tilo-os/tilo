@@ -178,3 +178,38 @@ print-centre-cancel-pending-message = It will be removed from the printer. This 
 
 ## A document waiting to be cancelled
 print-centre-cancel-pending-title = Cancel this document?
+
+## Actions
+
+print-centre-effects-refresh = Refresh printers
+print-centre-effects-find-printers = Find network printers
+print-centre-effects-add-printer = Add printer
+print-centre-effects-open-dashboard = Open dashboard
+print-centre-effects-open-queue = Open print queue
+print-centre-effects-open-history = Open print history
+print-centre-effects-run-diagnostics = Run printer diagnostics
+print-centre-effects-open-needs = Open what needs a person
+print-centre-effects-print-document = Print document
+print-centre-effects-scan-document = Scan document
+print-centre-effects-new-scanned-document = New scan
+print-centre-effects-open-printer = Open printer
+print-centre-effects-set-default-printer = Set as default printer
+print-centre-effects-cancel-document = Cancel job
+print-centre-effects-confirm-cancel = Confirm cancel
+print-centre-effects-choose-printer = Choose printer
+print-centre-effects-set-print-option = Set a print option
+print-centre-effects-send-to-printer = Send to printer
+print-centre-effects-close-print-setup = Close print setup
+print-centre-effects-scan-with = Choose a scanner
+print-centre-effects-previous-scan-page = Previous scanned page
+print-centre-effects-next-scan-page = Next scanned page
+print-centre-effects-move-scan-page-earlier = Move scanned page earlier
+print-centre-effects-move-scan-page-later = Move scanned page later
+print-centre-effects-remove-scan-page = Remove scanned page
+print-centre-effects-rotate-scan-page = Rotate scanned page
+print-centre-effects-crop-scan-page = Crop scanned page
+print-centre-effects-recognize-text = Recognise text
+print-centre-effects-copy-recognized-text = Copy recognised text
+print-centre-effects-save-scanned-page = Export scanned page
+print-centre-effects-save-scanned-document = Save scanned document
+print-centre-defaults = Print Centre

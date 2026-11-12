@@ -95,7 +95,6 @@ impl Reports {
 
 #[resource(
     kind = "store.catalog",
-    label = "App Store",
     search = Reports::search,
     read_content = Reports::read_document
 )]
@@ -104,7 +103,7 @@ impl Reports {
     ///
     /// Start a collaborative report about an app, with a note to describe
     /// it. A report the app already has keeps its note.
-    #[action]
+    #[action(label = "store-report-create")]
     pub fn draft_report(
         &mut self,
         #[param("App identity (for example so.tilo.notes)")] app_id: String,

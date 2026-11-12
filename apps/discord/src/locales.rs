@@ -82,6 +82,22 @@ pub mod keys {
     pub const DISCORD_DELETE_ROLE: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("discord-delete-role");
     pub const DISCORD_EDIT: ui::i18n::LabelKey = ui::i18n::LabelKey::new("discord-edit");
+    pub const DISCORD_EFFECTS_ACCEPT_LINK: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-effects-accept-link");
+    pub const DISCORD_EFFECTS_CONNECT_ACCOUNT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-effects-connect-account");
+    pub const DISCORD_EFFECTS_FIND_SERVERS: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-effects-find-servers");
+    pub const DISCORD_EFFECTS_LINK_OFFER: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-effects-link-offer");
+    pub const DISCORD_EFFECTS_MY_LINK: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-effects-my-link");
+    pub const DISCORD_EFFECTS_PLAN_EVENT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-effects-plan-event");
+    pub const DISCORD_EFFECTS_SET_BOT_TOKEN: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-effects-set-bot-token");
+    pub const DISCORD_EFFECTS_UNLINK_MINE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-effects-unlink-mine");
     pub const DISCORD_EMOJI_PROBLEM: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("discord-emoji-problem");
     pub const DISCORD_EMPTY_BODY: ui::i18n::LabelKey =
@@ -92,26 +108,103 @@ pub mod keys {
         ui::i18n::LabelKey::new("discord-fetch-asset");
     pub const DISCORD_FINISH_IMPORT: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("discord-finish-import");
+    pub const DISCORD_GUILD: ui::i18n::LabelKey = ui::i18n::LabelKey::new("discord-guild");
+    pub const DISCORD_GUILD_ANSWER_INTERACTION: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-answer-interaction");
+    pub const DISCORD_GUILD_APPLY_CHANNEL: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-apply-channel");
+    pub const DISCORD_GUILD_APPLY_EMOJI: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-apply-emoji");
+    pub const DISCORD_GUILD_APPLY_ROLE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-apply-role");
+    pub const DISCORD_GUILD_ARRANGE_CHANNELS: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-arrange-channels");
     pub const DISCORD_GUILD_AVATARS: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("discord-guild-avatars");
+    pub const DISCORD_GUILD_BAN: ui::i18n::LabelKey = ui::i18n::LabelKey::new("discord-guild-ban");
+    pub const DISCORD_GUILD_BEGIN_CONNECT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-begin-connect");
+    pub const DISCORD_GUILD_BLOCK_PERSONA: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-block-persona");
     pub const DISCORD_GUILD_BLOCKED_PERSONAS: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("discord-guild-blocked-personas");
     pub const DISCORD_GUILD_BOT_USER: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("discord-guild-bot-user");
+    pub const DISCORD_GUILD_COMPLETE_LINK: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-complete-link");
+    pub const DISCORD_GUILD_CONNECT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-connect");
+    pub const DISCORD_GUILD_CREATE_WEBHOOK: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-create-webhook");
+    pub const DISCORD_GUILD_DELETE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-delete");
+    pub const DISCORD_GUILD_DELETE_CHANNEL: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-delete-channel");
+    pub const DISCORD_GUILD_DELETE_EMOJI: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-delete-emoji");
+    pub const DISCORD_GUILD_DELETE_ROLE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-delete-role");
     pub const DISCORD_GUILD_DISCORD_ONLY: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("discord-guild-discord-only");
+    pub const DISCORD_GUILD_EDIT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-edit");
     pub const DISCORD_GUILD_EMOJI_PROBLEM: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("discord-guild-emoji-problem");
+    pub const DISCORD_GUILD_FETCH_ASSET: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-fetch-asset");
+    pub const DISCORD_GUILD_FINISH_IMPORT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-finish-import");
+    pub const DISCORD_GUILD_KICK: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-kick");
+    pub const DISCORD_GUILD_MAP: ui::i18n::LabelKey = ui::i18n::LabelKey::new("discord-guild-map");
     pub const DISCORD_GUILD_NAME: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("discord-guild-name");
+    pub const DISCORD_GUILD_OBSERVE_LAYOUT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-observe-layout");
+    pub const DISCORD_GUILD_OFFER_LINK: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-offer-link");
+    pub const DISCORD_GUILD_OFFER_SIGN_IN: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-offer-sign-in");
     pub const DISCORD_GUILD_OUTBOX: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("discord-guild-outbox");
     pub const DISCORD_GUILD_OWNERSHIP: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("discord-guild-ownership");
+    pub const DISCORD_GUILD_REACT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-react");
+    pub const DISCORD_GUILD_REMEMBER_AVATAR: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-remember-avatar");
+    pub const DISCORD_GUILD_RENAME_LINK: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-rename-link");
+    pub const DISCORD_GUILD_REPORT_VOICE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-report-voice");
+    pub const DISCORD_GUILD_SEND: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-send");
+    pub const DISCORD_GUILD_SET_LINK_PHOTO: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-set-link-photo");
+    pub const DISCORD_GUILD_SET_MEMBER_ROLES: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-set-member-roles");
+    pub const DISCORD_GUILD_SET_OVERWRITE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-set-overwrite");
+    pub const DISCORD_GUILD_SET_SIGN_IN: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-set-sign-in");
+    pub const DISCORD_GUILD_SETTLE_EMOJI: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-settle-emoji");
+    pub const DISCORD_GUILD_START_THREAD: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-start-thread");
     pub const DISCORD_GUILD_TILO_ONLY: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("discord-guild-tilo-only");
     pub const DISCORD_GUILD_TOKEN_ITEM: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("discord-guild-token-item");
+    pub const DISCORD_GUILD_UNBAN: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-unban");
+    pub const DISCORD_GUILD_UNBLOCK_PERSONA: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-unblock-persona");
+    pub const DISCORD_GUILD_UNLINK: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-unlink");
+    pub const DISCORD_GUILD_UNMAP: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-unmap");
+    pub const DISCORD_GUILD_UNREACT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("discord-guild-unreact");
     pub const DISCORD_GUILD_VANISHED: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("discord-guild-vanished");
     pub const DISCORD_GUILD_VOICE_PROBLEM: ui::i18n::LabelKey =

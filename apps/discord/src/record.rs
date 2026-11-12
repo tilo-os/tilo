@@ -586,7 +586,6 @@ impl Guild {
 
 #[resource(
     kind = "discord.guild",
-    label = "Discord server",
     params = guild,
     version = 4,
     migrate = migrate,

@@ -35,7 +35,6 @@ impl TrustedSenders {
 
 #[resource(
     kind = "mail.trusted-senders",
-    label = "Trusted senders",
     read_content = TrustedSenders::read_document
 )]
 impl TrustedSenders {

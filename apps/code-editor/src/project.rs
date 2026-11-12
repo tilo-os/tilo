@@ -131,7 +131,6 @@ fn minted(cx: &mut ActionCx) -> Id {
 
 #[resource(
     kind = "code_editor.project",
-    label = "Code Editor",
     search = Project::search_entries,
     children = Project::places,
     available = Project::available,

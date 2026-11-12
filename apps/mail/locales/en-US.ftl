@@ -247,3 +247,37 @@ mail-close-keep-draft = Close and keep in Drafts
 ## Attaching a file, and saving a received one
 mail-compose-attach-file = Attach file
 mail-save-attachment = Save attachment
+
+## Actions
+
+mail-effects-compose = Compose message
+mail-effects-contact-recipients = Choose a recipient
+mail-effects-account-settings = Account settings
+mail-effects-prepare-contact-draft = Draft to a contact
+mail-effects-refresh = Refresh folder
+mail-effects-prepare-calendar-invitation = Prepare calendar invitation
+mail-effects-open = Open
+mail-effects-read-message = Read message
+mail-effects-load-remote-content = Load remote images
+mail-effects-always-load-remote-content = Always load remote images
+mail-effects-search-messages = Search messages
+mail-effects-draft-reply = Draft reply
+mail-effects-open-attachment = Open attachment
+mail-effects-content = Get content
+mail-effects-export-content = Export content
+mail-mailbox = Mail
+mail-mailbox-mark-read = Mark read
+mail-mailbox-trash = Move to Trash
+mail-mailbox-move-messages = Move messages
+mail-mailbox-ingest = Add fetched messages
+mail-mailbox-server-applied = Server applied the update
+mail-mailbox-start-draft-body = Start the draft body
+mail-mailbox-create-draft = New draft
+mail-mailbox-show-draft = Show the draft
+mail-mailbox-attach = Attach to draft
+mail-mailbox-send-message = Send message
+mail-mailbox-deliver-message = Deliver message
+mail-mailbox-draft-message = Draft message
+mail-trusted-senders = Trusted senders
+mail-trusted-senders-trust = Trust this sender
+mail-trusted-senders-distrust = Stop trusting this sender

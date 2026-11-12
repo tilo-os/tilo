@@ -58,3 +58,52 @@ code-editor-show-panel = Show panel
 
 ## The code view's scroll control
 code-editor-line-start = Line start
+
+## Actions
+
+code-editor-effect-show-file = Open file
+code-editor-effect-reveal = Show location
+code-editor-effect-open-file = Open a file
+code-editor-effect-open-folder = Open project folder
+code-editor-effect-new-buffer = New file
+code-editor-effect-save = Save file
+code-editor-effect-save-as = Save as
+code-editor-effect-save-all = Save all
+code-editor-effect-format-file = Format file
+code-editor-effect-revert-file = Revert file
+code-editor-effect-find = Find in file
+code-editor-effect-replace = Replace in file
+code-editor-effect-search-project = Search project
+code-editor-effect-go-to-line = Go to line
+code-editor-effect-duplicate-line = Duplicate line
+code-editor-effect-move-line-up = Move line up
+code-editor-effect-move-line-down = Move line down
+code-editor-effect-delete-line = Delete line
+code-editor-effect-toggle-comment = Toggle line comment
+code-editor-effect-toggle-bottom-panel = Toggle bottom panel
+code-editor-effect-next-theme = Cycle colour theme
+code-editor-effect-go-to-problems = Show problems
+code-editor-effect-go-to-search = Show search results
+code-editor-effect-go-to-terminal = Show terminal
+code-editor-effect-toggle-sidebar = Toggle sidebar
+code-editor-effect-toggle-language-servers = Toggle language servers
+code-editor-effect-toggle-format-on-save = Toggle format on save
+code-editor-effect-read-text = Read file text
+code-editor-project = Code Editor
+code-editor-project-new-file = New file
+code-editor-project-new-folder = New folder
+code-editor-project-rename = Rename
+code-editor-project-move-entry = Move
+code-editor-project-replace-text = Replace text
+code-editor-project-replace-range = Replace range
+code-editor-project-delete = Delete
+code-editor-project-record-entry = Record entry
+code-editor-project-record-text = Record text
+code-editor-project-record-target = Record terminal target
+code-editor-project-record-relay-session = Record terminal relay session
+code-editor-project-claim-pane = Claim terminal pane
+code-editor-project-run = Run in terminal
+code-editor-project-rerun = Rerun in terminal
+code-editor-project-rerun-test = Rerun test in terminal
+code-editor-project-stop = Stop in terminal
+code-editor-project-record-run = Record terminal run

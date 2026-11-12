@@ -120,3 +120,38 @@ sheets-show-results = Show calculated results
 
 ## A tab's colour mark
 sheets-tab-colour = Tab colour
+
+## Actions
+
+sheets-effect-import-csv = Import CSV
+sheets-effect-import-xlsx = Import Excel workbook
+sheets-effect-import-ods = Import OpenDocument spreadsheet
+sheets-effect-export-csv = Export CSV
+sheets-effect-export-xlsx = Export Excel workbook
+sheets-effect-export-ods = Export OpenDocument spreadsheet
+sheets-effect-import-xlsx-content = Import workbook content
+sheets-effect-export-xlsx-content = Export workbook content
+sheets-effect-commands = Open command palette
+sheets-effect-go-to-cell = Go to cell…
+sheets-effect-toggle-formula-view = Toggle formula view
+sheets-effect-read-cells = Read cells
+sheets-effect-open = Open
+sheets-workbook = Workbook
+sheets-workbook-set-title = Name the workbook
+sheets-workbook-set-records = Set records
+sheets-workbook-upsert-item = Upsert a row
+sheets-workbook-duplicate-sheet = Duplicate sheet
+sheets-workbook-delete-sheet = Delete sheet
+sheets-workbook-set-cells = Set cells
+sheets-workbook-write-cells = Write cells
+sheets-workbook-format-cells = Format cells
+sheets-workbook-sort-rows = Sort rows
+sheets-workbook-insert-rows = Insert rows
+sheets-workbook-delete-rows = Delete rows
+sheets-workbook-insert-columns = Insert columns
+sheets-workbook-delete-columns = Delete columns
+sheets-workbook-import-sheets = Import sheets
+sheets-workbook-add-chart = Add chart
+sheets-workbook-edit-chart = Edit chart
+sheets-workbook-rename-sheet = Rename sheet
+sheets-workbook-comment = Comment on cells

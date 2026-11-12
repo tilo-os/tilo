@@ -83,24 +83,62 @@ pub mod keys {
         ui::i18n::LabelKey::new("canvas-area-stroke");
     pub const CANVAS_ARRANGE: ui::i18n::LabelKey = ui::i18n::LabelKey::new("canvas-arrange");
     pub const CANVAS_ARTWORK: ui::i18n::LabelKey = ui::i18n::LabelKey::new("canvas-artwork");
+    pub const CANVAS_ARTWORK_ALIGN: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-artwork-align");
+    pub const CANVAS_ARTWORK_ARRANGE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-artwork-arrange");
+    pub const CANVAS_ARTWORK_CHART: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-artwork-chart");
     pub const CANVAS_ARTWORK_COLOURS: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("canvas-artwork-colours");
+    pub const CANVAS_ARTWORK_COMBINE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-artwork-combine");
+    pub const CANVAS_ARTWORK_DRAW: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-artwork-draw");
+    pub const CANVAS_ARTWORK_EDIT_LAYER: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-artwork-edit-layer");
+    pub const CANVAS_ARTWORK_EDIT_MARKS: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-artwork-edit-marks");
     pub const CANVAS_ARTWORK_GROUND: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("canvas-artwork-ground");
     pub const CANVAS_ARTWORK_HEIGHT: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("canvas-artwork-height");
+    pub const CANVAS_ARTWORK_IMPORT_SVG: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-artwork-import-svg");
     pub const CANVAS_ARTWORK_LAYERS: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("canvas-artwork-layers");
     pub const CANVAS_ARTWORK_MARKS: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("canvas-artwork-marks");
     pub const CANVAS_ARTWORK_MEDIA: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("canvas-artwork-media");
+    pub const CANVAS_ARTWORK_OPEN_ARTWORK: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-artwork-open-artwork");
+    pub const CANVAS_ARTWORK_OPEN_PICTURE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-artwork-open-picture");
+    pub const CANVAS_ARTWORK_PAINT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-artwork-paint");
     pub const CANVAS_ARTWORK_REFERENCE: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("canvas-artwork-reference");
+    pub const CANVAS_ARTWORK_REMOVE_LAYER: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-artwork-remove-layer");
+    pub const CANVAS_ARTWORK_REMOVE_MARKS: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-artwork-remove-marks");
+    pub const CANVAS_ARTWORK_REMOVE_MEDIUM: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-artwork-remove-medium");
+    pub const CANVAS_ARTWORK_SAVE_MEDIUM: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-artwork-save-medium");
+    pub const CANVAS_ARTWORK_SELECT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-artwork-select");
     pub const CANVAS_ARTWORK_SELECTION: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("canvas-artwork-selection");
+    pub const CANVAS_ARTWORK_SET_ARTWORK: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-artwork-set-artwork");
+    pub const CANVAS_ARTWORK_SET_REFERENCE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-artwork-set-reference");
     pub const CANVAS_ARTWORK_TITLE: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("canvas-artwork-title");
+    pub const CANVAS_ARTWORK_USE_SELECTION: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-artwork-use-selection");
     pub const CANVAS_ARTWORK_WIDTH: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("canvas-artwork-width");
     pub const CANVAS_BACK: ui::i18n::LabelKey = ui::i18n::LabelKey::new("canvas-back");
@@ -569,6 +607,12 @@ pub mod keys {
     pub const CANVAS_PREVIEW_BANNER: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("canvas-preview-banner");
     pub const CANVAS_RECENT: ui::i18n::LabelKey = ui::i18n::LabelKey::new("canvas-recent");
+    pub const CANVAS_RECENT_ARTWORKS: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-recent-artworks");
+    pub const CANVAS_RECENT_ARTWORKS_FORGET: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-recent-artworks-forget");
+    pub const CANVAS_RECENT_ARTWORKS_REMEMBER: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-recent-artworks-remember");
     pub const CANVAS_RECENT_WORKSPACE: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("canvas-recent-workspace");
     pub const CANVAS_REDO: ui::i18n::LabelKey = ui::i18n::LabelKey::new("canvas-redo");
@@ -681,6 +725,12 @@ pub mod keys {
     pub const CANVAS_TOOLS_ALL: ui::i18n::LabelKey = ui::i18n::LabelKey::new("canvas-tools-all");
     pub const CANVAS_TOOLS_FOCUSED: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("canvas-tools-focused");
+    pub const CANVAS_TOOLS_USE_BRUSH: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-tools-use-brush");
+    pub const CANVAS_TOOLS_USE_COLOUR: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-tools-use-colour");
+    pub const CANVAS_TOOLS_USE_PIGMENT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-tools-use-pigment");
     pub const CANVAS_UNDO: ui::i18n::LabelKey = ui::i18n::LabelKey::new("canvas-undo");
     pub const CANVAS_UNDO_RUN: ui::i18n::LabelKey = ui::i18n::LabelKey::new("canvas-undo-run");
     pub const CANVAS_UNITS: ui::i18n::LabelKey = ui::i18n::LabelKey::new("canvas-units");
@@ -737,6 +787,24 @@ pub mod keys {
         ui::i18n::LabelKey::new("canvas-value-solid");
     pub const CANVAS_VALUE_SQUARE: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("canvas-value-square");
+    pub const CANVAS_VIEW_COMPARE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-view-compare");
+    pub const CANVAS_VIEW_COMPARE_VERSIONS: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-view-compare-versions");
+    pub const CANVAS_VIEW_EXPORT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-view-export");
+    pub const CANVAS_VIEW_EXPORT_SVG: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-view-export-svg");
+    pub const CANVAS_VIEW_FIND_AREA: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-view-find-area");
+    pub const CANVAS_VIEW_INSPECT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-view-inspect");
+    pub const CANVAS_VIEW_LOOK: ui::i18n::LabelKey = ui::i18n::LabelKey::new("canvas-view-look");
+    pub const CANVAS_VIEW_MEASURE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-view-measure");
+    pub const CANVAS_VIEW_MEDIA: ui::i18n::LabelKey = ui::i18n::LabelKey::new("canvas-view-media");
+    pub const CANVAS_VIEW_SAVE_ARTWORK: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("canvas-view-save-artwork");
     pub const CANVAS_VIEWING_PAST: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("canvas-viewing-past");
     pub const CANVAS_WAND_HINT: ui::i18n::LabelKey = ui::i18n::LabelKey::new("canvas-wand-hint");

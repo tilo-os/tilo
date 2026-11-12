@@ -37,6 +37,8 @@ pub mod keys {
     pub const PRINT_CENTRE_COPY_TEXT: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("print-centre-copy-text");
     pub const PRINT_CENTRE_CROP: ui::i18n::LabelKey = ui::i18n::LabelKey::new("print-centre-crop");
+    pub const PRINT_CENTRE_DEFAULTS: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-defaults");
     pub const PRINT_CENTRE_DETAILS: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("print-centre-details");
     pub const PRINT_CENTRE_DEVICE_ANSWERED: ui::i18n::LabelKey =
@@ -51,6 +53,68 @@ pub mod keys {
         ui::i18n::LabelKey::new("print-centre-device-unreachable");
     pub const PRINT_CENTRE_DOCUMENTS: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("print-centre-documents");
+    pub const PRINT_CENTRE_EFFECTS_ADD_PRINTER: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-add-printer");
+    pub const PRINT_CENTRE_EFFECTS_CANCEL_DOCUMENT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-cancel-document");
+    pub const PRINT_CENTRE_EFFECTS_CHOOSE_PRINTER: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-choose-printer");
+    pub const PRINT_CENTRE_EFFECTS_CLOSE_PRINT_SETUP: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-close-print-setup");
+    pub const PRINT_CENTRE_EFFECTS_CONFIRM_CANCEL: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-confirm-cancel");
+    pub const PRINT_CENTRE_EFFECTS_COPY_RECOGNIZED_TEXT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-copy-recognized-text");
+    pub const PRINT_CENTRE_EFFECTS_CROP_SCAN_PAGE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-crop-scan-page");
+    pub const PRINT_CENTRE_EFFECTS_FIND_PRINTERS: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-find-printers");
+    pub const PRINT_CENTRE_EFFECTS_MOVE_SCAN_PAGE_EARLIER: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-move-scan-page-earlier");
+    pub const PRINT_CENTRE_EFFECTS_MOVE_SCAN_PAGE_LATER: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-move-scan-page-later");
+    pub const PRINT_CENTRE_EFFECTS_NEW_SCANNED_DOCUMENT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-new-scanned-document");
+    pub const PRINT_CENTRE_EFFECTS_NEXT_SCAN_PAGE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-next-scan-page");
+    pub const PRINT_CENTRE_EFFECTS_OPEN_DASHBOARD: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-open-dashboard");
+    pub const PRINT_CENTRE_EFFECTS_OPEN_HISTORY: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-open-history");
+    pub const PRINT_CENTRE_EFFECTS_OPEN_NEEDS: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-open-needs");
+    pub const PRINT_CENTRE_EFFECTS_OPEN_PRINTER: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-open-printer");
+    pub const PRINT_CENTRE_EFFECTS_OPEN_QUEUE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-open-queue");
+    pub const PRINT_CENTRE_EFFECTS_PREVIOUS_SCAN_PAGE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-previous-scan-page");
+    pub const PRINT_CENTRE_EFFECTS_PRINT_DOCUMENT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-print-document");
+    pub const PRINT_CENTRE_EFFECTS_RECOGNIZE_TEXT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-recognize-text");
+    pub const PRINT_CENTRE_EFFECTS_REFRESH: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-refresh");
+    pub const PRINT_CENTRE_EFFECTS_REMOVE_SCAN_PAGE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-remove-scan-page");
+    pub const PRINT_CENTRE_EFFECTS_ROTATE_SCAN_PAGE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-rotate-scan-page");
+    pub const PRINT_CENTRE_EFFECTS_RUN_DIAGNOSTICS: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-run-diagnostics");
+    pub const PRINT_CENTRE_EFFECTS_SAVE_SCANNED_DOCUMENT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-save-scanned-document");
+    pub const PRINT_CENTRE_EFFECTS_SAVE_SCANNED_PAGE: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-save-scanned-page");
+    pub const PRINT_CENTRE_EFFECTS_SCAN_DOCUMENT: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-scan-document");
+    pub const PRINT_CENTRE_EFFECTS_SCAN_WITH: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-scan-with");
+    pub const PRINT_CENTRE_EFFECTS_SEND_TO_PRINTER: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-send-to-printer");
+    pub const PRINT_CENTRE_EFFECTS_SET_DEFAULT_PRINTER: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-set-default-printer");
+    pub const PRINT_CENTRE_EFFECTS_SET_PRINT_OPTION: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("print-centre-effects-set-print-option");
     pub const PRINT_CENTRE_EXPORT_PAGE: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("print-centre-export-page");
     pub const PRINT_CENTRE_FIND_PRINTER: ui::i18n::LabelKey =

@@ -486,3 +486,41 @@ canvas-a11y-artwork = { $width } mal { $height } Einheiten, { $layers } Ebenen, 
 
 ## What the window shows
 canvas-resource-artwork = Zeichnung
+
+## Actions
+
+canvas-recent-artworks = Letzte Bilder
+canvas-recent-artworks-remember = Ein letztes Bild vermerken
+canvas-recent-artworks-forget = Ein letztes Bild vergessen
+canvas-view-look = Bild ansehen
+canvas-view-inspect = Markierungen ansehen
+canvas-view-measure = Tusche messen
+canvas-view-media = Medien auflisten
+canvas-view-export = Bild exportieren
+canvas-view-compare-versions = Versionen vergleichen
+canvas-view-export-svg = SVG exportieren
+canvas-view-compare = Mit Referenz vergleichen
+canvas-view-save-artwork = Bild speichern
+canvas-view-find-area = Bildbereich finden
+canvas-artwork-paint = Striche malen
+canvas-artwork-draw = Formen zeichnen
+canvas-artwork-chart = Diagramm zeichnen
+canvas-artwork-edit-marks = Markierungen bearbeiten
+canvas-artwork-remove-marks = Markierungen entfernen
+canvas-artwork-arrange = Markierungen anordnen
+canvas-artwork-edit-layer = Ebene bearbeiten
+canvas-artwork-remove-layer = Ebene entfernen
+canvas-artwork-set-artwork = Bild setzen
+canvas-artwork-save-medium = Medium speichern
+canvas-artwork-remove-medium = Medium entfernen
+canvas-artwork-align = Markierungen ausrichten
+canvas-artwork-set-reference = Referenz setzen
+canvas-artwork-import-svg = SVG importieren
+canvas-artwork-open-picture = Bild öffnen
+canvas-artwork-open-artwork = Bild öffnen
+canvas-artwork-select = Bereich auswählen
+canvas-artwork-use-selection = Auswahl verwenden
+canvas-artwork-combine = Formen kombinieren
+canvas-tools-use-brush = Pinsel verwenden
+canvas-tools-use-colour = Farbe verwenden
+canvas-tools-use-pigment = Pigment laden
