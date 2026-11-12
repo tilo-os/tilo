@@ -377,7 +377,10 @@ impl TopBarChrome {
             (&[face], 0),
             theme.tokens.colors.surfaces.base,
         );
-        self.own_avatar_rect = rects.first().copied().unwrap_or(Rect::ZERO);
+        self.own_avatar_rect = Self::faces_drawn(rects)
+            .first()
+            .copied()
+            .unwrap_or(Rect::ZERO);
         right_x - stack.width_of(1, 0) - f64::from(theme.tokens.spacing.s2)
     }
 

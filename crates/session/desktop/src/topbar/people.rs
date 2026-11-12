@@ -359,7 +359,7 @@ impl TopBarChrome {
     /// The faces drawn, each where a press reaches it: the disc the stack painted, with the ring
     /// and the ground drawn around it. Where a face stands is decided once, here, for the pointer
     /// and for what a reader is told alike.
-    fn faces_drawn(rects: Vec<Rect>) -> Vec<Rect> {
+    pub(super) fn faces_drawn(rects: Vec<Rect>) -> Vec<Rect> {
         rects
             .into_iter()
             .map(|rect| rect.inflate(ui::presence::Face::REACH, ui::presence::Face::REACH))
