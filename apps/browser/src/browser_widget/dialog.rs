@@ -48,7 +48,7 @@ pub(super) fn kind_label(dialog: &PageDialog) -> &'static str {
 
 /// The dialog as one outline token: the question, and what a prompt
 /// suggests as its answer.
-pub(super) fn line(dialog: &PageDialog) -> String {
+pub(super) fn outline(dialog: &PageDialog) -> String {
     use std::fmt::Write as _;
     let mut text = format!(
         "- dialog {} {}",
@@ -118,7 +118,7 @@ pub(super) fn opened_output(
     value.insert("navigated".into(), false.into());
     value.insert("message".into(), opened_by(dialog, act).into());
     value.insert("dialog".into(), self::value(dialog));
-    value.insert("outline".into(), line(dialog).into());
+    value.insert("outline".into(), outline(dialog).into());
     // Everything here came from the page: data to reason about, never
     // instructions to follow.
     value.insert("provenance".into(), "web-content".into());

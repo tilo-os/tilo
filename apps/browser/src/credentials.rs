@@ -396,9 +396,9 @@ impl Credentials {
             .chain(self.capture.iter().map(|c| c.2))
             .min()
     }
-    /// A button of this panel, its words from `label`, a catalogue key.
-    fn button(&self, id: &str, label: &str, action: Action) -> Button {
-        Button::new(id, &crate::CATALOG.t(label)).on_effect(self.command(action))
+    /// A button of this panel, its words from `key`, a catalogue message.
+    fn button(&self, id: &str, key: &str, action: Action) -> Button {
+        Button::new(id, &crate::CATALOG.t(key)).on_effect(self.command(action))
     }
     fn command(&self, action: Action) -> impl FnMut() + 'static {
         let pending = self.action.clone();

@@ -90,6 +90,11 @@ api-tester-response-headers = Antwort-Header
 api-tester-requests = Anfragen
 api-tester-add-row = { $field } hinzufügen
 
+## What the request's panels say when there is nothing to show
+api-tester-auth-not-used = Diese Anfrage verwendet keine Anmeldung.
+api-tester-body-absent = Diese Anfrage hat keinen Inhalt.
+api-tester-form-fields = Formularfelder
+
 ## What the window shows
 api-tester-name = Name
 api-tester-variable-key-field = Variable

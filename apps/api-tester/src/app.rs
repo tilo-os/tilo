@@ -742,7 +742,7 @@ impl ApiTesterApp {
             && let (Some(slot), Some(data)) =
                 (&self.slots.response_body, &self.store.borrow().response)
         {
-            slot.set(response::body(data, self.response_view));
+            slot.set(response::body_view(data, self.response_view));
         }
     }
 

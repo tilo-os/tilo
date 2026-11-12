@@ -284,7 +284,7 @@ fn table_panel(
     blanks: &BlankRows,
     sink: &Sink,
 ) -> Panel {
-    let built = kv::build(table, label, rows, blanks.of(table), sink);
+    let built = kv::build_table(table, label, rows, blanks.of(table), sink);
     Panel {
         element: scrolling(built.element),
         inner: None,
@@ -337,8 +337,12 @@ fn auth_input(sink: &Sink, which: AuthField, value: &str, secret: bool, name: &s
 fn auth_fields(auth: &Auth, sink: &Sink) -> Element {
     let column = Column::new().with_no_padding().with_intrinsic_height();
     match auth {
-        Auth::SecretRef { .. } => Box::new(column.push(body("Stored authentication"))),
-        Auth::None => Box::new(column.push(body("This request does not use authentication."))),
+        Auth::SecretRef { .. } => {
+            Box::new(column.push(body(&crate::locales::CATALOG.t("api-tester-auth-stored"))))
+        }
+        Auth::None => {
+            Box::new(column.push(body(&crate::locales::CATALOG.t("api-tester-auth-not-used"))))
+        }
         Auth::Bearer { token } => Box::new(column.push(Box::new(Field::new(
             "Token",
             auth_input(
@@ -439,7 +443,10 @@ pub(crate) fn body_inner(
     sink: &Sink,
 ) -> (Element, Option<(Table, KvQueue)>) {
     match request.body_mode {
-        BodyMode::None => (body("This request does not have a body."), None),
+        BodyMode::None => (
+            body(&crate::locales::CATALOG.t("api-tester-body-absent")),
+            None,
+        ),
         BodyMode::Json | BodyMode::Raw => (
             request_text(
                 TextInput::local()
@@ -454,9 +461,9 @@ pub(crate) fn body_inner(
             None,
         ),
         BodyMode::Form => {
-            let built = kv::build(
+            let built = kv::build_table(
                 Table::Form,
-                "Form fields",
+                &crate::locales::CATALOG.t("api-tester-form-fields"),
                 &request.form,
                 blanks.of(Table::Form),
                 sink,

@@ -90,6 +90,11 @@ api-tester-response-headers = Response headers
 api-tester-requests = Requests
 api-tester-add-row = Add { $field }
 
+## What the request's panels say when there is nothing to show
+api-tester-auth-not-used = This request does not use authentication.
+api-tester-body-absent = This request does not have a body.
+api-tester-form-fields = Form fields
+
 ## What the window shows
 api-tester-name = Name
 api-tester-variable-key-field = Variable key

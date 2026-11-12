@@ -139,7 +139,7 @@ pub(crate) fn response(
         "request",
     ));
     let summary = summary.push(Box::new(switch));
-    let (slot, handle) = Slot::new(body(data, view));
+    let (slot, handle) = Slot::new(body_view(data, view));
     let column = Column::new()
         .with_no_padding()
         .push(Box::new(summary))
@@ -192,7 +192,7 @@ pub(crate) fn shown_caption(data: &ResponseData) -> Option<String> {
     }
 }
 
-pub(crate) fn body(data: &ResponseData, view: ResponseView) -> Element {
+pub(crate) fn body_view(data: &ResponseData, view: ResponseView) -> Element {
     match view {
         ResponseView::Pretty if data.is_json() => Box::new(
             Scrollable::new_vertical()
