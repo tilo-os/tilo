@@ -3473,6 +3473,12 @@ pub(crate) mod ordinary_confirmation_tests {
         )
     }
     pub(crate) fn layout(app: &mut App) {
+        // The passes a frame runs before it lays out, as the window's runner
+        // runs them: model notifications drained, the tree synced. A frame
+        // that drew the window has taken the state passes it owed, so the
+        // window it leaves behind owes none of its own.
+        app.update_native_model();
+        app.sync_model(false);
         // Match native redraw: capture the pending structural change before
         // rebuilding clears it; unchanged trees must use the normal fast path.
         app.layout.structure_dirty |= app.layout.root_node.is_none()
