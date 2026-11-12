@@ -24,6 +24,12 @@ LISTING_ATTEMPTS = 3
 WRITE_CHUNK = 64 * 1024
 
 
+# What the tool says of a VM or a slot another of its commands still holds, and how long
+# each further try waits first: a little over seven seconds in all.
+BUSY = "is busy with another tilo-vm command"
+BUSY_WAITS = (0.5, 1.0, 2.0, 4.0)
+
+
 class VmError(RuntimeError):
     """A tilo-vm command failed; carries its output for the report."""
 
@@ -90,21 +96,28 @@ class TiloVm:
         if slot:
             env["TILO_VM_SLOT"] = self.slot
         cmd = [self.binary, *args]
-        started = time.monotonic()
-        try:
-            # Slot output may be cut at a byte count (R09 reads the session
-            # log through `cut -c1-400`), splitting a multi-byte character;
-            # one bad byte must not lose the whole check.
-            proc = subprocess.run(cmd, env=env, capture_output=True, text=True,
-                                  errors="replace", timeout=timeout, cwd=cwd)
-        except subprocess.TimeoutExpired as exc:
-            self._log(cmd, None, time.monotonic() - started, "", str(exc))
-            raise VmError(f"timed out after {timeout}s: {shlex.join(args)}") from exc
-        except OSError as exc:
-            self._log(cmd, None, time.monotonic() - started, "", str(exc))
-            raise VmError(f"could not run {shlex.join(cmd)}: {exc}") from exc
-        self._log(cmd, proc.returncode, time.monotonic() - started,
-                  proc.stdout, proc.stderr)
+        # The tool holds a VM or a slot for the length of one command and refuses
+        # the next while it still does, saying to wait and retry: so a refusal
+        # of that kind is waited out a few times before it is the answer.
+        for wait in (*BUSY_WAITS, None):
+            started = time.monotonic()
+            try:
+                # Slot output may be cut at a byte count (R09 reads the session
+                # log through `cut -c1-400`), splitting a multi-byte character;
+                # one bad byte must not lose the whole check.
+                proc = subprocess.run(cmd, env=env, capture_output=True, text=True,
+                                      errors="replace", timeout=timeout, cwd=cwd)
+            except subprocess.TimeoutExpired as exc:
+                self._log(cmd, None, time.monotonic() - started, "", str(exc))
+                raise VmError(f"timed out after {timeout}s: {shlex.join(args)}") from exc
+            except OSError as exc:
+                self._log(cmd, None, time.monotonic() - started, "", str(exc))
+                raise VmError(f"could not run {shlex.join(cmd)}: {exc}") from exc
+            self._log(cmd, proc.returncode, time.monotonic() - started,
+                      proc.stdout, proc.stderr)
+            if proc.returncode == 0 or wait is None or BUSY not in proc.stdout + proc.stderr:
+                break
+            time.sleep(wait)
         if check and proc.returncode != 0:
             said = command_failure(proc.stdout, proc.stderr)
             if len(said) > 1200:
