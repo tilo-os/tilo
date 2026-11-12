@@ -1339,7 +1339,7 @@ try {
         const watch = globalThis.__tiloOpen;
         watch?.read?.();
         return !watch || watch.shownAt !== null;
-      }, stepLimit(2)) ?? false`).catch(() => false);
+      }, ${stepLimit(4)}) ?? false`).catch(() => false);
       const marks = await openMarks(a.tab);
       // An open the page's own clock never saw begun or never saw end is not a
       // fast one: it is no reading, and the gate says so instead of counting a
