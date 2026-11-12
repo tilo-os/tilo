@@ -409,27 +409,18 @@ impl Doors {
             .collect()
     }
 
-    /// Every control the offered surfaces show by name: what a test or a tool lists and then
-    /// presses. A name two surfaces show is the frontmost surface's — the sheet over the bar, the
-    /// bar over the desk — which is the last one offered, as it draws. One surface showing a name
-    /// twice shows two controls that go by it, as two windows of an app do: each is listed where it
-    /// stands, and a press by name reaches the first of them ([`Self::press_action`]).
+    /// Every control the offered surfaces show by name, frontmost surface first — the sheet over
+    /// the bar, the bar over the desk — each where it stands: what a test or a tool lists and then
+    /// presses. Two controls that go by one name, as each window's sidebar toggle does, are both
+    /// listed, so the one a person sees is found where they see it; a press by name reaches the
+    /// frontmost surface's ([`Self::press_action`]).
     #[must_use]
     pub fn controls(&self) -> Vec<(String, (f64, f64, f64, f64))> {
-        let mut shown = Vec::new();
-        let mut covered = std::collections::BTreeSet::new();
-        for (_, surface) in self.offered().into_iter().rev() {
-            let mut here = std::collections::BTreeSet::new();
-            for (name, rect) in surface.borrow_mut().controls() {
-                if covered.contains(&name) {
-                    continue;
-                }
-                here.insert(name.clone());
-                shown.push((name, rect));
-            }
-            covered.extend(here);
-        }
-        shown
+        self.offered()
+            .into_iter()
+            .rev()
+            .flat_map(|(_, surface)| surface.borrow_mut().controls())
+            .collect()
     }
 
     /// Act on the control `name` on the surface showing it as `action` says,

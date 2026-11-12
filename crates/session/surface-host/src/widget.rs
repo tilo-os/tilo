@@ -532,6 +532,20 @@ impl WidgetHost {
     /// whatever scale it is drawn at, so only where the surface stands is
     /// added. Dividing by the display's scale as well would halve every
     /// control on a 2 display, and a press at its centre would land past it.
+    /// Whether `rect`, in the tree's own coordinates, stands on the screen the tree covers.
+    fn on_screen(&self, rect: vello::kurbo::Rect) -> bool {
+        let (width, height) = self.placement.size;
+        rect.area() > 0.0
+            && !rect
+                .intersect(vello::kurbo::Rect::new(
+                    0.0,
+                    0.0,
+                    f64::from(width),
+                    f64::from(height),
+                ))
+                .is_zero_area()
+    }
+
     fn logical(&self, rect: vello::kurbo::Rect) -> (f64, f64, f64, f64) {
         let (ox, oy) = self.placement.origin;
         (
@@ -680,21 +694,13 @@ impl crate::Published for WidgetHost {
     /// switch, a tab's pill, an onboarding step) and the elements it names
     /// in its accessibility tree, each where it stands on the desktop.
     fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
-        let mut shown: std::collections::BTreeMap<String, (f64, f64, f64, f64)> =
-            std::collections::BTreeMap::new();
-        for (name, rect) in self.host.targets() {
-            shown.insert(name, self.logical(rect));
-        }
+        let mut found: Vec<(String, vello::kurbo::Rect)> =
+            self.host.targets().into_iter().collect();
         // The controls of an app the tree shows as its own (setup's steps),
         // by the ids the app names them with: the tree's targets stop at it.
-        let mut embedded = Vec::new();
         each_embedded_app(self.host.root_widget_mut(), &mut |app| {
-            embedded.extend(app.named_controls());
+            found.extend(app.named_controls());
         });
-        for (name, rect) in embedded {
-            let logical = self.logical(rect);
-            shown.entry(name).or_insert(logical);
-        }
         for (_, node) in self.host.a11y_nodes() {
             // A hidden node stands nowhere the person can reach.
             if node.is_hidden() {
@@ -703,13 +709,24 @@ impl crate::Published for WidgetHost {
             let (Some(name), Some(bounds)) = (node.label(), node.bounds()) else {
                 continue;
             };
-            shown.entry(name.to_owned()).or_insert_with(|| {
-                self.logical(vello::kurbo::Rect::new(
-                    bounds.x0, bounds.y0, bounds.x1, bounds.y1,
-                ))
-            });
+            found.push((
+                name.to_owned(),
+                vello::kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1),
+            ));
         }
-        shown.into_iter().collect()
+        // Two controls of one name — the sidebar toggle of each window, each window's "More
+        // actions" — are each listed where they stand, as the door lists them; a control named
+        // both by a target and by its node is listed once.
+        let mut shown: Vec<(String, vello::kurbo::Rect)> = Vec::with_capacity(found.len());
+        for (name, rect) in found {
+            if !shown.iter().any(|(seen, at)| *seen == name && *at == rect) {
+                shown.push((name, rect));
+            }
+        }
+        shown
+            .into_iter()
+            .map(|(name, rect)| (name, self.logical(rect)))
+            .collect()
     }
 
     /// The name `controls` showed, pressed: a widget addressed by its own
@@ -724,12 +741,22 @@ impl crate::Published for WidgetHost {
                 pressed = pressed || app.press_named(name);
             });
             if !pressed {
-                let node = self
+                // The one the person sees, as `controls` lists it.
+                let named_so: Vec<_> = self
                     .host
                     .a11y_nodes()
                     .into_iter()
-                    .find(|(_, node)| node.label() == Some(name))
-                    .map(|(node, _)| node)
+                    .filter(|(_, node)| node.label() == Some(name))
+                    .collect();
+                let node = named_so
+                    .iter()
+                    .find(|(_, node)| {
+                        node.bounds().is_some_and(|b| {
+                            self.on_screen(vello::kurbo::Rect::new(b.x0, b.y0, b.x1, b.y1))
+                        })
+                    })
+                    .or_else(|| named_so.first())
+                    .map(|(node, _)| *node)
                     .ok_or(named)?;
                 self.host
                     .perform_a11y_action(node, &ui::a11y::Action::Activate)?;
