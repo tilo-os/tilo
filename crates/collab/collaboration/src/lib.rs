@@ -898,7 +898,7 @@ pub struct CollaborationManager {
 impl CollaborationManager {
     /// The tid of the thread serving this connection's broker, for tests
     /// that hold the connection idle and count whether it wakes at all.
-    #[cfg(all(test, unix))]
+    #[cfg(all(test, unix, feature = "broker-transport"))]
     pub fn shovel_thread(&self) -> Option<i32> {
         let Backend::Transport(transport) = &self.backend else {
             return None;
