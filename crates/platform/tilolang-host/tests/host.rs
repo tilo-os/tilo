@@ -2506,6 +2506,94 @@ fn a_clock_the_person_changes_is_written_again_in_the_window() {
     );
 }
 
+/// A package whose window writes the day the week it shows began on, as the person's region
+/// starts its week: the "this week" a view reads.
+const WEEKS: &str = "so.tilo.lang.week";
+
+/// The text of the week package: a ledger whose window writes the day this week began on.
+const WEEKS_SOURCE: &str = r#"app so.tilo.lang.week "Week" (icon: .hash, category: .utility)
+
+/// Something the person looks at this week.
+type Ledger {
+    key: Text merge register
+    /// When it was read.
+    at: Date = Date("2026-10-29")
+}
+
+root Ledger
+
+default view ledger for Ledger
+
+/// The window: the day this week began on, as the person's region starts a week.
+view ledger(l: Ledger) {
+    std.page(l) {
+        section("This week") {
+            ui.Text("{l.at.start_of_week()}")
+        }
+    }
+}
+
+/// A ledger read on the 29th of October.
+scenario "this week" {
+    let l = root Ledger
+    l.at = Date("2026-10-29")
+}
+"#;
+
+/// The week package, compiled from [`WEEKS_SOURCE`].
+fn weeks() -> Bundle {
+    let compiled = tilolang::compile_package(WEEKS_SOURCE, &tilolang::IdsLock::new(), &[])
+        .unwrap_or_else(|diagnostics| panic!("the week package compiles: {diagnostics:?}"));
+    Bundle::new(&compiled, [])
+}
+
+/// The person's formats with the week starting on `first_day`.
+fn with_first_day(first_day: tilo_formats::FirstDayOfWeek) -> tilo_formats::RegionFormats {
+    tilo_formats::RegionFormats {
+        first_day,
+        ..tilo_formats::RegionFormats::default()
+    }
+}
+
+/// A person who starts their week on Sunday in Settings sees the week their window shows move
+/// with them: the session says so on the host's door, and the instance writes the day again.
+#[test]
+fn a_week_start_the_person_changes_is_written_again_in_the_window() {
+    let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", WEEKS, weeks());
+    host.instances_mut()
+        .next()
+        .expect("the instance runs")
+        .stage("this week");
+    settle(&mut host, &mut window);
+    let monday = shown(&window);
+    assert!(
+        monday.contains("2026-10-26"),
+        "until the person says otherwise, Thursday the 29th stands in the week that began on \
+         Monday: {monday}"
+    );
+
+    // Sunday in Settings, said on the host's door as the session says it: the same day stands in
+    // the week that began the Sunday before it, and the window shows that week.
+    let (session, door) = runtime_portal::tilolang_host::pair().expect("a door");
+    runtime_portal::tilolang_host::send_formats(
+        &session,
+        &with_first_day(tilo_formats::FirstDayOfWeek::Sunday),
+    )
+    .expect("the formats cross the door");
+    let Some(runtime_portal::tilolang_host::Handed::Formats(formats)) =
+        runtime_portal::tilolang_host::receive(&door).expect("the door carries them")
+    else {
+        panic!("the door carries the person's formats as formats");
+    };
+    assert!(host.set_formats(formats), "another first day is a change");
+    settle(&mut host, &mut window);
+    let sunday = shown(&window);
+    assert!(
+        sunday.contains("2026-10-25"),
+        "the week the person starts on Sunday is the one their window shows: {sunday}"
+    );
+}
+
 /// The text the form the window shows holds for the field `key`, or none while no form is open
 /// or the form has no such field.
 fn form_text(window: &Window, key: &str) -> Option<String> {

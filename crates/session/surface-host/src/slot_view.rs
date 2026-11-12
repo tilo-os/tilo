@@ -236,6 +236,13 @@ impl Platform for SlotPlatform {
         ui::time::local_zone_name()
     }
 
+    /// The day the person's region starts its week on, as they chose it in Settings: a slot's
+    /// view runs in the session, which holds their formats, so a day's `start_of_week()` goes
+    /// back to the day their desk's calendar starts a week on.
+    fn week_start(&self) -> i64 {
+        i64::from(ui::format::first_weekday().num_days_from_monday())
+    }
+
     fn waker(&self) -> Waker {
         std::sync::Arc::clone(&self.waker)
     }
@@ -785,4 +792,45 @@ fn anchor_of(reading: &str) -> Option<(f64, f64)> {
     let reading: Json = serde_json::from_str(reading).ok()?;
     let anchor = reading.get("anchor")?;
     Some((anchor.get("x")?.as_f64()?, anchor.get("y")?.as_f64()?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A slot's view runs in the session, which holds the person's formats: a day's
+    /// `start_of_week()` goes back to the day their region starts a week on, as their desk's
+    /// calendar and their app windows read it, not to the Monday a view with no formats falls back
+    /// on.
+    #[test]
+    fn a_slots_week_starts_on_the_persons_first_day() {
+        let platform = SlotPlatform {
+            meta: Meta::default(),
+            bundle: Bundle {
+                wasm: Vec::new(),
+                meta: Meta::default(),
+                ids: String::new(),
+                imports: Vec::new(),
+            },
+            waker: std::sync::Arc::new(|| {}),
+            why: Rc::new(RefCell::new(None)),
+        };
+        let before = ui::format::region::current();
+        let monday = ui::format::region::RegionFormats {
+            first_day: ui::format::region::FirstDayOfWeek::Monday,
+            ..before
+        };
+        ui::format::region::install(monday);
+        assert_eq!(platform.week_start(), 0, "a week that starts on Monday");
+        ui::format::region::install(ui::format::region::RegionFormats {
+            first_day: ui::format::region::FirstDayOfWeek::Saturday,
+            ..monday
+        });
+        assert_eq!(
+            platform.week_start(),
+            5,
+            "the person starts their week on Saturday"
+        );
+        ui::format::region::install(before);
+    }
 }

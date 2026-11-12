@@ -1496,3 +1496,32 @@ fn the_style_switch_lists_the_styles_a_later_reading_carries() {
         );
     }
 }
+
+/// The shell's views run in the session, which holds the person's formats: a day's
+/// `start_of_week()` goes back to the day their region starts a week on, as their desk's calendar
+/// and their app windows read it, not to the Monday a view with no formats falls back on.
+#[test]
+fn a_shells_week_starts_on_the_persons_first_day() {
+    let platform = ShellPlatform {
+        packages: Rc::new(Vec::new()),
+        waker: std::sync::Arc::new(|| {}),
+        link: Rc::new(SessionLink::default()),
+    };
+    let before = ui::format::region::current();
+    let monday = ui::format::region::RegionFormats {
+        first_day: ui::format::region::FirstDayOfWeek::Monday,
+        ..before
+    };
+    ui::format::region::install(monday);
+    assert_eq!(platform.week_start(), 0, "a week that starts on Monday");
+    ui::format::region::install(ui::format::region::RegionFormats {
+        first_day: ui::format::region::FirstDayOfWeek::Sunday,
+        ..monday
+    });
+    assert_eq!(
+        platform.week_start(),
+        6,
+        "the person starts their week on Sunday"
+    );
+    ui::format::region::install(before);
+}

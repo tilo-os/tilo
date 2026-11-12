@@ -205,6 +205,8 @@ pub mod files_daemon;
 #[cfg(target_os = "linux")]
 pub mod firstboot;
 #[cfg(target_os = "linux")]
+mod formats;
+#[cfg(target_os = "linux")]
 mod fs_authority;
 #[cfg(target_os = "linux")]
 mod governance;

@@ -1417,6 +1417,13 @@ impl Platform for ShellPlatform {
         ui::time::local_zone_name()
     }
 
+    /// The day the person's region starts its week on, as they chose it in Settings: the shell's
+    /// views run in the session, which holds their formats, so a day's `start_of_week()` goes
+    /// back to the day their desk's calendar starts a week on.
+    fn week_start(&self) -> i64 {
+        i64::from(ui::format::first_weekday().num_days_from_monday())
+    }
+
     fn waker(&self) -> Waker {
         std::sync::Arc::clone(&self.waker)
     }

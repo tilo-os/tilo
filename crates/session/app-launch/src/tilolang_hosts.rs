@@ -16,6 +16,10 @@
 //!   resources;
 //! - its module, read from the installation verified as a launch verifies it, in a sealed memfd.
 //!
+//! The person's region formats ride with the instance, and are said again on every host's door
+//! when they change them in Settings ([`Hosts::formats_changed`]): their windows' dates, clocks
+//! and weeks follow where they stand, without waiting for a restart.
+//!
 //! The author is the publisher whose key signed the package; a person's own build, signed with
 //! their own key, runs in a host of that person's. A host is started through the launch kind
 //! "tilolang host" (`tilo-launcher tilolang-host`), keyed by its workspace, its author and the
@@ -227,6 +231,25 @@ impl Hosts {
         hosts
     }
 
+    /// Say on every host running now that the person's formats changed: the instances write the
+    /// times and days their windows show again in the new ones (their week's first day, their
+    /// date and clock styles). A host started later is handed them with its first instance.
+    pub fn formats_changed(&self) {
+        let formats = ui::format::region::current();
+        for (key, host) in self.running().iter() {
+            if let Err(error) = runtime_portal::tilolang_host::send_formats(&host.door, &formats) {
+                // Its follow thread reads the end of the door and forgets it: the next instance
+                // starts another.
+                tracing::warn!(
+                    %error,
+                    workspace = %key.workspace,
+                    author = %key.author,
+                    "a tilolang host was not told the person's formats changed"
+                );
+            }
+        }
+    }
+
     /// Hand `instance` to the host of its workspace and author, starting the host when none runs.
     /// Done off the caller's thread: it verifies the package and may start the host.
     pub fn hand_over(self: &Arc<Self>, instance: Instance) {
@@ -293,7 +316,7 @@ impl Hosts {
             module_len,
             records_under,
             applies_change: false,
-            formats: ui::format::region::configured_formats(),
+            formats: ui::format::region::current(),
             record: instance.opens.record,
             reveal: instance.opens.reveal,
         };
@@ -647,6 +670,59 @@ fn seen_end(status: &std::io::Result<std::process::ExitStatus>, last: &VecDeque<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every host running says on its door what the person's formats now are, so the instances it
+    /// runs write their weeks and times again; a host that is not running hears nothing.
+    #[test]
+    fn a_formats_change_is_said_on_the_door_of_every_host_running() {
+        let (ours, theirs) = runtime_portal::tilolang_host::pair().unwrap();
+        let (idle_ours, idle_theirs) = runtime_portal::tilolang_host::pair().unwrap();
+        let hosts = Hosts::with(
+            std::env::temp_dir(),
+            Box::new(|_, _, _| Command::new("true")),
+            Box::new(|_| Err("no package store here".to_owned())),
+        );
+        let key = |workspace: &str| HostKey {
+            workspace: workspace.to_owned(),
+            author: "person-ada".to_owned(),
+            runtime: "tilolang@1".to_owned(),
+            app_runtime: "tilo@1".to_owned(),
+        };
+        let host = |door: OwnedFd| Host {
+            door: Arc::new(door),
+            instances: HashSet::from([7]),
+            generation: 1,
+        };
+        hosts
+            .running()
+            .insert(key("7a110d00-0000-4000-8000-0000000000f1"), host(ours));
+
+        let before = ui::format::region::current();
+        let sunday = ui::format::region::RegionFormats {
+            first_day: ui::format::region::FirstDayOfWeek::Sunday,
+            ..before
+        };
+        ui::format::region::install(sunday);
+        hosts.formats_changed();
+        let handed = runtime_portal::tilolang_host::receive(&theirs).unwrap();
+        ui::format::region::install(before);
+        let Some(runtime_portal::tilolang_host::Handed::Formats(formats)) = handed else {
+            panic!("a runtime host's door carries the formats as formats: {handed:?}");
+        };
+        assert_eq!(
+            formats, sunday,
+            "the week the person starts on reaches the host its instances run in"
+        );
+        // The session keeps no other host's door: nothing was said on it, so its end is all the
+        // host would hear.
+        drop(idle_ours);
+        assert!(
+            runtime_portal::tilolang_host::receive(&idle_theirs)
+                .unwrap()
+                .is_none(),
+            "a host that is not running is not told"
+        );
+    }
 
     /// A host that ended without saying why is reported by how it ended and what it last wrote.
     #[test]
