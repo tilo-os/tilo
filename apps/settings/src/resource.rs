@@ -22,7 +22,7 @@ use ui::tilo_resource::Effect as _;
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Settings {}
 
-#[resource(kind = "settings.root", label = "Settings", search = Settings::panes)]
+#[resource(kind = "settings.root", search = Settings::panes)]
 impl Settings {}
 
 impl Settings {

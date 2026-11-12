@@ -42,7 +42,6 @@ pub struct Imager {
 
 #[resource(
     kind = "imager.sources",
-    label = "Image sources",
     initialize = Imager::default,
     available = Imager::available
 )]
@@ -183,11 +182,13 @@ pub enum ImagerEffect {
     },
     /// Choose a disk image.
     #[effect(job)]
+    #[effect(label = "imager-drop-title")]
     ChooseImage,
     /// Cancel the installer download; what was verified is kept for resume.
     CancelDownload,
     /// Rescan drives.
     #[effect(kind = "read")]
+    #[effect(label = "imager-rescan-drives")]
     Rescan,
     /// Choose target drive.
     #[effect(kind = "read")]

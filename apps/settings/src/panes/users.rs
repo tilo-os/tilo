@@ -53,7 +53,7 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&UsersArea> {
 #[effect(operation = "settings.effect")]
 pub enum UsersEffect {
     /// Create a login account, with the password typed into the form.
-    #[effect(job, label = "Create account")]
+    #[effect(job)]
     CreateUser {
         #[param("The login name")]
         username: String,
@@ -76,7 +76,7 @@ pub enum UsersEffect {
         on: bool,
     },
     /// Remove an account, keeping its files or removing them too.
-    #[effect(job, row, destructive, label = "Remove account")]
+    #[effect(job, row, destructive)]
     RemoveUser {
         #[param("The account's login name")]
         user: String,
@@ -84,19 +84,19 @@ pub enum UsersEffect {
         keep_files: bool,
     },
     /// Sign new apps in as one of the person's identities.
-    #[effect(job, row, idempotent, label = "Use identity")]
+    #[effect(job, row, idempotent)]
     UseIdentity {
         #[param("The identity's id")]
         identity: String,
     },
     /// Remove an identity from this device.
-    #[effect(job, row, destructive, label = "Remove identity")]
+    #[effect(job, row, destructive, label = "settings-users-identity-remove")]
     RemoveIdentity {
         #[param("The identity's id")]
         identity: String,
     },
     /// Move an identity's key from a plain file into protected storage.
-    #[effect(job, row, idempotent, label = "Protect identity")]
+    #[effect(job, row, idempotent)]
     ProtectIdentity {
         #[param("The identity's id")]
         identity: String,

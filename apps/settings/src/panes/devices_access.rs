@@ -54,7 +54,7 @@ const REVOKE_REASONS: [&str; 4] = ["retired", "lost", "stolen", "compromised"];
 #[effect(operation = "settings.effect")]
 pub enum DevicesAccessEffect {
     /// End a device's access to everything of the person's, for good.
-    #[effect(job, row, destructive, label = "Revoke device")]
+    #[effect(job, row, destructive)]
     RevokeDevice {
         #[param("The device's key, in hex")]
         device: String,
@@ -62,13 +62,13 @@ pub enum DevicesAccessEffect {
         reason: String,
     },
     /// Take an agent's grant back: its runs end now and it gets in no more.
-    #[effect(job, row, destructive, label = "Revoke agent")]
+    #[effect(job, row, destructive)]
     RevokeAgent {
         #[param("The grant's id, as the door lists it")]
         grant: String,
     },
     /// End an agent's open run, keeping its grant so it can come back.
-    #[effect(job, row, label = "Stop run")]
+    #[effect(job, row)]
     StopRun {
         #[param("The grant's id, as the door lists it")]
         grant: String,
@@ -76,7 +76,7 @@ pub enum DevicesAccessEffect {
         run: String,
     },
     /// Approve or decline a device asking to be the person.
-    #[effect(job, row, label = "Answer device")]
+    #[effect(job, row)]
     AnswerDevice {
         #[param("The ask's id, as the list of asking devices names it")]
         ask: String,

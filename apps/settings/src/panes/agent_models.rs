@@ -241,7 +241,7 @@ fn as_json(value: &impl serde::Serialize) -> Result<serde_json::Value, String> {
 #[effect(operation = "settings.effect")]
 pub enum AgentModelsEffect {
     /// Stage the accelerator drivers the recommended model needs.
-    #[effect(job, label = "Set up accelerator")]
+    #[effect(job)]
     SetUpAccelerator,
     /// Show or hide what downloading the recommended model involves.
     #[effect(view)]
@@ -255,14 +255,14 @@ pub enum AgentModelsEffect {
     },
     /// Show one signed in-process model in Agent Models, first, at its
     /// licence confirmation when it is not installed yet. Installs nothing.
-    #[effect(view, label = "Show local model")]
+    #[effect(view)]
     ShowLocalModel {
         #[param("Signed model id, for example u2net-subject")]
         model: String,
     },
     /// Download and install the recommended model or an in-process one,
     /// accepting its license.
-    #[effect(job, label = "Install model")]
+    #[effect(job)]
     InstallModel {
         #[param("The model's id")]
         model: String,
@@ -270,19 +270,19 @@ pub enum AgentModelsEffect {
         revision: String,
     },
     /// Start serving an installed model.
-    #[effect(job, row, idempotent, label = "Start model")]
+    #[effect(job, row, idempotent)]
     StartModel {
         #[param("The model's id")]
         model: String,
     },
     /// Stop serving a model.
-    #[effect(job, row, idempotent, label = "Stop model")]
+    #[effect(job, row, idempotent)]
     StopModel {
         #[param("The model's id")]
         model: String,
     },
     /// Install a model again after it failed.
-    #[effect(job, row, label = "Retry")]
+    #[effect(job, row)]
     RetryModel {
         #[param("The model's id")]
         model: String,
@@ -290,14 +290,14 @@ pub enum AgentModelsEffect {
         revision: String,
     },
     /// Remove an installed model and its files.
-    #[effect(job, row, destructive, label = "Remove model")]
+    #[effect(job, row, destructive)]
     RemoveModel {
         #[param("The model's id")]
         model: String,
     },
     /// Search Hugging Face for models to run on this device, most
     /// downloaded first. Answers with the results.
-    #[effect(job, returns, kind = "read", label = "Search Hugging Face")]
+    #[effect(job, returns, kind = "read")]
     SearchHubModels {
         #[param("What to search for, for example qwen or llama")]
         query: String,
@@ -313,7 +313,7 @@ pub enum AgentModelsEffect {
     },
     /// Show a Hugging Face model's variants with their size, fit for this
     /// device and licence. Answers with them; downloads nothing.
-    #[effect(job, returns, kind = "read", label = "Show Hugging Face model")]
+    #[effect(job, returns, kind = "read")]
     ShowHubModel {
         #[param("A model id such as owner/name, or its huggingface.co link")]
         model: String,
@@ -328,7 +328,7 @@ pub enum AgentModelsEffect {
     /// Download a variant of a Hugging Face model at the commit it was
     /// shown at, accepting its licence, and start it when a signed runtime
     /// here serves it.
-    #[effect(job, row, label = "Download model")]
+    #[effect(job, row)]
     InstallHubModel {
         #[param("The model id, owner/name")]
         repo: String,
@@ -339,42 +339,42 @@ pub enum AgentModelsEffect {
     },
     /// Ask the person to choose a GGUF model file on this device in the
     /// file chooser, and copy it into the model store.
-    #[effect(job, label = "Add model file")]
+    #[effect(job)]
     AddModelFile,
     /// Open a gated model's page on Hugging Face, where its terms are accepted.
-    #[effect(view, label = "Open model page")]
+    #[effect(view)]
     OpenHubModelPage {
         #[param("The model id, owner/name")]
         repo: String,
     },
     /// Keep a Hugging Face access token in this device's vault, for gated
     /// and private models.
-    #[effect(job, label = "Save Hugging Face token")]
+    #[effect(job)]
     SaveHubToken {
         #[param(secret, "The token; what the token field holds when omitted")]
         token: Option<String>,
     },
     /// Remove the Hugging Face token or sign-in from this device's vault.
-    #[effect(job, destructive, label = "Remove Hugging Face token")]
+    #[effect(job, destructive)]
     RemoveHubToken,
     /// Sign in with Hugging Face in the browser, for gated models; the
     /// sign-in is kept in this device's vault in place of a token.
-    #[effect(attended, label = "Sign in with Hugging Face")]
+    #[effect(attended, label = "agent-sign-in-huggingface")]
     SignInWithHuggingFace,
     /// Sign in with Hugging Face by entering a code on its page, from any
     /// device: for a device without a browser.
-    #[effect(attended, label = "Sign in with Hugging Face by code")]
+    #[effect(attended)]
     SignInWithHuggingFaceCode,
     /// Stop a Hugging Face sign-in.
     #[effect(view)]
     CancelHuggingFaceSignIn,
     /// Reload the authoritative profiles and credential status.
-    #[effect(job, label = "Refresh providers")]
+    #[effect(job)]
     RefreshProviders,
     /// Add a provider from a known one, which fills its name, endpoint,
     /// protocol and key header; its key and model are set afterwards. Add
     /// the same one again for a second account.
-    #[effect(job, label = "Add provider")]
+    #[effect(job, label = "agent-vertex-add-provider")]
     AddProvider {
         #[param(
             "A `preset` name from model-providers' list-presets: `openrouter`, `anthropic`, `openai-compatible` or `anthropic-compatible` for any other"
@@ -384,14 +384,14 @@ pub enum AgentModelsEffect {
     /// Ask the provider which models it offers, with its stored key or
     /// sign-in: shows whether the connection works, and answers the models
     /// to choose from with what each can do.
-    #[effect(job, row, returns, label = "Test connection")]
+    #[effect(job, row, returns)]
     ListProviderModels {
         #[param("The provider's id")]
         provider: String,
     },
     /// Make one model the one agents use from this provider: one it listed,
     /// or any other id.
-    #[effect(job, row, idempotent, label = "Use model")]
+    #[effect(job, row, idempotent)]
     SetProviderModel {
         #[param("The provider's id")]
         provider: String,
@@ -440,7 +440,7 @@ pub enum AgentModelsEffect {
     /// Say what one model can do, over what its provider's list or Tilo's
     /// table of model families says; omit both to let them decide again.
     /// An agent plans only with a model that calls tools.
-    #[effect(job, row, idempotent, label = "Set model capabilities")]
+    #[effect(job, row, idempotent)]
     SetModelCapabilities {
         #[param("The provider's id")]
         provider: String,
@@ -452,7 +452,7 @@ pub enum AgentModelsEffect {
         tool_calling: Option<bool>,
     },
     /// Make a provider the one agents use unless told otherwise.
-    #[effect(job, row, idempotent, label = "Use by default")]
+    #[effect(job, row, idempotent)]
     SetDefaultProvider {
         #[param("The provider's id")]
         provider: String,
@@ -480,14 +480,14 @@ pub enum AgentModelsEffect {
         model: Option<String>,
     },
     /// Remove a provider and its stored API key.
-    #[effect(job, row, destructive, label = "Remove provider")]
+    #[effect(job, row, destructive)]
     RemoveProvider {
         #[param("The provider's id")]
         provider: String,
     },
     /// Store a provider's API key in this device's vault: a hosted
     /// provider that roamed here from another device needs its own.
-    #[effect(job, row, label = "Save API key")]
+    #[effect(job, row)]
     SaveProviderKey {
         #[param("The provider's id")]
         provider: String,
@@ -495,7 +495,7 @@ pub enum AgentModelsEffect {
         key: Option<String>,
     },
     /// Bind a legacy key only after independently confirming its original endpoint.
-    #[effect(job, row, label = "Confirm original endpoint and migrate key")]
+    #[effect(job, row)]
     MigrateProviderKey {
         #[param("The provider's id")]
         provider: String,
@@ -503,24 +503,24 @@ pub enum AgentModelsEffect {
         original_endpoint: String,
     },
     /// Remove a legacy key that is not bound to a provider origin.
-    #[effect(job, row, destructive, label = "Remove unbound legacy key")]
+    #[effect(job, row, destructive)]
     RemoveLegacyProviderKey {
         #[param("The provider's id")]
         provider: String,
     },
     /// Remove a provider's stored API key.
-    #[effect(job, row, destructive, label = "Remove API key")]
+    #[effect(job, row, destructive)]
     RemoveProviderKey {
         #[param("The provider's id")]
         provider: String,
     },
     /// Start adding Google Vertex AI, which signs in with Google instead of
     /// taking an API key. Shows its setup; signs in to nothing yet.
-    #[effect(view, label = "Add Google Vertex AI")]
+    #[effect(view, label = "agent-add-vertex")]
     AddGoogleVertex,
     /// Sign in with Google in the browser for Vertex AI: for the provider
     /// being added, or again for an existing one whose sign-in ended.
-    #[effect(label = "Sign in with Google")]
+    #[effect(label = "agent-vertex-sign-in")]
     SignInWithGoogle {
         #[param("The provider's id; omit for the one being added")]
         provider: Option<String>,
@@ -531,7 +531,7 @@ pub enum AgentModelsEffect {
     /// Sign in to `ChatGPT`, GitHub Copilot or `OpenRouter`: for a provider
     /// to add, or again for an existing one. Finishes once the
     /// person has signed in and the provider is saved.
-    #[effect(attended, job, label = "Sign in")]
+    #[effect(attended, job)]
     SignInToProvider {
         #[param("`chatgpt`, `github-copilot` or `openrouter`")]
         service: String,
@@ -541,7 +541,7 @@ pub enum AgentModelsEffect {
     /// Start adding the Gemini API signed in with Google and billed to one
     /// of the person's Cloud projects. Shows its setup; signs in to nothing
     /// yet.
-    #[effect(view, label = "Add Gemini with Google")]
+    #[effect(view, label = "agent-add-gemini")]
     AddGoogleGemini,
     /// Save the Gemini provider being added, once signed in with Google, or
     /// change the Cloud project an existing one bills.

@@ -61,10 +61,10 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&PermissionsArea> 
 #[effect(operation = "settings.effect")]
 pub enum PermissionsEffect {
     /// Open the privacy settings of the workspace that owns the grants.
-    #[effect(job, label = "Open workspace privacy")]
+    #[effect(job)]
     OpenWorkspacePrivacy,
     /// Let an application use the saved passwords and keys again, or stop it.
-    #[effect(job, idempotent, label = "Set an app's access to saved secrets")]
+    #[effect(job, idempotent)]
     SetSecretsAccess {
         #[param("The application identity the secret store recorded")]
         app: String,
@@ -72,13 +72,13 @@ pub enum PermissionsEffect {
         allowed: bool,
     },
     /// Remove an application's saved secrets and its record.
-    #[effect(job, label = "Forget an app's saved secrets")]
+    #[effect(job)]
     ForgetSecrets {
         #[param("The application identity the secret store recorded")]
         app: String,
     },
     /// Stop a terminal tab controlling the desktop beyond its workspace.
-    #[effect(job, label = "Stop a tab controlling the desktop")]
+    #[effect(job)]
     StopDesktopControl {
         #[param("The grant, as the desktop listed it")]
         grant: String,

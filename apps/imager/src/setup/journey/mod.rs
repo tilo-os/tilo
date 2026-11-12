@@ -215,6 +215,7 @@ pub enum InstallerPreviewEffect {
     StartExistingDevicePairing,
     /// Stop local pairing; this does not revoke remotely approved enrollment.
     #[effect(returns)]
+    #[effect(label = "installer-pairing-cancel")]
     CancelExistingDevicePairing,
     /// Choose an option on this page.
     #[effect(returns)]
@@ -251,6 +252,7 @@ pub enum InstallerPreviewEffect {
     },
     /// Choose the hardware report produced on the other computer.
     #[effect(attended, returns)]
+    #[effect(label = "installer-preview-target-file-title")]
     ChooseTargetHardwareReport,
     /// Read a hardware report produced on the other computer from this exact file.
     #[effect(returns)]
@@ -373,6 +375,7 @@ pub enum InstallerPreviewEffect {
     ToggleFlatpakAccessDetails,
     /// Perform a decision in the account connection flow.
     #[effect(returns)]
+    #[effect(label = "installer-accounts-add")]
     AccountStep {
         step: String,
         selection: Option<String>,

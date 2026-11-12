@@ -53,10 +53,10 @@ crate::effects::effect_family!(AboutEffect => answer);
 pub enum AboutEffect {
     /// Open the identity backup, to carry the person's identity to a new
     /// device.
-    #[effect(job, label = "Back up identity")]
+    #[effect(job)]
     BackUpIdentity,
     /// Open a problem's page: what happened, when, and the record's text.
-    #[effect(view, label = "Problem details")]
+    #[effect(view)]
     OpenProblem {
         #[param("The record's id, as the crash records' list answers it")]
         record: String,

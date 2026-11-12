@@ -2466,6 +2466,7 @@ impl UpdatesModel {
 pub enum UpdatesEffect {
     /// Check for a new system image now.
     #[effect(job, returns)]
+    #[effect(label = "upd-check")]
     CheckForUpdates,
     /// Restart into the staged system image.
     #[effect(job, destructive, returns)]

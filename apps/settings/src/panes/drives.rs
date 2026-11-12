@@ -73,7 +73,7 @@ pub enum DrivesEffect {
     RefreshDrives,
     /// Forget a remembered drive: it is closed if open, and asked about
     /// again the next time.
-    #[effect(job, row, label = "Forget", returns)]
+    #[effect(job, row, returns)]
     ForgetDrive {
         #[param("The remembered drive, as the drive list names it")]
         grant: String,

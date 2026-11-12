@@ -149,6 +149,7 @@ pub enum AccountsEffect {
     /// Add an account: mail, caldav, webdav, nextcloud, google-drive,
     /// onedrive, dropbox or icloud-drive.
     #[effect(view)]
+    #[effect(label = "accounts-add")]
     AddAccount {
         #[param("The kind of account, by its slug")]
         kind: String,
@@ -156,7 +157,7 @@ pub enum AccountsEffect {
     /// Add an email account with its password. The password is sealed by
     /// the session's account custody and never shown or read back; Mail,
     /// which keeps email accounts, is released it to sign in.
-    #[effect(job, returns, label = "Add email account")]
+    #[effect(job, returns)]
     AddEmailAccount {
         #[param("The name shown for it")]
         display_name: String,
@@ -182,16 +183,16 @@ pub enum AccountsEffect {
         account: String,
     },
     /// Sign an account in again.
-    #[effect(view, row, label = "Sign in again")]
+    #[effect(view, row, label = "accounts-status-reauth")]
     SignInAgain {
         #[param("The account's id")]
         account: String,
     },
     /// Check and save the account form, or take the sign-in's next step.
-    #[effect(label = "Save account")]
+    #[effect(label = "accounts-save")]
     SaveAccountForm,
     /// Choose calendars on an existing Nextcloud account, reusing its sign-in.
-    #[effect(row, label = "Connect calendars")]
+    #[effect(row, label = "accounts-nextcloud-calendars")]
     ConnectNextcloudCalendars { account: String },
     /// Read the discovered, secret-free calendar choices for the current form.
     #[effect(returns, kind = "read")]
@@ -208,73 +209,68 @@ pub enum AccountsEffect {
         files_mode: String,
     },
     /// Compatibility action requesting both Google services.
-    #[effect(label = "Continue with Files and Mail")]
     ConnectGoogleMail,
     /// Close the account form or sign-in without saving.
     #[effect(view)]
     CancelAccountForm,
     /// Check and save the password typed to sign an account in again.
-    #[effect(label = "Save password")]
     SaveNewPassword,
     /// Close the sign-in-again form without saving.
     #[effect(view)]
     CancelNewPassword,
     /// Check that an account's server accepts its saved sign-in.
-    #[effect(job, returns, row, idempotent, label = "Check connection")]
+    #[effect(job, returns, row, idempotent)]
     TestAccount {
         #[param("The account's id")]
         account: String,
     },
     /// Remove an account, its saved credential and its sync record.
-    #[effect(row, job, destructive, label = "Remove account")]
+    #[effect(row, job, destructive)]
     RemoveAccount {
         #[param("The account's id")]
         account: String,
     },
     /// Sync a mounted file account now; one that could not start is tried
     /// again.
-    #[effect(row, job, idempotent, label = "Sync now")]
+    #[effect(row, job, idempotent, label = "accounts-sync-now")]
     SyncNow {
         #[param("The account's id")]
         account: String,
     },
     /// Pause a mounted file account's background sync and uploads.
-    #[effect(row, job, idempotent, label = "Pause sync")]
+    #[effect(row, job, idempotent, label = "accounts-pause-sync")]
     PauseSync {
         #[param("The account's id")]
         account: String,
     },
     /// Resume a paused file account's sync.
-    #[effect(row, job, idempotent, label = "Resume sync")]
+    #[effect(row, job, idempotent, label = "accounts-resume-sync")]
     ResumeSync {
         #[param("The account's id")]
         account: String,
     },
     /// Recover an interrupted Files mode change after closing the connection form.
-    #[effect(row, job, idempotent, label = "Recover mode change")]
+    #[effect(row, job, idempotent, label = "accounts-recover-mode")]
     RecoverCloudMode { account: String },
     /// Link your account with a service this workspace is connected to (a
     /// Discord server it bridges): the page goes to the service's consent
     /// page, which comes back here linked.
-    #[effect(label = "Link account")]
     LinkService {
         #[param("The connector's app id")]
         app: String,
     },
     /// Unlink your account with a service this workspace is connected to.
-    #[effect(destructive, label = "Unlink account")]
+    #[effect(destructive)]
     UnlinkService {
         #[param("The connector's app id")]
         app: String,
     },
     /// Link the account a link from the service offers (Discord's /link).
-    #[effect(label = "Link offered account")]
     AcceptService {
         #[param("The connector's app id")]
         app: String,
     },
     /// Turn down the account a link from the service offers.
-    #[effect(label = "Turn down offered account")]
     DeclineService {
         #[param("The connector's app id")]
         app: String,

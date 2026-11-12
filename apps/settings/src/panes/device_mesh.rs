@@ -387,10 +387,9 @@ pub enum DeviceMeshEffect {
         on: bool,
     },
     /// Look for a new home server nearby, then approve the one found.
-    #[effect(label = "Pair home server")]
+    #[effect(label = "mesh-pair-home")]
     PairHomeServer,
     /// Look for a new personal device nearby, then approve the one found.
-    #[effect(label = "Add personal device")]
     AddPersonalDevice,
     /// Rename a home server.
     #[effect(row)]
@@ -401,7 +400,7 @@ pub enum DeviceMeshEffect {
         name: String,
     },
     /// Remove a home server; it stops serving the person's workspaces.
-    #[effect(row, destructive, label = "Remove home server")]
+    #[effect(row, destructive, label = "mesh-remove-home-confirm")]
     RemoveHomeServer {
         #[param("The home server's node id")]
         device: String,
@@ -416,13 +415,13 @@ pub enum DeviceMeshEffect {
         on: bool,
     },
     /// Ask, under a device's row, whether to remove it.
-    #[effect(view, row, label = "Remove device")]
+    #[effect(view, row)]
     ReviewRemoval {
         #[param("The device's key or home server's node id")]
         device: String,
     },
     /// Keep the device whose removal was asked about.
-    #[effect(view, label = "Cancel")]
+    #[effect(view)]
     CancelRemoval,
 }
 

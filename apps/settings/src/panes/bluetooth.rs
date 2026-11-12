@@ -113,26 +113,26 @@ pub enum BluetoothEffect {
     #[effect(job, idempotent)]
     RefreshBluetooth,
     /// Pair with a nearby device; the device may ask to confirm a code.
-    #[effect(job, row, label = "Pair")]
+    #[effect(job, row)]
     #[effect(keywords = "pair, connect headphones, add bluetooth device")]
     PairDevice {
         #[param("The device's object path")]
         device: String,
     },
     /// Stop pairing with a device.
-    #[effect(job, row, label = "Cancel pairing")]
+    #[effect(job, row, label = "settings-bluetooth-cancel-pairing")]
     CancelPairing {
         #[param("The device's object path")]
         device: String,
     },
     /// Connect a paired device.
-    #[effect(job, row, idempotent, label = "Connect")]
+    #[effect(job, row, idempotent)]
     ConnectDevice {
         #[param("The device's object path")]
         device: String,
     },
     /// Disconnect a device.
-    #[effect(job, row, idempotent, label = "Disconnect")]
+    #[effect(job, row, idempotent)]
     DisconnectDevice {
         #[param("The device's object path")]
         device: String,
@@ -153,7 +153,7 @@ pub enum BluetoothEffect {
         name: String,
     },
     /// Forget a paired device; it must pair again to connect.
-    #[effect(job, row, destructive, label = "Forget")]
+    #[effect(job, row, destructive)]
     ForgetDevice {
         #[param("The device's object path")]
         device: String,

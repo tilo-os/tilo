@@ -189,13 +189,12 @@ pub enum AudioEffect {
     #[effect(row, job, idempotent)]
     SetStreamMuted { stream: u32, muted: bool },
     /// Play a test tone on the left or right speaker.
-    #[effect(label = "Test speaker")]
     TestSpeaker {
         #[param("left or right", choices = ["left", "right"])]
         channel: String,
     },
     /// Show the microphone's level for a few seconds, or stop showing it.
-    #[effect(label = "Test microphone")]
+    #[effect(label = "sound-mic-test")]
     ToggleMicrophoneTest,
 }
 
