@@ -238,7 +238,9 @@ impl Runs {
         self.by_run
             .iter()
             .map(|(run, voice)| {
-                let (r, g, b) = agent_rgb(&voice.label);
+                // The colour the run is known by, never its display name's: one agent is one colour
+                // on every surface that draws it, as its own session paints it.
+                let (r, g, b) = agent_rgb(run);
                 let mut face = tilo_session_client::presence::view(
                     0,
                     tilo_clock::unix_now_ms(),

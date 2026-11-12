@@ -94,8 +94,32 @@ const TYPING_DERIVE_MAX_RUN: usize = 512;
 const EDIT_PULSE_WINDOW: crate::time::Duration = crate::time::Duration::from_millis(1500);
 
 pub use collab_types::presence::{
-    PEER_PALETTE, agent_client, agent_identity, assign_peer_colors, identity_rgb, user_color,
+    PEER_PALETTE, agent_client, agent_identity, assign_peer_colors, assign_peer_colors_from,
+    identity_rgb, user_color,
 };
+
+/// The hue a participant wears, from who they are: a person the one their identity
+/// derives ([`crate::tokens::PresenceHue::of_identity`]), software the one what it is
+/// wears ([`crate::tokens::PresenceHue::of_agent`], the same for every run of it and
+/// every surface that draws it). The one lookup every surface asks — the bar's faces,
+/// the People list, a profile card, an agent's card in a window, its pointer, its text
+/// marks and carets, and the run a change is attributed to — so one actor is one colour
+/// everywhere, and no surface picks its own.
+#[must_use]
+pub fn participant_hue(id: &str, is_agent: bool) -> crate::tokens::PresenceHue {
+    if is_agent {
+        crate::tokens::PresenceHue::of_agent(id)
+    } else {
+        crate::tokens::PresenceHue::of_identity(id)
+    }
+}
+
+/// [`participant_hue`] as the colour it travels as: what the workspace paints a
+/// participant in until it hears the colour they chose.
+#[must_use]
+pub fn participant_color(id: &str, is_agent: bool) -> (u8, u8, u8) {
+    identity_rgb(participant_hue(id, is_agent))
+}
 
 /// A presence colour as the surfaces paint it: the `(r, g, b)` a person's
 /// colour travels as ([`user_color`], a colour they chose), in the colour a
@@ -133,19 +157,34 @@ pub fn settle_colors_around<S: std::hash::BuildHasher>(
     chosen: &HashMap<String, (u8, u8, u8), S>,
     mine: Option<&str>,
 ) -> HashMap<String, (u8, u8, u8)> {
-    let mut settled: Vec<&str> = ids
+    let naturals: Vec<(&str, (u8, u8, u8))> = ids.iter().map(|id| (*id, user_color(id))).collect();
+    settle_colors_of(&naturals, chosen, mine)
+}
+
+/// [`settle_colors_around`] over participants the workspace knows the kind of: `naturals`
+/// pairs each id with the colour it wears before any settlement — a person's identity's
+/// ([`participant_color`]), software's own ([`participant_color`] of an agent) — so an agent
+/// settles on the colour it is known by and steps aside from one already spoken for, as
+/// everyone else does.
+#[must_use]
+pub fn settle_colors_of<S: std::hash::BuildHasher>(
+    naturals: &[(&str, (u8, u8, u8))],
+    chosen: &HashMap<String, (u8, u8, u8), S>,
+    mine: Option<&str>,
+) -> HashMap<String, (u8, u8, u8)> {
+    let mut settled: Vec<(&str, (u8, u8, u8))> = naturals
         .iter()
         .copied()
-        .filter(|id| !chosen.contains_key(*id))
+        .filter(|(id, _)| !chosen.contains_key(*id))
         .collect();
-    settled.compact_sort();
-    settled.dedup();
+    settled.compact_sort_by_key(|(id, _)| *id);
+    settled.dedup_by(|a, b| a.0 == b.0);
     // The colours here spoken for, in the order they are honoured: the
     // reader's own first, then the ids in sorted order, so every host that
     // sees the same claims settles them alike.
-    let mut claimants: Vec<&str> = ids
+    let mut claimants: Vec<&str> = naturals
         .iter()
-        .copied()
+        .map(|(id, _)| *id)
         .filter(|id| chosen.contains_key(*id))
         .filter(|id| Some(*id) != mine)
         .collect();
@@ -162,13 +201,13 @@ pub fn settle_colors_around<S: std::hash::BuildHasher>(
         };
         if worn.contains(&rgb) {
             // Someone here already wears it: this one takes a free entry.
-            settled.push(id);
+            settled.push((id, rgb));
             continue;
         }
         worn.push(rgb);
         claimed.insert(id.to_owned(), rgb);
     }
-    let mut assigned = assign_peer_colors(&settled, &worn);
+    let mut assigned = assign_peer_colors_from(&settled, &worn);
     assigned.extend(claimed);
     assigned
 }
@@ -1436,17 +1475,11 @@ impl PresenceCtx {
             .unwrap_or_else(|| identity_rgb(self.identity_hue(user)))
     }
 
-    /// The hue `user`'s identity derives where the workspace announced none:
-    /// a person's own, and for software the one what it is wears rather than
-    /// the one its run's id would — [`PresenceHue::of_agent`] takes the
-    /// admission's instance number off, so the same agent admitted again is
-    /// the same colour.
+    /// The hue `user`'s identity derives where the workspace announced none: a person's
+    /// own, and for software the one what it is wears rather than the one its run's id
+    /// would — [`participant_hue`], the rule every surface asks.
     fn identity_hue(&self, user: &UserId) -> crate::tokens::PresenceHue {
-        if self.is_agent(user) {
-            crate::tokens::PresenceHue::of_agent(agent_identity(&user.0))
-        } else {
-            crate::tokens::PresenceHue::of_identity(&user.0)
-        }
+        participant_hue(&user.0, self.is_agent(user))
     }
 
     /// The hue `user` wears: the one the workspace announced for them (their

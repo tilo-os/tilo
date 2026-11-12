@@ -16,7 +16,7 @@ mod shown;
 pub use call::CallPresence;
 pub use hue::{
     PEER_PALETTE, PRESENCE_HUES, PRESENCE_LEN, PresenceHue, agent_client, agent_identity,
-    agent_rgb, assign_peer_colors, identity_rgb, user_color,
+    agent_rgb, assign_peer_colors, assign_peer_colors_from, identity_rgb, user_color,
 };
 pub use key::{
     AppKind, DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange, UserId,

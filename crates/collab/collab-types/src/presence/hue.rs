@@ -303,9 +303,21 @@ pub fn assign_peer_colors(
     ids: &[&str],
     reserved: &[(u8, u8, u8)],
 ) -> HashMap<String, (u8, u8, u8)> {
-    let mut sorted: Vec<&str> = ids.to_vec();
-    sorted.compact_sort();
-    sorted.dedup();
+    let naturals: Vec<(&str, (u8, u8, u8))> = ids.iter().map(|id| (*id, user_color(id))).collect();
+    assign_peer_colors_from(&naturals, reserved)
+}
+
+/// [`assign_peer_colors`] where each id's own colour is `naturals`: the entry it
+/// starts from, instead of the one its id hashes to. Software wears the colour
+/// what it is wears ([`PresenceHue::of_agent`]), never the one its run's id would
+/// hash to, and it steps aside from a colour already spoken for like anyone else.
+pub fn assign_peer_colors_from(
+    naturals: &[(&str, (u8, u8, u8))],
+    reserved: &[(u8, u8, u8)],
+) -> HashMap<String, (u8, u8, u8)> {
+    let mut sorted: Vec<(&str, (u8, u8, u8))> = naturals.to_vec();
+    sorted.compact_sort_by_key(|(id, _)| *id);
+    sorted.dedup_by(|a, b| a.0 == b.0);
 
     let mut taken = [false; PEER_PALETTE.len()];
     for c in reserved {
@@ -317,8 +329,7 @@ pub fn assign_peer_colors(
     }
 
     let mut out = HashMap::with_capacity(sorted.len());
-    for id in sorted {
-        let natural = user_color(id);
+    for (id, natural) in sorted {
         let start = PEER_PALETTE
             .iter()
             .position(|p| *p == natural)

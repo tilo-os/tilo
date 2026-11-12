@@ -226,7 +226,7 @@ pub mod lines {
             assert_eq!(doing("so.tilo.sheets", "new-sheet", None), "Adding Sheets");
             assert_eq!(
                 doing("so.tilo.word-processor", "append-paragraph", None),
-                "Editing Word-processor"
+                "Writing in Word-processor"
             );
             let command = serde_json::json!({"command": "cargo build"});
             assert_eq!(
@@ -241,13 +241,14 @@ pub mod lines {
         }
 
         /// What a run is at on the record it acts in is said in the catalogue's own words for
-        /// the action, on the record: "Editing Trip plan", never the app's name as if the app
-        /// were being added, and the action's own words where no record is named.
+        /// the action, on the record: "Writing in Trip plan" where it writes text there, never
+        /// the app's name as if the app were being added, and the action's own words where no
+        /// record is named.
         #[test]
         fn a_step_is_said_on_the_record_it_acts_in() {
             assert_eq!(
                 acting("Replace text at a place", Some("Trip plan")),
-                "Editing Trip plan"
+                "Writing in Trip plan"
             );
             assert_eq!(acting("New note", Some("Trip plan")), "Adding Trip plan");
             assert_eq!(

@@ -48,6 +48,10 @@ pub(crate) fn draw_action_presence(
         }
         let user = crate::permissions::UserId(interaction.actor.id.clone());
         let control = control_bounds(tree, bindings, &interaction, bounds).unwrap_or(bounds);
+        // The place the agent would press is washed in its colour and framed in it: the wash light
+        // enough to keep the control's own words legible beneath it, and brighter the moment the
+        // step was taken.
+        presence.draw_agent_locus_tint(paint, &interaction, bounds, now);
         presence.draw_peer_outline(
             paint.scene,
             paint.theme,

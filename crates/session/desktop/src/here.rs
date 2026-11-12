@@ -883,7 +883,9 @@ impl HereState {
     /// the whole workspace at once ([`ui::presence::settle_colors`]): two people here together
     /// never share a colour while the ring has room for both, and every page, seeing the same
     /// workspace, settles it alike. A person is settled by who they are (their user root) so their
-    /// other devices wear their colour; an agent by its own publisher.
+    /// other devices wear their colour; an agent by its own publisher, in the colour what it is
+    /// wears ([`ui::presence::participant_color`]) — the one its own shell publishes and its face,
+    /// its card and its marks wear in every app.
     ///
     /// The colour someone claims for themselves is the one they wear: it is the colour they chose
     /// in their own card, or the one their identity derives, as their shell publishes it — the same
@@ -896,7 +898,9 @@ impl HereState {
     /// colour keyed by their device that changes once their person is known.
     pub fn colors(&self) -> HashMap<String, (u8, u8, u8)> {
         // Each device here, by the person it is (an agent by its own
-        // publisher), with the colour its shell claimed where it claimed one.
+        // publisher), with the colour its shell claimed where it claimed one and the
+        // one its kind wears where it claimed none: [`ui::presence::participant_color`],
+        // the rule every surface asks.
         let present: Vec<Present<'_>> = self
             .members
             .iter()
@@ -904,51 +908,36 @@ impl HereState {
             .chain(self.own.as_ref())
             .filter_map(|member| {
                 let id = member.publisher.as_str();
-                let key = if member.kind == "agent" {
-                    id
-                } else {
-                    self.user_of(id)?
-                };
+                let agent = member.kind == "agent";
+                let key = if agent { id } else { self.user_of(id)? };
                 let claimed = ui::presence::parse_hex_color(&member.colour);
-                Some((id, key, claimed))
+                Some((
+                    id,
+                    key,
+                    claimed,
+                    ui::presence::participant_color(key, agent),
+                ))
             })
             .collect();
         let chosen: HashMap<String, (u8, u8, u8)> = present
             .iter()
-            .filter_map(|(_, key, claimed)| claimed.map(|rgb| ((*key).to_owned(), rgb)))
+            .filter_map(|(_, key, claimed, _)| claimed.map(|rgb| ((*key).to_owned(), rgb)))
             .collect();
-        let keys: Vec<&str> = present.iter().map(|(_, key, _)| *key).collect();
+        let naturals: Vec<(&str, (u8, u8, u8))> = present
+            .iter()
+            .map(|(_, key, _, natural)| (*key, *natural))
+            .collect();
         // This page's own person is settled first: their colour is theirs, and nobody here is
         // drawn in it.
         let own = self
             .own_id()
-            .and_then(|own| present.iter().find(|(id, _, _)| *id == own))
-            .map(|(_, key, _)| *key);
-        let settled = ui::presence::settle_colors_around(&keys, &chosen, own);
-        let mut colors: HashMap<String, (u8, u8, u8)> = present
+            .and_then(|own| present.iter().find(|(id, _, _, _)| *id == own))
+            .map(|(_, key, _, _)| *key);
+        let settled = ui::presence::settle_colors_of(&naturals, &chosen, own);
+        present
             .into_iter()
-            .filter_map(|(id, key, _)| settled.get(key).map(|rgb| (id.to_owned(), *rgb)))
-            .collect();
-        let own_rgb = own.and_then(|own| settled.get(own)).copied();
-        // An agent wears its client's hue, so Claude Code reads as Claude Code on every face and
-        // caret of it; one this build does not know keeps the hue it settled on. A client hue the
-        // person themselves wears is not worn by the agent: they stay apart.
-        for agent in self
-            .members
-            .iter()
-            .flatten()
-            .filter(|member| member.kind == "agent")
-        {
-            let Some(hue) = ui::tokens::PresenceHue::of_agent_client(&agent.label) else {
-                continue;
-            };
-            let rgb = ui::presence::identity_rgb(hue);
-            if own_rgb == Some(rgb) {
-                continue;
-            }
-            colors.insert(agent.publisher.clone(), rgb);
-        }
-        colors
+            .filter_map(|(id, key, _, _)| settled.get(key).map(|rgb| (id.to_owned(), *rgb)))
+            .collect()
     }
 
     /// Everyone present but this page, people first, then agents, each in the order they arrived.
@@ -1139,9 +1128,10 @@ impl HereState {
 }
 
 /// One device here as the settlement reads it: its publisher, the person it
-/// is (an agent, itself), and the colour its shell claimed for that person
-/// where it claimed one.
-type Present<'a> = (&'a str, &'a str, Option<(u8, u8, u8)>);
+/// is (an agent, itself), the colour its shell claimed for that person where it
+/// claimed one, and the colour its kind wears where it claimed none
+/// ([`ui::presence::participant_color`]).
+type Present<'a> = (&'a str, &'a str, Option<(u8, u8, u8)>, (u8, u8, u8));
 
 /// `publisher` 's colour in `colors` ([`HereState::colors`]), or the neutral face while the
 /// workspace has not settled one for it.
@@ -1877,6 +1867,75 @@ mod tests {
             "the agent steps aside from the colour the person wears"
         );
         assert_eq!(here.own_rgb(), Some(orange));
+    }
+
+    /// One agent wears one colour on every surface that draws it: the desk's faces and the cards in
+    /// its windows, the People list's row, the bar's face, and the colour its own apps paint its
+    /// card, its text marks and its caret in — the one rule ([`ui::presence::participant_color`]),
+    /// never a colour a surface picked for itself.
+    #[test]
+    fn an_agent_wears_one_colour_on_every_surface() {
+        let helper = "agent:helper@host";
+        let (r, g, b) = ui::presence::participant_color(helper, true);
+        let announced = hex_of((r, g, b));
+        let me = LiveMember {
+            user: Some("me-root".into()),
+            ..member("me", "person", "Pat")
+        };
+        // The agent's own session publishes its colour with its face, as every session does.
+        let agent = LiveMember {
+            user: Some("helper-root".into()),
+            colour: announced,
+            ..member(helper, "agent", "Helper #1")
+        };
+        let mut here = HereState::default();
+        here.set_members(Some(me), Some(vec![agent]));
+
+        let tree = DesktopTree::default();
+        let people = here.people(&tree, &[], &|_| None);
+        let listed = people
+            .iter()
+            .find(|person| person.id == helper)
+            .expect("the agent is listed");
+        let mut presence = PresenceCtx::empty();
+        here.register_windows(&people, &mut presence);
+        assert_eq!(
+            (
+                here.colors().get(helper).copied(),
+                listed.rgb,
+                presence.color_for(&UserId(helper.into())),
+                ui::presence::participant_color(helper, true),
+            ),
+            (Some((r, g, b)), (r, g, b), (r, g, b), (r, g, b)),
+            "the board, its people row, the windows and every app settle one colour"
+        );
+
+        // The bar and the People list read the workspace's rows, which this page fills from its
+        // board: the same colour again.
+        let mut tree = DesktopTree {
+            workspaces: vec![Workspace::new(tilo_desktop_model::WorkspaceSlot(1), "Desk")],
+            ..DesktopTree::default()
+        };
+        tree.active = tree.workspaces[0].slot;
+        overlay_collaborators(&mut tree, &people, None);
+        let rows = crate::collaborators::collaborator_roster_rows(&tree, "me-root");
+        let row = rows
+            .iter()
+            .find(|row| row.id == helper)
+            .expect("the agent has a row in the People list");
+        assert_eq!(
+            row.color,
+            vello::peniko::Color::from_rgb8(r, g, b),
+            "the People list"
+        );
+        let mut bar =
+            crate::topbar::TopBarChrome::from_tree_with_local_user(&tree, "me-root".into());
+        bar.sync_from_tree(&tree);
+        assert_eq!(
+            bar.collaborator_colors(),
+            [vello::peniko::Color::from_rgb8(r, g, b)],
+            "the face on the bar"
+        );
     }
 
     /// The colour someone chose in their own card is the colour they wear here,

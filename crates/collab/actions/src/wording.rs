@@ -4,12 +4,14 @@
 //! One source for every surface that says what a step is at — the presence
 //! line beside an agent's face, the activity card drawn in the window it works
 //! in, the words a reviewer reads on a run. They ask here, so they never say
-//! different things about the same step: "Editing Trip plan" on the record,
-//! "Creating note from Markdown" where the record is the window the card
-//! stands in.
+//! different things about the same step: "Writing in Trip plan" where an agent
+//! writes text into the note, "Editing Trip plan" where it renames it, and
+//! "Creating note from Markdown" where the record is the window the card stands
+//! in.
 
 /// The colour a verb's phrase is put in: the action's own name says what kind
-/// of work it is, so "New note" is adding and "Replace text" is editing.
+/// of work it is, so "New note" is adding and "Replace text" is writing into the
+/// note.
 #[must_use]
 pub fn verb_of(actions_words: &str) -> Option<&'static str> {
     let action = actions_words.to_lowercase();
@@ -18,11 +20,16 @@ pub fn verb_of(actions_words: &str) -> Option<&'static str> {
         "Running"
     } else if any(&["delete", "remove", "clear"]) {
         "Deleting"
+    } else if any(&[
+        "text", "markdown", "write", "type", "insert", "append", "paste", "dictate",
+    ]) {
+        // Words about words are writing *into* the record: "Adding Trip plan" would say the note
+        // itself were being made.
+        "Writing in"
     } else if any(&["new", "add", "create"]) {
         "Adding"
     } else if any(&[
-        "edit", "insert", "append", "replace", "set", "update", "write", "type", "format",
-        "rename", "move", "toggle",
+        "edit", "replace", "set", "update", "format", "rename", "move", "toggle",
     ]) {
         "Editing"
     } else if any(&["open", "start", "launch"]) {
@@ -57,9 +64,9 @@ pub fn doing_phrase(actions_words: &str, working: &str) -> String {
 }
 
 /// What a step is at, on the record it acts in: its verb on that record
-/// ("Editing Trip plan"), and the action's own words where no record is named
-/// ("Creating note from Markdown"). A line of its own beside a face, so it
-/// starts a sentence: [`doing_phrase`] carried it mid-sentence instead.
+/// ("Writing in Trip plan", "Editing Trip plan"), and the action's own words where no
+/// record is named ("Creating note from Markdown"). A line of its own beside a face, so
+/// it starts a sentence: [`doing_phrase`] carried it mid-sentence instead.
 #[must_use]
 pub fn step_line(actions_words: &str, record: Option<&str>) -> String {
     let record = record.map(str::trim).filter(|record| !record.is_empty());
@@ -117,7 +124,12 @@ mod tests {
     fn a_step_is_said_on_its_record_in_its_verbs() {
         assert_eq!(
             step_line("Replace text at a place", Some("Trip plan")),
-            "Editing Trip plan"
+            "Writing in Trip plan"
+        );
+        assert_eq!(
+            step_line("Add Markdown to the end of a note", Some("Trip plan")),
+            "Writing in Trip plan",
+            "words written into a record never read as the record being made"
         );
         assert_eq!(
             step_line("Rename note", Some("Trip plan")),
@@ -127,6 +139,10 @@ mod tests {
         assert_eq!(
             step_line("Delete note", Some("Trip plan")),
             "Deleting Trip plan"
+        );
+        assert_eq!(
+            step_line("Open note", Some("Trip plan")),
+            "Opening Trip plan"
         );
         // No record: the action's own words, in the present tense.
         assert_eq!(

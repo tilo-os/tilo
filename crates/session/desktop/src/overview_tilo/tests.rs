@@ -276,8 +276,9 @@ fn revoking_a_grant_into_one_workspace_names_that_workspace() {
             .map(|confirm| confirm.question.as_str()),
         Some("Cursor loses access to Build box and stops now")
     );
-    // A client this build does not know keeps the hue its own id gives it, face and dot alike.
-    let hue = PresenceHue::of_identity("g2");
+    // A client this build does not know keeps the hue its own name gives it, face and dot alike:
+    // the one its face wears everywhere ([`ui::presence::participant_hue`]), never its grant's id.
+    let hue = PresenceHue::of_identity("Cursor");
     assert_eq!(
         agent.mark,
         Some(TiloMark::Face(TiloFace {
