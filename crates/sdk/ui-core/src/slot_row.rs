@@ -152,7 +152,7 @@ pub(crate) struct SlotRow {
     window_actions: Vec<WindowAction>,
     last_ground_press: Option<crate::time::Instant>,
     /// The window is narrower than the compact breakpoint: a notice has a
-    /// strip of its own under the row.
+    /// strip of its own, over the app at the window's foot.
     compact: bool,
 }
 
@@ -236,8 +236,10 @@ impl SlotRow {
     /// Keep the row current: shown at `place` (none: hidden), with the
     /// app's slots, its notice and the window's `history` control. Call
     /// every frame before layout, then [`Self::drive_search`]. Returns the
-    /// row's height, with a compact window's notice strip: the app's frame
-    /// starts that far below `place.top`.
+    /// row's height: the app's frame starts that far below `place.top`. A
+    /// compact window's notice floats over the app at the window's foot
+    /// while it is up and does not move what the app shows: the notice is
+    /// transient.
     pub(crate) fn refresh(
         &mut self,
         theme: &crate::theme::Theme,
@@ -265,8 +267,8 @@ impl SlotRow {
             (width - place.right - inset).max(place.left + inset),
             place.top + TOOLBAR_ROW_HEIGHT,
         );
-        // A compact window says a notice in a strip of its own under the
-        // row, as the desktop's bar does.
+        // A compact window says a notice in a strip of its own, where the
+        // row has no room for it.
         let compact = width < f64::from(theme.tokens.metrics.compact_breakpoint);
         let restyled = self.compact != compact;
         self.compact = compact;
@@ -286,16 +288,23 @@ impl SlotRow {
             self.shown = Some((toolbar, rect));
             self.repaint = true;
         }
-        self.repaint |= self.row.measure_strip(theme, rect.width());
+        // It floats at the window's foot on a card of its own
+        // ([`Self::strip_card`]), clear of what the app shows at its top, as
+        // a transient notice does.
+        let pad = f64::from(theme.tokens.spacing.s3);
+        self.repaint |= self
+            .row
+            .measure_strip(theme, (rect.width() - 2.0 * pad).max(0.0));
         let strip = self.row.strip_height();
+        let foot = place.top + window_height - pad;
         self.row.place_strip(if strip > 0.0 {
-            Rect::new(rect.x0, rect.y1, rect.x1, rect.y1 + strip)
+            Rect::new(rect.x0 + pad, foot - strip, rect.x1 - pad, foot)
         } else {
             Rect::ZERO
         });
         self.search.set_app_name(place.app_name);
         self.repaint |= self.row.measure_views(theme);
-        TOOLBAR_ROW_HEIGHT + strip
+        TOOLBAR_ROW_HEIGHT
     }
 
     /// Place the window's own controls in the pill at the row's trailing end,
@@ -441,7 +450,7 @@ impl SlotRow {
     }
 
     /// The band the row paints, from the host's frame at `left` to the
-    /// window's end, with a compact window's notice strip (zero: hidden).
+    /// window's end (zero: hidden).
     pub(crate) fn band(&self, left: f64, theme: &crate::theme::Theme) -> Rect {
         let Some((_, rect)) = self.shown.as_ref() else {
             return Rect::ZERO;
@@ -450,7 +459,7 @@ impl SlotRow {
             left,
             rect.y0,
             rect.x1 + f64::from(theme.tokens.spacing.s2),
-            rect.y1 + self.row.strip_height(),
+            rect.y1,
         )
     }
 
@@ -471,7 +480,11 @@ impl SlotRow {
         {
             return window;
         }
-        self.band(left, theme).inflate(4.0, 4.0).intersect(window)
+        let mut bounds = self.band(left, theme);
+        if let Some(card) = self.strip_card(theme) {
+            bounds = bounds.union(card);
+        }
+        bounds.inflate(4.0, 4.0).intersect(window)
     }
 
     /// Paint the row from the host's frame at `left`: its band, its slots
@@ -497,6 +510,25 @@ impl SlotRow {
             None,
             &band,
         );
+        // A compact window's notice, on a card of its own over the app.
+        if let Some(card) = self.strip_card(theme) {
+            let card =
+                vello::kurbo::RoundedRect::from_rect(card, f64::from(theme.tokens.radii.control));
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.raised,
+                None,
+                &card,
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(f64::from(theme.tokens.metrics.chrome_rule_px)),
+                transform,
+                crate::surface::edge_on(theme.tokens.colors.surfaces.raised),
+                None,
+                &card,
+            );
+        }
         self.row.paint(scene, transform, text, theme, presence);
         self.search.set_ground(theme.tokens.colors.surfaces.content);
         self.search
@@ -782,6 +814,52 @@ impl SlotRow {
             );
         }
         nodes
+    }
+
+    /// Whether the row shows as HTML of its own: at rest, with no menu
+    /// open, its location not edited and the search closed. Otherwise a page
+    /// shows its paint, which those draw over the app.
+    pub(crate) fn composes(&self) -> bool {
+        self.shown.is_some()
+            && !self.row.popup_open()
+            && !self.row.is_editing()
+            && !self.search.is_open()
+    }
+
+    /// What each part of the row shows, keyed as [`Self::accessibility`]
+    /// names them: the app's slots, the location, a compact window's notice
+    /// and the search's button, each in the face it is painted with.
+    pub(crate) fn composed_parts(
+        &self,
+        theme: &crate::theme::Theme,
+    ) -> Vec<(String, Rect, crate::composition::Own)> {
+        let mut parts = self.row.composed_slots(theme);
+        if let Some(node) = self.search.accessibility()
+            && let Some(rect) = node.bounds.map(|bounds| bounds.to_rect())
+            && let Some(face) = crate::widget::window_controls::icon_button_face(
+                rect,
+                crate::icons::Icon::Search,
+                crate::widget::window_controls::ButtonFace {
+                    enabled: true,
+                    ..Default::default()
+                },
+            )
+            .composed(theme)
+        {
+            parts.push((
+                node.action_target.unwrap_or_default(),
+                rect,
+                crate::composition::Own::Face(face),
+            ));
+        }
+        parts
+    }
+
+    /// The card a compact window's notice stands on over the app while one
+    /// is up: the strip, padded at its sides.
+    pub(crate) fn strip_card(&self, theme: &crate::theme::Theme) -> Option<Rect> {
+        let pad = f64::from(theme.tokens.spacing.s3);
+        self.row.strip_band().map(|strip| strip.inflate(pad, 0.0))
     }
 
     /// Perform `action` on the part of the row `target` names (a

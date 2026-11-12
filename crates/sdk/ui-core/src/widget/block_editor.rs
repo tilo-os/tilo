@@ -8927,7 +8927,8 @@ impl Widget for BlockEditor {
     /// The document's blocks as what they are: paragraphs, headings, list
     /// items, with their marks and the caret.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.blocks(self.composed_blocks());
+        let edges = self.composed_edges(cx.theme());
+        cx.blocks(self.composed_blocks(), edges);
     }
 
     /// The described component's instance, for the generic adapter to take new props in place

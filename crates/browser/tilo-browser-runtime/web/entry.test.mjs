@@ -874,3 +874,12 @@ test('a link to an app’s workspace document nobody wrote yet opens the app; an
   await assert.rejects(present({route: {mode: 'app', target: {scope, app: 'so.tilo.scratchpad', record: ''}}, peer: gone}),
     /connection closed/);
 });
+
+test('an app whose widgets all render as HTML opens as HTML; any other on the canvas', async () => {
+  const scope = {kind: 'room', host: 'https://h.example', room: 'r'};
+  const mountDesktop = async (_surface, options) => ({options});
+  const notes = await present({route: {mode: 'app', target: {scope, app: 'so.tilo.notes'}}, mountDesktop});
+  assert.equal(notes.mount.options.dom, true);
+  const other = await present({route: {mode: 'app', target: {scope, app: 'so.tilo.calculator'}}, mountDesktop});
+  assert.equal(other.mount.options.dom, undefined);
+});

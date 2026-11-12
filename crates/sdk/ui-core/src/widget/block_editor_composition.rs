@@ -3,9 +3,24 @@
 //! each block's kind, text and inline marks, and the caret while one is
 //! edited.
 
-use super::{BlockEditor, BlockKind, Mark, numbered_ordinals};
+use super::{
+    BlockEditor, BlockKind, LIST_INDENT_STEP_PX, Mark, numbered_ordinals, prefix_gutter_for,
+};
 
 impl BlockEditor {
+    /// Where its text stands, as its own layout puts it: a paragraph at the
+    /// editor's text inset (the edge a title above lines up with), a list
+    /// item and a quote past their gutters, a nested item a step further.
+    pub(super) fn composed_edges(&self, theme: &crate::Theme) -> crate::composition::DocEdges {
+        let scale = self.text_scale;
+        crate::composition::DocEdges {
+            text: self.text_inset(theme),
+            list: prefix_gutter_for(&BlockKind::Bullet { indent: 0 }) * scale,
+            indent: f64::from(LIST_INDENT_STEP_PX) * scale,
+            quote: prefix_gutter_for(&BlockKind::Quote) * scale,
+        }
+    }
+
     pub(super) fn composed_blocks(&self) -> Vec<crate::composition::DocBlock> {
         use crate::composition::{DocBlock, InlineMark};
         let ordinals = numbered_ordinals(&self.blocks);

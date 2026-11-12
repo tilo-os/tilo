@@ -34,10 +34,84 @@ pub enum Own {
     },
     /// A document of blocks, each edited through the semantic targets its
     /// widget publishes for it (`block-text:` + its id).
-    Blocks { blocks: Vec<DocBlock> },
+    Blocks {
+        blocks: Vec<DocBlock>,
+        /// Where its blocks' text sets out from, as the widget lays it.
+        edges: DocEdges,
+    },
+    /// A control's face: its icon and words on the ground it stands on.
+    Face(Face),
     /// The widget's own paint stands for it: a host shows it as one picture
     /// of the widget's box. `version` changes whenever the picture may have.
     Painted { version: u64 },
+}
+
+/// A control's face ([`Own::Face`]): a leading icon, its words, a fact or
+/// shortcut after them and a trailing icon, on its ground.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Face {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<Glyph>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<TextLook>,
+    /// Told after the label, at the face's trailing edge when `spread`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<TextLook>,
+    /// After everything else (a menu's chevron).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trailing: Option<Glyph>,
+    /// Straight sRGB, 0–255; none where the face stands on its container's
+    /// ground.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fill: Option<[u8; 4]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edge: Option<[u8; 4]>,
+    /// Logical pixels.
+    pub radius: f64,
+    /// From each side to the content.
+    pub pad: f64,
+    /// Between the icon, the label and the rest.
+    pub gap: f64,
+    /// The label leads and the detail trails, rather than all of it centred.
+    pub spread: bool,
+}
+
+/// An icon: Lucide-style outlines in a 24 × 24 box, as SVG path data.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Glyph {
+    /// Its name, for a host that keys its icons.
+    pub name: &'static str,
+    pub paths: Vec<String>,
+    /// Its edge, logical pixels.
+    pub size: f64,
+    /// Its outline's width, logical pixels at `size`.
+    pub stroke: f64,
+    /// Straight sRGB, 0–255.
+    pub color: [u8; 4],
+    /// Filled rather than outlined (a toggle that is on).
+    pub filled: bool,
+}
+
+/// Straight sRGB of `color`, 0–255, as a composition writes colours.
+#[must_use]
+pub fn rgba8(color: vello::peniko::Color) -> [u8; 4] {
+    let rgba = color.to_rgba8();
+    [rgba.r, rgba.g, rgba.b, rgba.a]
+}
+
+/// Where a document's text stands in its box, logical pixels: the edge a
+/// paragraph's text starts at (which a title above it lines up with), and how
+/// far a list item's and a nested item's text move in from it.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct DocEdges {
+    /// From the widget's left edge to a paragraph's first glyph.
+    pub text: f64,
+    /// From a paragraph's edge to a list item's text.
+    pub list: f64,
+    /// How much further each level of nesting moves a list item in.
+    pub indent: f64,
+    /// From a paragraph's edge to a quote's text.
+    pub quote: f64,
 }
 
 /// One block of a document ([`Own::Blocks`]).
@@ -121,10 +195,7 @@ impl TextLook {
                 TextWeight::Bold => 700,
             },
             italic: style.italic,
-            color: color.map(|color| {
-                let rgba = color.to_rgba8();
-                [rgba.r, rgba.g, rgba.b, rgba.a]
-            }),
+            color: color.map(rgba8),
             align: match style.align {
                 ParagraphAlign::Center => "center",
                 ParagraphAlign::End => "end",
@@ -316,6 +387,30 @@ pub struct Composed {
     pub surfaces: Vec<([f64; 4], &'static str)>,
 }
 
+impl Composed {
+    /// A widget at `path` standing at `rect` in the window, showing nothing
+    /// yet: what a host that composes its own parts fills in.
+    #[must_use]
+    pub fn new(path: String, widget: &str, rect: [f64; 4]) -> Self {
+        Self {
+            tag: None,
+            fallback: false,
+            path,
+            widget: widget.to_owned(),
+            rect,
+            clip: None,
+            layout: None,
+            scroll: None,
+            semantics: None,
+            own: None,
+            focusable: false,
+            flows: false,
+            children: Vec::new(),
+            surfaces: Vec::new(),
+        }
+    }
+}
+
 /// A window's whole composition.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Composition {
@@ -367,6 +462,11 @@ impl HtmlCx<'_> {
         self.composed.own = Some(Own::Text(look));
     }
 
+    /// The widget is a control showing `face`.
+    pub fn face(&mut self, face: Face) {
+        self.composed.own = Some(Own::Face(face));
+    }
+
     /// The widget is an editable field holding `value`.
     pub fn field(
         &mut self,
@@ -384,10 +484,10 @@ impl HtmlCx<'_> {
         });
     }
 
-    /// The widget is a document of `blocks`.
-    pub fn blocks(&mut self, blocks: Vec<DocBlock>) {
+    /// The widget is a document of `blocks`, its text standing at `edges`.
+    pub fn blocks(&mut self, blocks: Vec<DocBlock>, edges: DocEdges) {
         self.element("article");
-        self.composed.own = Some(Own::Blocks { blocks });
+        self.composed.own = Some(Own::Blocks { blocks, edges });
     }
 
     /// The widget is drawn: it shows as a picture of its own paint, redrawn
@@ -432,6 +532,26 @@ impl HtmlCx<'_> {
     pub fn selected(&mut self, selected: bool) {
         if let Some(semantics) = &mut self.composed.semantics {
             semantics.state.selected |= selected;
+        }
+    }
+
+    /// Of the children it composed ([`Self::children`]), the ones standing at
+    /// `chosen` are the chosen ones of its list: a list that shows its
+    /// choice under its rows rather than in them says which rows hold it.
+    pub fn choose_children(&mut self, chosen: &[vello::kurbo::Rect]) {
+        for child in &mut self.composed.children {
+            let [x, y, width, height] = child.rect;
+            let stands_at = |rect: &vello::kurbo::Rect| {
+                (rect.x0 - x).abs() < 0.5
+                    && (rect.y0 - y).abs() < 0.5
+                    && (rect.width() - width).abs() < 0.5
+                    && (rect.height() - height).abs() < 0.5
+            };
+            if chosen.iter().any(stands_at)
+                && let Some(semantics) = &mut child.semantics
+            {
+                semantics.state.selected = true;
+            }
         }
     }
 

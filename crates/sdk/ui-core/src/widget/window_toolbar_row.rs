@@ -52,6 +52,7 @@ use crate::tokens::{MotionSource, TextRole};
 use crate::window_toolbar::{ToolbarEvent, WindowToolbar};
 
 mod access;
+mod compose;
 mod layout;
 #[path = "window_toolbar_location_label.rs"]
 mod location_label;
@@ -59,6 +60,7 @@ mod paint;
 mod reactions;
 mod slot_change;
 mod strip;
+pub(crate) use compose::{LOCATION_KEY, STRIP_KEY};
 use layout::{
     LocationForms, LocationLead, MeasureKey, Measured, Slot, Slots, ViewsMeasure, location_chrome,
 };

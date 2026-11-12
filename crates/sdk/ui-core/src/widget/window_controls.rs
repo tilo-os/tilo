@@ -472,6 +472,23 @@ pub fn paint_icon_button(
     (rect, icon): (Rect, icons::Icon),
     face: ButtonFace,
 ) {
+    crate::widget::Button::paint(
+        scene,
+        transform,
+        text,
+        theme,
+        &icon_button_face(rect, icon, face),
+    );
+}
+
+/// The face [`paint_icon_button`] paints: the bar's small icon button in the
+/// role and state `face` says.
+#[must_use]
+pub fn icon_button_face(
+    rect: Rect,
+    icon: icons::Icon,
+    face: ButtonFace,
+) -> crate::widget::ButtonFace<'static> {
     let role = if face.destructive {
         crate::widget::ButtonRole::Destructive
     } else if face.primary {
@@ -479,14 +496,13 @@ pub fn paint_icon_button(
     } else {
         crate::widget::ButtonRole::Plain
     };
-    let face = crate::widget::ButtonFace::icon_only(rect, icon, "")
+    crate::widget::ButtonFace::icon_only(rect, icon, "")
         .role(role)
         .control_size(crate::widget::ControlSize::Small)
         .hovered(face.hovered && face.enabled)
         .pressed(face.pressed && face.enabled)
         .toggled(face.on)
-        .disabled(!face.enabled);
-    crate::widget::Button::paint(scene, transform, text, theme, &face);
+        .disabled(!face.enabled)
 }
 
 #[cfg(test)]
