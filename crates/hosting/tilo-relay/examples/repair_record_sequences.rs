@@ -64,7 +64,9 @@
 //! repaired, or does not read whole after its repair.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process::ExitCode;
 
 use anyhow::Context as _;
@@ -426,79 +428,84 @@ fn short(hash: &ChangeHash) -> String {
 ///
 /// # Errors
 /// The workspace is not governed here.
-async fn repair_workspace(
-    workspaces: &Workspaces,
-    workspace: &str,
-    app: Option<&str>,
+///
+/// Boxed: it holds a record's whole history and what it decodes to while it
+/// works, which is more than a caller's frame should carry.
+fn repair_workspace<'a>(
+    workspaces: &'a Workspaces,
+    workspace: &'a str,
+    app: Option<&'a str>,
     dry_run: bool,
-    archive: &Path,
-) -> anyhow::Result<Vec<RecordReport>> {
-    let mut reports = Vec::new();
-    let routes = workspaces
-        .record_routes(workspace)
-        .await
-        .map_err(|error| anyhow::anyhow!("{workspace}: {error}"))?;
-    for (record_app, record) in routes {
-        if app.is_some_and(|only| only != record_app) {
-            continue;
-        }
-        let history = match workspaces
-            .record_history(workspace, &record_app, &record)
+    archive: &'a Path,
+) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<RecordReport>>> + 'a>> {
+    Box::pin(async move {
+        let mut reports = Vec::new();
+        let routes = workspaces
+            .record_routes(workspace)
             .await
-        {
-            Ok(Some(history)) => history,
-            Ok(None) => continue,
-            // A person's own record, sealed for their devices alone (their
-            // drafts), is not the host's to read, nor to repair.
-            Err(_) if tilo_action_policy::member_record(&record).is_some() => continue,
-            Err(error) => {
-                let report = RecordReport {
-                    workspace: workspace.to_owned(),
-                    app: record_app.clone(),
-                    record: record.clone(),
-                    failed: Some(format!("its history does not read here: {error}")),
-                    ..RecordReport::default()
-                };
-                report.print(dry_run);
-                reports.push(report);
+            .map_err(|error| anyhow::anyhow!("{workspace}: {error}"))?;
+        for (record_app, record) in routes {
+            if app.is_some_and(|only| only != record_app) {
                 continue;
             }
-        };
-        let mut report = RecordReport {
-            workspace: workspace.to_owned(),
-            app: record_app.clone(),
-            record: record.clone(),
-            ..RecordReport::default()
-        };
-        let analysis = match Analysis::of(&history) {
-            Ok(analysis) => analysis,
-            Err(error) => {
-                report.failed = Some(format!("its history does not decode: {error}"));
-                report.print(dry_run);
-                reports.push(report);
+            let history = match workspaces
+                .record_history(workspace, &record_app, &record)
+                .await
+            {
+                Ok(Some(history)) => history,
+                Ok(None) => continue,
+                // A person's own record, sealed for their devices alone (their
+                // drafts), is not the host's to read, nor to repair.
+                Err(_) if tilo_action_policy::member_record(&record).is_some() => continue,
+                Err(error) => {
+                    let report = RecordReport {
+                        workspace: workspace.to_owned(),
+                        app: record_app.clone(),
+                        record: record.clone(),
+                        failed: Some(format!("its history does not read here: {error}")),
+                        ..RecordReport::default()
+                    };
+                    report.print(dry_run);
+                    reports.push(report);
+                    continue;
+                }
+            };
+            let mut report = RecordReport {
+                workspace: workspace.to_owned(),
+                app: record_app.clone(),
+                record: record.clone(),
+                ..RecordReport::default()
+            };
+            let analysis = match Analysis::of(&history) {
+                Ok(analysis) => analysis,
+                Err(error) => {
+                    report.failed = Some(format!("its history does not decode: {error}"));
+                    report.print(dry_run);
+                    reports.push(report);
+                    continue;
+                }
+            };
+            // A record holding each sequence once, and every change of it in
+            // place, reads whole: nothing to do.
+            if analysis.collisions.is_empty() && analysis.waiting == 0 {
                 continue;
             }
-        };
-        // A record holding each sequence once, and every change of it in
-        // place, reads whole: nothing to do.
-        if analysis.collisions.is_empty() && analysis.waiting == 0 {
-            continue;
-        }
-        analysis.describe(&mut report);
-        if !report.unreadable.is_empty() {
-            report.failed = Some(
+            analysis.describe(&mut report);
+            if !report.unreadable.is_empty() {
+                report.failed = Some(
                 "writes of its history do not open with the keys this host holds; repairing it would lose them"
                     .into(),
             );
-        } else if !dry_run
-            && let Err(error) = apply(workspaces, &analysis, &mut report, archive).await
-        {
-            report.failed = Some(format!("{error:#}"));
+            } else if !dry_run
+                && let Err(error) = apply(workspaces, &analysis, &mut report, archive).await
+            {
+                report.failed = Some(format!("{error:#}"));
+            }
+            report.print(dry_run);
+            reports.push(report);
         }
-        report.print(dry_run);
-        reports.push(report);
-    }
-    Ok(reports)
+        Ok(reports)
+    })
 }
 
 /// Found the record again from its kept branch, then write what the other
