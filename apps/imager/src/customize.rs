@@ -225,7 +225,7 @@ fn field_binding(
     let edit = move |shown: String| {
         profile_value(field, &shown)
             .and_then(|value| field_edit(field, value))
-            .ok_or_else(|| CATALOG.t(&field.choose_message()))
+            .ok_or_else(|| field.choose_message())
     };
     match text_path(field) {
         Some(path) => actions.edit_binding_with(path, move |_, shown: String| edit(shown)),

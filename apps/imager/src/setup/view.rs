@@ -2591,7 +2591,7 @@ mod tests {
             assert!(duplicate_is_error);
             assert_eq!(
                 duplicate_status,
-                "A Full Tilo download cannot start in its current state."
+                crate::setup::strings::t("imager-setup-error-download-start-unavailable")
             );
             assert_eq!(requests_after, requests);
             let deadline = tilo_test_env::hang_deadline();
