@@ -15,7 +15,7 @@
 use tilolang_runtime::meta::Meta;
 
 use crate::host::Host;
-use crate::publish::{package_resource_id, resource_id};
+use crate::publish::resource_id;
 use crate::record::{DynRecord, DynValue};
 use tilo_resource::search_index::{
     IndexAction, IndexDelta, IndexEntry, IndexState, IndexWeight, Publisher,
@@ -189,33 +189,18 @@ const OPEN_ACTION: &str = "open";
 
 /// Every hit of the workspace as the session's persistent search index keeps it: one [`IndexEntry`]
 /// per resource with text, short metadata only (never a prose body), keyed by the resource's
-/// published id and opening it through its package's `open` action at that anchor. This is what
+/// published id and opening it through its own `open` action. This is what
 /// a live tilolang instance publishes on its connection, so a Mail message or a note is found by
 /// a word of its body through the system's one search, whether or not the app runs.
 fn entries_of(
     snapshot: &crate::store::Snapshot,
     catalogue: &[(String, String)],
 ) -> Vec<IndexEntry> {
-    let open_of: std::collections::HashMap<String, tilo_actions::ActionAddress> = catalogue
-        .iter()
-        .map(|(app, _)| {
-            (
-                app.clone(),
-                tilo_actions::ActionAddress::new(package_resource_id(app), OPEN_ACTION),
-            )
-        })
-        .collect();
     hits_of(snapshot, catalogue)
         .into_iter()
         .filter_map(|hit| {
-            let app = hit
-                .resource
-                .strip_prefix("tl:")
-                .and_then(|rest| rest.split_once(':'))
-                .map(|(app, _)| app.to_owned())?;
             entry(
                 &hit.resource,
-                open_of.get(&app),
                 &hit.title,
                 &hit.type_name,
                 &hit.app_title,
@@ -241,10 +226,8 @@ pub fn index_entry_at(host: &Host, meta: &Meta, path: &str) -> Option<IndexEntry
         .filter_map(|text| reader.said(&held.path, text))
         .collect();
     let resource = resource_id(&meta.app, &held.path);
-    let open = tilo_actions::ActionAddress::new(package_resource_id(&meta.app), OPEN_ACTION);
     entry(
         &resource,
-        Some(&open),
         texts.first()?,
         &held.schema.name,
         &meta.title,
@@ -255,10 +238,10 @@ pub fn index_entry_at(host: &Host, meta: &Meta, path: &str) -> Option<IndexEntry
 
 /// The index's entry of the resource `resource` with `texts`: short metadata first (a sender, a
 /// subject), then long prose (a body), so the index keeps a bounded number of fields
-/// ([`IndexEntry::bounded`]) with the metadata that ranks highest.
+/// ([`IndexEntry::bounded`]) with the metadata that ranks highest. A hit opens through the
+/// resource's own `open`, bound to it: the item a hit names is the one its window shows.
 fn entry(
     resource: &str,
-    open: Option<&tilo_actions::ActionAddress>,
     title: &str,
     type_name: &str,
     app_title: &str,
@@ -281,9 +264,9 @@ fn entry(
     let entry = IndexEntry {
         key: resource.to_owned(),
         resource: resource.to_owned(),
-        action: open.map(|address| IndexAction {
-            resource: address.resource.clone(),
-            action: address.action.clone(),
+        action: Some(IndexAction {
+            resource: resource.to_owned(),
+            action: OPEN_ACTION.to_owned(),
         }),
         title: title.to_owned(),
         subtitle: Some(type_name.to_owned()),
