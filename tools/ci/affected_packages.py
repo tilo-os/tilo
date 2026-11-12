@@ -57,8 +57,8 @@ ALWAYS_PACKAGES = {"collab-types", "tilo-app-package", "tilo-doc", "tilo-doc-cod
 # change, if it can alter the desk and the session's whole test suite is not
 # scheduled anyway, the desk's own integration tests run instead — a window
 # becomes a tab of the strip, an app opens where the desk puts it, the owner's
-# door answers. Each is a test target of its own, so each gate entry costs a
-# link; when the suite is scheduled they come with it and the gate adds nothing.
+# door answers. When the suite is scheduled they come with it and the gate adds
+# nothing.
 DESK_PACKAGES = (
     "crates/session/desktop",
     "crates/session/desktop-model",
@@ -68,7 +68,12 @@ DESK_PACKAGES = (
 )
 DESKTOP_GATE_PACKAGE = "tilo-session"
 DESKTOP_GATE_MANIFEST = "crates/session/session/Cargo.toml"
+# The desk's integration tests, by the file each is written in. They are modules
+# of the package's one test binary (`tests/it.rs` includes each file), so the
+# gate names that binary once and picks the modules out by the name each test
+# gained from it.
 DESKTOP_GATE_TESTS = ("hosted_windows", "launch", "owner_door")
+DESKTOP_GATE_BINARY = "it"
 
 
 def desktop_gate(root: Path) -> dict[tuple[str, str], path_suites.ReaderScope]:
@@ -85,10 +90,14 @@ def desktop_gate(root: Path) -> dict[tuple[str, str], path_suites.ReaderScope]:
     if manifest.get("package", {}).get("name") != DESKTOP_GATE_PACKAGE:
         raise ValueError(f"the desktop gate names {DESKTOP_GATE_PACKAGE!r}, "
                          f"which {DESKTOP_GATE_MANIFEST} does not declare")
+    targets = {target.get("name") for target in manifest.get("test", [])}
+    if DESKTOP_GATE_BINARY not in targets:
+        raise ValueError(f"the desktop gate names test binary {DESKTOP_GATE_BINARY!r}, "
+                         f"which {DESKTOP_GATE_MANIFEST} does not declare")
     missing = [test for test in DESKTOP_GATE_TESTS
                if not (session.parent / "tests" / f"{test}.rs").is_file()]
     if missing:
-        raise ValueError(f"the desktop gate names test targets {missing} "
+        raise ValueError(f"the desktop gate names test files {missing} "
                          f"that {session.parent / 'tests'} does not hold")
     linked = {(session.parent / entry["path"]).resolve()
               for entry in manifest.get("dependencies", {}).values()
@@ -97,8 +106,10 @@ def desktop_gate(root: Path) -> dict[tuple[str, str], path_suites.ReaderScope]:
     if unreached:
         raise ValueError(f"the desktop gate names desk crates {unreached} that {DESKTOP_GATE_PACKAGE} "
                          "does not depend on: a change to one no longer reaches the desk's tests")
-    return {(DESKTOP_GATE_PACKAGE, test): path_suites.ReaderScope((), test, f"binary({test})")
-            for test in DESKTOP_GATE_TESTS}
+    # One entry: the modules share the binary, so a run of it covers them all.
+    modules = " or ".join(f"test({test}::)" for test in DESKTOP_GATE_TESTS)
+    return {(DESKTOP_GATE_PACKAGE, DESKTOP_GATE_BINARY): path_suites.ReaderScope(
+        (), DESKTOP_GATE_BINARY, f"binary({DESKTOP_GATE_BINARY}) and ({modules})")}
 
 
 DESKTOP_GATE = desktop_gate(TOOLS.parent)

@@ -41,7 +41,8 @@ class DesktopGateTests(unittest.TestCase):
 
     def tree(self, root: Path, *, package: str = ci_select.DESKTOP_GATE_PACKAGE,
              desktops: tuple[str, ...] = ci_select.DESK_PACKAGES,
-             tests: tuple[str, ...] = ci_select.DESKTOP_GATE_TESTS) -> Path:
+             tests: tuple[str, ...] = ci_select.DESKTOP_GATE_TESTS,
+             binary: str = ci_select.DESKTOP_GATE_BINARY) -> Path:
         session = root / ci_select.DESKTOP_GATE_MANIFEST
         (session.parent / "tests").mkdir(parents=True, exist_ok=True)
         for test in tests:
@@ -49,20 +50,29 @@ class DesktopGateTests(unittest.TestCase):
         dependencies = "".join(f'tilo-{Path(desk).name} = {{ path = "../{Path(desk).name}" }}\n'
                                for desk in desktops)
         session.write_text(f'[package]\nname = "{package}"\nversion = "0.1.0"\n\n'
-                           f'[dependencies]\n{dependencies}')
+                           f'[dependencies]\n{dependencies}\n'
+                           f'[[test]]\nname = "{binary}"\npath = "tests/it.rs"\n')
         return root
 
     def test_the_gate_names_the_session_and_desk_tests_the_tree_holds(self):
         self.assertEqual(ci_select.desktop_gate(REPO_ROOT), ci_select.DESKTOP_GATE)
         self.assertEqual(sorted(ci_select.DESKTOP_GATE),
-                         [(ci_select.DESKTOP_GATE_PACKAGE, test)
-                          for test in ci_select.DESKTOP_GATE_TESTS])
+                         [(ci_select.DESKTOP_GATE_PACKAGE, ci_select.DESKTOP_GATE_BINARY)])
+        # The desk's tests are modules of that binary, so the gate picks them out
+        # by name and a name that is no binary would be refused by nextest.
+        scope = ci_select.DESKTOP_GATE[(ci_select.DESKTOP_GATE_PACKAGE,
+                                        ci_select.DESKTOP_GATE_BINARY)]
+        self.assertEqual(scope.test, ci_select.DESKTOP_GATE_BINARY)
+        for test in ci_select.DESKTOP_GATE_TESTS:
+            self.assertIn(f"test({test}::)", scope.filter)
 
     def test_a_package_test_or_desk_crate_that_is_gone_fails_loudly(self):
         for phase, named, options in (
             ("the session's package is renamed", ci_select.DESKTOP_GATE_PACKAGE,
              {"package": "another-session"}),
-            ("a named test target is gone", ci_select.DESKTOP_GATE_TESTS[0],
+            ("the test binary is gone", ci_select.DESKTOP_GATE_BINARY,
+             {"binary": "the_old_per_file_target"}),
+            ("a named test file is gone", ci_select.DESKTOP_GATE_TESTS[0],
              {"tests": ci_select.DESKTOP_GATE_TESTS[1:]}),
             ("a desk crate is no longer the session's", ci_select.DESK_PACKAGES[0],
              {"desktops": ci_select.DESK_PACKAGES[1:]}),
@@ -169,8 +179,8 @@ class SelectorTests(unittest.TestCase):
         self.assertLessEqual(set(plan["near"]), set(plan["selected"]))
 
     def test_the_desktop_gate_runs_whenever_a_change_reaches_the_desktop(self):
-        # The desk's tests are separate targets of the session's, so the gate
-        # names one entry per target and each is its own run.
+        # A gate entry is a test target of the session's, so two entries are two
+        # runs; the real gate names one, its desk tests being modules of it.
         gate = ci_select.path_suites.ReaderScope((), "it", "binary(it) and test(desk::)")
         door = ci_select.path_suites.ReaderScope((), "probe", "binary(probe)")
         saved = ci_select.DESKTOP_GATE
