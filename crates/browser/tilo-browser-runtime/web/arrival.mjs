@@ -196,6 +196,11 @@ export const SLOW_NOTES = {
 /** Said, with Try again beside it, once a step has not moved on for long:
  * the page keeps waiting, since a busy device gets there in the end, and
  * the person may start over instead. */
+/** Said while this tab waits for the person's device key, which another tab
+ * of the browser holds: a browser is one device of the person, so the tab
+ * goes on as that device once the other lets go of it. */
+export const OTHER_TAB = 'This is open in another tab of this browser. This tab goes on once that one is closed.';
+
 export const STALLED = ['arrival-stalled', 'This is taking longer than it should. Keep waiting, or try again.'];
 
 /**
@@ -298,10 +303,6 @@ export function localized(messages, id, fallback, args) {
  * (naming the workspace) or `arrival-failed-<case>-unnamed` (where the page
  * does not know its name), else the English here. */
 export const FAILURES = {
-  'custody-busy': [
-    'Every device this browser keeps for { $workspace } is open in another tab. Close one of those tabs, then try again.',
-    'Every device this browser keeps for the workspace is open in another tab. Close one of those tabs, then try again.',
-  ],
   removed: [
     'You were removed from { $workspace }. To come back, ask someone in it for a new invitation.',
     'You were removed from this workspace. To come back, ask someone in it for a new invitation.',
@@ -431,12 +432,6 @@ export function failureMessage(error, {workspace = null, loaded = true, admitted
     return failure('invitation-only', workspace, messages);
   }
   if (error?.name === 'AdmissionError') return error.message;
-  if (error?.name === 'CustodyError' && error.code === 'custody-busy') {
-    // Each tab is a device of its own; this is only said where this tab
-    // could not become one (every device key in use, and no way here to
-    // certify another).
-    return failure('custody-busy', workspace, messages);
-  }
   if (refusedByHost(error)) return failure('cooling-down', workspace, messages);
   const name = workspace || (loaded ? null : 'Tilo');
   if (unreachable(error)) return failure('unreachable', name, messages);

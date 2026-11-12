@@ -18,14 +18,14 @@
  */
 import {AdmissionError} from './admission.mjs';
 import {answerAgentQuestions} from './agent-questions.mjs';
-import {doorCopy, failureMessage, inviteLinkTarget, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, STOPPED_DRAWING, stoppedInside} from './arrival.mjs';
+import {doorCopy, failureMessage, inviteLinkTarget, localeMessages, localeMessagesSoon, localized, OTHER_TAB, refusedByHost, startArrival, STOPPED_DRAWING, stoppedInside} from './arrival.mjs';
 import {servedVersion, watchForUpdate} from './bundle-update.mjs';
 import {mountWaitList} from './door-wait-list.mjs';
 import {boot, grammar} from './entry.mjs';
 import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetchDesktop, prefetchOfferedApplications, prepareGpu, reportPageErrors} from './host.mjs';
 import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, openInvitation, profileDevice, withCustody} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
-import {CustodyError, idbStorage, openDeviceCustody} from './device-custody.mjs';
+import {idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {createIdentityActions, SIGN_IN, syncProfile} from './identity-actions.mjs';
 import {firstRun, MCP_URL, setupDone} from './first-run.mjs';
 import {pickImageFile, squarePhoto} from './profile-photos.mjs';
@@ -746,6 +746,19 @@ export async function startEntryPage({mode}) {
   // language once its locale file is in.
   let messages = new Map();
   void localeMessages().then(loaded => { messages = loaded; });
+  // The person's device key is held by another tab of this browser (the same
+  // workspace open there, or the page before a reload not gone yet): this tab
+  // waits for it, as the same device, and says why it waits.
+  let waitingSaid = null;
+  addEventListener('tilo-custody-waiting', ({detail}) => {
+    if (detail?.waiting) {
+      waitingSaid = localized(messages, 'arrival-other-tab', OTHER_TAB);
+      status.textContent = waitingSaid;
+    } else if (waitingSaid !== null) {
+      if (status.textContent === waitingSaid) status.textContent = loading;
+      waitingSaid = null;
+    }
+  });
   /** The reconnect screen (`reconnect.mjs`), while the host does not let
    * the page in yet: one for every reason the page waits. */
   const reconnect = createReconnect({view: domReconnectView({messages: () => messages, workspace: () => workspaceName,
@@ -1068,15 +1081,15 @@ export async function startEntryPage({mode}) {
         const lobby = await connectPeer({origin, identity, runtime, displayName, live: false});
         try { await lobby.workspaces.enter(room); } finally { await lobby.dispose?.(); }
       }
-      // This tab's own device key: a new one where other tabs hold the
-      // others. A workspace admits each device once, through an invitation (or
-      // as its host's owner, above), so in a workspace joined by invitation a new
-      // device of the person cannot get in by itself: said plainly, and the
-      // key, which no host has seen, is not kept.
+      // This browser's device key for the person: made now where the browser
+      // never had one. A workspace admits each device once, through an
+      // invitation (or as its host's owner, above), so in a workspace joined by
+      // invitation a new device of the person cannot get in by itself: said
+      // plainly, and the key, which no host has seen, is not kept.
       const custody = await openDeviceCustody({profile: identityProfile(identity, origin), storage: idbStorage()});
       if (custody.created && !kept.owner) {
         await custody.destroy();
-        throw new CustodyError('custody-busy', 'A new device of this person needs an invitation to this workspace');
+        throw new AdmissionError('invitation-only', 'A new device of this person needs an invitation to this workspace');
       }
       const peer = await withCustody(custody, () => connectPeer({origin, workspace: room, identity, runtime, displayName, custody}));
       // What is kept names the workspace the host's door let this browser
@@ -1123,11 +1136,8 @@ export async function startEntryPage({mode}) {
     connectMember: async ({origin, room, account}) => {
       const {userPublicKey, profile, device} = account;
       const custody = await openDeviceCustody({profile, storage: idbStorage(), requireExisting: true});
-      // The account names the profile's first device; a tab that took
-      // another of its device keys is that device, with its own namespace.
       return withCustody(custody, () => connectPeer({origin, workspace: room, userPublicKey, profile, custody,
-        device: custody.slot ? profileDevice(profile, globalThis.localStorage, custody.slot) : device,
-        runtime, requireExistingCertificate: true}));
+        device, runtime, requireExistingCertificate: true}));
     },
   };
 

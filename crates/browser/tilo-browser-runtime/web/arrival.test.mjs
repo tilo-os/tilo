@@ -394,14 +394,6 @@ test('a pasted invite link opens as itself; anything else is not one', () => {
   }
 });
 
-test('a page that could not become a device of its own says other tabs hold every one', () => {
-  const busy = Object.assign(new Error('Every device key is held by another tab'), {name: 'CustodyError', code: 'custody-busy'});
-  assert.equal(failureMessage(busy, {workspace: 'Lounge'}),
-    'Every device this browser keeps for Lounge is open in another tab. Close one of those tabs, then try again.');
-  assert.equal(failureMessage(busy),
-    'Every device this browser keeps for the workspace is open in another tab. Close one of those tabs, then try again.');
-});
-
 test('a tip reads after its label, a joke bare', () => {
   const rotation = createRotation({jokes: ['Herding agents…'], tips: ['Ctrl+K finds any app']});
   const joke = rotation.next();

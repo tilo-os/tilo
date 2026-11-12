@@ -164,8 +164,6 @@ export async function admit({scope, secrets = {}, tickets, home = null, runtime,
     pair: secrets.pair ? (pairing ? 'named' : 'damaged') : undefined,
   });
   let accounts = [];
-  /** The error a way that got no one in left behind, said where nothing else is. */
-  let busy = null;
   let way = runtime.wayIn(link, JSON.stringify(here));
   for (;;) {
     switch (way) {
@@ -199,35 +197,24 @@ export async function admit({scope, secrets = {}, tickets, home = null, runtime,
           // once the peer is certified: that, too, is no access.
           return await ready(await deps.connectMember({origin, room, account}));
         } catch (error) {
-          // Other tabs of this browser hold every device key the account has here:
-          // not the host's answer, and not no access.
-          const held = error?.name === 'CustodyError' && error.code === 'custody-busy';
           // The host's reason could tell "no such workspace" from "not a member".
-          if (!held) console.warn('admission: connecting failed', error?.code ?? error?.name ?? 'error');
-          busy = held ? error : busy;
-          way = runtime.wayInAfter(held ? 'member-busy' : 'member', JSON.stringify({...here, accounts: accounts.length}));
+          console.warn('admission: connecting failed', error?.code ?? error?.name ?? 'error');
+          way = runtime.wayInAfter('member', JSON.stringify({...here, accounts: accounts.length}));
           continue;
         }
       }
       case 'reconnect': {
         let peer = null;
-        let held = false;
         try {
           peer = await deps.reconnect?.({origin, room, onProgress});
         } catch (error) {
-          // Other tabs hold every device key this browser can get in with: not
-          // the host's answer.
-          held = error?.name === 'CustodyError' && error.code === 'custody-busy';
-          busy = held ? error : busy;
           // As below: the host's reason could tell a missing workspace from a private one.
-          if (!held) console.warn('admission: reconnecting failed', error?.code ?? error?.name ?? 'error');
+          console.warn('admission: reconnecting failed', error?.code ?? error?.name ?? 'error');
         }
         if (peer) return ready(peer);
-        way = runtime.wayInAfter(held ? 'reconnect-busy' : 'reconnect', JSON.stringify({...here, accounts: accounts.length}));
+        way = runtime.wayInAfter('reconnect', JSON.stringify({...here, accounts: accounts.length}));
         continue;
       }
-      case 'busy':
-        throw busy ?? new AdmissionError('no-access', NO_ACCESS);
       default: {
         const [code, message] = REFUSED[way] ?? REFUSED['no-access'];
         throw new AdmissionError(code, message);

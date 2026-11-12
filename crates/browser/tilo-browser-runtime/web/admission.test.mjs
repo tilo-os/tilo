@@ -225,27 +225,6 @@ test('no access says the same thing for a missing and a private workspace', asyn
   }
 });
 
-test('a member whose device keys other tabs hold gets in as a new device, or is told so, never refused', async () => {
-  const busy = () => { throw new CustodyError('custody-busy', 'Every device key is held by another tab'); };
-  const member = {readAccounts: async () => [{userPublicKey: 'ab'}], connectMember: async () => busy()};
-  // Where the page holds the person's root, this tab is a new device of theirs.
-  const reconnected = doors({...member, reconnect: async ({origin, room: wanted}) => ({origin, room: wanted, admission: 'reconnect'})});
-  const way = rules(['accounts', 'member', 'reconnect']);
-  assert.deepEqual(await admit({scope: room, runtime: way.runtime, deps: reconnected.deps}),
-    {peer: {origin: room.host, room: room.room, admission: 'reconnect'}});
-  assert.deepEqual(way.asked.at(-1).slice(0, 2), ['wayInAfter', 'member-busy']);
-  // Where it cannot, the page says other tabs hold them: another tab of this
-  // browser says nothing about the host.
-  const stuck = rules(['accounts', 'member', 'reconnect', 'busy']);
-  await assert.rejects(admit({scope: room, runtime: stuck.runtime, deps: doors(member).deps}), {name: 'CustodyError', code: 'custody-busy'});
-  assert.deepEqual(stuck.asked.at(-1).slice(0, 2), ['wayInAfter', 'reconnect']);
-  // As where the workspace cannot admit a new device of the person by itself.
-  const uninvited = rules(['accounts', 'reconnect', 'busy']);
-  await assert.rejects(admit({scope: room, runtime: uninvited.runtime, deps: doors({reconnect: async () => busy()}).deps}),
-    {name: 'CustodyError', code: 'custody-busy'});
-  assert.deepEqual(uninvited.asked.at(-1).slice(0, 2), ['wayInAfter', 'reconnect-busy']);
-});
-
 test('a host this browser set up or joined as its person is reconnected to, and the door is the way in only when that fails', async () => {
   const back = doors({reconnect: async ({origin, room: wanted}) => ({owner: true, origin, room: wanted})});
   assert.deepEqual(await admit({scope: room, runtime: rules(['accounts', 'reconnect']).runtime, deps: back.deps}),

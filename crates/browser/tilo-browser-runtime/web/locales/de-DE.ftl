@@ -55,6 +55,9 @@ arrival-slow-connecting = Verbindet noch. Dein Netz ist vielleicht langsam.
 arrival-slow-starting = Tilo startet noch. Dieses Gerät ist vielleicht ausgelastet.
 arrival-slow-opening = Der Arbeitsbereich öffnet sich noch.
 arrival-slow-drawing = Die Grafik startet noch. Ohne Grafikkarte dauert das länger.
+# Said while this tab waits for the person's device key, held by another tab
+# of the same browser: the tab goes on as the same device once that one closes.
+arrival-other-tab = Das ist in einem anderen Tab dieses Browsers geöffnet. Dieser Tab macht weiter, sobald du den anderen schließt.
 # Steht mit „Noch einmal versuchen“ daneben, wenn ein Schritt lange nicht
 # weiterkommt; die Seite wartet währenddessen weiter.
 arrival-stalled = Das dauert länger, als es sollte. Warte weiter oder versuch es noch einmal.
@@ -125,8 +128,6 @@ arrival-invite-toggle = Du hast einen Einladungslink?
 arrival-door-own = Oder probier Tilo für dich allein aus
 arrival-failed-cooling-down = { $workspace } lässt aus deinem Netz gerade niemanden herein, weil jemand von hier entfernt wurde. Bitte jemanden darin um eine Einladung oder versuch es morgen wieder.
 arrival-failed-cooling-down-unnamed = Dieser Arbeitsbereich lässt aus deinem Netz gerade niemanden herein, weil jemand von hier entfernt wurde. Bitte jemanden darin um eine Einladung oder versuch es morgen wieder.
-arrival-failed-custody-busy = Alle Geräte, die dieser Browser für { $workspace } hat, sind in anderen Tabs geöffnet. Schließ einen dieser Tabs und versuch es dann noch einmal.
-arrival-failed-custody-busy-unnamed = Alle Geräte, die dieser Browser für diesen Arbeitsbereich hat, sind in anderen Tabs geöffnet. Schließ einen dieser Tabs und versuch es dann noch einmal.
 
 ## The reconnect screen: the page was not let in yet and tries again
 # { $time } is how long until the next try, such as "40 s" or "2 min 05 s".

@@ -7,7 +7,7 @@
 //! everyone else's from there. None of it is written to the workspace's desktop document: the bar,
 //! the People popover and the windows read it as ambient presence.
 //!
-//! A person may be here from several devices at once (each browser tab is a device of its own).
+//! A person may be here from several devices at once (each browser profile is a device of its own).
 //! They are one person here: each device's certificate names its person, devices of one person
 //! show once, and this page's person's other devices are this page's person, never someone else.
 use std::collections::HashMap;

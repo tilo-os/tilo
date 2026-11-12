@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, confirmWaitList, defaultDisplayName, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces, heldWorkspaces, HostAdmissionError, hostDeviceOf, joinGranted, joinViaHost, keepJoinedHost, keptMembership, leaveOnWaitList, leaveWaitList, listedAt, listedWorkspaces, markUnavailable, nameEntered, ownDesktopOpen, pairViaHost, randomDisplayName, redrawnDisplayName, rememberEntered, removedFrom, settleFailedWorkspace, waitListing, waitListStanding, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
-import {CustodyError} from './device-custody.mjs';
 import {HOST_CHANGED} from './peer.mjs';
 
 const identity = key => ({kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(key), userPublicKey: key.toString(16).padStart(2, '0').repeat(32), sign: async () => new Uint8Array(64)});
@@ -17,7 +16,7 @@ const reply = ({status = 200, headers = {}, body = {}}) => ({
 /** A device key of `profile` as `openDeviceCustody` gives it: `created` for
  * one no host has seen yet (a new tab's). */
 const custodyOf = (calls, created) => async profile => {
-  const custody = {profile, slot: created ? 1 : 0, created, closed: false, destroyed: false,
+  const custody = {profile, created, closed: false, destroyed: false,
     close: async () => { custody.closed = true; }, destroy: async () => { custody.destroyed = true; custody.closed = true; }};
   calls.custodies.push(custody);
   return custody;
@@ -59,7 +58,7 @@ function harness({person = identity(0x22), membership = null, door = [null], con
       pair: async options => { calls.paired.push(options); if (options.door) knock(options); return {workspace: options.workspace}; },
       openCustody: custodyOf(calls, created),
       renew: async (custody, profile) => {
-        const renewed = {profile, slot: 0, created: true, renewed: calls.renewed.length + 1, closed: false, close: async () => { renewed.closed = true; }};
+        const renewed = {profile, created: true, renewed: calls.renewed.length + 1, closed: false, close: async () => { renewed.closed = true; }};
         calls.renewed.push({custody, profile, renewed});
         await custody.destroy();
         return renewed;
@@ -445,16 +444,23 @@ test('a second tab of a paired device pairs as a new device, approved on one of 
     'the new device joins the person\u2019s workspace through the door once paired');
 });
 
-test('every device key held by other tabs keeps the membership and asks the host nothing', async () => {
-  // Not the host's refusal: this browser has as many tabs open as device
-  // keys. Joining again would spend a seat and the address's join window,
-  // then fail the same way.
+test('a device key another tab holds is waited for: the host is asked nothing meanwhile, and the same device goes on', async () => {
+  // Another tab of this browser has the workspace open: this tab waits for
+  // the person's device key, which the browser keeps one of, and joining
+  // again would spend a seat for a device the host already admitted.
   const membership = {origin: 'https://rooms.example', room: 'WORKSPACE', userPublicKey: '11'.repeat(32)};
   const {calls, options, store} = harness({person: identity(0x11), membership});
-  options.openCustody = async () => { throw new CustodyError('custody-busy', 'Every device key is held by another tab'); };
-  await assert.rejects(joinViaHost(options), {name: 'CustodyError', code: 'custody-busy'});
-  assert.equal(calls.posted.length, 0);
-  assert.equal(calls.joined.length, 0);
+  const open = options.openCustody;
+  let letGo;
+  const otherTab = new Promise(resolve => { letGo = resolve; });
+  options.openCustody = async name => { await otherTab; return open(name); };
+  const joining = joinViaHost(options);
+  for (let turn = 0; turn < 5; turn++) await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual([calls.posted.length, calls.joined.length, calls.connected.length], [0, 0, 0]);
+  letGo();
+  await joining;
+  assert.equal(calls.posted.length, 0, 'the door is not asked for a device the host knows');
+  assert.equal(calls.connected.length, 1);
   assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), membership);
 });
 

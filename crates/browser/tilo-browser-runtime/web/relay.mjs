@@ -33,9 +33,6 @@ export async function connectRelayPeer({
   if (!origin || !userPublicKey || !workspace) throw new TypeError('origin, userPublicKey and workspace are required');
   signal?.throwIfAborted();
   const custody = await openDeviceCustody({profile, storage: idbStorage()});
-  // Each device key of the profile (one per tab open at once) is a device of
-  // its own, with a namespace of its own.
-  if (custody.slot) device = `${device}#${custody.slot}`;
   const peer = await connectPeer({
     // The runtime, with the peer's code, and the profile's storage come
     // through host.mjs, which loads them once for this page.

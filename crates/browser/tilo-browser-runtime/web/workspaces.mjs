@@ -571,9 +571,9 @@ const browserCustody = profile => openDeviceCustody({profile, storage: idbStorag
  * what this browser kept for the previous host stays on this device in a
  * namespace of its own.
  *
- * Each tab is a device of its own (`openCustody`, one device key per tab
- * open at once): a tab that takes a key no host has seen yet is a new
- * device of the person. The workspace admits each device once, so a new device
+ * A browser profile is one device of the person (`openCustody`, one device
+ * key, which a tab waits for while another tab holds it): a browser whose
+ * key no host has seen yet is a new device of the person. The workspace admits each device once, so a new device
  * of a person whose root this page holds is admitted through the door; one
  * of a person paired from elsewhere pairs first, approved on one of their
  * devices, as on any new browser.
@@ -671,9 +671,9 @@ export async function joinViaHost({
     }
   };
   if (known?.userPublicKey !== identity.userPublicKey) return admitAnew();
-  // Other tabs of this browser may hold every device key it has for this
-  // host (`custody-busy`): nothing the host refused, so the membership stays
-  // and the door is not asked, which would spend a seat to fail the same way.
+  // Another tab of this browser may hold the person's device key for this
+  // host: this one waits for it (`device-custody.mjs`), as the same device,
+  // so the membership stays and the door is not asked.
   const custody = await openCustody(identityProfile(identity, known.origin));
   return withCustody(custody, async () => {
     // A key no host has seen yet is a new device of the person: the workspace

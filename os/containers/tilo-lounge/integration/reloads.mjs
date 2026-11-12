@@ -94,11 +94,10 @@ const BEFORE = `JSON.stringify((() => {
     protocol: nav?.nextHopProtocol ?? null,
   };
 })())`;
-// The device keys this browser holds for the page's profile: the locks
-// held on them now (one per tab that holds one), and the keys kept. A reload
-// is the same device only when it takes the key the page before it held: one
-// that finds that key still locked takes the next free one, a new device of
-// the person's with its own certificate and state.
+// The device key this browser holds for the page's profile: the lock held on
+// it now, and the keys kept. A browser profile is one device of the person:
+// a reload, or a second tab, that finds the key still held waits for it, and
+// a second key would be a second device with its own certificate and state.
 const DEVICE_LOCKS = `navigator.locks.query().then(state => JSON.stringify(state.held
   .map(lock => lock.name).filter(name => name.startsWith('tilo-device-custody:'))))`;
 const DEVICE_KEYS = `new Promise(resolve => {
@@ -220,8 +219,28 @@ for (let n = 1; n <= times; n += 1) {
     ({tab} = await open());
   }
 }
-// Every key this person's reloads made: one device, the first visit's,
-// unless a reload found its key still held and made another.
+// A second tab of the same browser while the first is in, then the first
+// reloaded under that contention: the second waits for the device key and
+// says so, the reloaded page and it take turns with it, and the browser stays
+// one device of the person.
+const second = await browser.tab();
+await second.send('Emulation.setDeviceMetricsOverride', deskMetrics).catch(() => {});
+await second.send('Page.addScriptToEvaluateOnNewDocument', {source: EARLY});
+await second.navigate(site);
+const WAITING = `document.documentElement.dataset.custody === 'waiting' && (document.getElementById('status')?.textContent || 'waiting')`;
+const secondWaits = await until(second, WAITING, stepLimit(4));
+console.log(`TIMING two-tabs second-tab-waits=${secondWaits ? 'yes' : 'no'}${secondWaits ? ` said="${secondWaits}"` : ''}`);
+if (!secondWaits) console.error('FAIL: a second tab of the browser did not wait for the device key the first holds');
+await tab.reload().catch(() => {});
+const oneIn = await until(tab, `(${ARRIVED}) ? 'first' : document.documentElement.dataset.custody === 'waiting' ? 'waiting' : ''`, stepLimit(6));
+const secondIn = await until(second, `(${ARRIVED}) ? 'in' : document.documentElement.dataset.custody === 'waiting' ? 'waiting' : ''`, stepLimit(6));
+console.log(`TIMING two-tabs after-reload first=${oneIn ?? 'neither'} second=${secondIn ?? 'neither'}`);
+const contended = !(oneIn && secondIn && [oneIn, secondIn].includes('waiting') && !(oneIn === 'waiting' && secondIn === 'waiting'));
+if (contended) console.error('FAIL: after a reload under contention one tab should be in and the other waiting for the device key');
+await second.close().catch(() => {});
+
+// Every key this person's tabs and reloads made: one device, the first
+// visit's.
 const keys = JSON.parse(await tab.evaluate(DEVICE_KEYS).catch(() => '[]') ?? '[]');
 console.log(`TIMING device-keys=${keys.length} (${keys.join(', ')})`);
 if (keys.length > 1) {
@@ -238,6 +257,6 @@ console.log(`TIMING reloads=${times} ok=${counts.ok} crashed=${counts.crashed} n
 console.log(`the old page held the navigation longest (fetch ms): ${slowest.map(l => `#${l.n} ${l.fetch}`).join(', ')}`);
 writeFileSync(join(out, 'reloads.json'), JSON.stringify({counts, lines, machine: machine().text}, null, 2));
 await browser.close().catch(() => {});
-const bad = counts.crashed + counts.neverArrived + counts.stopped + (keys.length > 1 ? 1 : 0);
+const bad = counts.crashed + counts.neverArrived + counts.stopped + (keys.length > 1 ? 1 : 0) + (secondWaits ? 0 : 1) + (contended ? 1 : 0);
 if (bad) console.error(`FAIL: ${bad} of ${times} reloads did not come back (${counts.crashed} crashed, ${counts.neverArrived} never arrived, ${counts.stopped} stopped)`);
 process.exit(bad ? 1 : 0);

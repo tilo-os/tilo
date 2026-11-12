@@ -12,23 +12,20 @@
  *   AES-GCM key and only the ciphertext is stored; `unseal()` hands the seed
  *   to the wasm runtime, which keeps it in wasm memory only.
  *
- * A tab is a device of its own. A profile keeps a small pool of device keys,
- * one per slot, each held under an exclusive Web Lock for the custody's whole
- * lifetime: a tab takes the first slot whose lock is free, so a reload takes
- * its slot back and keys are reused across tab sessions, and a new slot (a new
- * key, to be certified as a new device of the same person) is made only when
- * every existing one is held by another tab.
+ * A browser profile is one device of the person, whatever its tabs and
+ * reloads: a profile keeps one device key, held under an exclusive Web Lock
+ * for the custody's whole lifetime. A tab that finds it held (another tab of
+ * the profile has the workspace open, or the page before a reload has not
+ * let go of it yet) waits for it, however long that takes, and says that it
+ * waits (`onWait`); it never makes another key, which would be another device
+ * of the person with its own certificate and state.
  *
  * Storage is `{get(key), put(key, value), delete(key)}`; `idbStorage()`
  * provides it over IndexedDB with strict durability.
  */
 
 export const LOCK_PREFIX = 'tilo-device-custody:';
-/** How many device keys (tabs open at once) a profile keeps at most. */
-export const MAX_SLOTS = 16;
-/** A slot's name within its profile: slot 0 is the profile itself. */
-const slotName = (profile, slot) => (slot ? `${profile}#${slot}` : profile);
-const keyRecord = (profile, slot = 0) => `device-key:${slotName(profile, slot)}`;
+const keyRecord = profile => `device-key:${profile}`;
 
 export class CustodyError extends Error {
   constructor(code, message) {
@@ -63,53 +60,61 @@ async function createSealedSeed(subtle, random) {
   return {kind: 'sealed-seed', wrapKey, iv, sealed};
 }
 
-/** Takes the lock `name` if no one holds it: `{release, held}`, else `null`.
- * `held` settles once the user agent let go of the lock, after `release()`. */
-async function takeLock(locks, name) {
+/** What a page shows while its device key waits for another tab: the page
+ * says so on its root (`data-custody="waiting"`) and tells whoever listens
+ * (`tilo-custody-waiting`, with `detail.waiting`). */
+export function sayCustodyWaiting(waiting, target = globalThis) {
+  const root = target.document?.documentElement;
+  if (root) {
+    if (waiting) root.dataset.custody = 'waiting';
+    else delete root.dataset.custody;
+  }
+  try { target.dispatchEvent?.(new CustomEvent('tilo-custody-waiting', {detail: {waiting}})); } catch { /* no events here */ }
+}
+
+/** Takes the lock `name`, waiting while another holds it: `{release, held}`.
+ * `onWait(true)` runs when it has to wait, `onWait(false)` once it has it.
+ * `held` settles once the user agent let go of the lock, after `release()`.
+ * Rejects with the signal's reason when `signal` aborts the wait. */
+async function takeLock(locks, name, {signal, onWait} = {}) {
   let release;
   const released = new Promise(resolve => { release = resolve; });
+  const hold = () => released;
   let held;
-  const acquired = await new Promise((resolve, reject) => {
+  const free = await new Promise((resolve, reject) => {
     held = locks.request(name, {mode: 'exclusive', ifAvailable: true}, lock => {
-      if (!lock) { resolve(false); return undefined; }
-      resolve(true);
-      return released;
+      resolve(Boolean(lock));
+      return lock ? hold() : undefined;
     });
     held.catch(reject);
   });
-  return acquired ? {release, held} : null;
-}
-
-/**
- * The slot of `profile` this tab takes: the first whose lock is free. With
- * `requireExisting`, only a slot that already has a key counts.
- * Resolves to `{slot, release, held}`.
- */
-export async function takeSlot({profile, storage, locks, requireExisting = false}) {
-  let busy = false;
-  for (let slot = 0; slot < MAX_SLOTS; slot++) {
-    if (requireExisting && !await storage.get(keyRecord(profile, slot))) continue;
-    const lock = await takeLock(locks, LOCK_PREFIX + slotName(profile, slot));
-    if (lock) return {slot, ...lock};
-    busy = true;
+  if (!free) {
+    onWait?.(true);
+    try {
+      await new Promise((resolve, reject) => {
+        held = locks.request(name, {mode: 'exclusive', ...(signal ? {signal} : {})}, () => {
+          resolve();
+          return hold();
+        });
+        held.catch(reject);
+      });
+    } finally {
+      onWait?.(false);
+    }
   }
-  if (requireExisting && !busy) throw new CustodyError('custody-missing', 'This account has no existing browser device');
-  throw new CustodyError('custody-busy', requireExisting
-    ? 'Every device key this browser has for this account is held by another tab'
-    : `Every one of this browser's ${MAX_SLOTS} device keys for this profile is held by another tab`);
+  return {release, held};
 }
 
 /**
- * Open the device key of the first free slot of `profile` (creating it on
- * first use: a new device). Resolves to `{kind, slot, created, publicKey?,
- * sign?, unseal?, close, destroy}`:
- * - `slot`: which of the profile's keys this is (0 for the first); each slot
- *   is a device of its own, with its own certificate and state.
+ * Open the device key of `profile` (creating it on first use: a new device),
+ * waiting for it while another tab of this browser holds it. Resolves to
+ * `{kind, created, publicKey?, sign?, unseal?, close, destroy}`:
  * - `created`: the key was made now, so no host has certified it yet.
  * - `webcrypto-ed25519`: `publicKey` (32 bytes) and `sign(message)`.
  * - `sealed-seed`: `unseal()` resolving to `{seed}` for the wasm runtime.
  * With `requireExisting`, rejects with `CustodyError('custody-missing')` when
- * the profile has no key, and `custody-busy` when other tabs hold every one.
+ * the profile has no key. `onWait` hears whether it waits for another tab
+ * (default: the page says so, `sayCustodyWaiting`); `signal` gives up the wait.
  */
 export async function openDeviceCustody({
   profile,
@@ -118,6 +123,8 @@ export async function openDeviceCustody({
   locks = globalThis.navigator?.locks,
   preferWebCrypto = true,
   requireExisting = false,
+  onWait = sayCustodyWaiting,
+  signal,
 }) {
   if (!profile || typeof profile !== 'string') throw new TypeError('profile is required');
   if (!storage) throw new TypeError('storage is required');
@@ -125,27 +132,29 @@ export async function openDeviceCustody({
   const subtle = crypto.subtle;
   const random = bytes => crypto.getRandomValues(bytes);
 
-  const {slot, release, held} = await takeSlot({profile, storage, locks, requireExisting});
+  if (requireExisting && !await storage.get(keyRecord(profile))) {
+    throw new CustodyError('custody-missing', 'This account has no existing browser device');
+  }
+  const {release, held} = await takeLock(locks, LOCK_PREFIX + profile, {signal, onWait});
   try {
-    let record = await storage.get(keyRecord(profile, slot));
+    let record = await storage.get(keyRecord(profile));
     const created = !record;
     if (!record) {
       if (requireExisting) throw new CustodyError('custody-missing', 'This account has no existing browser device');
       record = preferWebCrypto && await supportsEd25519(subtle)
         ? await createWebCryptoKey(subtle)
         : await createSealedSeed(subtle, random);
-      await storage.put(keyRecord(profile, slot), record);
+      await storage.put(keyRecord(profile), record);
     }
     let closed = false;
     const live = () => { if (closed) throw new CustodyError('custody-closed', 'Device custody is closed'); };
     const common = {
       kind: record.kind,
-      slot,
       created,
       /** Lets go of the device key; resolves once another holder may take it. */
       close() { if (!closed) { closed = true; release(); } return held.then(() => undefined, () => undefined); },
       /** Forget the key (after revocation): the next open creates a new device. */
-      async destroy() { live(); await storage.delete(keyRecord(profile, slot)); this.close(); },
+      async destroy() { live(); await storage.delete(keyRecord(profile)); this.close(); },
     };
     if (record.kind === 'webcrypto-ed25519') {
       return {
