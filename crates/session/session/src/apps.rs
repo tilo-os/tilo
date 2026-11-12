@@ -28,6 +28,7 @@ use tilo_broker_core::services::LaunchPlace;
 use tilo_desktop_search::LaunchPlace as OpenPlace;
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
+use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_desktop_surface::outcome::{Closed, Outcome};
 
 use crate::agents::Kept;
@@ -1319,12 +1320,15 @@ impl Apps {
         // The open is timed from here to the app's first presented frame: everything this session
         // does for it is in the launch's share, and the phases below say where that share went.
         let app = launch.app();
-        let timed = tilo_startup_metrics::launch_requested(app);
         // A tilolang app's window holds none of its data: its instance runs in the tilolang host
         // of its workspace and author, and every window of it opens through its door, which
         // names the instance the window draws.
         let doors = self.state.borrow().doors.clone();
         let hosted = launch.package().is_some() && self.runs_in_host(app);
+        if self.open_at_desk(hosted, launch, new_window, instance) {
+            return Ok(true);
+        }
+        let timed = tilo_startup_metrics::launch_requested(app);
         let instance = match (&doors, hosted) {
             (Some(doors), true) => instance.or_else(|| Some(doors.next_instance())),
             _ => instance,
@@ -1333,13 +1337,7 @@ impl Apps {
             tilo_startup_metrics::launch_failed(timed);
             DoorError::Failed(error)
         })?;
-        let mut planned = match self.plan(launch, workspace, new_window, instance) {
-            Ok(planned) => planned,
-            Err(error) => {
-                tilo_startup_metrics::launch_failed(timed);
-                return Err(DoorError::Failed(error.to_string()));
-            }
-        };
+        let mut planned = self.planned_or_failed(launch, workspace, new_window, instance, timed)?;
         tilo_startup_metrics::launch_phase(app, "planned");
         // The window this launch starts is the one the shell asked for: a
         // process has no door open to it yet, so its launch says which item
@@ -1465,6 +1463,62 @@ impl Apps {
             hosted: hosted.as_deref(),
         };
         Planned::of(launch, &context)
+    }
+
+    /// Plan `launch` against `workspace`, reporting the launch's failure for the timing it was
+    /// opened for when it cannot be planned.
+    fn planned_or_failed(
+        &self,
+        launch: &Launch,
+        workspace: &Workspace,
+        new_window: bool,
+        instance: Option<u64>,
+        timed: u64,
+    ) -> Result<Planned, DoorError> {
+        self.plan(launch, workspace, new_window, instance)
+            .map_err(|error| {
+                tilo_startup_metrics::launch_failed(timed);
+                DoorError::Failed(error.to_string())
+            })
+    }
+
+    /// Ask the desk for `launch`'s window: it makes the tab the window takes and asks this session
+    /// again, naming that tab as the window's instance ([`Self::start_asked`]). Whether the desk
+    /// took the ask: a session with no desk behind it starts the launch itself.
+    ///
+    /// Only a plain open of an app whose windows are hosted (`hosted`) asks, that names no tab of
+    /// its own and takes no window of its own: a hosted window is shown in a tab of the desk's, and
+    /// that tab is the window's instance, so what it asks about its own window — the controls of
+    /// its content for assistive technology, its bar, its search — is answered for the tab it
+    /// stands in, never for another window of its app (`crate::app_tabs`, `start_held`).
+    fn open_at_desk(
+        &self,
+        hosted: bool,
+        launch: &Launch,
+        new_window: bool,
+        instance: Option<u64>,
+    ) -> bool {
+        if !hosted || new_window || instance.is_some() {
+            return false;
+        }
+        if !matches!(launch, Launch::Package { open: None, .. }) {
+            return false;
+        }
+        let Some(desktop) = self.desktop.borrow().clone() else {
+            return false;
+        };
+        let handle = desktop.with_policy(|policy| policy.handle().clone());
+        handle
+            .dispatch(ChromeEffect::OpenApp {
+                app: launch.app().to_owned(),
+                beside: None,
+                background: None,
+                float: None,
+            })
+            .inspect_err(|error| {
+                tracing::warn!(%error, app = %launch.app(), "the desk took no open");
+            })
+            .is_ok()
     }
 
     /// Start package `app` in `workspace` with no window, for an action that shows nothing: its
