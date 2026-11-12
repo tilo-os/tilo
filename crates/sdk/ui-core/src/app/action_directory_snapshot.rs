@@ -198,6 +198,39 @@ impl App {
             .as_ref()
             .ok_or(PinRefused::Moved)?
             .clone();
+        self.pin_local_document_action_directory(revision, snapshot)
+    }
+
+    /// The surface on the route, as it was published: its revision and
+    /// directory, whether or not what it was built from has moved since.
+    pub(super) fn published_action_directory(
+        &self,
+    ) -> Option<(String, std::rc::Rc<ActionDirectorySnapshot>)> {
+        let revision = self.actions.published_stamp.as_ref()?.revision();
+        let current = self
+            .actions
+            .action_directory_stamp
+            .as_ref()
+            .filter(|(_, current)| current == revision)
+            .and(self.actions.action_directory_snapshot.as_ref());
+        let retired = self
+            .actions
+            .action_directory_retired
+            .as_ref()
+            .filter(|retired| retired.revision == revision)
+            .map(|retired| &retired.snapshot);
+        current
+            .or(retired)
+            .cloned()
+            .map(|snapshot| (revision.to_owned(), snapshot))
+    }
+
+    /// Pin `snapshot`, published at `revision`, for local input.
+    pub(super) fn pin_local_document_action_directory(
+        &mut self,
+        revision: &str,
+        snapshot: std::rc::Rc<ActionDirectorySnapshot>,
+    ) -> Result<std::rc::Rc<LocalDocumentDirectoryPin>, PinRefused> {
         let pins = &mut self.actions.local_document_directory_pins;
         pins.retain(|pin| pin.strong_count() > 0);
         let mut retained_bytes = 0usize;

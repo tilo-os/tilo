@@ -202,11 +202,16 @@ def placed_window(session, app: str, timeout: float) -> dict:
     raise RuntimeError(f"{app} showed no window to type into")
 
 
-def open_something(session, app: str, title: str, arguments: dict) -> None:
+def open_something(session, app: str, title: str, arguments: dict, timeout: float) -> None:
     """Invoke `app`'s own action named `title`, as a person picks it, so the window shows what
-    keys change."""
-    found = [action for action in session.actions(app)
-             if action.get("provider") != "applications" and action.get("title") == title]
+    keys change. A window publishes its actions after it shows, so the run waits for it."""
+    deadline = time.monotonic() + timeout
+    while True:
+        found = [action for action in session.actions(app)
+                 if action.get("provider") != "applications" and action.get("title") == title]
+        if found or time.monotonic() > deadline:
+            break
+        time.sleep(0.2)
     if not found:
         sys.exit(f"[key-latency] {app} offers no action {title!r} to --open")
     receipt = session.invoke(found[0]["provider"], found[0]["id"], arguments or None)
@@ -266,7 +271,8 @@ def measure(args: argparse.Namespace) -> dict:
             # The window has the keyboard, but its editor has to have the caret before a key
             # changes anything it draws: a click where the person types puts it there.
             if args.open:
-                open_something(session, args.app, args.open, json.loads(args.open_args))
+                open_something(session, args.app, args.open, json.loads(args.open_args),
+                               args.app_timeout)
                 time.sleep(1.0)
             across, down = (float(part) for part in args.click_at.split(","))
             placed = placed_window(session, args.app, args.app_timeout)

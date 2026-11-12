@@ -697,7 +697,8 @@ impl App {
         app.broadcast_location_presence();
         app.broadcast_composing_presence();
         app.broadcast_view_presence();
-        if sync_follows {
+        // A publication an earlier input owes is the frame's already.
+        if sync_follows || app.actions.action_surface_owed {
             app.actions.action_surface_owed = true;
         } else {
             app.publish_action_surface();
