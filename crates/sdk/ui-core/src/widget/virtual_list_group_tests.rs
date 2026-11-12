@@ -9,6 +9,8 @@ use crate::widget::section::band_height;
 /// A list whose rows name their group, and which counts how often it is asked.
 struct Grouped {
     groups: Vec<Option<RowGroup>>,
+    /// The rows whose item the person has finished with.
+    finished: Vec<usize>,
     asked: Rc<Cell<usize>>,
 }
 
@@ -16,8 +18,15 @@ impl Grouped {
     fn new(groups: Vec<Option<RowGroup>>) -> Self {
         Self {
             groups,
+            finished: Vec::new(),
             asked: Rc::new(Cell::new(0)),
         }
+    }
+
+    /// The rows `rows`' items are done with, as a checked box leaves them.
+    fn finished(mut self, rows: &[usize]) -> Self {
+        self.finished = rows.to_vec();
+        self
     }
 }
 
@@ -43,6 +52,10 @@ impl ListModel for Grouped {
         self.groups.get(index).cloned().flatten()
     }
 
+    fn done(&self, index: usize) -> bool {
+        self.finished.contains(&index)
+    }
+
     fn discloses(&self) -> bool {
         self.groups.iter().any(Option::is_some)
     }
@@ -55,7 +68,18 @@ fn heading(name: &str) -> Option<RowGroup> {
 const ROW: f32 = 40.0;
 
 fn grouped(groups: Vec<Option<RowGroup>>) -> VirtualList<Grouped> {
-    VirtualList::new(Grouped::new(groups), ROW, |_, index, _| {
+    listed(Grouped::new(groups))
+}
+
+/// The rows `groups` name, the ones `finished` standing done with: a task checked off whose
+/// row stays where it stands.
+fn grouped_finished(groups: Vec<Option<RowGroup>>, finished: &[usize]) -> VirtualList<Grouped> {
+    listed(Grouped::new(groups).finished(finished))
+}
+
+/// A list of `model`'s rows, each a probe of its own.
+fn listed(model: Grouped) -> VirtualList<Grouped> {
+    VirtualList::new(model, ROW, |_, index, _| {
         Box::new(super::tests::ProbeRow::new(
             format!("row {index}"),
             ROW,
@@ -719,6 +743,102 @@ fn a_heading_counts_only_where_the_number_says_something() {
     );
 }
 
+/// The heading over the rows a figure stands beside: the first, which stands over them all.
+fn open_count(list: &mut VirtualList<Grouped>) -> Option<usize> {
+    let _ = settle(list);
+    let band = list
+        .groups
+        .bands
+        .first()
+        .expect("the heading stands")
+        .clone();
+    list.shown_heading_count(&band)
+}
+
+#[test]
+fn a_heading_counts_the_rows_left_to_do() {
+    // Two tasks due today, one of them just checked off and still standing struck through: the
+    // heading says what is left to do, which is the one task under it.
+    let mut one = grouped_finished(vec![heading("Today"), heading("Today")], &[1]);
+    assert_eq!(
+        open_count(&mut one),
+        None,
+        "one task is left: the number would restate the row under it"
+    );
+    // Three due today, two of them left: so the heading says.
+    let mut two = grouped_finished(
+        vec![heading("Today"), heading("Today"), heading("Today")],
+        &[2],
+    );
+    assert_eq!(open_count(&mut two), Some(2), "two tasks are left to do");
+    // The tail heads the rows done with: it counts them as they stand, never what is left of
+    // them, which is nothing.
+    let mut week = listed(
+        Grouped::new(vec![
+            heading("Monday"),
+            heading("Monday"),
+            Some(RowGroup::Tail),
+            Some(RowGroup::Tail),
+        ])
+        .finished(&[0, 2, 3]),
+    )
+    .with_tail_title("Done");
+    let _ = settle(&mut week);
+    let tail = week
+        .groups
+        .bands
+        .iter()
+        .find(|band| band.heading == "Done")
+        .expect("the tail's heading stands")
+        .clone();
+    assert_eq!(
+        week.shown_heading_count(&tail),
+        Some(2),
+        "the items done with are counted, both of them"
+    );
+    let monday = week
+        .groups
+        .bands
+        .iter()
+        .find(|band| band.heading == "Monday")
+        .expect("Monday's heading stands")
+        .clone();
+    assert_eq!(
+        week.shown_heading_count(&monday),
+        None,
+        "the one row left to do under Monday says itself"
+    );
+}
+
+#[test]
+fn a_heading_a_reader_hears_counts_the_rows_left_to_do() {
+    let mut list = grouped_finished(
+        vec![
+            heading("Today"),
+            heading("Today"),
+            heading("Tomorrow"),
+            None,
+        ],
+        &[0],
+    );
+    let _ = settle(&mut list);
+    let tree = Widget::accessibility(&list).expect("list semantics");
+    let headings: Vec<_> = tree
+        .children
+        .iter()
+        .filter(|child| child.role == crate::a11y::Role::Button)
+        .map(|child| (child.name.clone().unwrap_or_default(), child.value.clone()))
+        .collect();
+    assert_eq!(
+        headings,
+        [
+            ("Today".to_owned(), Some("1".to_owned())),
+            ("Tomorrow".to_owned(), Some("2".to_owned()))
+        ],
+        "the finished row is not read as one still to do, the row on its way is"
+    );
+}
+
 #[test]
 fn a_lone_group_heading_starts_the_rows_on_the_content_gutter() {
     // Three tasks under two headings, and the same first two under a title that names their
@@ -916,4 +1036,32 @@ fn the_title_a_list_stands_under_takes_its_heading_away_and_gives_it_back() {
         vec!["Today"],
         "a title saying something else gives the heading back"
     );
+}
+
+#[test]
+fn the_title_counting_what_is_left_takes_the_heading_over_a_finished_row_too() {
+    // The window's title says "Today 1", counting the one task left: the heading over the task
+    // and the one just finished under it would say the same words and the same number.
+    let mut list =
+        grouped_finished(vec![heading("Today"), heading("Today")], &[1]).in_view("Today", Some(1));
+    let _ = settle(&mut list);
+    assert!(
+        bands(&list).is_empty(),
+        "the title says it: no heading stands over the rows ({:?})",
+        bands(&list)
+    );
+    // A title counting the finished row as well says something else: the heading comes back,
+    // with the number of what is left, which is one, and so with no number at all.
+    let mut list =
+        grouped_finished(vec![heading("Today"), heading("Today")], &[1]).in_view("Today", Some(2));
+    let _ = settle(&mut list);
+    assert_eq!(
+        bands(&list)
+            .iter()
+            .map(|(heading, _, _)| heading.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Today"],
+        "a title counting every row leaves the heading to count what is left"
+    );
+    assert_eq!(open_count(&mut list), None, "one row is left to do");
 }

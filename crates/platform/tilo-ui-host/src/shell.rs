@@ -140,8 +140,8 @@ const VIEW_COUNT: &str = "view_count";
 
 /// The tree with each titled view's title handed to the lists it holds: a list whose rows all
 /// stand in one group then heads no group of them when that heading says what the view's title
-/// already says — the same words, counting the same rows — since the title over the list says it
-/// once.
+/// already says — the same words, counting the same rows left to do — since the title over the
+/// list says it once.
 ///
 /// A view's title is the one its shell's content header reads (`title:` and `count:`), and it
 /// reaches the lists of that column under whatever the app puts between them. A shell's other

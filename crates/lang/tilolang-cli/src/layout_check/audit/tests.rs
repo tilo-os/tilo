@@ -2583,6 +2583,12 @@ fn a_presence_tag_covers_no_word_and_one_actor_wears_one() {
 
 /// A list drawing one group heading over rows, under the title its window reads.
 fn grouped_list(title: &str, count: u32, heading: &str, rows: u32) -> InspectionNode {
+    grouped_list_of(title, count, heading, rows, 0)
+}
+
+/// A list drawing one group heading over `rows` rows, `done` of them checked off, under the
+/// title its window reads.
+fn grouped_list_of(title: &str, count: u32, heading: &str, rows: u32, done: u32) -> InspectionNode {
     let mut shell = node("NavShell", "shell", [0.0, 0.0, 400.0, 700.0], None);
     let mut list = node(
         "VirtualList",
@@ -2592,7 +2598,7 @@ fn grouped_list(title: &str, count: u32, heading: &str, rows: u32) -> Inspection
     );
     let mut head = AccessNode::new(Role::Button);
     head.name = Some(heading.to_owned());
-    head.value = Some(rows.to_string());
+    head.value = Some(count.to_string());
     head.action_target = Some(format!("group:{heading}"));
     head.bounds = Some(ui::a11y::AccessBounds {
         x0: 0.0,
@@ -2603,6 +2609,9 @@ fn grouped_list(title: &str, count: u32, heading: &str, rows: u32) -> Inspection
     let mut children = vec![head];
     for row in 0..rows {
         let mut item = AccessNode::new(Role::ListItem);
+        if row < done {
+            item.state.checked = Some(true);
+        }
         let top = 68.0 + f64::from(row) * 40.0;
         item.bounds = Some(ui::a11y::AccessBounds {
             x0: 0.0,
@@ -2730,5 +2739,17 @@ fn a_lone_group_heading_repeating_the_titles_words_is_caught() {
         repeated(&grouped_list("Today", 2, "Today", 1)),
         0,
         "a heading counting rows the list does not show heads part of it"
+    );
+    // A heading counts what is left to do: three rows under it, one of them finished, read as
+    // the two the title counts, and say what the title says.
+    assert_eq!(
+        repeated(&grouped_list_of("Today", 2, "Today", 3, 1)),
+        1,
+        "the heading counts the two rows left, as the title does"
+    );
+    assert_eq!(
+        repeated(&grouped_list_of("Today", 3, "Today", 3, 1)),
+        0,
+        "a title counting every row says something else than the two left"
     );
 }

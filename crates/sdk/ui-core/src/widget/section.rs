@@ -297,6 +297,10 @@ pub fn band_height(theme: &Theme) -> f64 {
 /// how many, and a run the surface cut short says how many it left out even when that is one.
 /// `shown` is how many of them the heading stands over, `total` how many the surface holds
 /// where it holds more than it shows. `None` leaves the heading to its name alone.
+///
+/// What a heading counts, it counts as left to do: a list asks how many of the rows under it
+/// are still to do, so a row just finished takes its number down with it even while its row
+/// stands struck through ([`crate::widget::ListModel::done`]).
 #[must_use]
 pub fn heading_count(shown: usize, total: Option<usize>) -> Option<usize> {
     let total = total.unwrap_or(shown);

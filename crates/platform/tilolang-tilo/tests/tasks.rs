@@ -79,6 +79,32 @@ fn items(r: &Replica) -> Vec<Value> {
     }
 }
 
+/// The title the window's header reads, as a person reads it: the shell's own, unwrapped.
+pub(crate) fn shown_title(view: &ViewInstance) -> Option<String> {
+    let shell = all(view.tree(), "ui.NavShell").into_iter().next()?;
+    match shell.props.get("title") {
+        Some(Value::Text(title)) => Some(title.clone()),
+        Some(Value::Opt(Some(title))) => match &**title {
+            Value::Text(title) => Some(title.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// How many things the window's header says its page lists, or nothing when it says no number.
+pub(crate) fn shown_count(view: &ViewInstance) -> Option<i64> {
+    let shell = all(view.tree(), "ui.NavShell").into_iter().next()?;
+    match shell.props.get("count") {
+        Some(Value::Int(count)) => Some(*count),
+        Some(Value::Opt(Some(count))) => match **count {
+            Value::Int(count) => Some(count),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// A place as the sidebar draws it: its label, and the count the sidebar itself works out for
 /// the places it counts (the inbox's and today's).
 pub(crate) type ShownPlace = (String, Option<i64>);
@@ -1114,7 +1140,7 @@ pub(crate) fn home_list_titles(r: &Replica, view: &mut ViewInstance) -> Vec<Stri
 }
 
 /// The home list's row that presents `item`: its place, its key, and what its box draws.
-fn home_row_of(view: &mut ViewInstance, item: &str) -> (usize, String, bool) {
+pub(crate) fn home_row_of(view: &mut ViewInstance, item: &str) -> (usize, String, bool) {
     let row = home_list_rows(view)
         .into_iter()
         .find(|(_, _, of, _)| of == item);

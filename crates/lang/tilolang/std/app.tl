@@ -27,12 +27,14 @@ app tilo.std "Standard library"
 ///
 /// `row` draws an item, handed the item and who else is at it, and writes the `ui.ListItem` the
 /// list shows: its `group:`, its `parent:` and its `tail:` say the list's grouping, nesting and
-/// fold, which are the app's to say, and what it puts inside is the item's row. A list that
-/// nests its rows gives `tree`; one that groups says the name of the items that group under
-/// nothing (`ungrouped`) and of the run it folds under its tail (`tail_title`); one that does
-/// neither gives neither. The list is the column's scroller unless `in_column` is off: a list
-/// standing in a page's own scroller is as tall as its rows, and the page scrolls them with the
-/// rest, so no list scrolls inside a scroller that scrolls it. A window too narrow for a page
+/// fold, which are the app's to say, and what it puts inside is the item's row. A row whose item
+/// the person can finish says so as `done:`: a place counts what waits, so the heading over the
+/// rows counts what is left to do, and a row just finished keeps its place without counting. A
+/// list that nests its rows gives `tree`; one that groups says the name of the items that group
+/// under nothing (`ungrouped`) and of the run it folds under its tail (`tail_title`); one that
+/// does neither gives neither. The list is the column's scroller unless `in_column` is off: a
+/// list standing in a page's own scroller is as tall as its rows, and the page scrolls them with
+/// the rest, so no list scrolls inside a scroller that scrolls it. A window too narrow for a page
 /// beside the list gives the row's item a page of its own, opened in front of the list.
 ///
 /// The row the person opened is the list's own state, so a window that lists and nothing else

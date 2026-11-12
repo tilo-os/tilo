@@ -96,6 +96,10 @@ pub struct ListItemProps {
     /// The row is one of the items done with: they stand after every group, under the list's
     /// tail title, closed until the person opens them.
     pub tail: bool,
+    /// The item is one the person has finished with — its box checked off — though its row may
+    /// still stand in the list until they leave the place: a heading counts what is left to do,
+    /// so it does not count this row ([`crate::widget::heading_count`]).
+    pub done: bool,
     /// The item the view shows just over this one in its group: the place the actions offered
     /// on the row take when one reads a place (`above`). None for the first of a group.
     pub above: Option<ResourceId>,
@@ -524,6 +528,7 @@ fn reusable(item: &ListItemProps) -> Option<ListItemProps> {
         group_done: item.group_done,
         group_tone: item.group_tone,
         tail: item.tail,
+        done: item.done,
         above: item.above.clone(),
         removed: item.removed,
         parent: item.parent.clone(),
@@ -652,6 +657,16 @@ impl ListModel for DescribedRows {
             }
         })
         .flatten()
+    }
+
+    /// Whether the row's item is one the person is done with — checked off, or removed and not
+    /// yet seen go — which a heading over it does not count ([`super::heading_count`]).
+    fn done(&self, index: usize) -> bool {
+        let Some(key) = self.key_at(index) else {
+            return false;
+        };
+        self.with_item(&key, |item| item.done || item.removed)
+            .unwrap_or(false)
     }
 
     /// What the row stands as in a tree: the item it is a subtask of, when that item is one of

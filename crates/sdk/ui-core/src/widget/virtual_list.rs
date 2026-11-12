@@ -205,6 +205,17 @@ pub trait ListModel {
         None
     }
 
+    /// Whether the row `index` is one the person is done with: its item checked off, or removed
+    /// and not yet seen go — though its row may still stand in the list until they leave the
+    /// place. A heading counts what is left to do, so it does not count this row
+    /// ([`heading_count`]). `false` for a row that is still to do, which is every row of a model
+    /// that says nothing.
+    ///
+    /// [`heading_count`]: super::section::heading_count
+    fn done(&self, _index: usize) -> bool {
+        false
+    }
+
     /// What the row stands as in a tree ([`VirtualList::with_tree`]): the row it is under, and
     /// what the list shows of its subtasks. `None` for a row outside a tree, or a model that
     /// holds none.

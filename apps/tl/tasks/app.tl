@@ -651,6 +651,7 @@ view task_item(
         presence: at,
         group: group,
         group_done: group_done,
+        done: t.done,
         tail: tail,
         above: above,
         parent: t.parent,

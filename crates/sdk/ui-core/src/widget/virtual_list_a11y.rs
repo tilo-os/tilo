@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::edit::RenameStamp;
-use super::groups::{Band, Group, HEADING_TARGET};
+use super::groups::{Band, HEADING_TARGET};
 use super::open::first_page_title;
 use super::{ListModel, MountedRow, MountedRowState, VirtualList};
 use crate::a11y::{AccessNode, AccessState, Role};
@@ -504,7 +504,7 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     /// The heading's node in the accessibility tree: a disclosure saying whether its group
-    /// shows and how many rows it holds.
+    /// shows and how many of its rows are left to do.
     fn heading_node(&self, band: &Band, enabled: bool) -> AccessNode {
         let focused = self
             .focused_group
@@ -512,7 +512,7 @@ impl<M: ListModel> VirtualList<M> {
             .is_some_and(|(heading, _)| *heading == band.heading);
         AccessNode::new(Role::Button)
             .with_name(band.heading.clone())
-            .with_value(self.heading_rows(band).to_string())
+            .with_value(self.heading_open_rows(band).to_string())
             .with_action_target(format!("{HEADING_TARGET}{}", band.heading))
             .with_bounds(self.band_rect(band.top))
             .with_state(
@@ -522,27 +522,6 @@ impl<M: ListModel> VirtualList<M> {
                     .disabled(!enabled)
                     .expanded(!band.closed),
             )
-    }
-
-    /// How many rows stand under the band's heading: its group's, and each row after them that
-    /// names no group of its own — one whose item has not arrived yet stands there too, under
-    /// the heading the person reads it by — until the next heading. The count is what the
-    /// heading shows over, never a row less.
-    pub(super) fn heading_rows(&self, band: &Band) -> usize {
-        let len = self.model.len();
-        let tail = self.tail_title.as_deref();
-        let group = |index: usize| super::groups::group_of(&self.model, index, tail);
-        let same =
-            |index: usize| group(index).is_some_and(|group: Group| group.heading == band.heading);
-        let mut start = band.index.min(len);
-        while start > 0 && same(start - 1) {
-            start -= 1;
-        }
-        let mut end = start;
-        while end < len && group(end).is_none_or(|group: Group| group.heading == band.heading) {
-            end += 1;
-        }
-        end - start
     }
 }
 

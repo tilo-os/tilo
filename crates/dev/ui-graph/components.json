@@ -7498,6 +7498,11 @@
           "type": "bool"
         },
         {
+          "name": "done",
+          "doc": "The item is one the person has finished with — its box checked off — though its row may still stand in the list until they leave the place: a heading counts what is left to do, so it does not count this row ([`crate::widget::heading_count`]).",
+          "type": "bool"
+        },
+        {
           "name": "above",
           "doc": "The item the view shows just over this one in its group: the place the actions offered on the row take when one reads a place (`above`). None for the first of a group.",
           "type": {

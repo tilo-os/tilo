@@ -1898,8 +1898,8 @@ impl Walk<'_> {
             .map(|(at, _)| at)
             .collect();
         // Two groups tell the runs apart, and a heading says something the title does not. Where
-        // the list shows one band, it may head part of a longer list: the rows it heads must be
-        // the rows the list shows, so the count it reads is the count of the list.
+        // the list shows one band, it may head part of a longer list: the rows it stands over must
+        // be the rows the list shows, so the number it reads is the number of them left to do.
         let [at] = headings[..] else {
             return;
         };
@@ -1916,14 +1916,17 @@ impl Walk<'_> {
         ) else {
             return;
         };
-        let rows = access
+        // The rows still to do under the heading: a heading counts what is left, so a row the
+        // person has finished with stands under it without counting.
+        let left = access
             .children
             .iter()
             .skip(at.saturating_add(1))
             .take_while(|child| !heads_group(child))
             .filter(|child| child.role == ui::a11y::Role::ListItem)
+            .filter(|child| child.state.checked != Some(true))
             .count();
-        if rows != usize::try_from(count).unwrap_or(0) {
+        if left != usize::try_from(count).unwrap_or(0) {
             return;
         }
         self.group_headings.push(GroupHeading {
