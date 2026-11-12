@@ -80,6 +80,20 @@ fn the_controls_that_press_the_notebooks_actions_declare_them() {
         "the page tree's + presses the notebook's New note: {empty:?}"
     );
 
+    // The marker an agent's action draws rests on that control: the action
+    // resolves to the "+" and to nothing else.
+    let address = tilo_actions::ActionAddress::new("notes.notebook", "new-note");
+    let routes = app.harness().action_ui_routes(&address);
+    let [route] = routes.as_slice() else {
+        panic!("the window binds one control to New note: {routes:?}");
+    };
+    let control = route.bounds.expect("the + is laid out");
+    let plus = app.harness().targets()["new-note"];
+    assert!(
+        control.contains(plus.center()) && plus.contains(control.center()),
+        "the agent's marker lands on the page tree's +: {control:?} vs {plus:?}"
+    );
+
     crate::framework_support::add_note(&mut app, "Inbox", "");
     app.settle();
     let with_a_row = pressed(&mut app);

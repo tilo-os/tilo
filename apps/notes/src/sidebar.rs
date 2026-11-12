@@ -7,7 +7,7 @@
 //! the model the list reads (every page may hold children), the page menu, and
 //! what its controls press as the notebook's own
 //! [actions](crate::notebook::Notebook): each control carries the published
-//! action it presses ([`PageSidebar::attach_notebook`]), so what a person
+//! action it presses ([`PageSidebar::attach_actions`]), so what a person
 //! clicks and what an agent invokes are the same action through the one door
 //! the palette, agents, history, undo and the permission check share. Keys and
 //! menu rows submit through the notebook's dispatcher. Which note is open is
@@ -714,9 +714,9 @@ impl PageSidebar {
             .unwrap_or_else(|| action == Notebook::NEW_NOTE.id())
     }
 
-    /// Make a note, as the "+" and New note controls do: inside `parent`
-    /// when given, at the top level otherwise. `naming`: the note opens with
-    /// its title taking the keyboard.
+    /// Make a note, as the keys and the page menu's New note do: inside
+    /// `parent` when given, at the top level otherwise. `naming`: the note
+    /// opens with its title taking the keyboard.
     pub(crate) fn new_note(&self, parent: Option<PageId>, naming: bool) {
         make_note(&self.door, &self.wanted, parent, naming);
     }
