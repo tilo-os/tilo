@@ -870,7 +870,9 @@ impl TiloStore {
                     .versions_built
                     .set(inner.versions_built.get().saturating_add(1));
                 let mut built = versions::Versions::default();
-                let changes = doc.committed_document().get_changes(&[]);
+                // What each change says of itself, not its operations: a step's are fetched
+                // alone, where what it wrote is read off them.
+                let changes = doc.committed_document().get_changes_meta(&[]);
                 inner.version_changes.set(
                     inner
                         .version_changes
