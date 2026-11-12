@@ -200,7 +200,10 @@ script on: `history.length` is 1, the page's own `history.back()` goes nowhere,
 `history` reports no `back`, `back` does nothing and `navigation_history` has
 nothing behind the page. Nothing is removed from the history after a page
 committed, so there is no moment at which a script could see more. No `uri`
-or `loaded` comes for a tab before those of its first address.
+or `loaded` comes for a tab before those of its first address. Until then the
+tab shows the empty document its frame began with: where the host names the
+address a tab shows (to extensions, in `navigation_outcome`), that is
+`about:blank`, as that document's own `location` says.
 
 The refused load is there for the renderer: the engine starts a new tab's
 renderer only for a navigation, and the renderer answers the DevTools commands

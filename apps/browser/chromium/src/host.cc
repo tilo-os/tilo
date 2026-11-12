@@ -312,6 +312,13 @@ bool SealedDocumentUrl(const std::string& url) { return url.rfind("data:",0)==0 
 // engine asks about none; this one names an empty document and needs no
 // network either.
 constexpr char kTabStart[]="data:,";
+// The address of the document a tab shows. A tab that has loaded no page
+// shows the empty document its frame began with, whose address is
+// about:blank, though the engine names none for it.
+std::string ShownUrl(CefRefPtr<CefBrowser> browser) {
+  auto url=browser->GetMainFrame()->GetURL().ToString();
+  return url.empty()?"about:blank":url;
+}
 std::string service_session_id;
 bool service_session_consumed=false;
 // Extension management over Chromium's DevTools pipe (see devtools_bridge.h).
@@ -802,8 +809,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     Event("renderer_terminated");
     // The page action that was running has no document left to answer from.
     if(page_automation_)page_automation_->RendererGone();
-    if(navigation_owner_)NavigationOutcome(*navigation_owner_,browser_->GetMainFrame()->GetURL(),"Renderer terminated");
-    for(const auto& command:pending_navigation_)if(command->GetString("op")=="scoped_navigation")NavigationOutcome(command->GetInt("request_id"),browser_->GetMainFrame()->GetURL(),"Renderer terminated");
+    if(navigation_owner_)NavigationOutcome(*navigation_owner_,ShownUrl(browser_),"Renderer terminated");
+    for(const auto& command:pending_navigation_)if(command->GetString("op")=="scoped_navigation")NavigationOutcome(command->GetInt("request_id"),ShownUrl(browser_),"Renderer terminated");
     pending_navigation_.clear();navigation_owner_.reset();navigation_dispatched_=false;navigation_started_=false;navigation_busy_=false;navigation_aborting_=false;bootstrap_settled_=true;
   }
   void OnFrameCreated(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame) override { SendFilters(frame);SendScripts(frame); }
@@ -1107,14 +1114,14 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(extension_tabs) {auto change=CefDictionaryValue::Create();change->SetString("status",loading?"loading":"complete");extension_tabs->Updated(id_,change);}
     if(loading) { navigation_busy_=true; main_navigation_finished_=false; failed_main_navigation_.reset(); return; }
     // OnLoadEnd excludes same-document history; overall loading settles it.
-    CompleteMainNavigation(browser->GetMainFrame()->GetURL().ToString(),0);
+    CompleteMainNavigation(ShownUrl(browser),0);
     // A sign-in out of sight ends once its page loaded.
-    if(extension_panel_ && extension_tabs)extension_tabs->SignInLoaded(id_,browser->GetMainFrame()->GetURL().ToString());
+    if(extension_panel_ && extension_tabs)extension_tabs->SignInLoaded(id_,ShownUrl(browser));
     // Not at OnLoadEnd: the browser still counts as loading there, and an
     // action's reply waiting on the load would say it is still loading.
     if(page_automation_)page_automation_->NavigationFinished();
     if(!navigation_dispatched_ || navigation_started_ || navigation_aborting_) {
-      const auto uri=browser->GetMainFrame()->GetURL().ToString();
+      const auto uri=ShownUrl(browser);
       if(navigation_owner_) NavigationOutcome(*navigation_owner_,uri,navigation_error_);
       navigation_owner_.reset();navigation_dispatched_=false;navigation_started_=false;navigation_busy_=false;navigation_aborting_=false;bootstrap_settled_=true;navigation_urls_.clear();navigation_error_.reset();
       ScheduleNavigation();
@@ -1355,21 +1362,21 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     else if(op=="reload")browser_->Reload();
     else if(op=="site_action" && SiteCommand(command)) {}
     else if(op=="history_entry" && navigation_history_->Navigate(scoped?command->GetInt("history_request_id"):command->GetInt("request_id"),command->GetInt("id"),[self=CefRefPtr<Client>(this),owner=navigation_owner_]{if(owner && self->navigation_owner_==owner)self->RefuseNavigation("History navigation was refused");})) {}
-    else { if(navigation_owner_)NavigationOutcome(*navigation_owner_,frame->GetURL(),"Navigation is unavailable");navigation_owner_.reset();navigation_dispatched_=false;navigation_busy_=false;ScheduleNavigation(); }
+    else { if(navigation_owner_)NavigationOutcome(*navigation_owner_,ShownUrl(browser_),"Navigation is unavailable");navigation_owner_.reset();navigation_dispatched_=false;navigation_busy_=false;ScheduleNavigation(); }
   }
   bool DeferNavigation(CefRefPtr<CefDictionaryValue> command) {
-    if(pending_navigation_.size()>=256) {if(command->GetString("op")=="scoped_navigation")NavigationOutcome(command->GetInt("request_id"),browser_->GetMainFrame()->GetURL(),"Navigation queue exhausted");else {StringEvent("error","message","Document-start navigation queue exhausted");CloseHost();}return true;}
+    if(pending_navigation_.size()>=256) {if(command->GetString("op")=="scoped_navigation")NavigationOutcome(command->GetInt("request_id"),ShownUrl(browser_),"Navigation queue exhausted");else {StringEvent("error","message","Document-start navigation queue exhausted");CloseHost();}return true;}
     TraceGeometry("navigation-queued",id_);pending_navigation_.push_back(command->Copy(false));
     // An explicit replacement stops the old lifecycle; its remaining callbacks
     // finish without owning the newly queued operation.
     if(bootstrap_settled_ && navigation_busy_) {
-      if(navigation_owner_)NavigationOutcome(*navigation_owner_,browser_->GetMainFrame()->GetURL(),"Navigation was superseded");
+      if(navigation_owner_)NavigationOutcome(*navigation_owner_,ShownUrl(browser_),"Navigation was superseded");
       navigation_owner_.reset();AbortNavigation();
     }
     ScheduleNavigation();return true;
   }
   void RefuseNavigation(const std::string& error) {
-    if(navigation_owner_)NavigationOutcome(*navigation_owner_,browser_->GetMainFrame()->GetURL(),error);
+    if(navigation_owner_)NavigationOutcome(*navigation_owner_,ShownUrl(browser_),error);
     navigation_owner_.reset();navigation_dispatched_=false;navigation_started_=false;navigation_busy_=false;ScheduleNavigation();
   }
   void AbortNavigation() {
@@ -1510,9 +1517,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     else if(op=="forward") browser_->GoForward();
     else if(op=="reload") browser_->Reload();
     else if(op=="stop") {
-      for(const auto& command:pending_navigation_)if(command->GetString("op")=="scoped_navigation")NavigationOutcome(command->GetInt("request_id"),frame->GetURL(),"Navigation was stopped");
+      for(const auto& command:pending_navigation_)if(command->GetString("op")=="scoped_navigation")NavigationOutcome(command->GetInt("request_id"),ShownUrl(browser_),"Navigation was stopped");
       pending_navigation_.clear();
-      if(navigation_owner_)NavigationOutcome(*navigation_owner_,frame->GetURL(),"Navigation was stopped");
+      if(navigation_owner_)NavigationOutcome(*navigation_owner_,ShownUrl(browser_),"Navigation was stopped");
       navigation_owner_.reset();AbortNavigation();
     }
     else if(op=="exit_fullscreen") host->ExitFullscreen(true);
@@ -1963,7 +1970,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   // This tab as extensions are told of it.
   tilo::ExtensionTab ExtensionState() const {
     tilo::ExtensionTab tab;tab.tab=id_;
-    if(browser_) {tab.browser=tab.id=browser_->GetIdentifier();tab.url=browser_->GetMainFrame()->GetURL().ToString();tab.loading=browser_->IsLoading();tab.zoom=std::pow(1.2,browser_->GetHost()->GetZoomLevel());}
+    if(browser_) {tab.browser=tab.id=browser_->GetIdentifier();tab.url=ShownUrl(browser_);tab.loading=browser_->IsLoading();tab.zoom=std::pow(1.2,browser_->GetHost()->GetZoomLevel());}
     tab.title=title_;tab.favicon=favicon_;tab.width=geometry_.logical_width();tab.height=geometry_.logical_height();
     tab.panel=extension_panel_;tab.opener=panel_opener_;return tab;
   }
