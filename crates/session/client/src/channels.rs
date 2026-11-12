@@ -23,7 +23,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tilo_clock::{SystemTime, UNIX_EPOCH};
+use tilo_clock::UNIX_EPOCH;
 
 use crate::plane::{Cmd, RosterDevice, Topic, topic_of};
 

@@ -5,7 +5,7 @@
 //! the workspace is waits for that pass rather than being refused for a workspace that is about to
 //! be the person's own.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use super::super::app_node;
 use super::{

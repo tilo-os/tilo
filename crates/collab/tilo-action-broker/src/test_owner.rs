@@ -18,7 +18,6 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::SystemTime,
 };
 use tilo_peer_state::owner_commit::{
     CommitFuture, CommitOperation, OwnerCommitReceipt, OwnerCommitRequest, OwnerCommitService,

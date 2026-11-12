@@ -138,7 +138,7 @@ fn sign_entry(
 #[cfg(test)]
 mod tests {
     use std::path::Path;
-    use std::time::{Duration, SystemTime};
+    use std::time::Duration;
 
     use tilo_identity_host::device_fleet::DeviceFleetStore;
     use tilo_identity_host::provisioning::{self, IdentityStorage};

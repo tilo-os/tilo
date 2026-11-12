@@ -194,7 +194,7 @@ impl MemberLimits {
 #[allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 mod tests {
     use super::*;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     const GUEST: Standing = Standing::Guest;
 

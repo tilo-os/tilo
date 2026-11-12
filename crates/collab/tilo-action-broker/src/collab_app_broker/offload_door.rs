@@ -13,7 +13,6 @@
 //! that fails or goes away therefore costs time, never a different answer.
 
 use std::sync::Arc;
-use std::time::Instant;
 
 use tilo_actions::offload::{ActionOffload, OffloadRequest, Offloaded};
 use tilo_actions::remote::InvokeRequest;

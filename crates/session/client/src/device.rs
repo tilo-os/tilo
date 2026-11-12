@@ -18,7 +18,7 @@ use tilo_relay_session::workspaces::{
     LIST_PERSONAL, PersonalList, WorkspaceListing,
 };
 use tilo_user_identity::DeviceCert;
-use web_time::{Duration as Wait, Instant};
+use web_time::Duration as Wait;
 
 use crate::session::{HOST_ITSELF, PeerConfig};
 use crate::{Cmd, Link, Outbox, TransportPhase};

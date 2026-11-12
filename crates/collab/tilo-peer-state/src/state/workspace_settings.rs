@@ -259,7 +259,7 @@ impl PeerGovernanceMut<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{NeighbourMsg, SigningKey, StatePeer, SystemTime, TransportOrigin};
+    use super::super::{NeighbourMsg, SigningKey, StatePeer, TransportOrigin};
     use automerge::{ROOT, ScalarValue, transaction::Transactable as _};
     use tilo_desktop_model::projection::WORKSPACE_NAME_KEY;
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};

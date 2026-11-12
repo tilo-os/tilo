@@ -233,7 +233,6 @@ mod tests {
     use crate::services::{LaunchContent, LaunchPlace, Launched};
     use crate::test_support::{Workspace, WorkspaceSlot, WorkspaceTree};
     use std::sync::{Arc, Mutex};
-    use std::time::Instant;
     use tilo_actions::InvocationUpdate;
     use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
 
