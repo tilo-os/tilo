@@ -75,11 +75,14 @@ template view desk_around(d: Desk, front: Option<Arrangement>, traditional: Bool
                     dock_ground(s, d, .top)
                 }
             } else if s.dock_edge == .left {
-                stack(at: .leading, fill, align: .center) {
+                // A dock standing up a leading or trailing edge hugs its own width: the layer
+                // sits at that edge (`at: .leading`), centred up it, and a `fill` here would
+                // span the whole desk and centre the dock on it instead.
+                stack(at: .leading, align: .center) {
                     dock_ground(s, d, .left)
                 }
             } else {
-                stack(at: .trailing, fill, align: .center) {
+                stack(at: .trailing, align: .center) {
                     dock_ground(s, d, .right)
                 }
             }
