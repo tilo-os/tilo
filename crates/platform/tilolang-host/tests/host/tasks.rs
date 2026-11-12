@@ -578,8 +578,11 @@ fn today_reads_tasks_from_its_record_and_clears_it_at_its_door() {
     let new_task = desk.tasks_action("New task", |resource| !resource.contains('/'));
     let mut arguments = serde_json::Map::new();
     arguments.insert("title".to_owned(), "Water the plants".into());
-    // Long past: due today or late is what Today's place holds.
-    arguments.insert("due".to_owned(), "2020-01-01".into());
+    // Due today, the person's: what Today's place holds.
+    let today = chrono::DateTime::<chrono::Local>::from(tilo_clock::to_std(tilo_clock::wall()))
+        .date_naive()
+        .to_string();
+    arguments.insert("due".to_owned(), today.into());
     desk.deliver(
         &new_task,
         tilo_actions::remote::InvokeArgument::Json(arguments).to_slot(),

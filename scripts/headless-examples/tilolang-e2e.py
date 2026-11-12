@@ -400,31 +400,37 @@ def check_windows(session: Session, processes: dict, session_pid: int, out: Path
             "process": procs[0], "host": hosts[0], "changed": len(after)}
 
 
-def today_shown(session: Session, out: Path, name: str) -> None:
-    """Today's window in front, as it shows now, captured as today-`name`.png."""
+def today_shown(session: Session, out: Path, name: str) -> bytes:
+    """Today's window in front, as it shows now, captured as today-`name`.png: its pixels."""
     today = app_id("today")
     window = next(w for w in session.windows() if w.get("app_id") == today)
     focus(session, window)
     time.sleep(1.0)
-    session.control_cmd("snapshot", str(out / f"today-{name}.png"))
+    rect = next(w["rect"] for w in session.windows() if w.get("tab") == window["tab"])
+    path = out / f"today-{name}.png"
+    session.control_cmd("snapshot", str(path))
+    return window_pixels(png_rgb(path), rect)
 
 
-def hold_today(session: Session, out: Path) -> dict:
-    """Capture Today's window before Tasks holds a task."""
-    today_shown(session, out, "before")
+def hold_today(session: Session, out: Path, held: list[bytes]) -> dict:
+    """Capture Today's window before Tasks holds a task, into `held`."""
+    held.append(today_shown(session, out, "before"))
     return {"before": str(out / "today-before.png")}
 
 
-def check_today(session: Session, out: Path) -> dict:
-    """Today's Tasks card, which read nothing before Tasks held a task, shows the tasks typed
-    into Tasks' Today since: Today reads them from Tasks' own record, live."""
-    def shows_tasks():
-        today_shown(session, out, "after")
-        named = json.dumps(session.targets())
-        return named if "Water the plants" in named else None
-    named = until("Tasks' tasks in Today's card", shows_tasks, 30, 1.0)
-    (out / "today-targets.json").write_text(named)
-    return {"before": str(out / "today-before.png"), "after": str(out / "today-after.png")}
+def check_today(session: Session, out: Path, before: bytes) -> dict:
+    """Today's Tasks card, which held nothing before Tasks held a task, shows the tasks typed
+    into Tasks' Today since: Today reads them from Tasks' own record, live. The card's rows move
+    a good part of the window; a focus ring or a caret moves next to none of it."""
+    def moved(now: bytes) -> float:
+        width = 4  # a snapshot holds RGBA pixels
+        changed = sum(1 for i in range(0, min(len(now), len(before)), width)
+                      if now[i:i + width] != before[i:i + width])
+        return changed / max(1, len(before) // width)
+    share = until("Tasks' tasks in Today's card", lambda: (lambda part: part if part > 0.05 else None)(
+        moved(today_shown(session, out, "after"))), 30, 1.0)
+    return {"before": str(out / "today-before.png"), "after": str(out / "today-after.png"),
+            "moved": round(share, 3)}
 
 
 def invoke_found(session: Session, found: dict, args: dict | None = None) -> dict:
@@ -704,6 +710,8 @@ def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
     proc, session = start_session(state, out, [out / "build" / f"{n}.tapp" for n in APPS], "apps", apps="notes")
     running["proc"] = proc
     pid = proc.pid
+    # Today's window before Tasks holds a task, which its card is held to after.
+    today_before: list[bytes] = []
     ok = run_checks(summary, [
         ("registry", lambda: check_registry(session)),
         ("launch", lambda: launch_all(session)),
@@ -720,9 +728,9 @@ def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
         # Before the checks that type into the desk: every app's threads are held to sleeping
         # on a desk no other check has just touched.
         ("idle", lambda: check_idle(session, summary["checks"]["processes"], pid)),
-        ("today-before", lambda: hold_today(session, out)),
+        ("today-before", lambda: hold_today(session, out, today_before)),
         ("windows", lambda: check_windows(session, summary["checks"]["processes"], pid, out)),
-        ("today", lambda: check_today(session, out)),
+        ("today", lambda: check_today(session, out, today_before[0])),
     ])
     stop_session(proc)
     running["proc"] = None
