@@ -96,6 +96,19 @@ remote-fit-to-window = An Fenster anpassen
 remote-full-screen = Vollbild
 remote-disconnect = Trennen
 
+## Actions
+
+remote-effect-show-connections = Verbindungen anzeigen
+remote-effect-edit-connection = Verbindungseinstellungen
+remote-effect-send-text = Text senden
+remote-effect-put-file = Datei senden
+remote-effect-fetch-file = Datei holen
+remote-effect-trust-host-key = Hostschlüssel vertrauen
+remote-effect-forget-host-key = Hostschlüssel vergessen
+remote-connection-list = Fernverbindungen
+remote-connection-list-add-connection = Verbindung hinzufügen
+remote-connection-list-mark-used = Verwendung vermerken
+
 ## What a connection is called
 remote-kind-ssh = SSH
 remote-kind-vnc = VNC

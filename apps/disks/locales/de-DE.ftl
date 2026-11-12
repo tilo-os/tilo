@@ -82,3 +82,13 @@ disks-health-healthy = In Ordnung
 disks-health-attention = Braucht Aufmerksamkeit
 disks-health-failing = Fehlerhaft
 disks-health-unknown = Unbekannt
+
+## Actions
+
+disks-device-rescan = Neu einlesen
+disks-device-select = Auswählen
+disks-device-show-tab = Register anzeigen
+disks-device-format = Format
+disks-device-disk-usage = Speicherbelegung anzeigen
+disks-system = Speichergeräte
+disks-system-name-drive = Laufwerk benennen

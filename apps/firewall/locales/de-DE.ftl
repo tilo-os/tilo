@@ -106,6 +106,21 @@ firewall-add-rule = Regel hinzufügen
 firewall-panic-mode = Panikmodus
 firewall-views = Ansicht
 
+## Actions
+
+firewall-effect-apply-config = Änderungen übernehmen
+firewall-effect-retry = Erneut versuchen
+firewall-effect-read-blocked = Blockierten Verkehr anzeigen
+firewall-config = Firewall
+firewall-config-start = Firewall starten
+firewall-config-stop = Firewall stoppen
+firewall-config-enter-panic-mode = Panikmodus einschalten
+firewall-config-exit-panic-mode = Panikmodus verlassen
+firewall-config-delete-rule = Regel löschen
+firewall-config-import = Konfiguration importieren
+firewall-applied = Angewendete Konfiguration
+firewall-applied-applied = Angewandte Konfiguration speichern
+
 ## What the window names
 firewall-zone-drop-title = Drop
 firewall-zone-block-title = Block

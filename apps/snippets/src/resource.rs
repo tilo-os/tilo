@@ -38,13 +38,13 @@ impl Snippets {
 
 #[resource(
     kind = "snippets.library",
-    label = "Snippets",
+    label = "snippets-library",
     children = Snippets::places,
     read_content = Snippets::read_document
 )]
 impl Snippets {
     /// Create a snippet.
-    #[action]
+    #[action(label = "snippets-new")]
     pub fn new_snippet(
         &mut self,
         cx: &mut ActionCx,

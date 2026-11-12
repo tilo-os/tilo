@@ -44,7 +44,6 @@ impl Remote {
 
 #[resource(
     kind = "remote.connection-list",
-    label = "Remote connections",
     read_content = Remote::read_document
 )]
 impl Remote {
@@ -88,7 +87,7 @@ impl Remote {
     /// device saved for it.
     // Undo brings the connection back but not the passwords every device
     // forgot, so people confirm it.
-    #[action(destructive, irreversible, item = connections)]
+    #[action(destructive, irreversible, item = connections, label = "remote-delete-connection-button")]
     pub fn delete_connection(&mut self, connection: &Id) -> Result<(), Refusal> {
         self.connections
             .remove(connection)

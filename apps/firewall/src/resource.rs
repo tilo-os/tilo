@@ -43,7 +43,6 @@ impl Firewall {
 
 #[resource(
     kind = "firewall.config",
-    label = "Firewall",
     available = Firewall::available,
     children = Firewall::zone_places,
     search = Firewall::search,
@@ -223,7 +222,6 @@ impl AppliedConfig {
 
 #[resource(
     kind = "firewall.applied",
-    label = "Applied configuration",
     read_content = AppliedConfig::read_document
 )]
 impl AppliedConfig {
@@ -619,10 +617,7 @@ mod tests {
         };
         for (id, label) in [
             ("stop", "Stop firewall"),
-            (
-                "enter-panic-mode",
-                "Enter panic mode: drop all traffic in and out",
-            ),
+            ("enter-panic-mode", "Enter panic mode"),
         ] {
             let spec = spec(id);
             assert_eq!(spec.label, label, "{id}");

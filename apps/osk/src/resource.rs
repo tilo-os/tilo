@@ -140,7 +140,6 @@ impl Osk {
 
 #[resource(
     kind = "osk.keyboard",
-    label = "On-screen keyboard",
     read_content = Osk::read_document
 )]
 impl Osk {}

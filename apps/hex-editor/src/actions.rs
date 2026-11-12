@@ -29,25 +29,25 @@ pub fn parse_bytes(text: &str) -> Result<Vec<u8>, String> {
 #[effect(operation = "hex_editor.effects")]
 pub enum HexEffect {
     /// Open a file.
-    #[effect(attended, job, cancellable, label = "Open file")]
+    #[effect(attended, job, cancellable, label = "hex-editor-open-file")]
     OpenFile {
         #[param("absolute path of the file to open; omit to use the system file picker")]
         path: Option<tilo_resource::AbsolutePath>,
     },
     /// Save the buffer to the file it was opened from, or choose one.
-    #[effect(job, cancellable, label = "Save file")]
+    #[effect(job, cancellable)]
     Save,
     /// Save the buffer to another file, replacing what is there.
-    #[effect(destructive, label = "Save as")]
+    #[effect(destructive)]
     SaveAs {
         #[param("absolute path of the save destination")]
         path: tilo_resource::AbsolutePath,
     },
     /// Find in the bytes, in the window's search.
-    #[effect(view, idempotent, label = "Search bytes")]
+    #[effect(view, idempotent)]
     Search,
     /// Show the go-to-offset prompt.
-    #[effect(view, idempotent, label = "Go to offset")]
+    #[effect(view, idempotent)]
     GotoOffset,
 }
 
@@ -65,6 +65,50 @@ mod tests {
     use crate::buffer::Hex;
     use crate::model::BufferEdit;
     use ui::tilo_actions::OperationKind;
+    use ui::tilo_resource::effect::{Effect as _, EffectDecl};
+
+    /// The words of one of the window's actions and one of its effects, as a
+    /// palette or an agent publishes them: read from the app's catalogue in
+    /// the language this thread reads.
+    fn published_words() -> (String, String) {
+        let spec = ui::tilo_resource::publish::<crate::HexEditor>(
+            "hex-editor.document",
+            "Hex document",
+            &crate::HexEditor::default(),
+        );
+        let verb = spec
+            .actions
+            .iter()
+            .find(|action| action.id == "load")
+            .expect("load is one of the window's actions")
+            .label
+            .clone();
+        let effect = HexEffect::declarations()
+            .iter()
+            .map(EffectDecl::spec_of::<HexEffect>)
+            .find(|spec| spec.id == "open-file")
+            .expect("open-file is one of the window's effects")
+            .label
+            .clone();
+        (verb, effect)
+    }
+
+    #[test]
+    fn the_windows_words_read_in_the_readers_language() {
+        // A window start: its own catalogue loads in both languages, then the
+        // person's language decides.
+        crate::resource::CATALOG.ensure();
+        assert_eq!(
+            published_words(),
+            ("Load file".to_owned(), "Open file".to_owned())
+        );
+        ui::i18n::I18nManager::set_locale("de-DE");
+        assert_eq!(
+            published_words(),
+            ("Datei laden".to_owned(), "Datei öffnen".to_owned()),
+            "a German window publishes its actions in German"
+        );
+    }
 
     #[test]
     fn bytes_parse_as_people_write_them() {

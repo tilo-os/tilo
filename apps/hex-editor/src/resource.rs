@@ -70,7 +70,6 @@ impl HexEditor {
 
 #[resource(
     kind = "hex-editor.document",
-    label = "Hex document",
     read_content = HexEditor::read_document
 )]
 impl HexEditor {

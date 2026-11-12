@@ -70,7 +70,6 @@ impl Learned {
 
 #[resource(
     kind = "osk.learned",
-    label = "What the keyboard learned",
     read_content = Learned::read_document
 )]
 impl Learned {

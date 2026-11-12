@@ -46,6 +46,18 @@ hex-editor-edit-mode = Bearbeitungsmodus
 hex-editor-hide-inspector = Inspektor ausblenden
 hex-editor-show-inspector = Inspektor einblenden
 
+## Actions
+
+hex-editor-effects-save = Datei speichern
+hex-editor-effects-save-as = Speichern unter
+hex-editor-effects-search = Bytes suchen
+hex-editor-effects-goto-offset = Zu Offset springen
+hex-editor-document = Hex-Dokument
+hex-editor-document-load = Datei laden
+hex-editor-document-insert-bytes = Bytes einfügen
+hex-editor-document-overwrite-bytes = Bytes ersetzen
+hex-editor-document-delete-bytes = Bytes löschen
+
 ## The endianness strip
 hex-editor-little-endian = Little Endian
 hex-editor-big-endian = Big Endian

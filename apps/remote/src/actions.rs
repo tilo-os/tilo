@@ -29,7 +29,7 @@ pub enum RemoteEffect {
     #[effect(view, idempotent)]
     ShowConnections,
     /// New connection.
-    #[effect(view)]
+    #[effect(view, label = "remote-new-connection")]
     New,
     /// Open connection settings.
     #[effect(view, row)]
@@ -38,13 +38,13 @@ pub enum RemoteEffect {
         connection: ConnectionId,
     },
     /// Connect.
-    #[effect(row, job, privileged, kind = "read")]
+    #[effect(row, job, privileged, kind = "read", label = "remote-connect-confirm")]
     Connect {
         #[param("The saved connection's id")]
         connection: ConnectionId,
     },
     /// Disconnect session.
-    #[effect(row, idempotent)]
+    #[effect(row, idempotent, label = "remote-disconnect")]
     Disconnect {
         #[param("The saved connection's id")]
         connection: ConnectionId,

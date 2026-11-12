@@ -82,3 +82,13 @@ disks-health-healthy = Healthy
 disks-health-attention = Needs attention
 disks-health-failing = Failing
 disks-health-unknown = Unknown
+
+## Actions
+
+disks-device-rescan = Rescan
+disks-device-select = Select
+disks-device-show-tab = Show tab
+disks-device-format = Format
+disks-device-disk-usage = Show disk usage
+disks-system = Storage devices
+disks-system-name-drive = Name drive
