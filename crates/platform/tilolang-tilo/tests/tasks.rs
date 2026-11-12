@@ -1294,6 +1294,62 @@ fn a_peers_completion_takes_its_row_away() {
     assert!(rows.iter().all(|(_, _, row, _)| *row != of));
 }
 
+/// A task somebody else completes while the person has it open stays where it stands, drawn
+/// checked, until they leave the place: what they read does not vanish from under them.
+#[test]
+fn a_peers_completion_of_the_open_task_keeps_its_row_until_the_place_is_left() {
+    let (mut ada, root) = workspace();
+    for title in ["Buy oat milk", "Pay the electricity bill", "Book a haircut"] {
+        let made = call(&ada, "new_task", create(&root, title));
+        call(
+            &ada,
+            "schedule",
+            vec![made, Value::some(Value::text("2026-10-29"))],
+        );
+        ada.commit();
+    }
+    let mut ben = ada.fork("ben", PACKAGES);
+    ben.host.sync_from(&ben.doc);
+    let mut view = ada.view(APP);
+    go_to(&mut view, "Today");
+    assert_eq!(home_list_rows(&mut view).len(), 3);
+    let bill = task(&ada, "Pay the electricity bill");
+    let of = target(&bill).expect("a task");
+    let (place, _, _) = home_row_of(&mut view, &of);
+    let list = all(view.tree(), "ui.VirtualList")
+        .first()
+        .expect("the home list")
+        .key
+        .clone();
+    // The person opens the row where it stands, as the list does on a press.
+    let open = view.row_key(&list, place).expect("the row");
+    view.fire_with(&list, "opened", Some(&bill)).unwrap();
+    view.open_row(&list, Some(&open));
+    view.poll_patches().unwrap();
+    call(&ben, "check", vec![task(&ben, "Pay the electricity bill")]);
+    ben.commit();
+    ada.sync_with(&mut ben);
+    let rows = home_list_rows(&mut view);
+    assert_eq!(rows.len(), 3, "the open row stayed: {rows:?}");
+    let (now, _, drawn) = home_row_of(&mut view, &of);
+    assert_eq!(now, place, "in the place it stood");
+    assert!(drawn, "its box drawn checked");
+    // Closing it, or opening another row, is reading on in the same place: the row stays.
+    view.fire(&list, "closed").unwrap();
+    view.open_row(&list, None);
+    assert_eq!(
+        home_list_rows(&mut view).len(),
+        3,
+        "closing it keeps the row"
+    );
+    // Leaving the place settles the list: the task is no longer today's.
+    go_to(&mut view, "Inbox");
+    go_to(&mut view, "Today");
+    let rows = home_list_rows(&mut view);
+    assert_eq!(rows.len(), 2, "the row left with the place: {rows:?}");
+    assert!(rows.iter().all(|(_, _, row, _)| *row != of));
+}
+
 /// A list row's checkbox asks the app's check, so a press on it takes the tasks under the one
 /// it stands for, not the one field the box shows.
 #[test]

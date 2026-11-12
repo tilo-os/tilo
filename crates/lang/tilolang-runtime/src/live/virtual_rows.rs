@@ -15,7 +15,11 @@
 //! sorted query follow it the same way: a change names the items it touched, the store says
 //! where each was in the listing the rows stand for and where it is now
 //! ([`crate::store::moved_steps`]), and those are the steps, so a post that brings one item to
-//! the top of 100,000 reads the pages of that item, not the list's. Rows made of another
+//! the top of 100,000 reads the pages of that item, not the list's.
+//!
+//! A row the person's own change takes out of the rows stands where it is until the view is
+//! left, and so does the row standing open into its item, whoever's change takes it out: what
+//! a person reads does not vanish from under them ([`Virtual::open`]). Rows made of another
 //! query (a filter or an order chosen) are new rows: the host reads them anew, as it reads a
 //! list new to the tree, and choosing a filter costs the rows it shows, not the collection's.
 
@@ -25,10 +29,12 @@ use std::rc::Rc;
 use super::{Bound, BoundId, Builder, Live, Pending, Steps};
 use crate::core::Core;
 use crate::error::RuntimeError;
+use crate::host_ui::SET_ACTION;
 use crate::render::{RowSource, RowsOf, VirtualRows, item_key};
 use crate::store::{Listing, Splice};
-use crate::value::{CollRef, Value};
+use crate::value::{ActionRef, CollRef, Value};
 use crate::view::{Patch, RowStep, RowsChange, UiNode, row_steps};
+use crate::view_state::StateKey;
 
 /// The rows a virtual list holds built: each row's place and boundary, and the fragments that
 /// stand for the rows in the list.
@@ -41,14 +47,16 @@ pub(crate) enum Rows {
     Coll {
         coll: Rc<CollRef>,
         listing: Rc<Listing>,
-        /// The rows the person's own changes took out of the listing, kept where they stand
-        /// (`place`, item) until the view is left: see [`Live::keep_rows`].
+        /// The rows the person's own changes, or any change to the row standing open, took out
+        /// of the listing, kept where they stand (`place`, item) until the view is left: see
+        /// [`Live::keep_rows`].
         kept: Vec<(usize, Rc<str>)>,
     },
     List {
         values: Rc<[Value]>,
-        /// The rows the person's own changes took out of the list, kept where they stand
-        /// (`place`, item) until the view is left: see [`still_kept_list`].
+        /// The rows the person's own changes, or any change to the row standing open, took out
+        /// of the list, kept where they stand (`place`, item) until the view is left: see
+        /// [`still_kept_list`].
         kept: Vec<(usize, Value)>,
     },
 }
@@ -362,6 +370,14 @@ impl Virtual {
         self.built.get(place).map(|(index, _)| *index)
     }
 
+    /// The item of the collection whose row stands open, when the rows are a collection's.
+    fn open_id(&self) -> Option<&str> {
+        let Rows::Coll { coll, .. } = &self.rows else {
+            return None;
+        };
+        self.template.coll_row_id(coll, self.open.as_deref()?)
+    }
+
     /// The items of the rows built now (the visible rows and the overscan): what the window
     /// shows of this list.
     pub(super) fn shown_items(&self, core: &Core) -> Vec<Value> {
@@ -373,6 +389,17 @@ impl Virtual {
 }
 
 impl Live {
+    /// The row of `list`, a list of values, standing open into its item: where it stands among
+    /// the rows, and its item. A row open is one the host shows, so it is built.
+    fn open_value(&self, list: &Virtual) -> Option<(usize, Value)> {
+        let open = list.open.as_deref()?;
+        let (index, _) = list
+            .built
+            .iter()
+            .find(|(_, id)| self.bound(*id).is_some_and(|b| b.key == open))?;
+        Some((*index, list.rows.list_row(*index)?.clone()))
+    }
+
     /// The host shows the row at `open` of the list `list` standing open into its item: the row
     /// that opens builds its item's document and the row that closes drops it, both rendered
     /// again where they stand — the list sends them on as the rows that changed.
@@ -412,17 +439,41 @@ impl Live {
         }
     }
 
-    /// The rows kept for the viewer settle in the lists the moved view state `left` encloses:
-    /// the view they stood in is left.
-    pub(super) fn settle_kept(&mut self, left: &[BoundId]) {
-        let settling: Vec<String> = self
-            .lists
+    /// The lists the moved view state `left` (each boundary that read it, and the state) leaves:
+    /// those a boundary that read it encloses. A list's own row opening or closing — the state its
+    /// `opened` and `closed` events set — leaves none: the person reads on in the same rows.
+    pub(super) fn left_lists(&self, core: &Core, left: &[(BoundId, &StateKey)]) -> Vec<String> {
+        self.lists
             .iter()
-            .filter(|(_, list)| left.iter().any(|moved| self.encloses(*moved, list.holder)))
+            .filter(|(key, list)| {
+                left.iter().any(|(moved, state)| {
+                    self.encloses(*moved, list.holder) && !self.opens_with(core, key, state)
+                })
+            })
             .map(|(key, _)| key.clone())
-            .collect();
+            .collect()
+    }
+
+    /// Whether the list `list` opens and closes its rows with the view state `state`: its
+    /// `opened` or `closed` event sets it.
+    fn opens_with(&self, core: &Core, list: &str, state: &StateKey) -> bool {
+        let Some(node) = self.find(list) else {
+            return false;
+        };
+        let frames = core.frames.borrow();
+        [OPENED, CLOSED].iter().any(|event| {
+            node.events
+                .get(*event)
+                .and_then(|retained| frames.retained(*retained))
+                .is_some_and(|action| matches!(action, Value::Action(set) if sets(set, state)))
+        })
+    }
+
+    /// The rows kept for the viewer settle in the lists `settling`: the view they stood in is
+    /// left.
+    pub(super) fn settle_kept(&mut self, settling: &[String]) {
         for key in settling {
-            if let Some(list) = self.lists.get_mut(&key) {
+            if let Some(list) = self.lists.get_mut(key) {
                 // The rows of a query were never steps the host took: the list alone knows it
                 // held them, so where one stood the host reads the list anew when its holder
                 // runs, as it does when another filter is chosen.
@@ -704,40 +755,46 @@ impl Live {
 
     /// What the steps of `step` do to `list` when its rows are the values its holder made: what
     /// the guest made of them says which items they are, so a row the person's own change took
-    /// out of it stands where it is — the host's rows do not move and the holder runs again to
-    /// keep it — and anyone else's change makes the rows new, as a query's steps do. `None` for
-    /// a list whose rows are a query's.
+    /// out of it, or the row standing open, stands where it is — the host's rows do not move and
+    /// the holder runs again to keep it — and anyone else's change to other rows makes the rows
+    /// new, as a query's steps do. `None` for a list whose rows are a query's.
     fn linger_in_list(&mut self, list: &str, step: &Pending) -> Option<bool> {
-        if !matches!(
-            self.lists.get(list).map(|held| &held.rows),
-            Some(Rows::List { .. })
-        ) {
+        let held = self.lists.get(list)?;
+        if !matches!(held.rows, Rows::List { .. }) {
             return None;
         }
         let Steps::Moved(ids) = &step.steps else {
             return Some(false);
         };
-        if !step.mine || ids.is_empty() {
+        if step.mine && !ids.is_empty() {
+            self.mine_items.extend(ids.iter().cloned());
+        } else if !self
+            .open_value(held)
+            .is_some_and(|(_, item)| item_ref_id(&item).is_some_and(|id| ids.contains(id)))
+        {
             return Some(false);
         }
-        self.mine_items.extend(ids.iter().cloned());
         self.dirty.insert(step.holder);
         Some(true)
     }
 
     /// What a step that only takes rows out of `list`, a query of a collection, does when the
-    /// change is the person's: every row it takes out is still in the collection, so each stands
-    /// where it is, the host's rows untouched, until the view is left ([`Rows::settle`] settles
-    /// them). `None` when the rows are a list of values' or the step is not one that only takes
-    /// rows out, or is someone else's.
+    /// change is the person's, or takes out only the row standing open: every row it takes out
+    /// is still in the collection, so each stands where it is, the host's rows untouched, until
+    /// the view is left ([`Rows::settle`] settles them). `None` when the rows are a list of
+    /// values' or the step is not one that only takes rows out, or is someone else's.
     fn linger_in_query(&mut self, core: &Core, list: &str, step: &Pending) -> Option<bool> {
         let Steps::Splices(splices) = &step.steps else {
             return Some(false);
         };
-        if !step.mine || splices.is_empty() {
+        if splices.is_empty() {
             return Some(false);
         }
         let held = self.lists.get(list)?;
+        let open = held.open_id();
+        if !step.mine && splices.iter().any(|splice| Some(splice.item()) != open) {
+            return Some(false);
+        }
         let Rows::Coll {
             coll,
             listing,
@@ -844,10 +901,10 @@ impl Live {
     }
 
     /// The rows kept after the change of the query `now`: those kept before that the query still
-    /// does not hold, and — for the person's own change — each row built whose item `ids` names
-    /// and that the change took out of the query, at its place. A row someone else's change
-    /// takes out moves as it ever did; one the query holds again (an undo) is the query's own
-    /// row now ([`still_kept`]).
+    /// does not hold, and each row whose item `ids` names and that the change took out of the
+    /// query, at its place — every one for the person's own change, the row standing open for
+    /// anyone's. Any other row someone else's change takes out moves as it ever did; one the
+    /// query holds again (an undo) is the query's own row now ([`still_kept`]).
     fn keep_rows(
         &self,
         core: &Core,
@@ -860,13 +917,17 @@ impl Live {
     ) -> Option<Vec<(usize, Rc<str>)>> {
         let held = self.lists.get(list)?;
         let mut kept = still_kept(core, coll, now, held.rows.kept());
-        if !mine {
+        let open = held.open_id();
+        if !mine && open.is_none_or(|open| !ids.contains(open)) {
             return Some(kept);
         }
         // A row the change takes out of the query stands where it stood, whether the host has
         // built it yet or not: the host takes no step for it.
         for id in ids {
-            if kept.iter().any(|(_, held)| &**held == id.as_str()) || now.holds(id) != Some(false) {
+            if (!mine && Some(id.as_str()) != open)
+                || kept.iter().any(|(_, held)| &**held == id.as_str())
+                || now.holds(id) != Some(false)
+            {
                 continue;
             }
             let Some(Some(place)) = before.position(id) else {
@@ -1052,22 +1113,29 @@ fn keeps(core: &Core, coll: &CollRef, id: &str) -> Option<bool> {
 }
 
 /// The rows of a list of values the person looking took out of it that still stand: those kept
-/// before, and those this change named, where they stood in it. They stand there while the list
-/// is the one that kept them — its other rows there still, in order — and the items are still
-/// there: a row the list holds again is its own row, and one whose item is gone has no row.
+/// before, those this change named, and the row standing `open`, where they stood in it. They
+/// stand there while the list is the one that kept them — its other rows there still, in order —
+/// and the items are still there: a row the list holds again is its own row, and one whose item
+/// is gone has no row.
 fn still_kept_list(
     core: &Core,
     before: &Rows,
     values: &[Value],
     named: &std::collections::BTreeSet<String>,
+    open: Option<(usize, Value)>,
 ) -> Vec<(usize, Value)> {
     let Rows::List { kept: old, .. } = before else {
         return Vec::new();
     };
-    if old.is_empty() && named.is_empty() {
+    if old.is_empty() && named.is_empty() && open.is_none() {
         return Vec::new();
     }
     let mut keep = old.clone();
+    if let Some((index, item)) = open
+        && keep.iter().all(|(place, _)| *place != index)
+    {
+        keep.push((index, item));
+    }
     if !named.is_empty() {
         for index in 0..before.len() {
             let Some(item) = before.list_row(index) else {
@@ -1085,6 +1153,7 @@ fn still_kept_list(
     if !stands_in(rest, values) {
         return Vec::new();
     }
+    keep.sort_unstable_by_key(|(place, _)| *place);
     keep.into_iter()
         .filter(|(_, item)| !values.contains(item) && still_there(core, item))
         .collect()
@@ -1117,9 +1186,9 @@ fn another_query(before: &Rows, now: &Rows) -> bool {
 }
 
 impl Builder<'_> {
-    /// The rows the person's own changes took out of the list stand where they are for as long
-    /// as the view is there, so a list built again keeps them; one the list holds again is its
-    /// own row now.
+    /// The rows the person's own changes took out of the list, and the row standing open, stand
+    /// where they are for as long as the view is there, so a list built again keeps them; one
+    /// the list holds again is its own row now.
     fn carry_kept(&self, before: Option<&Virtual>, rows: &mut Rows) {
         let Some(before) = before else {
             return;
@@ -1129,9 +1198,26 @@ impl Builder<'_> {
                 coll,
                 listing,
                 kept,
-            } => *kept = still_kept(self.core, coll, listing, before.rows.kept()),
+            } => {
+                let mut held = before.rows.kept().to_vec();
+                if let Some(open) = before.open_id()
+                    && listing.holds(open) == Some(false)
+                    && held.iter().all(|(_, item)| &**item != open)
+                    && let Some(place) = before.rows.place(open)
+                {
+                    held.push((place, Rc::from(open)));
+                    held.sort_unstable_by_key(|(place, _)| *place);
+                }
+                *kept = still_kept(self.core, coll, listing, &held);
+            }
             Rows::List { values, kept } => {
-                *kept = still_kept_list(self.core, &before.rows, values, &self.live.mine_items);
+                *kept = still_kept_list(
+                    self.core,
+                    &before.rows,
+                    values,
+                    &self.live.mine_items,
+                    self.live.open_value(before),
+                );
             }
         }
     }
@@ -1300,6 +1386,20 @@ impl Builder<'_> {
         self.new.push(id);
         Ok((id, vec![self.live.render(self.core, id)?]))
     }
+}
+
+/// The event a list fires as the person opens a row where it stands, and as it closes.
+const OPENED: &str = "opened";
+const CLOSED: &str = "closed";
+
+/// Whether `action` puts a value in the view state `state` (`set(opened, x)`).
+fn sets(action: &ActionRef, state: &StateKey) -> bool {
+    let named =
+        |at: usize, text: &str| matches!(action.args.get(at), Some(Value::Text(t)) if t == text);
+    action.action == SET_ACTION
+        && named(0, &state.window)
+        && named(1, state.principal.as_deref().unwrap_or_default())
+        && named(2, &state.state)
 }
 
 /// The id of the item a row was built for, when it is one resource (`Value::Ref`).

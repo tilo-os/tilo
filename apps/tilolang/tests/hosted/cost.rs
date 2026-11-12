@@ -470,8 +470,8 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 16_000,
             eval_layout_us: 16_000,
             held: Held {
-                optimized_us: 550_000,
-                development_us: 1_900_000,
+                optimized_us: 210_000,
+                development_us: 1_450_000,
             },
         },
     ),
@@ -504,6 +504,18 @@ fn top_title(session: &mut Session) -> String {
         .first()
         .cloned()
         .expect("the list shows a row")
+}
+
+/// The row at the top of what the window shows: the first whose top is on screen. The rows
+/// built around it reach past the window's edges, so the first of those can stay as the list
+/// scrolls under a row grown into its page.
+fn top_shown(session: &mut Session) -> String {
+    accessible(session)
+        .into_iter()
+        .filter(|node| node.role == ui::a11y::Role::ListItem)
+        .find(|node| node.bounds.is_some_and(|bounds| bounds.y0 >= 0.0))
+        .and_then(|node| node.name)
+        .expect("the window shows a row")
 }
 
 /// The first row the list shows that the person has not checked yet, its title, and where
@@ -1572,14 +1584,14 @@ fn scroll_the_list(session: &mut Session, costs: &mut Costs) {
     let at = shown_at(session, &first);
     session.window.move_to(at.0, at.1);
     session.settle();
-    let mut top = top_title(session);
+    let mut top = top_shown(session);
     for notch in 0..8 {
         let down = notch % 2 == 0;
         costs.add(cost(session, "scroll", |session| {
             session.window.scroll(0.0, if down { -3.0 } else { 3.0 });
         }));
         session.settle();
-        let now = top_title(session);
+        let now = top_shown(session);
         assert_ne!(now, top, "the list scrolled");
         top = now;
     }
@@ -1674,7 +1686,8 @@ fn typing_in_the_entry_renders_the_entry() {
 }
 
 /// A row opens where it stands after the person's own changes have taken rows out of the place
-/// they stand in: the rows they kept are rows that open into their item like any other.
+/// they stand in: the rows they kept are rows that open into their item like any other, and
+/// opening one is reading on in the same place, so every one of them stays.
 #[test]
 fn a_row_opens_where_it_stands_after_tasks_are_checked() {
     let _motion = ui::motion::testing::settled();
@@ -1688,11 +1701,25 @@ fn a_row_opens_where_it_stands_after_tasks_are_checked() {
     }
     let title = session.titles().get(1).cloned().expect("a row");
     let (x, y) = shown_at(&mut session, &title);
+    let shown = session.titles();
+    let before = renders(&session);
     session.window.click_at(x, y);
     session.settle();
+    let ran = renders(&session) - before;
     assert!(
         opened_title_field(&mut session).is_some(),
         "the row of {title} opens where it stands"
+    );
+    // The row and the page it grows into run, and the list that holds it hears which row is
+    // open; the rows beside it, and the place's query, run not at all.
+    assert!(
+        ran <= 12,
+        "opening the row of {title} ran {ran} boundaries: the rows beside it ran again"
+    );
+    assert_eq!(
+        session.titles(),
+        shown,
+        "the rows checked off stand where they stood, the one opened among them"
     );
 }
 

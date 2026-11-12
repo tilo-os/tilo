@@ -502,17 +502,6 @@ fn places(shared: Bool) -> List<Filter<Task>> {
     }
 }
 
-/// The tasks a list shows, with the one held open where it stands until it is closed.
-fn holding(listed: List<Task>, opened: Option<Task>) -> List<Task> {
-    if let o = opened {
-        if listed.contains(o) {
-            listed
-        } else {
-            tasks.items.filter(x -> x == o or listed.contains(x))
-        }
-    } else { listed }
-}
-
 /// The place a task stands in: its project's, or the first of `side` that holds it, else Inbox.
 fn place_of(side: List<Filter<Task>>, x: Task) -> Filter<Task> {
     if let p = x.project {
@@ -532,8 +521,8 @@ view home(t: Tasks) {
         .then(set(opened, x))
     let side = places(workspace.members.len() > 1)
     let chosen = side.find(f -> f == place)
-    let held = holding(t.items.matching(place), opened)
-    let found = if searched.is_empty() { held } else { held.matching(searched) }
+    let listed = t.items.matching(place)
+    let found = if searched.is_empty() { listed } else { listed.matching(searched) }
     let project = t.projects.find(p -> place == Task.project(p))
     // A place of days groups by day and a project's list folds finished work under its foot.
     let by_day = place == Task.today or place == Task.upcoming or project != .none
@@ -693,8 +682,7 @@ view task_item(
 view project_list(p: Project) {
     state opened: Option<Task> = .none
     on show(x: Task): set(opened, x)
-    let shown = tasks.items.filter(t -> t.project == p)
-    let listed = holding(shown, opened)
+    let listed = tasks.items.filter(t -> t.project == p)
     ui.NavShell(content_kind: .list, title: p.name) {
         content: {
             // The project's tasks as the column's own scroller, the entry that adds to them
