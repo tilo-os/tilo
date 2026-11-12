@@ -252,14 +252,19 @@ is asked about one departure twice.
 A departure no action asked for, such as a page posting on its own or a
 download the page started, waits on nobody's invocation. The window publishes
 it as the wait it is — `send-held-request` and `keep-held-request` of
-`browser.page`, each bound to the hold's id and stating it as their one
-accepted argument — and the session in the VM reports each one it publishes to
-the relay, naming that invocation. The relay puts it to the person as it puts
-any page action, and their answer comes back to the session as the
-confirmation their allow runs it with: the same witness the relay signs for a
-page action, for that one request. Denied or unanswered, the session runs
-`keep-held-request` instead and the page stays as it was filled. A person's
-own window holds none of this: what they click leaves as they click it.
+`browser.page`, each bound to the hold's id and stating it as the argument a
+caller names — and the session in the VM reports each one it publishes to the
+relay, naming that invocation. The departure travels with the row, so the
+question names what leaves and not only a name for it: the page it leaves
+from, what it sends and where (`send the form to https://visa.example
+(POST)`), and the filled page as a picture the window kept in the workspace's
+content store, which the person's device draws before they allow it. The relay
+puts it to the person as it puts any page action, and their answer comes back
+to the session as the confirmation their allow runs it with: the same witness
+the relay signs for a page action, for that one request. Denied or unanswered,
+the session runs `keep-held-request` instead and the page stays as it was
+filled. A person's own window holds none of this: what they click leaves as
+they click it.
 
 A key can carry the authority to operate the pages its workspaces' Browser
 holds without asking each time: the person ticks **Operate web pages in
