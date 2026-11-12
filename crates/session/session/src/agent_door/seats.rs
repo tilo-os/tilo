@@ -161,12 +161,11 @@ impl Seats {
     /// Connection `seat` changed `record` of `app` in its run: one of the records taking its work
     /// back undoes.
     pub(super) fn changed(&self, seat: u64, app: &str, record: &str) {
-        let mut inner = self.inner.lock_recover();
-        let Some(connection) = inner.connections.get_mut(&seat) else {
-            return;
-        };
         let step = (app.to_owned(), record.to_owned());
-        if !connection.changed.contains(&step) {
+        let mut inner = self.inner.lock_recover();
+        if let Some(connection) = inner.connections.get_mut(&seat)
+            && !connection.changed.iter().any(|known| known == &step)
+        {
             connection.changed.push(step);
         }
     }
@@ -174,29 +173,31 @@ impl Seats {
     /// What the agent `agent` works in here, as its connections name it: the run, the records it
     /// changed in it, and the app it says it works in. `None` for an agent seated here not at all.
     pub(crate) fn working(&self, agent: &str) -> Option<Working> {
-        let inner = self.inner.lock_recover();
         let mut working: Option<Working> = None;
-        for connection in inner
-            .connections
-            .values()
-            .filter(|connection| connection.agent == agent)
         {
-            let held = working.get_or_insert_with(|| Working {
-                workspace: connection.workspace_id.clone(),
-                run: None,
-                changed: Vec::new(),
-                app: None,
-            });
-            if held.run.is_none() {
-                held.run.clone_from(&connection.run);
-            }
-            for step in &connection.changed {
-                if !held.changed.contains(step) {
-                    held.changed.push(step.clone());
+            let inner = self.inner.lock_recover();
+            for connection in inner
+                .connections
+                .values()
+                .filter(|connection| connection.agent == agent)
+            {
+                let held = working.get_or_insert_with(|| Working {
+                    workspace: connection.workspace_id.clone(),
+                    run: None,
+                    changed: Vec::new(),
+                    app: None,
+                });
+                if held.run.is_none() {
+                    held.run.clone_from(&connection.run);
                 }
-            }
-            if held.app.is_none() {
-                held.app = connection.doing.as_ref().and_then(|(_, app)| app.clone());
+                for step in &connection.changed {
+                    if !held.changed.contains(step) {
+                        held.changed.push(step.clone());
+                    }
+                }
+                if held.app.is_none() {
+                    held.app = connection.doing.as_ref().and_then(|(_, app)| app.clone());
+                }
             }
         }
         working

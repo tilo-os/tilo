@@ -1749,13 +1749,15 @@ impl SeatAt {
 /// the connection leave before its run ends.
 pub(crate) struct DoorRun {
     host: tilo_action_broker::collab_app_broker::TaskRunHost,
-    _held: crate::door_runs::Held,
+    /// The run itself, held for as long as the connection lasts: dropping it ends what the broker
+    /// still runs of it.
+    held: crate::door_runs::Held,
 }
 
 impl DoorRun {
     /// The issue that names its run: what the desk's card takes its work back by.
     fn issue(&self) -> &str {
-        self._held.issue()
+        self.held.issue()
     }
 
     /// Start the run of the agent `admitted` names, admitted by its person at this door: mint its
@@ -1799,7 +1801,7 @@ impl DoorRun {
         )?;
         let held = runs.doors().open(admitted.workspace, minted.run);
         let host = broker.task_run_host(&minted.presentation)?;
-        Ok(Some(Self { host, _held: held }))
+        Ok(Some(Self { host, held }))
     }
 }
 
