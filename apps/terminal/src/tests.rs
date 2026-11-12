@@ -4751,29 +4751,7 @@ fn an_agents_narrated_run_lands_at_the_prompt() {
             _ => None,
         })
         .expect("the prompt is bound to the session's run");
-    let event = ui::tilo_actions::SemanticInteraction {
-        version: ui::tilo_actions::INTERACTION_VERSION,
-        invocation: ui::tilo_actions::InvocationId::new(),
-        sequence: 1,
-        actor: ui::tilo_actions::InteractionActor {
-            id: "scribe".into(),
-            kind: ui::tilo_actions::ActorKind::Agent,
-            for_person: None,
-        },
-        phase: ui::tilo_actions::InteractionPhase::Applying,
-        action: ui::tilo_actions::InteractionAction {
-            id: run.action.clone(),
-            label: "Run".into(),
-            app: None,
-        },
-        resource: ui::tilo_actions::ActionResource {
-            id: run.resource,
-            kind: "terminal.session".into(),
-            label: "Terminal".into(),
-        },
-        anchor: ui::tilo_actions::InteractionAnchor::Resource,
-        group: None,
-    };
+    let event = ui::headless::agent_acting(&run.resource, &run.action);
     // The cursor rests on the prompt, for a viewer following nobody.
     let locus = app
         .harness()
@@ -4793,8 +4771,8 @@ fn an_agents_narrated_run_lands_at_the_prompt() {
             .follow_view("someone-else", &mut ui::headless::FollowedView::default()),
         "not following moves nothing"
     );
-    assert!(app.harness().follow_view("scribe", &mut followed));
-    assert!(!app.harness().follow_view("scribe", &mut followed));
+    assert!(app.harness().follow_view("agent", &mut followed));
+    assert!(!app.harness().follow_view("agent", &mut followed));
     // A control the frame cannot name an action for, or an action it cannot
     // find, is the contract every native app is audited by.
     let audit = app.harness().native_app_audit();

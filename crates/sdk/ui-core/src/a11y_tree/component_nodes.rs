@@ -460,10 +460,15 @@ fn id_prefix(binding: &CallbackBinding) -> String {
 
 /// The node id of resource `id` published by `binding`'s component.
 pub(super) fn bound_resource_id(binding: &CallbackBinding, id: &str) -> SemanticId {
-    SemanticId(format!(
-        "ri:{}:{}:{}",
-        binding.instance_id, binding.lifetime_id, id
-    ))
+    SemanticId(format!("{}{id}", id_prefix(binding)))
+}
+
+/// The resource a component's node `id` stands for ([`bound_resource_id`]),
+/// or `None` when `id` is no component's resource node.
+pub(crate) fn component_record(id: &SemanticId) -> Option<&str> {
+    let mut parts = id.as_str().strip_prefix("ri:")?.splitn(3, ':');
+    let (_instance, _lifetime) = (parts.next()?, parts.next()?);
+    parts.next()
 }
 
 /// The affordances of `resource`'s own actions on node `id`, recording each

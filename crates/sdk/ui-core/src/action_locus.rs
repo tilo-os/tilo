@@ -263,9 +263,12 @@ fn interaction_address(
 }
 
 /// The record a semantic node names: its id without the `r:` of a published
-/// resource, and without the transport alias a window published it under.
+/// resource or the component a window mounts its record in, and without the
+/// transport alias a window published it under.
 fn record_of(id: &crate::a11y_tree::SemanticId) -> std::borrow::Cow<'_, str> {
-    let id = id.as_str().strip_prefix("r:").unwrap_or(id.as_str());
+    let id = crate::a11y_tree::component_record(id)
+        .or_else(|| id.as_str().strip_prefix("r:"))
+        .unwrap_or(id.as_str());
     tilo_actions::logical_resource_id(id)
 }
 
@@ -307,23 +310,17 @@ pub(crate) fn interaction_bounds(
         node.action(&address.action).is_some()
             && (node.durable_identity || !address.resource.starts_with("ui:"))
     };
-    // A record the session keeps is published by each window under its own
-    // alias, and the invocation names one window's while the frame in hand
-    // carries another: that record is what its node is found by.
-    let published_here = tree
-        .node(&canonical_id)
-        .is_some_and(|node| stands_for_record(node));
-    let same_record = interaction
-        .resource
-        .id
-        .starts_with(tilo_actions::BOUND_RESOURCE_PREFIX)
-        && tree
+    // A window publishes its record under the record's own id, or mounts it
+    // in a component whose node names it; either way that record is what its
+    // node is found by, whatever alias the invocation carries.
+    let published = tree.node(&canonical_id).is_some_and(stands_for_record)
+        || tree
             .iter()
             .any(|node| stands_for_record(node) && record_of(&node.id) == address.resource);
-    if !published_here && !same_record {
+    if !published {
         return None;
     }
-    let mut candidates = action_ui_routes(tree, bindings, &address)
+    let candidates = action_ui_routes(tree, bindings, &address)
         .into_iter()
         .filter(|route| match &interaction.anchor {
             tilo_actions::InteractionAnchor::Resource => true,
@@ -335,16 +332,30 @@ pub(crate) fn interaction_bounds(
                 .is_some_and(|node| node.durable_identity),
             _ => false,
         })
-        .filter_map(|route| route.bounds)
-        .filter(|bounds| {
+        .filter_map(|route| {
+            let presses = route
+                .path
+                .last()
+                .and_then(|target| tree.node(target))
+                .is_some_and(|node| crate::a11y::activation_role(node.role));
+            Some((route.bounds?, presses))
+        })
+        .filter(|(bounds, _)| {
             [bounds.x0, bounds.y0, bounds.x1, bounds.y1]
                 .into_iter()
                 .all(f64::is_finite)
                 && bounds.width() > 0.0
                 && bounds.height() > 0.0
-        });
-    let only = candidates.next()?;
-    candidates.next().is_none().then_some(only)
+        })
+        .collect::<Vec<_>>();
+    if let [(only, _)] = candidates.as_slice() {
+        return Some(*only);
+    }
+    // An action a field takes the words of and a button runs (a title, then
+    // "New issue") is done where it is pressed.
+    let mut pressed = candidates.iter().filter(|(_, presses)| *presses);
+    let (only, _) = pressed.next()?;
+    pressed.next().is_none().then_some(*only)
 }
 
 /// The node [`interaction_bounds`] finds `interaction` on, reached through the

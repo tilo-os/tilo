@@ -20,7 +20,7 @@ mod history;
 pub mod host_media;
 mod keys;
 
-pub use controls::{CONTROL_RESOURCE_PREFIX, Control, ControlInput, FollowedView};
+pub use controls::{CONTROL_RESOURCE_PREFIX, Control, ControlInput, FollowedView, agent_acting};
 use tilo_sort::CompactSort as _;
 
 use std::collections::{HashMap, HashSet};
