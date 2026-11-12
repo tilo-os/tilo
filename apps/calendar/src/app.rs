@@ -3661,20 +3661,26 @@ impl CalendarApp {
             self.dirty = true;
             return true;
         }
+        // The editor is the top transient surface, and Escape dismisses it
+        // whatever field inside it holds the keyboard — the same rule the
+        // toolkit's dialogs and the calendar's own cards follow, so a sheet
+        // never answers the first Escape by only leaving its field.
+        if self.detail_open {
+            self.blur_editor();
+            self.discard_pristine_draft(state);
+            self.detail_open = false;
+            self.selection = None;
+            *handled = true;
+            self.dirty = true;
+            return true;
+        }
+        // A field outside any sheet (the sidebar's new-task line) gives up the
+        // keyboard first: nothing there is a surface to put away.
         if field_focused || notes_focused {
             self.title_input.set_focus(false);
             self.location_input.set_focus(false);
             self.invite_input.set_focus(false);
             self.tasks.set_entry_focus(false);
-            self.notes_editor.set_focus(false);
-            *handled = true;
-            self.dirty = true;
-            return true;
-        }
-        if self.detail_open {
-            self.discard_pristine_draft(state);
-            self.detail_open = false;
-            self.selection = None;
             self.notes_editor.set_focus(false);
             *handled = true;
             self.dirty = true;

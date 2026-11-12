@@ -2109,17 +2109,20 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
 
 #[test]
 fn keyboard_focus_and_shortcuts_route_between_editor_and_calendar() {
-    // Case `escape_blurs_notes_before_dismissing_the_editor`.
+    // Case `escape_dismisses_the_editor_whatever_field_holds_the_keyboard`.
     {
         let mut h = Harness::new(1280, 800);
         h.app.title_input.set_focus(false);
         h.app.location_input.set_focus(false);
         h.app.notes_editor.set_focus(true);
         h.press_named(NamedKey::Escape);
-        assert!(h.app.detail_open, "first Escape keeps the editor open");
+        assert!(
+            !h.app.detail_open,
+            "Escape dismisses the sheet, not only the field it was in"
+        );
         assert!(
             !h.app.notes_editor.is_focused(),
-            "first Escape returns focus from notes instead of unexpectedly closing the editor"
+            "the notes gave up the caret"
         );
     }
     // Case `keyboard_shortcuts_switch_views_navigate_and_act`.
@@ -3349,4 +3352,27 @@ fn a_new_event_starts_at_the_next_quarter_hour_not_at_noon() {
         "the next quarter hour after 14:07"
     );
     assert_eq!(draft.end - draft.start, Duration::hours(1));
+}
+
+/// Escape dismisses the event sheet, whatever field inside it holds the
+/// keyboard: a sheet is the top transient surface, and every sheet in every
+/// app leaves on Escape the way the toolkit's own dialogs do.
+#[test]
+fn escape_dismisses_the_event_sheet_even_with_a_field_focused() {
+    let mut h = Harness::new(1280, 800);
+    let (app, doc) = h.parts();
+    app.apply_action(Action::CloseDetail, &mut Edits::lend(doc));
+    app.apply_action(Action::NewEvent, &mut Edits::lend(doc));
+    h.relayout();
+    assert!(h.app.detail_open, "a new event opens its sheet");
+    assert!(
+        h.app.title_input.is_focused(),
+        "the sheet starts in its title"
+    );
+
+    h.press_named(winit::keyboard::NamedKey::Escape);
+    assert!(
+        !h.app.detail_open,
+        "Escape closes the sheet rather than only leaving the field"
+    );
 }
