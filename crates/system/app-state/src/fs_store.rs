@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 use std::thread;
 use std::time::Duration;
-use tilo_clock::Instant;
+use tilo_clock::time::Instant;
 
 use durable_store::{
     Durability, DurableStore, Lease, ReadyWake, Revision, SettleWatch, SharedLease, StorageKey,
@@ -748,7 +748,7 @@ impl DurableStore for FsStore {
             }
         };
         self.ensure_worker()?;
-        let now = Instant::now();
+        let now = tilo_clock::now();
         let due = now.checked_add(self.shared.debounce).unwrap_or(now);
         let revision = {
             let mut state = lock(&self.shared.state);
@@ -1506,7 +1506,7 @@ fn writer_loop(shared: &Shared) {
             }
         };
         guard.current = Some((taken.key.clone(), taken.batch.first, taken.batch.last));
-        let started = Instant::now();
+        let started = tilo_clock::now();
         let result = commit(shared, &taken);
         guard.current = None;
         // Release the owner's handles before waking flushers: a caller that
@@ -1535,7 +1535,7 @@ fn next_work(shared: &Shared) -> Option<Work> {
         if let Some((key, hint)) = state.hints.pop_front() {
             return Some(Work::Hint(key, hint));
         }
-        let now = Instant::now();
+        let now = tilo_clock::now();
         let stopping = state.stopping;
         let due = state
             .queue

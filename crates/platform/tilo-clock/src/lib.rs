@@ -1,12 +1,14 @@
 //! Reading the time, once, the same way on every target.
 //!
-//! [`now`] and [`wall`] are the sanctioned monotonic and wall-clock reads, and
-//! the re-exported clock types are the ones to name instead of `std::time`'s.
-//! On Linux and macOS they are `std::time`'s own types, so values cross freely
-//! into crates that name `std::time` directly. `std`'s clocks panic in a
-//! browser page; there the page's clocks (`performance.now()` and
-//! `Date.now()`) back the same API. [`to_std`] and [`from_std`] cross into and
-//! out of `std::time::SystemTime` where an API names it.
+//! [`now`] and [`wall`] are the sanctioned monotonic and wall-clock reads.
+//! [`time`] names the clock types, the ones to name instead of `std::time`'s;
+//! a type is named there, never read, because `Instant::now()` and
+//! `SystemTime::now()` are the machine's own readings. On Linux and macOS they
+//! are `std::time`'s own types, so values cross freely into crates that name
+//! `std::time` directly. `std`'s clocks panic in a browser page; there the
+//! page's clocks (`performance.now()` and `Date.now()`) back the same API.
+//! [`to_std`] and [`from_std`] cross into and out of `std::time::SystemTime`
+//! where an API names it.
 //!
 //! The `unix_now*` functions read the wall clock as integer time since the Unix
 //! epoch. The unchecked forms return `0` when the system clock is set before
@@ -22,7 +24,22 @@
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub use imp::{Duration, Instant, SystemTime, SystemTimeError, UNIX_EPOCH};
+use time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+/// The clock types, under the names `std::time` gives them.
+///
+/// Naming one here is how a signature, a field or a variable says what kind of
+/// time it holds, on every target: `std`'s clocks panic in a browser page, and
+/// a module has to compile against one type name native and in the page alike.
+///
+/// Reading is not here. `Instant::now()` and `SystemTime::now()` call the
+/// machine directly, past the reading a test holds still and a host lends a
+/// module it runs, so a deadline or a timestamp taken from one is a value the
+/// rest of tilo cannot follow. [`now`](crate::now) returns this `Instant`,
+/// [`wall`](crate::wall) this `SystemTime`.
+pub mod time {
+    pub use crate::imp::{Duration, Instant, SystemTime, SystemTimeError, UNIX_EPOCH};
+}
 
 #[cfg(any(not(target_family = "wasm"), tilo_no_js))]
 mod imp {
@@ -79,7 +96,7 @@ pub fn now() -> Instant {
 /// continue to use their ordinary clocks.
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing {
-    use super::{Instant, SystemTime};
+    use super::time::{Instant, SystemTime};
     use std::cell::Cell;
 
     thread_local! {

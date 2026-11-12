@@ -21,7 +21,7 @@
 //! as before.
 
 use std::time::Duration;
-use tilo_clock::Instant;
+use tilo_clock::time::Instant;
 
 /// The longest a change waits for its re-check, and the period of a clocked
 /// one.
@@ -142,13 +142,13 @@ mod tests {
 
     #[test]
     fn the_first_check_is_due_at_once() {
-        let now = Instant::now();
+        let now = tilo_clock::now();
         assert_eq!(PolicySchedule::default().due(now, 7), Some(now));
     }
 
     #[test]
     fn nothing_is_due_while_nothing_changed() {
-        let start = Instant::now();
+        let start = tilo_clock::now();
         let mut schedule = PolicySchedule::default();
         schedule.checked(start, 3, false);
         assert_eq!(schedule.due(after(start, secs(3600)), 3), None);
@@ -157,7 +157,7 @@ mod tests {
 
     #[test]
     fn a_change_after_a_quiet_interval_is_checked_at_once() {
-        let start = Instant::now();
+        let start = tilo_clock::now();
         let mut schedule = PolicySchedule::default();
         schedule.checked(start, 3, false);
         let later = after(start, secs(30));
@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn changes_in_quick_succession_wait_out_the_interval() {
-        let start = Instant::now();
+        let start = tilo_clock::now();
         let mut schedule = PolicySchedule::default();
         schedule.checked(start, 3, false);
         let soon = after(start, Duration::from_millis(200));
@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn a_clocked_check_recurs_every_interval_without_a_change() {
-        let start = Instant::now();
+        let start = tilo_clock::now();
         let mut schedule = PolicySchedule::default();
         schedule.checked(start, 3, true);
         assert_eq!(schedule.due(start, 3), Some(after(start, RECHECK_INTERVAL)));

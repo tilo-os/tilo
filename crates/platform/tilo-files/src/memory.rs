@@ -10,7 +10,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::task::{Context, Poll, Waker};
 
-use tilo_clock::SystemTime;
+use tilo_clock::time::SystemTime;
 
 use crate::watch::{ChangeKind, Watchers};
 use crate::{Entry, FsError, Kind, LockMode, Meta, VPath};

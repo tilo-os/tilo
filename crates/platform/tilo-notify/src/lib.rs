@@ -57,7 +57,7 @@ pub mod windows_toasts {
 }
 
 pub use caps::{Availability, Feature, Unsupported, availability, available};
-pub use tilo_clock::SystemTime;
+pub use tilo_clock::time::SystemTime;
 
 /// One user-visible notification.
 #[derive(Debug, Clone, PartialEq, Eq)]

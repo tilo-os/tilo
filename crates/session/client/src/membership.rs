@@ -236,7 +236,7 @@ pub fn authorship(
         // A workspace that lives only on this desk holds no governance here, so the desk's own
         // policy is where its authorship goes.
         let now = tilo_clock::wall()
-            .duration_since(tilo_clock::UNIX_EPOCH)
+            .duration_since(tilo_clock::time::UNIX_EPOCH)
             .map_or(0, |since| since.as_secs());
         edit_workspace(desk, id, |shown| author_on_desk(shown, app, now))?;
     }

@@ -14,7 +14,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
-use tilo_clock::Instant;
+use tilo_clock::time::Instant;
 
 use tilo_desktop::window_flight::{WindowFlight, WindowPicture as Flying};
 use tilo_desktop_model::TabId;

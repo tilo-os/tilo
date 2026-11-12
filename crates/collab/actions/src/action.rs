@@ -338,7 +338,7 @@ impl EncodedAction {
 #[cfg(test)]
 mod action_id_tests {
     use super::ActionId;
-    use tilo_clock::{Duration, UNIX_EPOCH};
+    use tilo_clock::time::{Duration, UNIX_EPOCH};
 
     /// The id's time is the clock this process was given, never `std`'s own: an app's model runs
     /// as a WebAssembly module with no `std` clock to ask, and mints its ids under the host's

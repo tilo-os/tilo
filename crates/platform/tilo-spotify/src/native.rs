@@ -104,7 +104,7 @@ pub struct NativeAudio {
     cancel: Arc<AtomicBool>,
     status: Arc<Mutex<Status>>,
     frames: Arc<AtomicU64>,
-    started: Mutex<tilo_clock::Instant>,
+    started: Mutex<tilo_clock::time::Instant>,
     requested_play: AtomicBool,
     next: Arc<Mutex<Option<String>>>,
 }
@@ -402,7 +402,7 @@ async fn run(
     player.load(track, false, 0);
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     let mut pending_transition = None;
-    let mut pending_started: Option<tilo_clock::Instant> = None;
+    let mut pending_started: Option<tilo_clock::time::Instant> = None;
     loop {
         if !confirm_playback_session(&session, shared) {
             break;
@@ -650,7 +650,7 @@ fn custody_streaming_bearer() -> Result<librespot::core::token::Token, librespot
         expires_in: Duration::from_secs(lifetime),
         token_type: "Bearer".into(),
         scopes: Vec::new(),
-        timestamp: tilo_clock::SystemTime::now(),
+        timestamp: tilo_clock::wall(),
     })
 }
 

@@ -137,7 +137,7 @@ pub struct PersistentAudioPolicy {
     /// Consecutive echo-cancellation client exits, used to back off restarts
     /// of a client that dies on start.
     echo_failures: u32,
-    echo_retry_at: Option<tilo_clock::Instant>,
+    echo_retry_at: Option<tilo_clock::time::Instant>,
 }
 
 impl PersistentAudioPolicy {
@@ -215,7 +215,7 @@ impl PersistentAudioPolicy {
     /// When a backed-off echo-cancellation restart falls due. Nothing in the
     /// graph changes at that moment, so an event-driven owner must reconcile
     /// again by then on its own.
-    pub fn next_retry(&self) -> Option<tilo_clock::Instant> {
+    pub fn next_retry(&self) -> Option<tilo_clock::time::Instant> {
         self.echo_retry_at
     }
 

@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(target_os = "linux")]
-use tilo_clock::SystemTime;
+use tilo_clock::time::SystemTime;
 
 use tilo_action_policy::WorkspacePolicy;
 use tilo_channels::{ChannelAccess, ChannelKeyProvider};
@@ -1335,7 +1335,7 @@ impl Engine {
         let reachable = tilo_delivery_protocol::workspace_join::reachable(endpoint);
         let hint = self.own_host_hint(workspace, &reachable)?;
         let now_ns: u64 = now
-            .duration_since(tilo_clock::UNIX_EPOCH)
+            .duration_since(tilo_clock::time::UNIX_EPOCH)
             .map_err(|error| error.to_string())?
             .as_nanos()
             .try_into()

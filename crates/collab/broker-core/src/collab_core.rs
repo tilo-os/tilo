@@ -18,7 +18,7 @@ const AUDIT_LOG_RING_CAPACITY: usize = 256;
 pub struct AuditEntry {
     pub envelope: Box<SignedOp>,
     pub rejection: Option<ValidationError>,
-    pub at: tilo_clock::SystemTime,
+    pub at: tilo_clock::time::SystemTime,
 }
 
 #[derive(Default)]
@@ -50,7 +50,7 @@ pub struct RedactionRecord {
     pub target_op_hash: [u8; 32],
     pub redactor_pk: Ed25519PublicKey,
     pub reason: String,
-    pub redacted_at: tilo_clock::SystemTime,
+    pub redacted_at: tilo_clock::time::SystemTime,
 }
 
 #[derive(Default)]
@@ -91,7 +91,7 @@ pub struct BrokerChannels {
     /// History pages this device asked its peers for, by artifact: the
     /// `before_seq` bound and when the request left. Answers are accepted
     /// only while a request is outstanding.
-    pub peer_history_requests: HashMap<ArtifactId, (u64, tilo_clock::Instant)>,
+    pub peer_history_requests: HashMap<ArtifactId, (u64, tilo_clock::time::Instant)>,
     /// The route (app, workspace, record) each artifact's ops were validated on
     /// this session. A history page is only ever answered to that workspace.
     pub routes: HashMap<ArtifactId, crate::route::CrdtRoute>,
@@ -309,7 +309,7 @@ impl BrokerChannels {
         if self.history.is_none() {
             return false;
         }
-        let now = tilo_clock::Instant::now();
+        let now = tilo_clock::now();
         if let Some((bound, at)) = self.peer_history_requests.get(&artifact)
             && *bound == before_seq
             && now.saturating_duration_since(*at) < PEER_HISTORY_RETRY
@@ -335,7 +335,7 @@ impl BrokerChannels {
         let Some((bound, at)) = self.peer_history_requests.get(&artifact).copied() else {
             return (0, Unsynced::default());
         };
-        if tilo_clock::Instant::now().saturating_duration_since(at) > PEER_HISTORY_WINDOW {
+        if tilo_clock::now().saturating_duration_since(at) > PEER_HISTORY_WINDOW {
             self.peer_history_requests.remove(&artifact);
             return (0, Unsynced::default());
         }

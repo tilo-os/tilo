@@ -6,7 +6,7 @@
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::time::Duration;
-use tilo_clock::Instant;
+use tilo_clock::time::Instant;
 
 use collab_types::presence::{Payload, Presence as Frame, ShellPresence, Shown};
 use iroh_base::EndpointId;

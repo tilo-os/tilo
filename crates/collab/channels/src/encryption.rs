@@ -19,7 +19,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tilo_clock::Instant;
+use tilo_clock::time::Instant;
 
 use channel_crypto::{Access, ChannelContentKeys, ChannelPeer, PeerEvent, VaultKey};
 use collab_types::signer::{DeviceSigner, SignFuture};
@@ -796,7 +796,7 @@ impl ChannelEncryption {
         config.state.prepare().map_err(std::io::Error::other)?;
         let held = config.state.held();
         let mut service = Self::with_store(Some(config), directory, gates);
-        let now = Instant::now();
+        let now = tilo_clock::now();
         for (workspace, channels) in held {
             for channel in channels {
                 if let Err(error) = service.open_peer(workspace, channel, now) {
@@ -2323,7 +2323,7 @@ impl ChannelKeyAccess {
     /// generation, which changes whenever any channel's keys or access do.
     pub fn access(&self, workspace: WorkspaceId, channel: ChannelId) -> (ChannelAccess, u64) {
         let Some((access, generation, queued)) = self.run(|service| {
-            let access = service.access(workspace, channel, Instant::now());
+            let access = service.access(workspace, channel, tilo_clock::now());
             (
                 access,
                 service.generation(),
@@ -2343,7 +2343,7 @@ impl ChannelKeyAccess {
     /// device takes part and asked for when it does not.
     fn access_unit(&self, workspace: WorkspaceId, unit: ChannelId) -> (ChannelAccess, u64) {
         let Some((access, generation, queued)) = self.run(|service| {
-            let access = service.access_unit(workspace, unit, Instant::now());
+            let access = service.access_unit(workspace, unit, tilo_clock::now());
             (
                 access,
                 service.generation(),
@@ -2393,7 +2393,7 @@ impl ChannelKeyAccess {
         workspace: WorkspaceId,
         route: &ChannelRoute,
     ) -> (ChannelAccess, u64) {
-        let (_, access, generation) = self.record_access(workspace, route, Instant::now());
+        let (_, access, generation) = self.record_access(workspace, route, tilo_clock::now());
         (access, generation)
     }
 
@@ -2507,7 +2507,7 @@ impl ChannelKeyAccess {
     #[must_use]
     pub fn pump_until_due(&self, transport: &dyn GovernanceTransport) -> Option<Duration> {
         let inbound = transport.take_inbound();
-        let now = Instant::now();
+        let now = tilo_clock::now();
         let deadline = self.run(|service| {
             service.pump_inbound(inbound, transport, now, tilo_clock::unix_now());
             service.next_pump_deadline(now)
@@ -2717,7 +2717,7 @@ impl ChannelKeyProvider {
         wait: Duration,
     ) -> Option<Result<ChannelContentKeys, String>> {
         let channel = route.channel(&workspace.to_string());
-        let deadline = Instant::now()
+        let deadline = tilo_clock::now()
             .checked_add(wait)
             .unwrap_or_else(Instant::now);
         loop {
@@ -2735,7 +2735,7 @@ impl ChannelKeyProvider {
                 }
                 ChannelAccess::Unavailable | ChannelAccess::NoSecretStore => return None,
             }
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            let remaining = deadline.saturating_duration_since(tilo_clock::now());
             if remaining.is_zero() {
                 return Some(Err(not_ready(wait)));
             }

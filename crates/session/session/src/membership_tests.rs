@@ -56,7 +56,7 @@ fn workspace_here(joiner: &str) -> (Engine, Workspace, String, tempfile::TempDir
     // What her admission changed reaches this device's copy of the workspace, as it would over
     // the workspace's own plane.
     let workspace_id = WorkspaceId::parse(WORKSPACE).expect("a workspace");
-    let now = tilo_clock::SystemTime::now();
+    let now = tilo_clock::wall();
     for (bytes, _) in governor.outgoing() {
         engine
             .owner()
@@ -108,7 +108,7 @@ struct TwoDesks {
     desk: Engine,
     desk_cert: tilo_user_identity::DeviceCert,
     person: String,
-    now: tilo_clock::SystemTime,
+    now: tilo_clock::time::SystemTime,
     _states: (tempfile::TempDir, tempfile::TempDir, tempfile::TempDir),
 }
 
@@ -116,7 +116,7 @@ struct TwoDesks {
 /// devices' copies of the workspace, as the workspace's host carries it.
 fn the_owner_admitted_ada() -> TwoDesks {
     let workspace_id = WorkspaceId::parse(WORKSPACE).expect("a workspace");
-    let now = tilo_clock::SystemTime::now();
+    let now = tilo_clock::wall();
     // The workspace's owner, whose own device signs for it.
     let a_root = SigningKey::from_bytes(&[51; 32]);
     let a_key = SigningKey::from_bytes(&[52; 32]);
@@ -560,7 +560,7 @@ struct GovernedDesk {
     her: Engine,
     cert: tilo_user_identity::DeviceCert,
     key: SigningKey,
-    now: tilo_clock::SystemTime,
+    now: tilo_clock::time::SystemTime,
 }
 
 /// [`session_keeping`], acting as `person` instead of the default one, and serving its apps'
@@ -602,7 +602,7 @@ fn governed_desk(served: Option<tempfile::TempDir>) -> GovernedDesk {
     let person = hex::encode(cert.user_public_key);
     let state = tempfile::tempdir().expect("a state directory");
     let workspace_id = a_workspace_on_the_desk(state.path());
-    let now = tilo_clock::SystemTime::now();
+    let now = tilo_clock::wall();
     let hers = tempfile::tempdir().expect("her state directory");
     let (her, _her_cert, _her_key, ada) =
         a_second_device(state.path(), hers.path(), workspace_id, &cert, &key, now);
@@ -1013,7 +1013,7 @@ fn the_people_another_device_admits_are_on_this_desks_people() {
     };
     // The workspace, as this computer's device governs it, takes ada in: a change another
     // member's device makes while this desk is away.
-    let now = tilo_clock::SystemTime::now();
+    let now = tilo_clock::wall();
     let her_root = SigningKey::from_bytes(&[0x63; 32]);
     let her_key = SigningKey::from_bytes(&[0x64; 32]);
     let her = testing::certificate(&her_root, &her_key, "ada");
@@ -1198,7 +1198,7 @@ fn a_second_device(
     workspace_id: WorkspaceId,
     cert: &tilo_user_identity::DeviceCert,
     key: &SigningKey,
-    now: tilo_clock::SystemTime,
+    now: tilo_clock::time::SystemTime,
 ) -> (Engine, tilo_user_identity::DeviceCert, SigningKey, String) {
     let her_key = SigningKey::from_bytes(&[0x72; 32]);
     let her = testing::certificate(&SigningKey::from_bytes(&[0x71; 32]), &her_key, "ada");
@@ -1339,7 +1339,7 @@ fn her_device_takes(
     key: &SigningKey,
     hers: &Engine,
     person: &str,
-    now: tilo_clock::SystemTime,
+    now: tilo_clock::time::SystemTime,
 ) -> Option<MemberRole> {
     let mine = Engine::open(
         identity(cert, key),
@@ -1390,7 +1390,7 @@ fn a_person_changes_a_workspaces_people_through_the_session_this_computer_runs()
     );
     let state = tempfile::tempdir().expect("a state directory");
     let workspace_id = a_workspace_on_the_desk(state.path());
-    let now = tilo_clock::SystemTime::now();
+    let now = tilo_clock::wall();
     let her_state = tempfile::tempdir().expect("her state directory");
     let (hers, _her, _her_key, her_person) = a_second_device(
         state.path(),
@@ -1566,7 +1566,7 @@ fn invite_from_this_device(
         crate::platform::custody::of_this_desk(),
     )
     .expect("this computer's engine opens");
-    let now = tilo_clock::SystemTime::now();
+    let now = tilo_clock::wall();
     engine
         .owner()
         .issue_invitation(

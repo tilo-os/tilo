@@ -56,11 +56,13 @@ impl ExternalBroker {
         if source.owner() != &self.owner {
             return Err(SendError::Revoked);
         }
-        let mut signals =
-            tokio::time::timeout(tilo_clock::Duration::from_secs(10), source.subscribe())
-                .await
-                .map_err(|_| SendError::Unavailable)?
-                .map_err(|_| SendError::Unavailable)?;
+        let mut signals = tokio::time::timeout(
+            tilo_clock::time::Duration::from_secs(10),
+            source.subscribe(),
+        )
+        .await
+        .map_err(|_| SendError::Unavailable)?
+        .map_err(|_| SendError::Unavailable)?;
         self.scan_sms_inbox(&source).await?;
         let stopped = Arc::new(AtomicBool::new(false));
         let marker = Stopped {
@@ -70,7 +72,7 @@ impl ExternalBroker {
         let broker = self.clone();
         let task = handle.spawn(async move {
             let _marker = marker;
-            let mut refresh = tokio::time::interval(tilo_clock::Duration::from_secs(30));
+            let mut refresh = tokio::time::interval(tilo_clock::time::Duration::from_secs(30));
             refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             refresh.tick().await;
             loop {
@@ -88,7 +90,7 @@ impl ExternalBroker {
     async fn scan_sms_inbox(&self, source: &SmsInbox) -> Result<(), SendError> {
         // Bound the complete scan as well as individual broker reads. D-Bus
         // signals are drained independently while native reads are in flight.
-        tokio::time::timeout(tilo_clock::Duration::from_secs(20), async {
+        tokio::time::timeout(tilo_clock::time::Duration::from_secs(20), async {
             let paths = source.objects().await.map_err(|_| SendError::Unavailable)?;
             for path in paths {
                 let Some(recipient) = source

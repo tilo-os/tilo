@@ -25,6 +25,18 @@ Test sources and ``#[cfg(test)]`` items are not judged, and neither is
 ``tilo-clock`` itself. Tokio's timer instant is the one clock a file may still
 read, and only where the reason below says its deadlines are timers rather
 than a decision about trust: tokio's own ``time::pause`` drives those in tests.
+
+The clock types are named in ``tilo_clock::time`` and read through
+``tilo_clock::now()`` and ``tilo_clock::wall()``. ``Instant::now()`` on one of
+those types is the same machine reading as ``std::time``'s, spelled as if
+``tilo_clock`` had blessed it, so a deadline or a timestamp made from one stops
+following the clock a test holds still and a host lends a module. Every file of
+the tree outside the crates above is judged for it, in both the ways it can be
+written: the type named in full (``tilo_clock::time::Instant::now()``), and the
+bare name of a ``use`` — the nearest one before the read, so a test module's
+own ``std::time`` import is left alone. The machine's own types still read where
+they like: what is refused is the reading that takes its type from
+``tilo_clock`` and skips the clock.
 """
 
 from __future__ import annotations
@@ -104,6 +116,37 @@ DIRECT = {
     ),
 }
 
+# The clock types `tilo_clock::time` names. They are `std::time`'s (or the
+# page's) own, so `now()` on one is a machine reading whatever path it is
+# reached by.
+REEXPORTED = ("Instant", "SystemTime")
+CLOCK = "|".join(REEXPORTED)
+
+# The tree's own Rust sources; `vendor` is other people's code and is not ours
+# to hold to a contract, and `tilo-clock` defines the re-export.
+SOURCE_ROOTS = ("crates", "apps", "examples", "tools", "fuzz", "os")
+REEXPORT_CRATE = Path("crates/platform/tilo-clock")
+
+# `tilo_clock::time::Instant::now()`, at any depth of module path.
+QUALIFIED_READ = re.compile(
+    rf"\btilo_clock\s*::\s*(?:[A-Za-z_]\w*\s*::\s*)*(?P<clock>{CLOCK})\s*::\s*now\s*\("
+)
+# The bare name, once a `use` has brought it into scope.
+BARE_READ = re.compile(rf"(?<![\w:])(?P<clock>{CLOCK})\s*::\s*now\s*\(")
+TILO_IMPORT_STATEMENT = re.compile(r"\buse\s+[^;]*;", re.DOTALL)
+RENAMED = re.compile(rf"\b({CLOCK})\s+as\b")
+
+REEXPORT_REASON = {
+    "Instant": (
+        "names tilo_clock's monotonic clock type and then reads it directly, past "
+        "the reading a test holds and a host lends; read tilo_clock::now()"
+    ),
+    "SystemTime": (
+        "names tilo_clock's wall-clock type and then reads it directly, past the "
+        "reading a test holds and a host lends; read tilo_clock::wall()"
+    ),
+}
+
 
 @dataclass(frozen=True)
 class Violation:
@@ -155,13 +198,78 @@ def audit_sources(files: Judged, scope: Path) -> list[Violation]:
     return violations
 
 
+def clock_imports(text: str) -> list[tuple[int, str, bool]]:
+    """The clock types this file's `use` statements bring into scope.
+
+    ``(offset, type, from tilo_clock)`` per statement. A renamed import
+    (`Instant as Clock`) binds another name, and a bare `Instant::now()` after
+    it is not tilo_clock's.
+    """
+    found: list[tuple[int, str, bool]] = []
+    for statement in TILO_IMPORT_STATEMENT.finditer(text):
+        body = statement.group()
+        tilo = re.search(r"\btilo_clock\s*::", body) is not None
+        renamed = set(RENAMED.findall(body))
+        for name in REEXPORTED:
+            if name not in renamed and re.search(rf"\b{name}\b", body):
+                found.append((statement.start(), name, tilo))
+    return found
+
+
+def audit_reexport(relative: Path, source: str) -> list[Violation]:
+    """A machine clock read through a type `tilo_clock` only names."""
+    violations: list[Violation] = []
+    # A test can hold the clock still, so a qualified read there walks past
+    # exactly what the test is about: judged on the whole file.
+    whole = code_only(source)
+    for found in QUALIFIED_READ.finditer(whole):
+        clock = found.group("clock")
+        violations.append(
+            Violation(str(relative), line_number(whole, found.start()), REEXPORT_REASON[clock])
+        )
+    # The bare name is whichever import of it is in scope: the nearest one
+    # before the read, which is the file's or the test module's own.
+    imports = clock_imports(whole)
+    for found in BARE_READ.finditer(whole):
+        clock = found.group("clock")
+        in_scope = [entry for entry in imports if entry[1] == clock and entry[0] < found.start()]
+        if not in_scope or not max(in_scope)[2]:
+            continue
+        violations.append(
+            Violation(str(relative), line_number(whole, found.start()), REEXPORT_REASON[clock])
+        )
+    return violations
+
+
+def judged_by_scope(relative: Path) -> bool:
+    """Whether the crates above judge this file, or it is `tilo-clock`'s."""
+    return relative.is_relative_to(REEXPORT_CRATE) or any(
+        relative.is_relative_to(scope) for scope in SCOPES
+    )
+
+
+def audit_workspace(files: Judged) -> list[Violation]:
+    """Every other crate: the clock types are named, not read."""
+    violations: list[Violation] = []
+    for root in SOURCE_ROOTS:
+        if not (files.root / root).is_dir():
+            continue
+        for relative, source in files.sources(root):
+            # A file that never names the crate cannot reach its types.
+            if "tilo_clock" not in source or judged_by_scope(relative):
+                continue
+            violations += audit_reexport(relative, source)
+    return violations
+
+
 def audit(root: Path = ROOT, staged: bool = False) -> list[Violation]:
     files = judged(root, staged)
     violations: list[Violation] = []
     for scope in SCOPES:
         if (root / scope).is_dir():
             violations += audit_sources(files, scope)
-    return violations
+    violations += audit_workspace(files)
+    return sorted(violations, key=lambda violation: (violation.path, violation.line))
 
 
 def main(argv: list[str] | None = None) -> int:

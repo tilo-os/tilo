@@ -11,7 +11,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::time::Duration;
-use tilo_clock::Instant;
+use tilo_clock::time::Instant;
 
 /// How long Alt has to stay down after Tab before the switcher's panel shows: shorter than a
 /// deliberate look, longer than a practised Alt+Tab, so the common "back to the last window"
@@ -166,7 +166,7 @@ impl Overlays {
         }
         self.here.set(surface);
         if surface == Overlay::Switcher {
-            self.opened.set(Some(Instant::now()));
+            self.opened.set(Some(tilo_clock::now()));
             self.scope.set(SwitcherScope::Workspace);
             self.walk.set(1);
         } else {
@@ -186,7 +186,7 @@ impl Overlays {
         if walking {
             self.walk.set(self.walk.get().saturating_add(steps));
         } else {
-            self.opened.set(Some(Instant::now()));
+            self.opened.set(Some(tilo_clock::now()));
             self.walk.set(steps);
         }
         self.revision.set(self.revision.get().wrapping_add(1));
@@ -342,7 +342,7 @@ mod tests {
     #[test]
     fn a_flick_shows_nothing_and_holding_reveals_the_panel() {
         let surfaces = Overlays::new();
-        let opened = Instant::now();
+        let opened = tilo_clock::now();
         surfaces.walk(None, 1);
         assert_eq!(surfaces.here(), "switcher", "the walk is going");
         assert!(

@@ -441,7 +441,7 @@ async fn a_sealed_read_waiting_for_its_key_ends_when_the_key_arrives() {
             .and_then(|access| access.record_keys(workspace_id, &route))
             .is_some_and(|keys| keys.is_ok())
     };
-    let mut now = tilo_clock::Instant::now();
+    let mut now = tilo_clock::now();
     let mut pass = |(access, endpoint): &(ChannelKeyAccess, testing::Endpoint)| {
         now = now.checked_add(Duration::from_secs(60)).unwrap();
         access.access_record(workspace_id, &route);

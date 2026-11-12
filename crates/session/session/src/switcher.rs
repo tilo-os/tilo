@@ -39,7 +39,7 @@ pub(crate) fn show(
     }
     // A flick shorter than the panel's reveal delay shows nothing, and costs no reading of the
     // desk's windows.
-    let view = (!locked && walk.revealed(tilo_clock::Instant::now()))
+    let view = (!locked && walk.revealed(tilo_clock::now()))
         .then(|| crate::desk_windows::switcher_view(handle, walk, sizes))
         .flatten();
     panel.set(view)
@@ -140,8 +140,8 @@ impl WindowWalk {
 
     /// When the panel of a walk held down comes up, with nothing pressed meanwhile.
     #[must_use]
-    pub fn deadline(&self) -> Option<tilo_clock::Instant> {
-        self.walk.deadline(tilo_clock::Instant::now())
+    pub fn deadline(&self) -> Option<tilo_clock::time::Instant> {
+        self.walk.deadline(tilo_clock::now())
     }
 }
 

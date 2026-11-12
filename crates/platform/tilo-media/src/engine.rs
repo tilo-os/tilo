@@ -17,7 +17,7 @@
 //! [`FrameAcceptance`].
 
 use std::sync::OnceLock;
-use tilo_clock::Instant;
+use tilo_clock::time::Instant;
 
 use crate::event::{MediaEvent, VideoFrame};
 use crate::frame::{Frame, FrameAcceptance, FramePayload};
@@ -526,7 +526,7 @@ impl MediaEngine {
     pub fn seek_and_wait(
         &mut self,
         ms: u64,
-        timeout: tilo_clock::Duration,
+        timeout: tilo_clock::time::Duration,
     ) -> Result<(), SeekWaitError> {
         // `Instant + Duration` panics on overflow, and the only way to reach
         // that is a `timeout` of hundreds of billions of years — a caller
@@ -552,7 +552,7 @@ impl MediaEngine {
         if let Backend::Unavailable(u) = &self.backend {
             return Err(SeekWaitError::Failed(u.reason.clone()));
         }
-        let deadline = Instant::now().checked_add(timeout);
+        let deadline = tilo_clock::now().checked_add(timeout);
         // A pipeline that has not finished prerolling refuses seeks, so the
         // request has to be repeated until it is taken. Waiting on a seek that
         // was never accepted is the difference between "the frame is coming"
@@ -563,7 +563,7 @@ impl MediaEngine {
             if let Backend::Gst(g) = &mut self.backend {
                 // A flushing seek is asynchronous: the new preroll exists only
                 // once the state change completes.
-                g.wait_settled(tilo_clock::Duration::from_millis(50));
+                g.wait_settled(tilo_clock::time::Duration::from_millis(50));
             }
             if !accepted {
                 accepted = self.seek_with(ms, SeekMode::Accurate);
@@ -575,10 +575,10 @@ impl MediaEngine {
             if accepted && self.frame_is_current() {
                 return Ok(());
             }
-            if deadline.is_some_and(|d| Instant::now() >= d) {
+            if deadline.is_some_and(|d| tilo_clock::now() >= d) {
                 return Err(SeekWaitError::TimedOut);
             }
-            std::thread::sleep(tilo_clock::Duration::from_millis(5));
+            std::thread::sleep(tilo_clock::time::Duration::from_millis(5));
         }
     }
 
@@ -1304,7 +1304,8 @@ mod tests {
             // caller who asked hardest to be patient was the one who got killed.
             let mut e = opened();
             assert!(
-                e.seek_and_wait(1_000, tilo_clock::Duration::MAX).is_ok(),
+                e.seek_and_wait(1_000, tilo_clock::time::Duration::MAX)
+                    .is_ok(),
                 "an unbounded wait still returns the frame it waited for"
             );
         }

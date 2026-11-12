@@ -44,7 +44,7 @@ const PLAIN: &str = "text/plain;charset=utf-8";
 
 /// A copy deadline no test outlives, for tests about the order of the
 /// compositor's answers rather than the copy's budget.
-fn outlasting_deadline() -> tilo_clock::Instant {
+fn outlasting_deadline() -> tilo_clock::time::Instant {
     tilo_clock::now()
         .checked_add(tilo_test_env::hang_bound().saturating_mul(2))
         .expect("publication deadline beyond this test")
@@ -54,7 +54,7 @@ fn outlasting_deadline() -> tilo_clock::Instant {
 fn publish(
     payload: PublicationPayload,
     reply: mpsc::Sender<bool>,
-    deadline: tilo_clock::Instant,
+    deadline: tilo_clock::time::Instant,
 ) -> ClipboardCommand {
     ClipboardCommand::Publish(Publication::new(
         payload,

@@ -31,9 +31,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             joined: parts,
         }];
         let wait = if after.is_some() { RECORD_WAIT_MS } else { 0 };
-        let deadline = tilo_clock::Instant::now()
+        let deadline = tilo_clock::now()
             .checked_add(std::time::Duration::from_millis(wait))
-            .unwrap_or_else(tilo_clock::Instant::now);
+            .unwrap_or_else(tilo_clock::time::Instant::now);
         let caller = self.execution_caller();
         // The owner captures each record on this thread's behalf, and the wait holds it.
         let readings = tokio::task::spawn_blocking(move || {

@@ -20,7 +20,7 @@ use crate::journal::{EncryptedJournal, Owner, Status};
 use crate::routing::LiveBinding;
 use crate::signal_session::{CheckedSendError, Completion, SendError, SendJournal};
 use crate::{Error, ProtocolReference, Route, Service};
-use tilo_clock::Duration;
+use tilo_clock::time::Duration;
 pub use transport::{DbusTransport, SimAuthority, SimBinding};
 
 /// A bounded complete text read from this runtime's pinned modem/SIM.

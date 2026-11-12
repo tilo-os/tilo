@@ -382,7 +382,7 @@ fn a_bot_reads_the_records_it_holds_through_the_record_door() {
         },
         joined: false,
     };
-    let now = tilo_clock::Instant::now();
+    let now = tilo_clock::now();
     let read = tilo_actions::remote::read_records(
         reads.as_ref(),
         &bot(),

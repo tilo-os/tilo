@@ -251,7 +251,7 @@ fn a_task_typed_into_todays_entry_is_due_the_persons_today() {
             zone.set("TZ", "America/Los_Angeles");
             let _clock = tilo_clock::testing::hold_wall_everywhere(
                 tilo_clock::testing::OwnProcess::of_a_test_in_its_own_process(),
-                tilo_clock::UNIX_EPOCH + tilo_clock::Duration::from_secs(1_794_459_600),
+                tilo_clock::time::UNIX_EPOCH + tilo_clock::time::Duration::from_secs(1_794_459_600),
             );
             let (app, bundle) = shipped(&shipped_dir().join("tasks"));
             assert_eq!(app, TASKS);

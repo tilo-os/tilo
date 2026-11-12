@@ -90,7 +90,7 @@ impl NativeTaskActionRequirement {
         workspace: &str,
         run: &TrackerRun,
         looked: Option<&tilo_action_policy::turn::Looked>,
-        now: tilo_clock::SystemTime,
+        now: tilo_clock::time::SystemTime,
     ) -> Result<(), String> {
         use tilo_action_policy::{Answer, Authority, Context, roles};
         let node = tilo_actions::action_node(
