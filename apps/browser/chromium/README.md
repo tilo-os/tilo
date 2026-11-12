@@ -208,6 +208,10 @@ attaches DevTools: it has the tab run `javascript:void(0)`, for which the
 engine starts the renderer of a tab that has loaded nothing, and which is no
 navigation. A popup needs none of this: it comes from its opener with a live
 frame, and its first navigation replaces its initial entry in the same way.
+`tests/first_page_history.py` opens some 250 tabs, one after another and
+several at once, and fails if the first script of any first page saw more
+than the page itself or its tab could go back; it also prints what opening a
+tab costs (`perf chromium tab open`).
 
 A page's own questions (`alert`, `confirm`, `prompt`, and "leave this page?"
 from a `beforeunload` handler) are the embedder's to show. `ready` /
