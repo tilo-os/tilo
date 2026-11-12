@@ -124,15 +124,23 @@ const PAGE = `JSON.stringify({
   frameMs: window.__tiloDom?.stats.lastMs ?? null,
 })`;
 
+// Frames stop, and nothing is still on its way: an app whose tiles or photos
+// arrive after its frames settled was compared once with them and once
+// without, which read as a 27 % pixel difference that was only the network.
+const LOADED = 'JSON.stringify({frames: window.renderMarks.presented.length, resources: performance.getEntriesByType("resource").length})';
 async function settle(tab) {
   await tab.waitFor('!!window.renderMarks', {timeout: 60000});
   await tab.waitFor('window.renderMarks.presented[0]', {timeout: 90000});
-  let last = -1;
-  for (let i = 0; i < 40; i++) {
+  let last = '';
+  let steady = 0;
+  for (let i = 0; i < 60; i++) {
     await sleep(250);
-    const n = await tab.evaluate('window.renderMarks.presented.length');
-    if (n === last) break;
-    last = n;
+    const now = await tab.evaluate(LOADED);
+    steady = now === last ? steady + 1 : 0;
+    last = now;
+    // Two quiet passes, and at least one frame has been drawn since the
+    // last thing that arrived.
+    if (steady >= 3) return;
   }
 }
 
@@ -390,6 +398,11 @@ try {
           if (!scenario) result.interaction = await interact(tab, result.field);
           result.field = result.field ?? JSON.parse(await tab.evaluate(FIELD));
         }
+        // What arrived over the network: an app whose tiles or photos load
+        // in one render and not the other differs by them, not by the
+        // renderer, and the counts say so.
+        result[`${render}Remote`] = JSON.parse(await tab.evaluate(`JSON.stringify(
+          performance.getEntriesByType('resource').filter(e => !e.name.startsWith(location.origin)).length)`));
         const errors = tab.log.filter(line => /^(EXC|ERROR)/.test(line)).slice(0, 6);
         if (errors.length) result[`${render}Errors`] = errors;
       } catch (error) {

@@ -131,7 +131,12 @@ transparent, as the input surface. Nothing changes for a mount without
     drew, cut to the viewport, with its text still text over it. The
     encoder rasterizes it with the CPU rasterizer the canvas path already
     has, hashes what it drew, and hands the page a new image only when that
-    changed, naming the one it replaces. A widget that scrolls natively or
+    changed, naming the one it replaces. An image is drawn at the density
+    of the screen showing it (`device_scale`, the page's device pixel
+    ratio) and placed back at its size in points by its matrix, so a
+    picture is as crisp on a phone as on a desktop; one larger than
+    `ISLAND_PIXELS` (4 M device pixels) is drawn less densely instead,
+    never below one pixel per point. A widget that scrolls natively or
     holds a field the page shows never becomes an image unasked.
 11. **Real `<input>` for single-line fields.** A text field's semantics
     carry what it asks to be filled with (`AccessState::autofill`: username,
@@ -271,6 +276,20 @@ Against the targets:
   screen. The frame metrics name what asks for it: `queued: component wake`
   and `queued: input frame pending` — the app's own background update after
   the edit, which the runtime cannot know changes no pixel until it draws.
+- **Ten apps at 390 px** (`parity.mjs --phone`: 390 × 844 at three device
+  pixels per point, each app mounted alone, HTML and canvas in the same run):
+  Canvas 0.35 %, Chat 0.35 %, Notes 0.29 %, Photos 0.40 %, Clock 0.57 %,
+  Sheets 0.53 %, PDF Viewer 0.30 %, Typst 0.17 %, Video Editor 1.17 % — all
+  glyph and picture edges, the same kind of difference as at 1280 px. Maps
+  is the one app whose frames are not its own: it fetched 141 remote
+  resources as HTML and 20 on the canvas in one run, and its difference is
+  whatever share of its tiles had arrived (28 % in a run where one render had
+  none, 1.9 % where both had most, 0.6 % where both had all). The run now
+  reports each render's remote resource count beside its diff, so that reads
+  as the network, not the renderer. No app of the bundle puts a picture (a
+  chart or plot widget, or a widget past the island threshold) on its first
+  screen or the screens scrolled to here, so islands at a phone's density are
+  covered by the encoder's own test rather than by a pixel diff.
 - **The last run, with every change in this stage** (HTML, canvas and
   plain DOM in one run; raw data in
   [`html-renderer/results.json`](html-renderer/results.json)): typing p50 /
@@ -360,10 +379,20 @@ What blocks it:
   the canvas within glyph edges — the note's typed and selected frames differ
   by 1.1 % — and the run found a dialog that does not: the canvas app's "New
   artwork…" differs in 47 % of its pixels, with the sheet behind it painted
-  much darker as HTML than on the canvas. ebook's pages differ from the
-  canvas for a reason not found yet.
-- **Phones.** Only Notes is measured at 390 px. Pictures are rasterized at
-  one pixel per CSS pixel, so they are soft on a phone's screen.
+  much darker as HTML than on the canvas. ebook's pages agree line for line
+  and word for word, but its column of text carries about 4 % more ink as
+  HTML and its heading is 2.8 % narrower; that is a face or an antialiasing
+  weight, not the line breaks it once looked like, and it is not yet
+  explained.
+- **Phones.** Ten apps are measured at 390 px now, and all of them but Maps
+  agree with the canvas within glyph and picture edges; Maps' difference is
+  its remote tiles, which the run now counts per render. A picture — a chart
+  or plot widget, or a widget past the island threshold — is rasterised at
+  the screen's density, so it is no longer soft on a phone; no app of the
+  bundle draws one on the screens measured, so that rests on the encoder's
+  own test. A denser island costs more to draw when it changes: the same
+  picture at three device pixels per point is nine times the pixels, capped
+  at four million.
 - **Real hardware.** Every number here is headless Chrome without a GPU;
   Safari and Firefox are not run at all.
 
