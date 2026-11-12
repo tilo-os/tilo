@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "tilo-fs"
 version = "0.1.0"
 edition = "2024"
@@ -78,76 +80,19 @@ name = "fs"
 path = "src/main.rs"
 required-features = ["filesystem"]
 
+# The content plane's integration tests: one binary, its files included as
+# modules by `tests/it.rs` (a file per binary linked the whole crate once
+# each), gated on the filesystem half they all drive.
 [[test]]
-name = "workspace_startup"
-path = "tests/workspace_startup.rs"
+name = "it"
+path = "tests/it.rs"
 required-features = ["filesystem"]
 
-[[test]]
-name = "collab_release_matrix"
-path = "tests/collab_release_matrix.rs"
-required-features = ["filesystem"]
-
-[[test]]
-name = "corruption_matrix"
-path = "tests/corruption_matrix.rs"
-required-features = ["filesystem"]
-
-[[test]]
-name = "held_memory"
-path = "tests/held_memory.rs"
-required-features = ["filesystem"]
-
+# A binary carries one global allocator, and this test's counts the daemon's
+# peak heap across its threads.
 [[test]]
 name = "document_media_footprint"
 path = "tests/document_media_footprint.rs"
-required-features = ["filesystem"]
-
-[[test]]
-name = "integration_test"
-path = "tests/integration_test.rs"
-required-features = ["filesystem"]
-
-[[test]]
-name = "performance_gate"
-path = "tests/performance_gate.rs"
-required-features = ["filesystem"]
-
-[[test]]
-name = "performance_timing"
-path = "tests/performance_timing.rs"
-required-features = ["filesystem"]
-
-[[test]]
-name = "native_tier1"
-path = "tests/native_tier1.rs"
-required-features = ["filesystem"]
-
-[[test]]
-name = "iroh_idle"
-path = "tests/iroh_idle.rs"
-required-features = ["filesystem"]
-
-[[test]]
-name = "native_sync_bench"
-path = "tests/native_sync_bench.rs"
-required-features = ["filesystem"]
-
-# The document media a session started from a build under test serves its apps
-# (`fs serve-media`): the connector's put and the window's read through it.
-[[test]]
-name = "session_media"
-path = "tests/session_media.rs"
-required-features = ["filesystem"]
-
-[[test]]
-name = "gdrive-rystic-volume"
-path = "tests/gdrive_rystic_volume.rs"
-required-features = ["rystic-tests"]
-
-[[test]]
-name = "cloud_mount"
-path = "tests/cloud_mount.rs"
 required-features = ["filesystem"]
 
 [dependencies]
