@@ -2477,7 +2477,7 @@ impl InstallerApp {
             children.push(Box::new(
                 Text::new(&CATALOG.t_args(
                     "installer-install-alongside",
-                    &[("host", ArgValue::Text(host.display_name()))],
+                    &[("host", ArgValue::Text(host.display_name().to_owned()))],
                 ))
                 .with_role(TextRole::Caption)
                 .with_color(dim),
@@ -3198,7 +3198,7 @@ impl InstallerApp {
                         CATALOG.t("installer-property-this-disk"),
                         CATALOG.t_args(
                             "installer-disk-holds-installer",
-                            &[("host", ArgValue::Text(host.clone()))],
+                            &[("host", ArgValue::Text(host.to_owned()))],
                         ),
                     ));
                     summary.push(Property::new(
@@ -3209,7 +3209,7 @@ impl InstallerApp {
                         CATALOG.t("installer-property-choose-os"),
                         CATALOG.t_args(
                             "installer-choose-os-restart",
-                            &[("host", ArgValue::Text(host.clone()))],
+                            &[("host", ArgValue::Text(host.to_owned()))],
                         ),
                     ));
                 } else {
