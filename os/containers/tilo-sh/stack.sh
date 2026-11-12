@@ -45,7 +45,7 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
   stack.sh status        what runs, at which address, and whether it answers
   stack.sh logs NAME     a service's log (relay, tls, door, web, discord, releases)
   stack.sh browser       a Chromium on a fresh profile, opened on the local site
-  stack.sh check [--images]
+  stack.sh check
                          bring the stack up and run the end-to-end check on it
                          (check.sh: a startup's visa flow and a fresh visitor's
                          entry time)
@@ -67,22 +67,33 @@ What runs, all on 127.0.0.1 (ports from TILO_SH_PORT_BASE, default 24100):
             its Browser run in its VM here, and the relay places it on this
             host. It is privileged, so it runs as root over its own state
             (TILO_SH_VM_HOST_STATE, /var/lib/tilo-sh-local-vm) through sudo;
-            skipped, with the reason, where /dev/kvm or root is missing
-            (with --images; natively it is skipped, with that reason: it runs
-            from its image)
+            skipped, with the reason, where /dev/kvm or root is missing. It
+            always runs from its image; natively it starts with the rest when
+            TILO_SH_VM_HOST=1 names it
   discord   with --discord, the fake Discord (crates/dev/fake-discord)
 
 Natively: the programs are t's lounge-gate build (the release's code and
 opt-level without its whole-program link) in ./target/lounge-gate, built by
 t, or by the cargo drop-in TILO_SH_CARGO names; Caddy is
-the one on PATH, else a pinned release fetched once. The relay and the door
-trust the local Caddy's CA through the fixed bundle path Tilo's programs read,
-which bwrap (bubblewrap) puts in front of this machine's own for those
-processes alone. Nothing runs as root, and no process sees this session's
-D-Bus or runtime directory. TILO_SH_BUNDLE names a built desktop bundle
+the one TILO_SH_CADDY names, else the one on PATH, else a pinned release
+fetched once. The
+relay and the door trust the local Caddy's CA through the fixed bundle path
+Tilo's programs read, which bwrap (bubblewrap) puts in front of this machine's
+own for those processes alone. No process sees this session's D-Bus or runtime
+directory. TILO_SH_BUNDLE names a built desktop bundle
 (build.sh --bundle desktop) instead of building one; TILO_SH_BUNDLE_NAMES=1
 builds it with its function names kept, for profiling the page
 (stack.sh restart web).
+Already-built inputs, which a check hands the stack so its bring-up compiles
+and lays out nothing (see docs/testing-tilo-sh.md):
+  TILO_SH_PROGRAMS  a directory of the programs the other services run
+                    (tilo-front-door, and fake-discord for --discord)
+  TILO_SH_LOUNGE    the relay's laid-out context, as lounge-context.sh makes it
+                    (bin/, bots/, fonts/, surfaces/, entrypoint.sh)
+  TILO_SH_SITE      the web entry's laid-out site, as web-entry-context.sh makes
+                    it (site/, install.sh): the web builds no bundle then
+  TILO_SH_CLI_DIR   a built release of the tilo command (cli-x86_64), which
+                    the site serves at /releases instead of packing one
 Images: TILO_SH_IMAGE_LOUNGE, TILO_SH_IMAGE_DOOR and TILO_SH_IMAGE_WEB name an
 OCI archive or a registry reference instead of this checkout's t build (e.g.
 the registry.tilo.so/tilo/lounge@sha256:… production pins).
@@ -140,9 +151,12 @@ native=$state/native   # what the native stack builds and lays out
 runs=$state/run         # each native process's runtime directory and pid
 # The programs t builds for it: the release's code and opt-level without the
 # whole-program link (Cargo.toml's lounge-gate, which the Lounge's own checks
-# run), so a change relinks in a minute instead of LTO's many.
+# run), so a change relinks in a minute instead of LTO's many. A caller that
+# built them already names their directory (TILO_SH_PROGRAMS, TILO_SH_LOUNGE).
 profile='lounge-gate'
-programs=$repo/target/$profile
+programs=${TILO_SH_PROGRAMS:-$repo/target/$profile}
+# The relay's laid-out context, as lounge-context.sh makes it (below).
+lounge=${TILO_SH_LOUNGE:-}
 # The one trust bundle Tilo's programs read (crates/system/tilo-native-certs).
 ca_path=/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
 
@@ -288,27 +302,21 @@ relay_env() {
   # A workspace's programs and its Browser run in its VM on this stack's own
   # VM host, when it is up: where to place a workspace, which device holds it,
   # and the ledger its page actions are counted in.
-  if [[ $mode == images ]] && vm_host_running; then
+  if vm_host_running; then
     local line
     while IFS= read -r line; do env+=("$line"); done < <(vm_host env)
   fi
   printf '%s\n' "${env[@]}"
 }
 
-# Why the stack runs no VM host here: what this machine lacks, or, for the
-# native stack, that the VM host runs from its image (up --images).
-vm_skip_reason() {
-  local blocker
-  blocker=$(vm_host_blocker)
-  if [[ -n $blocker ]]; then
-    printf '%s' "$blocker"
-  elif [[ $mode != images ]]; then
-    printf '%s' 'it runs from its image, as root: stack.sh up --images starts it'
-  fi
-}
+# Why the stack runs no VM host here: what this machine lacks, or that this
+# run does not ask for one (natively it starts from its image only when
+# TILO_SH_VM_HOST=1 names the images it runs).
+vm_skip_reason() { vm_host_blocker; }
 
-# Whether this stack's VM host is up.
-vm_host_running() { [[ -z $(vm_host_blocker) && -n $(vm_host status 2>/dev/null | sed -n 's/^tilo-sh-vm-host-0 *running$/running/p') ]]; }
+# Whether this stack's VM host is up, whatever this run asked for: a stack
+# started with it places workspaces there, and `down` stops it.
+vm_host_running() { [[ -n $(vm_host status 2>/dev/null | sed -n 's/^tilo-sh-vm-host-0 *running$/running/p') ]]; }
 
 # The front door's environment: apps/tilo-front-door/deployment.yaml.
 door_env() {
@@ -350,7 +358,7 @@ env_args() { local line; while IFS= read -r line; do printf -- '--env\0%s\0' "$l
 # image's own bundle, and Cloudflare's certificate in front of the relay).
 trust_bundle() {
   local root=$state/tls/caddy/pki/authorities/local/root.crt
-  local deadline=$((SECONDS + 30))
+  local deadline=$((SECONDS + 10))
   until [[ -s $root ]]; do
     ((SECONDS < deadline)) || die "Caddy made no local CA at $root; stack.sh logs tls"
     sleep 0.2
@@ -401,12 +409,21 @@ vm_state=${TILO_SH_VM_HOST_STATE:-/var/lib/tilo-sh-local-vm}
 # the hosted Browser's steps, which need it).
 vm_host_blocker() {
   [[ ${TILO_SH_VM_HOST:-} != 0 ]] || { echo 'TILO_SH_VM_HOST=0 leaves it out'; return; }
+  if [[ $mode == native && ${TILO_SH_VM_HOST:-} != 1 ]]; then
+    echo 'it runs from its image: TILO_SH_VM_HOST=1 starts it beside this stack, from the images TILO_SH_IMAGE_VM_HOST and TILO_SH_HOSTED_GUEST name'
+    return
+  fi
   [[ -e /dev/kvm ]] || { echo 'this machine has no /dev/kvm'; return; }
   if [[ $EUID != 0 ]] && ! sudo -n true 2>/dev/null; then
     echo 'it needs root (a raw block device for its state, cgroup delegation and setcap for its jail helper) and sudo here asks for a password; run: sudo -E env TILO_SH_STATE=$vm_state bash os/containers/tilo-sh/vm-host.sh up'
     return
   fi
   command -v t >/dev/null || { [[ -n ${TILO_SH_IMAGE_VM_HOST:-} && -n ${TILO_SH_HOSTED_GUEST:-} ]] || { echo 't is not here to build its images, and TILO_SH_IMAGE_VM_HOST and TILO_SH_HOSTED_GUEST name none'; return; }; }
+  # Natively the host never builds its images: they are named, or t made them.
+  if [[ $mode == native && ( -z ${TILO_SH_IMAGE_VM_HOST:-} || -z ${TILO_SH_HOSTED_GUEST:-} ) ]]; then
+    echo 'natively it runs from the images TILO_SH_IMAGE_VM_HOST and TILO_SH_HOSTED_GUEST name, and one is not named'
+    return
+  fi
 }
 
 # vm-host RUN…: os/containers/tilo-sh/vm-host.sh, as root when this stack is
@@ -575,24 +592,27 @@ image_env_here() {
 }
 
 # Caddy: production's tls container and the web entry image both run it. The
-# one on PATH, else this release, fetched once and checked against its
-# published SHA-512 (the web entry image's version).
-caddy_version=2.11.7
-caddy_sha512=a7a433a1b133efc3c8d10eb0b99d52a24b5ef5c322dc77f5282182b1c0402139ab83f3a99f0c52409df77d20123fb0b523edad8a66d8f5e49136197bf61ef0e7
+# one the caller built (TILO_SH_CADDY, which t's tilo-sh-caddy hands the checks
+# so their bring-up downloads nothing), else the one on PATH, else the pinned
+# release (caddy.env), fetched once and checked against its published SHA-512.
+. "$here/caddy.env"
 find_caddy() {
-  if [[ -n ${TILO_SH_CADDY:-} ]]; then printf '%s' "$TILO_SH_CADDY"; return; fi
+  if [[ -n ${TILO_SH_CADDY:-} ]]; then
+    [[ -x $TILO_SH_CADDY ]] || die "TILO_SH_CADDY names $TILO_SH_CADDY, which is not an executable"
+    printf '%s' "$TILO_SH_CADDY"; return
+  fi
   if command -v caddy >/dev/null; then command -v caddy; return; fi
-  local dir=$native/caddy-$caddy_version
+  local dir=$native/caddy-$CADDY_VERSION
   if [[ ! -x $dir/caddy ]]; then
-    say "fetching Caddy $caddy_version (no caddy on PATH)"
+    say "fetching Caddy $CADDY_VERSION (no caddy on PATH)"
     local fetch=${native:?}/caddy-fetch
     rm -rf "${fetch:?}"
     mkdir -p "$fetch" "$dir"
     curl -fsSL -o "$fetch/caddy.tar.gz" \
-      "https://github.com/caddyserver/caddy/releases/download/v$caddy_version/caddy_${caddy_version}_linux_amd64.tar.gz" \
+      "https://github.com/caddyserver/caddy/releases/download/v$CADDY_VERSION/caddy_${CADDY_VERSION}_linux_amd64.tar.gz" \
       || die 'could not fetch Caddy; install one (dnf install caddy) or set TILO_SH_CADDY'
-    printf '%s  %s\n' "$caddy_sha512" "$fetch/caddy.tar.gz" | sha512sum -c --quiet - >&2 \
-      || die "the fetched Caddy is not release $caddy_version's"
+    printf '%s  %s\n' "$CADDY_SHA512" "$fetch/caddy.tar.gz" | sha512sum -c --quiet - >&2 \
+      || die "the fetched Caddy is not release $CADDY_VERSION's"
     tar -xzf "$fetch/caddy.tar.gz" -C "$dir" caddy
     rm -rf "${fetch:?}"
   fi
@@ -601,8 +621,16 @@ find_caddy() {
 
 # The programs, for every service at once: one build, so the features Cargo
 # unifies are the same each time and a change relinks only what it touches.
+# A caller that built them already (TILO_SH_PROGRAMS) compiles nothing.
 build_programs() {
   local began=$SECONDS
+  if [[ -n ${TILO_SH_PROGRAMS:-} ]]; then
+    # Every service's own start says what it is missing; the door is the one
+    # this stack always runs from here.
+    [[ -x $programs/tilo-front-door ]] || die "TILO_SH_PROGRAMS names $programs, which holds no tilo-front-door"
+    say "programs given ($programs, built by the caller)"
+    return
+  fi
   say "building the programs (${TILO_SH_CARGO:-t} build --profile $profile; only what changed compiles)"
   (cd "$repo" && "$here/cargo.sh" build --profile "$profile" --features tilo-relay/agents \
     -p tilo-relay -p discord-worker -p tilo-front-door -p fake-discord -p tilo-cli \
@@ -618,16 +646,25 @@ build_programs() {
 # The relay's files as the image's context lays them out (lounge-context.sh,
 # the image's own build step): the programs, the bots, the app surfaces from
 # the apps' history and the product font catalog (lounge-fonts.sh, once).
+# TILO_SH_LOUNGE names a context laid out already, which is what a check hands
+# the stack: laying it out reads the apps' history and the catalog, seconds a
+# check has no reason to spend twice.
 lay_out_lounge() {
-  if [[ ! -f $native/fonts/manifest.toml ]]; then
-    say 'fetching the product font catalog (tools/ci/publish/lounge-fonts.sh, once)'
-    bash "$repo/tools/ci/publish/lounge-fonts.sh" "$native/fonts" >&2 || die 'could not prepare the fonts'
+  if [[ -z $lounge ]]; then
+    if [[ ! -f $native/fonts/manifest.toml ]]; then
+      say 'fetching the product font catalog (tools/ci/publish/lounge-fonts.sh, once)'
+      bash "$repo/tools/ci/publish/lounge-fonts.sh" "$native/fonts" >&2 || die 'could not prepare the fonts'
+    fi
+    bash "$repo/tools/ci/publish/lounge-context.sh" "$native/lounge" "$programs" "$native/fonts" >/dev/null \
+      || die 'could not lay out the relay (lounge-context.sh)'
+    lounge=$native/lounge
   fi
-  bash "$repo/tools/ci/publish/lounge-context.sh" "$native/lounge" "$programs" "$native/fonts" >/dev/null \
-    || die 'could not lay out the relay (lounge-context.sh)'
+  [[ -x $lounge/bin/tilo-relay ]] || die "TILO_SH_LOUNGE names $lounge, which holds no bin/tilo-relay"
+  [[ -f $lounge/entrypoint.sh ]] || die "TILO_SH_LOUNGE names $lounge, which holds no entrypoint.sh"
   # The image installs the catalog at /usr/share/fonts/tilo; outside it a Tilo
   # program finds it in fonts/ beside itself.
-  ln -sfn ../fonts "$native/lounge/bin/fonts"
+  [[ -d $lounge/fonts ]] || die "TILO_SH_LOUNGE names $lounge, which holds no fonts"
+  ln -sfn ../fonts "$lounge/bin/fonts"
 }
 
 # The desktop bundle the web entry serves (build.sh --bundle desktop, the
@@ -636,7 +673,7 @@ lay_out_lounge() {
 # TILO_SH_BUNDLE_NAMES=1 builds it with its function names kept (build.sh
 # --names), for profiling the page: otherwise the bundle that ships.
 build_bundle() {
-  if [[ -n ${TILO_SH_BUNDLE:-} ]]; then return; fi
+  if [[ -n ${TILO_SH_BUNDLE:-} || -n ${TILO_SH_SITE:-} ]]; then return; fi
   local began=$SECONDS next=${native:?}/bundle.next names=()
   [[ ${TILO_SH_BUNDLE_NAMES:-0} != 1 ]] || names=(--names)
   say "building the desktop bundle (build.sh --bundle desktop ${names[*]}, compiled by ${TILO_SH_CARGO:-t})"
@@ -650,8 +687,20 @@ build_bundle() {
 
 # The site as the image holds it: laid out by layout.py, precompressed by
 # compress.sh, the installer beside it (web-entry-context.sh, Containerfile).
+# TILO_SH_SITE names a site laid out already (web-entry-context.sh's output:
+# site/, install.sh), which a check hands the stack: the files the image
+# serves, laid out and precompressed once, not per bring-up.
 lay_out_web() {
-  local bundle=${TILO_SH_BUNDLE:-$native/bundle} container=$repo/crates/browser/tilo-browser-runtime/container
+  local container=$repo/crates/browser/tilo-browser-runtime/container
+  if [[ -n ${TILO_SH_SITE:-} ]]; then
+    web_site=$TILO_SH_SITE/site
+    web_install=$TILO_SH_SITE
+    [[ -f $web_site/index.html ]] || die "TILO_SH_SITE names $TILO_SH_SITE, which holds no site/index.html"
+    [[ -f $web_install/install.sh ]] || die "TILO_SH_SITE names $TILO_SH_SITE, which holds no install.sh"
+    say "the site is the one given ($web_site)"
+    return
+  fi
+  local bundle=${TILO_SH_BUNDLE:-$native/bundle}
   [[ -f $bundle/build.json ]] || die "no desktop bundle at $bundle"
   local stamp
   stamp=$(sha256sum "$bundle/build.json" | cut -c1-16)
@@ -670,15 +719,22 @@ lay_out_web() {
   fi
   mkdir -p "$native/web/install"
   cp "$repo/dist/install/tilo.sh" "$native/web/install/install.sh"
+  web_site=$native/web/site
+  web_install=$native/web/install
 }
 
 # The site's /releases: this checkout's tilo command, packed as a release packs
-# it (cli-release.sh pack).
+# it (cli-release.sh pack), or the release a caller built (TILO_SH_CLI_DIR, the
+# cli-x86_64 check's output).
 lay_out_releases() {
   local dir=$state/releases/tilo-cli/latest
   mkdir -p "$dir"
-  bash "$repo/tools/ci/publish/cli-release.sh" pack "$programs/tilo" "$dir/tilo-linux-x86_64.tar.gz" \
-    || die 'could not pack the tilo command'
+  if [[ -n ${TILO_SH_CLI_DIR:-} ]]; then
+    cp "$TILO_SH_CLI_DIR"/tilo-* "$dir/" || die "TILO_SH_CLI_DIR holds no tilo-* release files"
+  else
+    bash "$repo/tools/ci/publish/cli-release.sh" pack "$programs/tilo" "$dir/tilo-linux-x86_64.tar.gz" \
+      || die 'could not pack the tilo command'
+  fi
 }
 
 # private_env NAME PATH: a home, runtime, config, data, state, cache and
@@ -723,8 +779,8 @@ stop_native() {
   pid=$(cat "$pidfile")
   if kill -0 "$pid" 2>/dev/null; then
     kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
-    local deadline=$((SECONDS + 10))
-    while kill -0 "$pid" 2>/dev/null && ((SECONDS < deadline)); do sleep 0.2; done
+    local deadline=$((SECONDS + 5))
+    while kill -0 "$pid" 2>/dev/null && ((SECONDS < deadline)); do sleep 0.1; done
     kill -KILL -- "-$pid" 2>/dev/null || true
   fi
   rm -f "$pidfile"
@@ -748,7 +804,7 @@ start_native_tls() {
 }
 
 start_native_relay() {
-  local lounge=$native/lounge
+  local lounge=${lounge:-$native/lounge}
   { private_env relay "$lounge/bin"
     image_env_here "$repo/os/containers/tilo-lounge/Containerfile" \
       "TILO_ROOMS_STATE=$state/relay" "TILO_SECRETS_DIR=$state/relay/secrets"
@@ -771,14 +827,15 @@ start_native_door() {
 # for the running relay, asked at its public origin, as production's operator
 # asks it to set apps/tilo-web. LOUNGE is the relay's image with --images.
 page_host() {
-  local lounge=${1:-}
+  local image=${1:-}
   if [[ $mode == images ]]; then
     podman_ run --rm --network host --read-only --entrypoint /usr/local/bin/tilo-relay \
-      -v "$state/trust-bundle.pem:$ca_path:ro,Z" "$lounge" page-host "$relay_origin"
+      -v "$state/trust-bundle.pem:$ca_path:ro,Z" "$image" page-host "$relay_origin"
   else
+    local relay=${lounge:-${TILO_SH_LOUNGE:-$native/lounge}}/bin/tilo-relay
     env -i PATH=/usr/bin:/bin "HOME=$runs" \
       bwrap --dev-bind / / --ro-bind "$state/trust-bundle.pem" "$ca_path" -- \
-      "$programs/tilo-relay" page-host "$relay_origin"
+      "$relay" page-host "$relay_origin"
   fi
 }
 
@@ -791,7 +848,7 @@ start_native_web() {
     image_env_here "$container/Containerfile" \
       "XDG_DATA_HOME=$runs/web/data" "XDG_CONFIG_HOME=$runs/web/config"
     # The image's paths and port, here (entrypoint.sh).
-    printf '%s\n' "TILO_WEB_SITE=$native/web/site" "TILO_WEB_INSTALL=$native/web/install" \
+    printf '%s\n' "TILO_WEB_SITE=$web_site" "TILO_WEB_INSTALL=$web_install" \
       "TILO_WEB_RUN=$runs/web/entry" "TILO_WEB_CADDYFILE=$container/Caddyfile" \
       TILO_WEB_BIND=127.0.0.1 "TILO_WEB_PORT=$web_port"
     web_env "$room" "$info"
@@ -811,7 +868,7 @@ start_native_discord() {
   private_env discord "$programs" > "$runs/discord.env"
   run_native discord "$runs/discord" "$programs/fake-discord" --rest "127.0.0.1:$discord_rest_port" \
     --gateway "127.0.0.1:$discord_gateway_port" --control "127.0.0.1:$discord_control_port"
-  local deadline=$((SECONDS + 20))
+  local deadline=$((SECONDS + 10))
   until grep -q '^DISCORD_API_BASE=' "$state/logs/discord.log" 2>/dev/null; do
     ((SECONDS < deadline)) || die "the fake Discord did not start: $(cat "$state/logs/discord.log")"
     sleep 0.2
@@ -820,27 +877,51 @@ start_native_discord() {
   discord_secrets
 }
 
+# A step's limit is what the step needs on a machine that is not busy with
+# something else: every wait here is local, and one that runs past it says
+# which step and where to read why, instead of hanging on the whole check's
+# timeout.
 wait_relay() {
-  wait_for 'relay (its readiness probe, /mode)' "http://127.0.0.1:$routes_port/mode" 300
-  wait_for 'tls (the relay through Caddy)' "$relay_origin/mode" 60 --cacert "$state/local-ca.pem"
+  wait_for 'relay (its readiness probe, /mode)' "http://127.0.0.1:$routes_port/mode" 30
+  wait_for 'tls (the relay through Caddy)' "$relay_origin/mode" 30 --cacert "$state/local-ca.pem"
 }
 
+wait_door() { wait_for 'door (its health check)' "http://127.0.0.1:$door_port/health" 20; }
+
+wait_web() { wait_for 'web (its health check)' "$site_origin/healthz" 30 --cacert "$state/local-ca.pem"; }
+
 native_preflight() {
-  [[ $EUID != 0 ]] || die 'run it as a regular user, not root'
-  command -v "${TILO_SH_CARGO:-t}" >/dev/null || die "needs ${TILO_SH_CARGO:-t}, which builds the programs"
+  # Root is the job sandbox's identity in a check, which is where TILO_SH_STATE
+  # is named; on a developer's machine root would leave root's files behind.
+  [[ $EUID != 0 || -n ${TILO_SH_STATE:-} ]] \
+    || die 'run it as a regular user, or name the state it may own (TILO_SH_STATE)'
+  if [[ -z ${TILO_SH_PROGRAMS:-} ]]; then
+    command -v "${TILO_SH_CARGO:-t}" >/dev/null || die "needs ${TILO_SH_CARGO:-t}, which builds the programs"
+  fi
   command -v bwrap >/dev/null \
     || die 'needs bwrap (bubblewrap: dnf install bubblewrap), which gives the relay and the door the local trust bundle'
   [[ -f $ca_path ]] || die "this machine has no trust bundle at $ca_path, the one path Tilo's programs read"
 }
 
+# The relay's own device, which its VM host's member takes the workspaces' runs
+# from: made before either starts, so the relay starts once with the host
+# already placed.
+host_device_key() {
+  [[ -s $state/relay/lounge/relay/host-device.key ]] && return 0
+  mkdir -p "$state/relay/lounge/relay"
+  local key
+  key=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
+  (umask 077 && printf "$(printf '%s' "$key" | sed 's/../\\x&/g')" > "$state/relay/lounge/relay/host-device.key")
+}
+
 up_native() {
-  local seed=$1 discord=$2 began=$SECONDS
+  local discord=$1 began=$SECONDS phase=$SECONDS
   native_preflight
   mkdir -p "$state"/{logs,relay,secrets,door,tls/caddy,tls/config} "$native" "$runs"
   # The bundle compiles on t beside the programs; only its first build, or
   # `restart web`, waits for it.
   local bundle_pid=
-  if [[ -z ${TILO_SH_BUNDLE:-} && ! -f $native/bundle/build.json ]]; then
+  if [[ -z ${TILO_SH_BUNDLE:-} && -z ${TILO_SH_SITE:-} && ! -f $native/bundle/build.json ]]; then
     build_bundle > "$state/logs/bundle.log" 2>&1 &
     bundle_pid=$!
   fi
@@ -856,19 +937,40 @@ up_native() {
   echo native > "$state/mode"
   use_mode native
   make_secrets
+  # The VM host runs from its images as root, so it starts before the relay:
+  # the relay reads where to place a workspace once, when it starts.
+  local vm_skipped
+  vm_skipped=$(vm_host_blocker)
+  if [[ -z $vm_skipped ]]; then
+    [[ -n ${TILO_SH_IMAGE_VM_HOST:-} ]] || die 'TILO_SH_IMAGE_VM_HOST names no VM host image'
+    [[ -n ${TILO_SH_HOSTED_GUEST:-} ]] || die 'TILO_SH_HOSTED_GUEST names no guest image'
+    enroll=$(find_enroll)  # read by relay_env, so the stack's own is used
+    printf '%s\n' "$enroll" > "$state/vm-host-enroll"
+    host_device_key
+    say 'starting the VM host (Firecracker, as root)'
+    vm_host up || die 'the VM host did not start; sudo -E bash '"$here"'/vm-host.sh status says why'
+    say "vm-host up ($((SECONDS - phase))s)"
+    phase=$SECONDS
+  fi
   [[ -z $discord ]] || start_native_discord
   start_native_tls
   trust_bundle
+  say "tls up ($((SECONDS - phase))s)"
+  phase=$SECONDS
   start_native_relay
   wait_relay
   local room
   room=$(cat "$state/relay/lounge/room-id") || die 'the relay kept no workspace id'
-  say "relay ready: the Lounge is $room ($((SECONDS - began))s)"
+  say "relay ready: the Lounge is $room ($((SECONDS - phase))s, $((SECONDS - began))s in)"
+  phase=$SECONDS
   start_native_door
-  wait_for 'door (its health check)' "http://127.0.0.1:$door_port/health" 60
+  wait_door
+  say "door up ($((SECONDS - phase))s)"
+  phase=$SECONDS
   start_native_releases
   start_native_web "$room"
-  wait_for 'web (its health check)' "$site_origin/healthz" 60 --cacert "$state/local-ca.pem"
+  wait_web
+  say "web up ($((SECONDS - phase))s)"
 }
 
 restart() {
@@ -888,16 +990,16 @@ restart() {
     door)
       build_programs
       start_native_door
-      wait_for 'door (its health check)' "http://127.0.0.1:$door_port/health" 60 ;;
+      wait_door ;;
     web)
       build_bundle
       stop_native web
       lay_out_web
       start_native_web "$(cat "$state/relay/lounge/room-id")"
-      wait_for 'web (its health check)' "$site_origin/healthz" 60 --cacert "$state/local-ca.pem" ;;
+      wait_web ;;
     tls)
       start_native_tls
-      wait_for 'tls (the relay through Caddy)' "$relay_origin/mode" 60 --cacert "$state/local-ca.pem" ;;
+      wait_for 'tls (the relay through Caddy)' "$relay_origin/mode" 30 --cacert "$state/local-ca.pem" ;;
     discord)
       build_programs
       start_native_discord
@@ -949,9 +1051,9 @@ up() {
   if [[ -n $images ]]; then
     up_images "$discord"
   else
-    up_native "$seed" "$discord"
-    vm_skipped=$(vm_skip_reason)
+    up_native "$discord"
   fi
+  vm_skipped=$(vm_skip_reason)
 
   [[ -z $vm_skipped ]] || say "vm-host skipped: $vm_skipped"
 
@@ -985,12 +1087,7 @@ up_images() {
   # The relay's own device, which its VM host's member takes the workspaces'
   # runs from: made here, before either starts, so the relay starts once with
   # the host already placed.
-  if [[ ! -s $state/relay/lounge/relay/host-device.key ]]; then
-    mkdir -p "$state/relay/lounge/relay"
-    local seed
-    seed=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
-    (umask 077 && printf "$(printf '%s' "$seed" | sed 's/../\\x&/g')" > "$state/relay/lounge/relay/host-device.key")
-  fi
+  host_device_key
 
   # The VM host, when this machine can run it and the relay root is there: it
   # is root's, and it starts before the relay so the relay reads where to
@@ -1086,7 +1183,7 @@ start_discord() {
   "$bin" --rest "127.0.0.1:$discord_rest_port" --gateway "127.0.0.1:$discord_gateway_port" \
     --control "127.0.0.1:$discord_control_port" > "$state/logs/discord.log" 2>&1 &
   echo $! > "$state/discord.pid"
-  local deadline=$((SECONDS + 20))
+  local deadline=$((SECONDS + 10))
   until grep -q '^DISCORD_API_BASE=' "$state/logs/discord.log" 2>/dev/null; do
     ((SECONDS < deadline)) || die "the fake Discord did not start: $(cat "$state/logs/discord.log")"
     sleep 0.2
@@ -1104,7 +1201,7 @@ down() {
   for name in web releases door relay tls discord; do
     stop_native "$name"
   done
-  if [[ $mode == images && -z $(vm_host_blocker) ]]; then
+  if vm_host_running; then
     vm_host down || say 'the VM host did not stop; sudo -E bash '"$here"'/vm-host.sh down'
   fi
   if command -v podman >/dev/null; then
@@ -1144,10 +1241,12 @@ status() {
     elif running "$name"; then answer=starting; else answer=down; fi
     printf '%-9s %-8s %s\n' "$name" "$answer" "$shown"
   done
-  if [[ $mode == images && -z $(vm_host_blocker) ]]; then
+  local vm_skipped
+  vm_skipped=$(vm_skip_reason)
+  if [[ -z $vm_skipped ]]; then
     printf '%-9s %-8s %s\n' vm-host up "workspaces' VMs; vm-host.sh status says which"
   else
-    printf '%-9s %-8s %s\n' vm-host skipped "$(vm_skip_reason)"
+    printf '%-9s %-8s %s\n' vm-host skipped "$vm_skipped"
   fi
   if running discord || { [[ -f $state/discord.pid ]] && kill -0 "$(cat "$state/discord.pid")" 2>/dev/null; }; then
     printf '%-9s %-8s %s\n' discord up "http://127.0.0.1:$discord_rest_port (control http://127.0.0.1:$discord_control_port)"
@@ -1204,7 +1303,6 @@ case $cmd in
   logs) [[ -n ${1:-} ]] || die 'logs NAME: relay, tls, door, web, discord, releases, bundle'; cat "$state/logs/$1.log" ;;
   browser) browser "$@" ;;
   check)
-    if [[ ${1:-} == --images ]]; then shift; export TILO_SH_IMAGES=1; fi
     exec bash "$here/check.sh" "$@" ;;
   help|-h|--help) usage ;;
   *) usage >&2; exit 2 ;;

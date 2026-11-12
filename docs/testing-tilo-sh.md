@@ -19,9 +19,24 @@ lists every command.
 
 `stack.sh up --images` runs the release images instead: `image-lounge`,
 `image-front-door` and `image-web-entry`, built by `t` for this commit,
-under rootless podman. That is the rehearsal of what ships, and it is what
-`t test tilo-sh-local` runs. The first run on a commit waits for the image
-builds (about 40 minutes).
+under rootless podman. That is the rehearsal of what ships: the images as
+they are packaged, which their own checks (`image-lounge`, `image-web-entry`,
+`test-image-front-door`) hold to booting, answering their health route and
+one request per route, and which the release publishes. `t test
+tilo-sh-local` does not wait for them: it runs this commit's programs.
+
+## Checking a change end to end
+
+`t test tilo-sh-local` is the whole product, used as people use it, on the
+programs this commit builds: the check compiles nothing and starts no
+container. Everything it runs is another check's output — `tilo-sh-binaries`
+(the relay's context and the door), `tilo-sh-caddy`, `image-web-entry-context`
+(the site, laid out as the web entry image lays it out) and `cli-x86_64` —
+handed to `stack.sh` as `TILO_SH_LOUNGE`, `TILO_SH_PROGRAMS`, `TILO_SH_SITE`,
+`TILO_SH_CADDY` and `TILO_SH_CLI_DIR`. A change to the check alone reruns the
+check alone, and a change to the page or the relay reruns only what that
+change moved plus this check. `t test tilo-sh-local-vm` is the same stack with
+its VM host, from the images that host runs.
 
 ## Changing code
 
@@ -46,7 +61,7 @@ Everything listens on `127.0.0.1`. Ports start at `TILO_SH_PORT_BASE`
 | Lounge relay (room host and relay) | `eu1.tilo.sh` and `live-eu1.tilo.sh`, image `lounge` | `tilo-relay` through the image's entrypoint (`os/containers/tilo-lounge/entrypoint.sh`), laid out by the image's own context script, behind production's Caddy and Caddyfile at `https://127.0.0.1:24100` and `https://127.0.0.1:24106` |
 | Front door (MCP, `/v1`, keys, OAuth) | `mcp.tilo.sh`, image `front-door` | `tilo-front-door` at `http://localhost:24110` |
 | Web entry (site, `/sign-in`, `/install.sh`, `/releases`) | `tilo.sh`, image `web-entry` | the image's entrypoint and Caddyfile serving this checkout's desktop bundle, laid out and precompressed as the image does it, on `127.0.0.1:24121` behind the same Caddy, which serves it as Cloudflare serves tilo.sh (HTTPS and HTTP/2) at `https://tilo.localhost:24120`; `/releases/latest` serves this checkout's `tilo` command |
-| Linux VM host (Firecracker) | `tilo-sh-vm-host`, image `vm-host` | with `--images`, the image as root (through `sudo`) where the machine has `/dev/kvm`; otherwise, and always natively, skipped with the reason |
+| Linux VM host (Firecracker) | `tilo-sh-vm-host`, image `vm-host` | the image as root (through `sudo`) where the machine has `/dev/kvm`: with `--images`, as part of the stack, and natively when `TILO_SH_VM_HOST=1` names the images it runs; otherwise skipped with the reason |
 | Hosted browser | in the workspace's own VM, on the VM host | with the VM host: the relay places it there (docs/hosted-browser.md), and `t test tilo-sh-local-vm` holds it to what it must be |
 | Discord | discord.com | `stack.sh up --discord` starts `crates/dev/fake-discord` and points the Lounge's Discord sign-in and bridge at it |
 
@@ -100,13 +115,18 @@ does not know how to move stops the start.
   over that path for the relay and the door alone, as the containers mount
   it. Nothing else of the machine changes, and nothing runs as root.
 - **Natively, Caddy's version.** The relay's TLS and the web entry use the
-  `caddy` on your `PATH`, else Caddy 2.11.7 (the web entry image's version),
-  fetched once and checked against its release checksum. Production's tls
-  container pins its own Caddy image.
+  `caddy` the caller built (`TILO_SH_CADDY`, which `t test tilo-sh-local`
+  hands the stack), else the `caddy` on your `PATH`, else the pinned release
+  (`os/containers/tilo-sh/caddy.env`, the web entry image's version, one pin
+  for the stack and the check that builds it) fetched once and checked
+  against its published checksum. Production's tls container pins its own
+  Caddy image.
 - **Natively, compression.** The site is precompressed with the image's own
   script (`compress.sh`) when `brotli` and `zstd` are installed. Without
   them it is served uncompressed, and entry times are not comparable with
-  production's.
+  production's. `TILO_SH_SITE` names a site laid out and precompressed
+  already (`web-entry-context.sh`'s output, the web entry image's build
+  context), which t's checks hand the stack instead of building one.
 - **No model keys.** The moderation agent and the "who is here" summaries do
   not run.
 - **The VM host is root.** In production it is a privileged pod: it formats a
@@ -164,7 +184,9 @@ leave what it builds in `./target` as cargo would, the bundle's
 
 `TILO_SH_BUNDLE` names a desktop bundle built elsewhere
 (`build.sh OUT --bundle desktop`) for the native stack to serve instead of
-building one.
+building one. `TILO_SH_PROGRAMS`, `TILO_SH_LOUNGE`, `TILO_SH_SITE`,
+`TILO_SH_CADDY` and `TILO_SH_CLI_DIR` name what a check built already, so the
+stack compiles and lays out nothing (see "Checking a change end to end").
 
 With `--images`, `TILO_SH_IMAGE_LOUNGE`, `TILO_SH_IMAGE_DOOR` and `TILO_SH_IMAGE_WEB` each take an OCI archive or a registry reference.
 To reproduce what is deployed, give the digests infra pins. To try a
@@ -173,8 +195,7 @@ release candidate, give its `sha-<commit>` images.
 ## The end-to-end check
 
 ```sh
-os/containers/tilo-sh/stack.sh check            # this checkout's programs
-os/containers/tilo-sh/stack.sh check --images   # the images, as t test tilo-sh-local runs it
+os/containers/tilo-sh/stack.sh check   # this checkout's programs, as t test tilo-sh-local runs it
 ```
 
 The check brings the stack up and uses it as people and backends do:
@@ -206,17 +227,19 @@ The report (`report.json` in the work directory) holds the bring-up time,
 the visa run's duration and each visitor's entry time, and each step prints
 its own seconds as the next one begins, so a run says where its time went.
 
-To chase one step, name it: `TILO_SH_ONLY=7 stack.sh check --images` brings
+To chase one step, name it: `TILO_SH_ONLY=7 stack.sh check` brings
 the stack up and times the visitors, `TILO_SH_ONLY=2-6` runs only the visa
 run (with the startup's key, which it needs), and `TILO_SH_ONLY=10` only a
 key opening Browser in a workspace's VM. Naming none runs every step.
 
 ### The Browser of a hosted workspace
 
-`TILO_SH_VM_HOST=1 stack.sh check --images` adds the part that needs a
-machine with `/dev/kvm`: the stack's VM host runs, so a workspace's Browser
-runs in that workspace's VM, on the guest image this checkout built.
-(`t test tilo-sh-local-vm` is exactly this.) After the startup's key it holds:
+`TILO_SH_VM_HOST=1 stack.sh check`, with `TILO_SH_IMAGE_VM_HOST` and
+`TILO_SH_HOSTED_GUEST` naming the VM host's image and this checkout's guest,
+adds the part that needs a machine with `/dev/kvm`: the stack's VM host runs,
+so a workspace's Browser runs in that workspace's VM, on the guest image this
+checkout built. (`t test tilo-sh-local-vm` is exactly this.) After the
+startup's key it holds:
 
 8. the visa test page (`apps/browser/test-pages/visa-form.html`), served
    where a VM's network may reach it: a VM reaches the public internet and
@@ -227,7 +250,10 @@ runs in that workspace's VM, on the guest image this checkout built.
    `tilo-browser` user. A guest without them fails here, saying so.
 10. a key opens Browser in a hosted workspace (`integration/hosted-visa.py`):
     the open answers once the VM's window is live, and the time it took is
-    printed with a second open's attach time.
+    printed with a second open's attach time. The VM it woke must be a clone
+    of the host's warm template; the wake the host measured is printed
+    (`1234 ms (restored)`), and a VM that booted the guest image cold says
+    why that is not what a person waits for.
 11. the VM's own proofs (`integration/vm-proofs.py`, run while the window is
     up): every renderer of the engine host has a seccomp filter and no new
     privileges, and network, pid and user namespaces of its own; nothing runs
