@@ -113,6 +113,24 @@ pub fn get_radio_state() -> Result<RadioState, String> {
     SystemRadio.radio_state()
 }
 
+/// Whether this device runs a network service at all: `NetworkManager` is on
+/// the system bus.
+///
+/// A caller leaves out what only the service can answer — the networks, the
+/// radios, the VPNs — when there is none, the way it leaves out absent
+/// hardware, instead of showing those rows as unreadable. A bus name check,
+/// not a read, so it may be asked every time the state is read.
+#[must_use]
+pub fn network_service_present() -> bool {
+    crate::block_on(async {
+        Ok::<bool, String>(match NmClient::system().await {
+            Ok(nm) => nm.running().await,
+            Err(_) => false,
+        })
+    })
+    .unwrap_or(false)
+}
+
 fn nm_radio_state() -> Result<RadioState, String> {
     with_nm(|nm| async move {
         let radios = nm.radios().await?;

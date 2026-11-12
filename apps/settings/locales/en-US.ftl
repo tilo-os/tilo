@@ -1169,6 +1169,7 @@ net-not-connected = Not connected
 net-no-wifi-adapter = No Wi-Fi adapter on this device
 net-no-modem = No mobile broadband modem on this device
 net-no-radio = No Wi-Fi or mobile broadband radio on this device
+net-no-service = This device has no network service
 net-applying = Applying network changes…
 net-refresh = Refresh
 net-wifi = Wi-Fi

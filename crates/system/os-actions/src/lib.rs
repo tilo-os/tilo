@@ -133,10 +133,11 @@ pub use network::{
     disconnect_wifi, forget_network_profile, get_connectivity, get_link_status, get_radio_state,
     get_wifi, get_wired, hotspot_details, import_vpn_config, inspect_certificate,
     link_status_from_state, list_hotspot_clients, list_saved_network_profiles,
-    list_vpn_connections, list_wifi_networks, portable_wifi_profile_secret, read_interface_traffic,
-    scan_wifi, set_airplane_mode, set_hotspot, set_mobile_broadband, set_network_autoconnect,
-    set_vpn_connection, set_vpn_connection_uuid, set_wifi, set_wifi_radio, set_wired,
-    wifi_change_outcome, wifi_from_radios, wireless_link_quality_pct,
+    list_vpn_connections, list_wifi_networks, network_service_present,
+    portable_wifi_profile_secret, read_interface_traffic, scan_wifi, set_airplane_mode,
+    set_hotspot, set_mobile_broadband, set_network_autoconnect, set_vpn_connection,
+    set_vpn_connection_uuid, set_wifi, set_wifi_radio, set_wired, wifi_change_outcome,
+    wifi_from_radios, wireless_link_quality_pct,
 };
 pub use orientation::{
     AccelSample, DeviceOrientation, OrientationTracker, RotationControl, has_accelerometer,

@@ -1169,6 +1169,7 @@ net-not-connected = Nicht verbunden
 net-no-wifi-adapter = Kein WLAN-Adapter an diesem Gerät
 net-no-modem = Kein Mobilfunkmodem an diesem Gerät
 net-no-radio = Kein WLAN- oder Mobilfunkadapter an diesem Gerät
+net-no-service = Dieses Gerät hat keinen Netzwerkdienst
 net-applying = Netzwerkänderungen werden angewendet…
 net-refresh = Aktualisieren
 net-wifi = WLAN
