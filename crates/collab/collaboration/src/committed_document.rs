@@ -1198,18 +1198,7 @@ mod tests {
     fn committed_document_replacing_route_discards_staged_capture() {
         let reads = Reads::default();
         let ready = reads.pending("route").unwrap();
-        let budget = ByteBudget::new();
-        let read = CommittedDocument {
-            data: Arc::new(Captured {
-                bytes: std::sync::Mutex::new(vec![1]),
-                _reservation: budget.reserve(1, 1).unwrap(),
-            }),
-            merged: Arc::new(AtomicBool::new(false)),
-            merge_wake: Arc::new(tokio::sync::Notify::new()),
-            valid: Arc::new(AtomicBool::new(true)),
-            base: None,
-            refused: Arc::new(AtomicBool::new(false)),
-        };
+        let read = CommittedDocument::for_test(vec![1], None);
         reads.stage("route", &ready, read.clone()).unwrap();
         assert!(reads.unapplied("route").is_some());
         read.applied();
