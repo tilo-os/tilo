@@ -131,9 +131,14 @@ does not know how to move stops the start.
   not run.
 - **The VM host is root.** In production it is a privileged pod: it formats a
   raw block device for its state, delegates cgroups and gives its jail helper
-  capabilities. Rootless podman can do none of that, so `up --images` starts
-  it as root over its own state (through `sudo`, where that needs no
-  password), and only where the machine has `/dev/kvm`. The stack also needs
+  capabilities. Rootless podman can do none of that, so the stack starts it as
+  root over its own state (through `sudo`, where that needs no password), and
+  only where the machine has `/dev/kvm`: with `--images`, or natively when
+  `TILO_SH_VM_HOST=1` names its images. Its memory budget
+  (`TILO_SH_VM_HOST_MEMORY_MIB`) holds the warm template of the size it places,
+  a clone of it awake beside that, and the host's own reserve, since a host
+  that admits a template and then refuses the VM it is for wakes workspaces
+  cold. The stack also needs
   a member identity the relay operator certifies, which `vm-host.sh` makes
   from the relay's own root. Without `/dev/kvm` or root, `stack.sh` says it
   skipped the VM host and why; workspaces, keys, the MCP and the visa flow
@@ -248,6 +253,10 @@ startup's key it holds:
 9. the guest the VM host boots carries the Browser: the headless session
    (`/usr/libexec/tilo/browser-session`) and the image's unprivileged
    `tilo-browser` user. A guest without them fails here, saying so.
+9b. the host warms the template its VMs of that size start from, timed: it is
+    booted cold once and warmed, and every VM after it is a clone. A host
+    without the room for a template beside the VM it is for makes none, and
+    the wait says so rather than leaving the next step to boot cold.
 10. a key opens Browser in a hosted workspace (`integration/hosted-visa.py`):
     the open answers once the VM's window is live, and the time it took is
     printed with a second open's attach time. The VM it woke must be a clone
