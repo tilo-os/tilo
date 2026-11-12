@@ -2472,6 +2472,9 @@ impl AppHandler {
         // is the window's bar, the header draws no second one. Only the Linux
         // header asks: elsewhere the host draws the frame.
         let _shown = self.slot_bar.refresh(&mut self.app, window);
+        // What the window shows names it: the desktop reads the title, so its tab, the switcher
+        // and assistive technology say the page or record the window is at.
+        self.app.refresh_window_title(window);
         #[cfg(target_os = "linux")]
         self.decorations.refresh(&mut self.app, window, _shown);
         let app = &mut self.app;
@@ -3711,6 +3714,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // AccessKit's adapter asserts it's created while the window is
         // hidden, so build invisible, create the adapter, show.
         let title = resolve_window_title(self.app.window.title.as_deref());
+        self.app.window.shown_title = Some(title.clone());
         let icon = if takes_window_icon(event_loop) {
             crate::window_icon::resolve()
         } else {

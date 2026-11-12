@@ -138,6 +138,23 @@ pub fn has_overview(shell: &UiNode) -> bool {
 const VIEW_TITLE: &str = "view_title";
 const VIEW_COUNT: &str = "view_count";
 
+/// What the window `shell` shows, as the shell's own headers name it: its content column's title
+/// — the page, the record, the place the window is at — else its overview's, else its sidebar's,
+/// and nothing where it names none of them. A window is named by what it shows, so a desktop
+/// names its tab, its switcher entry and its assistive-technology node by this.
+#[must_use]
+pub fn shown_title(shell: &UiNode) -> Option<&str> {
+    ["title", "overview_title", "sidebar_title"]
+        .iter()
+        .find_map(|prop| match shell.props.get(*prop) {
+            Some(Value::Text(title)) => {
+                let title = title.trim();
+                (!title.is_empty()).then_some(title)
+            }
+            _ => None,
+        })
+}
+
 /// The tree with each titled view's title handed to the lists it holds: a list whose rows all
 /// stand in one group then heads no group of them when that heading says what the view's title
 /// already says — the same words, counting the same rows left to do — since the title over the
@@ -745,6 +762,45 @@ mod tests {
             1,
             "the bar keeps its primary once the content offers nothing"
         );
+    }
+
+    /// The window is named by what it shows: the page its content column heads, else the place its
+    /// overview does, else its sidebar's, and by nothing where the shell names none of them.
+    #[test]
+    fn the_window_is_named_by_the_title_its_shell_heads_what_it_shows_with() {
+        let content = shell(
+            "tasks",
+            vec![("content", vec![])],
+            &[
+                ("sidebar_title", Value::text("Tasks")),
+                ("title", Value::text("Today")),
+            ],
+        );
+        assert_eq!(shown_title(&content), Some("Today"));
+
+        let overview = shell(
+            "notes",
+            vec![("overview", vec![])],
+            &[
+                ("sidebar_title", Value::text("Notes")),
+                ("overview_title", Value::text("Q3 plan")),
+            ],
+        );
+        assert_eq!(
+            shown_title(&overview),
+            Some("Q3 plan"),
+            "the column beside the sidebar names what is open in it"
+        );
+
+        let sidebar = shell(
+            "files",
+            vec![("sidebar", vec![])],
+            &[("sidebar_title", Value::text("Files"))],
+        );
+        assert_eq!(shown_title(&sidebar), Some("Files"));
+
+        let unnamed = shell("blank", vec![], &[("title", Value::text("   "))]);
+        assert_eq!(shown_title(&unnamed), None, "a blank heading names nothing");
     }
 
     #[test]

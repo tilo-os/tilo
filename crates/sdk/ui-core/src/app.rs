@@ -2679,6 +2679,26 @@ impl App {
         self
     }
 
+    /// Name the window by what it shows, for the desktop to name it by too: the page, the record,
+    /// the place its content says it is ([`crate::component_lifecycle::WindowTitle`]), and the
+    /// title this window states where its content says nothing. The desktop reads the window's
+    /// title, so a tab, the switcher and assistive technology all say what the window shows.
+    /// Returns whether the window was retitled.
+    #[cfg(feature = "native")]
+    pub(crate) fn refresh_window_title(&mut self, window: &Window) -> bool {
+        let shown = crate::component_lifecycle::window_title(self.root_widget.as_ref())
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .map(str::to_owned);
+        let title = shown.unwrap_or_else(|| resolve_window_title(self.window.title.as_deref()));
+        if self.window.shown_title.as_deref() == Some(title.as_str()) {
+            return false;
+        }
+        window.set_title(&title);
+        self.window.shown_title = Some(title);
+        true
+    }
+
     /// Set the stable Wayland application id announced by this window.
     #[must_use]
     pub fn with_window_app_id(mut self, app_id: impl Into<String>) -> Self {
