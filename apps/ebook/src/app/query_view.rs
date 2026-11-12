@@ -1002,6 +1002,24 @@ impl BooksApp {
     /// One result as a row: a passage by its words, a chapter or a note by
     /// its name, each with where it is; a store book with its author and
     /// the button that gets it.
+    /// The row's action and its name: a store book is got, a hit opened.
+    fn row_action(
+        item: &Item,
+        store: Option<&crate::store::StoreBook>,
+        title: &str,
+    ) -> (Action, String) {
+        match store {
+            Some(book) => (Action::GetBook(book.id), Self::get_label(book)),
+            None => (
+                Action::OpenHit(item.id.clone()),
+                CATALOG.t_args(
+                    "ebook-query-open",
+                    &[("title", ArgValue::Text(title.to_owned()))],
+                ),
+            ),
+        }
+    }
+
     /// What the button that gets `book` from the store says.
     fn get_label(book: &crate::store::StoreBook) -> String {
         CATALOG.t_args(
@@ -1041,20 +1059,11 @@ impl BooksApp {
             .and_then(|entry| entry.icon.as_deref())
             .and_then(Icon::from_name)
             .unwrap_or(Icon::FileText);
-        let (action, label) = match &store {
-            Some(book) => (Action::GetBook(book.id), Self::get_label(book)),
-            None => (
-                Action::OpenHit(item.id.clone()),
-                CATALOG.t_args(
-                    "ebook-query-open",
-                    &[("title", ArgValue::Text(title.clone()))],
-                ),
-            ),
-        };
+        let (action, label) = Self::row_action(item, store.as_ref(), &title);
         let id = item.id.clone();
         let row_index = self.query.rows.len();
-        let get_label = "Get";
-        let get_width = ButtonFace::new(Rect::ZERO, get_label)
+        let get_label = CATALOG.t("ebook-get");
+        let get_width = ButtonFace::new(Rect::ZERO, &get_label)
             .control_size(ControlSize::Small)
             .intrinsic_width(ctx.text, theme);
         // A store book's cover once it has arrived; its placeholder, the
@@ -1121,7 +1130,7 @@ impl BooksApp {
                 );
                 self.button(
                     ctx,
-                    ButtonFace::new(button, get_label)
+                    ButtonFace::new(button, &get_label)
                         .control_size(ControlSize::Small)
                         .role(ButtonRole::Secondary),
                     action,

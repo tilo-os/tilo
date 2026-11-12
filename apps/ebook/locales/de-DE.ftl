@@ -119,3 +119,5 @@ ebook-use-font = Schrift { $font } verwenden
 ebook-reading-theme = Lesethema { $theme }
 ebook-use-scheme = Farbthema { $scheme } verwenden
 ebook-untitled = Ohne Titel
+
+ebook-get = Holen

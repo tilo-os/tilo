@@ -3892,14 +3892,7 @@ impl MailApp {
             .enumerate()
             .filter_map(|(index, (id, thread_len))| {
                 let message = state.mailbox.get(*id)?;
-                let title = if message.folder == Folder::Drafts {
-                    CATALOG.t_args(
-                        "mail-draft-subject",
-                        &[("subject", ArgValue::Text(message.subject.clone()))],
-                    )
-                } else {
-                    format!("{}: {}", message.from.display(), message.subject)
-                };
+                let title = Self::row_title(message);
                 let snippet = message.snippet();
                 let mut node = AccessNode::new(Role::ListItem)
                     .with_name(title)
@@ -3919,7 +3912,10 @@ impl MailApp {
                 Some(node)
             })
             .collect::<Vec<_>>();
-        let name = format!("{} messages", state.folder.title());
+        let name = CATALOG.t_args(
+            "mail-list-name",
+            &[("folder", ArgValue::Text(state.folder.title().to_owned()))],
+        );
         let mut children = vec![
             AccessNode::new(Role::Button)
                 .with_name(if state.bulk_selecting {
@@ -3940,22 +3936,14 @@ impl MailApp {
                         .get(*id)
                         .is_some_and(|message| message.folder == Folder::Trash)
                 });
-            let mut controls = vec![
-                ("Select all visible messages", "select-all"),
-                ("Archive selected messages", "archive"),
-                ("Mark selected messages read", "read"),
-                ("Mark selected messages unread", "unread"),
-            ];
-            controls.push(if all_trash {
-                ("Delete selected trashed messages permanently", "purge")
-            } else {
-                ("Move selected messages to Trash", "delete")
-            });
             children.push(
                 AccessNode::new(Role::Toolbar)
-                    .with_name(format!("{selected} selected"))
+                    .with_name(CATALOG.t_args(
+                        "mail-selected-count",
+                        &[("count", ArgValue::Text(selected.to_string()))],
+                    ))
                     .with_children(
-                        controls
+                        Self::bulk_controls(all_trash)
                             .into_iter()
                             .map(|(name, action)| {
                                 AccessNode::new(Role::Button)
@@ -3982,6 +3970,44 @@ impl MailApp {
             ));
         }
         list
+    }
+
+    /// The name a message's row reads out: a draft says so, a sent or
+    /// received one names who it is from and what it is about.
+    fn row_title(message: &crate::model::Message) -> String {
+        if message.folder == Folder::Drafts {
+            return CATALOG.t_args(
+                "mail-draft-subject",
+                &[("subject", ArgValue::Text(message.subject.clone()))],
+            );
+        }
+        CATALOG.t_args(
+            "mail-row-name",
+            &[
+                ("sender", ArgValue::Text(message.from.display())),
+                ("subject", ArgValue::Text(message.subject.clone())),
+            ],
+        )
+    }
+
+    /// What the bulk bar's buttons are called, and the action each takes.
+    fn bulk_controls(all_trash: bool) -> Vec<(String, &'static str)> {
+        let names = [
+            ("mail-bulk-select-all", "select-all"),
+            ("mail-bulk-archive", "archive"),
+            ("mail-bulk-read", "read"),
+            ("mail-bulk-unread", "unread"),
+        ];
+        let last = if all_trash {
+            ("mail-bulk-purge", "purge")
+        } else {
+            ("mail-bulk-delete", "delete")
+        };
+        names
+            .into_iter()
+            .chain([last])
+            .map(|(key, action)| (CATALOG.t(key), action))
+            .collect()
     }
 
     /// The outbox page: a row per message still to leave, each saying why it

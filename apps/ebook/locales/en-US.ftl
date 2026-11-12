@@ -119,3 +119,5 @@ ebook-use-font = Use { $font } font
 ebook-reading-theme = { $theme } reading theme
 ebook-use-scheme = Use { $scheme } colour theme
 ebook-untitled = Untitled
+
+ebook-get = Get
