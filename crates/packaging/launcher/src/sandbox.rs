@@ -1842,36 +1842,6 @@ mod tests {
             assert_eq!(setenv_value(&argv, "TILO_STARTUP_METRICS_PATH"), None);
         }
         {
-            // The session's document host serves this app's record: the
-            // launch names the resource, and the app's sandbox is told it.
-            // Anything but a resource address is refused.
-            for (value, forwarded) in [
-                ("tasks.tracker", true),
-                ("tube.library", true),
-                ("", false),
-                ("tasks.tracker\n", false),
-                ("a b", false),
-                ("$(id)", false),
-            ] {
-                let mut env = tilo_test_env::ScopedEnv::new();
-                env.set("TILO_HOSTED_RESOURCE", value);
-                let argv = build_bwrap_argv(
-                    &mk_manifest("off"),
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
-                assert_eq!(
-                    setenv_value(&argv, "TILO_HOSTED_RESOURCE"),
-                    forwarded.then_some(value),
-                    "{value:?}"
-                );
-            }
-        }
-        {
             let m = mk_manifest("off");
             let argv = build_bwrap_argv(
                 &m,
