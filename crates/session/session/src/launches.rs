@@ -118,10 +118,6 @@ pub struct Launches {
     waiting: Mutex<Vec<LaunchRequest>>,
     /// What wakes that loop when a launch is waiting for it.
     wake: Mutex<Option<tilo_service::Wake>>,
-    /// The apps whose models this session runs itself, by the app: the resource each is served at.
-    /// A plain `open` of one places that resource rather than awaiting a window process that never
-    /// publishes (`docs/designs/app-language/one-app-model.md` §3).
-    served: Mutex<BTreeMap<String, String>>,
 }
 
 impl Launches {
@@ -135,18 +131,6 @@ impl Launches {
     /// thread that starts a process.
     pub fn waking(&self, wake: tilo_service::Wake) {
         *self.wake.lock_recover() = Some(wake);
-    }
-
-    /// Record that this session runs `app`'s model itself, serving its record at `root`: its plain
-    /// `open` places that root instead of awaiting a window process
-    /// (`docs/designs/app-language/one-app-model.md` §3). Each pass that reads the services
-    /// publishes it again, so the record moving is followed.
-    pub fn serves(&self, app: &str, root: &str) {
-        let mut served = self.served.lock_recover();
-        if served.get(app).map(String::as_str) == Some(root) {
-            return;
-        }
-        served.insert(app.to_owned(), root.to_owned());
     }
 
     /// Ask the session's loop to make `launch` in `workspace` at `place`,
@@ -504,17 +488,10 @@ impl LauncherServices for Launches {
         self.live(pid, app, workspace).is_some()
     }
 
-    /// Whether this session runs `app`'s model itself, so it has no window process for a launch
-    /// to bring up: the resource the session serves the app at, when one does.
-    fn served(&self, app: &str) -> Option<String> {
-        self.served.lock_recover().get(app).cloned()
-    }
-
     /// Have package `app` run with no window in `workspace`, for an action that shows nothing:
     /// the session's loop starts it unless a process of it runs there already, and the start's
-    /// answer is the one returned. An app this session runs itself, one whose windows' instances
-    /// run in a tilolang host (its process holds none of its data), or one that is no package,
-    /// has no such instance.
+    /// answer is the one returned. An app whose windows' instances run in a tilolang host (its
+    /// process holds none of its data), or one that is no package, has no such instance.
     ///
     /// # Errors
     /// More launches are waiting than a person's apps ask for.
@@ -523,7 +500,7 @@ impl LauncherServices for Launches {
         app: &str,
         workspace: &str,
     ) -> Result<Option<tilo_broker_core::services::WindowlessStart>, String> {
-        if self.served(app).is_some() || tilo_app_launch::tilolang_hosts::runs_in_host(app) {
+        if tilo_app_launch::tilolang_hosts::runs_in_host(app) {
             return Ok(None);
         }
         let Some(launch @ tilo_app_launch::Launch::Package { open: None, .. }) =

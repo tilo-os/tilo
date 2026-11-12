@@ -473,32 +473,6 @@ fn push_surface(argv: &mut Vec<String>, payload_root: &Path, payload_mount: &Pat
     ]);
 }
 
-/// Name the resource the session's document host keeps for this launch's app,
-/// when the session serves it: the app's process opens no record of its own,
-/// reads the readings the session publishes there and submits its actions over
-/// the connection the launcher made it
-/// (`docs/architecture/apps.md` §8 step 2, `one-app-model.md` §4).
-///
-/// The session hands the value in the launch's environment; the sandbox clears
-/// it, so it is set again here, exactly as the session gave it.
-fn push_hosted_resource(argv: &mut Vec<String>) {
-    let Ok(value) = std::env::var("TILO_HOSTED_RESOURCE") else {
-        return;
-    };
-    // A resource address: a package's kind and id, with no separator the
-    // environment or a shell could take for more than it is.
-    let allowed = !value.is_empty()
-        && value.len() <= 256
-        && !value.contains(['\0', '\n', '\r', ' ', '$', '`']);
-    if allowed {
-        argv.extend([
-            "--setenv".to_string(),
-            "TILO_HOSTED_RESOURCE".to_string(),
-            value,
-        ]);
-    }
-}
-
 fn push_continuity_environment(argv: &mut Vec<String>) {
     for key in [
         "TILO_CONTINUITY_INSTANCE",
@@ -752,9 +726,6 @@ pub fn build_bwrap_argv_for_entry(
     // the parent environment, so forward only the compact identifiers/payload
     // after rejecting control characters and an oversized resume blob.
     push_continuity_environment(&mut argv);
-    // A launch the session's document host serves opens no record of its own:
-    // it is told which resource the session publishes for it as its reading.
-    push_hosted_resource(&mut argv);
 
     // The human-readable app name from `[package].name`; omitted when
     // unset, and the toolkit derives one from the package id.

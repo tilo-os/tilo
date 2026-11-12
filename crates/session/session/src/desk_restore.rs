@@ -151,18 +151,6 @@ impl Restore {
             let Some(saved) = self.waiting.pop_front() else {
                 return;
             };
-            // An app whose model the session runs itself has no window process: the tab the
-            // person left open is the place its root stands in, restored by the desk as every
-            // place is, and nothing starts for it
-            // (`docs/designs/app-language/one-app-model.md` §3). The tab the saved window was
-            // held in goes with it: the place stands in its workspace.
-            if apps.serves(&saved.app) {
-                if let Some(slot) = workspace_holding(desktop, saved.tab, |held| held.slot.0) {
-                    apps.restore_served(&saved.app, slot);
-                }
-                desktop.with_policy(|policy| policy.release_tab(saved.tab));
-                continue;
-            }
             // The person may have opened the app while its saved window was still waiting: its
             // window comes into that tab now, or came, and asking for it again would start the app
             // a second time.

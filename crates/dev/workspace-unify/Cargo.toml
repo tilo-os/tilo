@@ -1235,7 +1235,6 @@ doc = false
 "tilo-model-client" = { path = "../../../crates/agent/model-client", default-features = false, features = ["default", "runtime-client"] }
 "tilo-model-gateway" = { path = "../../../crates/agent/model-gateway", default-features = false, features = ["default", "host-backend", "local-models", "runtime-client", "server"] }
 "tilo-model-guest" = { path = "../../../crates/sdk/tilo-model-guest", default-features = false, features = [] }
-"tilo-model-host" = { path = "../../../crates/sdk/tilo-model-host", default-features = false, features = [] }
 "tilo-moderation" = { path = "../../../crates/collab/moderation", default-features = false, features = ["host"] }
 "tilo-native-media" = { path = "../../../crates/session/native-media", default-features = false, features = [] }
 "tilo-nearby-service" = { path = "../../../crates/session/nearby-service", default-features = false, features = [] }
@@ -3854,7 +3853,6 @@ doc = false
 "tilo-model-client" = { path = "../../../crates/agent/model-client", default-features = false, features = ["default", "runtime-client"] }
 "tilo-model-gateway" = { path = "../../../crates/agent/model-gateway", default-features = false, features = ["default", "host-backend", "local-models", "runtime-client", "server"] }
 "tilo-model-guest" = { path = "../../../crates/sdk/tilo-model-guest", default-features = false, features = [] }
-"tilo-model-host" = { path = "../../../crates/sdk/tilo-model-host", default-features = false, features = [] }
 "tilo-moderation" = { path = "../../../crates/collab/moderation", default-features = false, features = ["host"] }
 "tilo-native-media" = { path = "../../../crates/session/native-media", default-features = false, features = [] }
 "tilo-nearby-service" = { path = "../../../crates/session/nearby-service", default-features = false, features = [] }

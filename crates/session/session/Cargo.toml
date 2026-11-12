@@ -277,10 +277,6 @@ tilolang-mail = { path = "../../platform/tilolang-mail", default-features = fals
 tilolang-youtube = { path = "../../platform/tilolang-youtube" }
 # The toolkit's words, which what a package the session runs publishes reads through.
 tilo-ui-host = { path = "../../platform/tilo-ui-host" }
-# A Rust app's records: its model runs as the app's own WebAssembly module in the session,
-# never linked into it (docs/architecture/apps.md §1–§2).
-tilo-model-host = { path = "../../sdk/tilo-model-host" }
-tilo-model-abi = { path = "../../sdk/tilo-model-abi" }
 tilolang-runtime = { path = "../../lang/tilolang-runtime" }
 app-catalogue = { path = "../../packaging/app-catalogue" }
 # The pictures the desk shows: the image's own, and the person's.

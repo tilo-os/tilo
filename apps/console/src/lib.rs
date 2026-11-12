@@ -312,10 +312,6 @@ impl ResourceApp for App {
     type Resource = Console;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
-    /// The session's document host runs the record's model where the session serves it: a
-    /// launch it hosts opens no record and joins no workspace of its own.
-    const HOSTED_BY_SESSION: bool = true;
-
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)
     }

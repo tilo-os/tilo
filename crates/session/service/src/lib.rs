@@ -136,24 +136,6 @@ pub trait Service {
         None
     }
 
-    /// The resource address this service publishes the app `app`'s record at,
-    /// when it runs that app's model: the session's document host serves the
-    /// app, so a launch it makes names the address and the app's process opens
-    /// no record of its own (`docs/architecture/apps.md` §8 step 2,
-    /// `one-app-model.md` §4). `None` for a service that runs no such model.
-    fn hosted(&self, _app: &str) -> Option<String> {
-        None
-    }
-
-    /// Every app whose model this service runs, by the app, with the resource address it publishes
-    /// its record at: what [`Self::hosted`] answers, for a host that asks about them all at once —
-    /// the session tells its launches which apps it serves, so a plain `open` of one places that
-    /// resource instead of awaiting a window process that never publishes
-    /// (`docs/designs/app-language/one-app-model.md` §3).
-    fn served(&self) -> Vec<(String, String)> {
-        Vec::new()
-    }
-
     /// The record of the app `app` this service keeps, when the session runs the app's package
     /// itself (the shell) and its records are the person's as any app's: what a connection the
     /// session admits — a REPL, an agent's task — reads and changes by the app, as it does
@@ -401,23 +383,6 @@ impl Services {
     #[must_use]
     pub fn module(&self, app: &str) -> Option<std::sync::Arc<[u8]>> {
         self.started.iter().find_map(|service| service.module(app))
-    }
-
-    /// The resource address a service publishes the app `app`'s record at,
-    /// when it runs that app's model; see [`Service::hosted`].
-    #[must_use]
-    pub fn hosted(&self, app: &str) -> Option<String> {
-        self.started.iter().find_map(|service| service.hosted(app))
-    }
-
-    /// Every app whose model one of the services runs, by the app, with the resource address it
-    /// publishes its record at; see [`Service::served`].
-    #[must_use]
-    pub fn served(&self) -> Vec<(String, String)> {
-        self.started
-            .iter()
-            .flat_map(|service| service.served())
-            .collect()
     }
 
     /// The record of the app `app`, from the service keeping it; see [`Service::record`].
@@ -699,14 +664,6 @@ impl Service for Services {
 
     fn module(&self, app: &str) -> Option<std::sync::Arc<[u8]>> {
         Self::module(self, app)
-    }
-
-    fn hosted(&self, app: &str) -> Option<String> {
-        Self::hosted(self, app)
-    }
-
-    fn served(&self) -> Vec<(String, String)> {
-        Self::served(self)
     }
 
     #[cfg(unix)]

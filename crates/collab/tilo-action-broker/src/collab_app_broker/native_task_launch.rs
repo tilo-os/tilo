@@ -626,22 +626,6 @@ impl AppBrokerState {
     ) -> Result<(u64, tilo_actions::InvocationUpdate), String> {
         let target = reask.target;
         let mut native = self.native_launch_for(reask)?;
-        // An app whose model this session runs itself has no window process to launch: a task's
-        // `open` of it is refused at once, naming the resource to open, rather than left to the
-        // delivery wait for a process that never publishes
-        // (`docs/designs/app-language/one-app-model.md` §3).
-        if let Some(root) = self
-            .services
-            .launcher
-            .as_ref()
-            .and_then(|launcher| launcher.served(&native.app))
-        {
-            return Err(format!(
-                "{} is served by this session: it has no window to open; open its resource {root} \
-                 instead",
-                native.app
-            ));
-        }
         // A retained action that asks first pauses at its draft before the
         // application is launched for it, as a running application's does.
         if let Some(retained) = native.retained.clone()

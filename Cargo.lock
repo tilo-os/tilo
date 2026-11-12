@@ -16708,9 +16708,7 @@ dependencies = [
  "tasks",
  "tasks-model",
  "tilo-app",
- "tilo-model-host",
  "tilo-rich-text",
- "tilo-service",
  "tilo-test-env",
  "workspace-hack",
 ]
@@ -18196,8 +18194,6 @@ dependencies = [
  "serde_json",
  "tilo-app",
  "tilo-console",
- "tilo-model-host",
- "tilo-service",
  "workspace-hack",
 ]
 
@@ -19880,30 +19876,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-model-host"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "durable-store",
- "getrandom 0.4.3",
- "serde",
- "serde_json",
- "tasks-model",
- "thiserror 2.0.21",
- "tilo-actions",
- "tilo-app-state",
- "tilo-automerge",
- "tilo-automerge-fork",
- "tilo-model-abi",
- "tilo-resource",
- "tilo-service",
- "tilolang-runtime",
- "tracing",
- "tube-model",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-moderation"
 version = "0.1.0"
 dependencies = [
@@ -21541,9 +21513,7 @@ dependencies = [
  "tilo-liveness",
  "tilo-lock",
  "tilo-media",
- "tilo-model-abi",
  "tilo-model-client",
- "tilo-model-host",
  "tilo-native-media",
  "tilo-nearby-service",
  "tilo-net",
@@ -23781,10 +23751,8 @@ dependencies = [
  "tilo-files",
  "tilo-innertube",
  "tilo-media",
- "tilo-model-host",
  "tilo-net",
  "tilo-secrets",
- "tilo-service",
  "tilo-test-env",
  "tilo-vello",
  "tilo-vello-encoding",
@@ -28496,7 +28464,6 @@ dependencies = [
  "tilo-model-client",
  "tilo-model-gateway",
  "tilo-model-guest",
- "tilo-model-host",
  "tilo-moderation",
  "tilo-native-media",
  "tilo-nearby-service",

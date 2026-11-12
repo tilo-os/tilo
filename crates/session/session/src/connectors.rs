@@ -233,24 +233,6 @@ pub(crate) fn reconcile(session: &crate::Session) {
             }
         }
     }
-    // The record service keeps the records of the workspace in front: what it holds is kept in
-    // step there whether or not a place shows it yet (a search's answer, a task made by an agent),
-    // so that workspace's connector runs from the start as it always did.
-    let active = session.shared.active_workspace_id();
-    if !active.is_empty() {
-        let hosted: Vec<String> = connectors
-            .iter()
-            .map(|connector| connector.app.clone())
-            .filter(|app| session.shared.services.borrow().hosted(app).is_some())
-            .collect();
-        for app in hosted {
-            for connector in &connectors {
-                if connector.app == app {
-                    needed.insert((app.clone(), connector.origin.clone(), active.clone()));
-                }
-            }
-        }
-    }
     // The connectors running for no workspace any more end: their records stand as they were,
     // and a workspace that shows the app again starts one when it does.
     for key in session.connectors.keys() {

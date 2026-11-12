@@ -21,10 +21,7 @@ mod host;
 mod open_file;
 pub mod registry;
 mod surface;
-/// The variable a launch carries when the session's document host keeps the
-/// app's record (§8 step 2).
-pub use host::HOSTED_RESOURCE_ENV;
-pub use host::{ApplicationHost, NativeProcessHost, NativeProfile, session_hosted_resource};
+pub use host::{ApplicationHost, NativeProcessHost, NativeProfile};
 #[cfg(test)]
 pub(crate) use host::{follow_host_authority, manual_authority_watch};
 pub use open_file::{MAX_OPEN_FILE_BYTES, OpenFile, OpenFileReceipt};
@@ -160,12 +157,6 @@ pub struct HostContext {
     launch_options: Vec<LaunchOption>,
     private: bool,
     lent: Vec<Box<dyn std::any::Any>>,
-    /// The session's document host keeps this app's record: no record here, read and written
-    /// over its one connection at this resource address (`prepare_session_hosted`,
-    /// `provide_connection`). The launch's input, as the record it names is: the app reads it
-    /// here rather than from the process it runs in.
-    hosted_resource: Option<String>,
-    connection: Option<std::rc::Rc<dyn std::any::Any>>,
 }
 
 /// Where playback stood on the device or app that handed the launch's media
@@ -681,8 +672,6 @@ impl HostContext {
             launch_options: Vec::new(),
             private: false,
             lent: Vec::new(),
-            hosted_resource: None,
-            connection: None,
         })
     }
     /// Commit this instance's edits to its record under an actor of its
@@ -1128,11 +1117,10 @@ impl ApplicationDefinition {
     ) -> Result<AppComponent, LaunchError> {
         let records = context.records.clone();
         let record = context.record.clone();
-        let hosted = context.hosted();
         let result = self.instantiate_checked(context, target, restore);
 
         result.map_err(|source| {
-            if !hosted && records.is_ready(&record.id) {
+            if records.is_ready(&record.id) {
                 LaunchError::ComponentSetup {
                     source: Box::new(source),
                     record: Box::new(record),
@@ -1200,11 +1188,8 @@ impl ApplicationDefinition {
         };
         let entry = context.wake_scope.enter();
         let result = (self.create)(context, target, restore).and_then(|mut component| {
-            // A window the session serves opens no record here (§8 step 2).
             if !Rc::ptr_eq(&construction, &component.context.construction)
-                || !(component.context.hosted()
-                    || records.is_ready(&record.id)
-                    || records.is_opening(&record.id))
+                || !(records.is_ready(&record.id) || records.is_opening(&record.id))
             {
                 return Err(mismatch(
                     "a component of another construction, or its record neither open nor opening",
@@ -1855,13 +1840,9 @@ impl AppComponent {
                 }
                 Ok(())
             };
-        if self.context.hosted() {
-            restore(root, &AutoCommit::new())?;
-        } else {
-            self.context
-                .read_record(|doc| restore(root, doc))
-                .map_err(|error| ThawError::State(error.to_string()))??;
-        }
+        self.context
+            .read_record(|doc| restore(root, doc))
+            .map_err(|error| ThawError::State(error.to_string()))??;
         let (view, application) = self.capture_local_pair_owned(&saved.view)?;
         self.local_view = view;
         self.application_view = application;

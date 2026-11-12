@@ -1663,14 +1663,6 @@ mod component_adapter {
             attachment: crate::control_custody::CustodyAttachment,
         ) {
             let binding = self.component.callback_binding();
-            // A component the session serves holds no record here: its
-            // controls are not the host door's to run, and no domain may take
-            // their queue. They stay unowned for the component's own root,
-            // which submits each over the connection that keeps the record
-            // (`docs/designs/app-language/one-app-model.md` §4).
-            if binding.hosted {
-                return;
-            }
             if let Some(domain) = binding.control_domain.upgrade() {
                 let _ = domain.attach_to(parent);
                 if let Some(root) = self.component.root.as_deref_mut() {

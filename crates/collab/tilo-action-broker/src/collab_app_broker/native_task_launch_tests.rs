@@ -14,18 +14,6 @@ struct Launcher {
     launches: tokio::sync::mpsc::UnboundedSender<String>,
     custody: Mutex<Option<std::path::PathBuf>>,
     workspaces: Mutex<Vec<tilo_desktop_model::Workspace>>,
-    /// The apps this session serves itself, by the app: the resource each is served at.
-    served: Mutex<std::collections::BTreeMap<String, String>>,
-}
-
-impl Launcher {
-    /// Report `app` as one the session serves, at `root`: its `open` is answered, never launched.
-    fn served_with(&self, app: &str, root: &str) {
-        self.served
-            .lock()
-            .unwrap()
-            .insert(app.to_owned(), root.to_owned());
-    }
 }
 
 impl LauncherServices for Launcher {
@@ -93,9 +81,6 @@ impl LauncherServices for Launcher {
     fn attest_process(&self, _pid: u32, _app: &str, _workspace: &str) -> bool {
         false
     }
-    fn served(&self, app: &str) -> Option<String> {
-        self.served.lock().unwrap().get(app).cloned()
-    }
 }
 
 struct SignedLaunchFixture {
@@ -118,7 +103,6 @@ fn fixture() -> (
         launches: sender,
         custody: Mutex::new(None),
         workspaces: Mutex::new(Vec::new()),
-        served: Mutex::new(std::collections::BTreeMap::new()),
     });
     let f = Fixture::with_launcher(Some(launcher.clone()));
     *launcher.custody.lock().unwrap() = Some(f.directory.path().join("journal"));
@@ -312,55 +296,6 @@ async fn native_task_activation_refuses_missing_host_signer_before_launching() {
             assert!(
                 launches.try_recv().is_err(),
                 "no launcher effect precedes signed admission"
-            );
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn a_task_open_of_an_app_the_session_serves_is_refused_before_any_wait() {
-    // An app whose model the session runs itself has no window process: a task's `open` of it is
-    // refused at once, naming the resource to open, rather than left to the delivery wait for a
-    // process that never publishes (`docs/designs/app-language/one-app-model.md` §3). Before this,
-    // the request waited the whole bounded delivery and the agent heard nothing for ten seconds.
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let (f, mut launches) = fixture();
-            // The launcher reports the Writer as served by the session, at its root.
-            f.launcher
-                .served_with(WRITER, "tl:so.tilo.word-processor:root-main");
-            f.approve();
-            let agent = f.channel(100, true);
-            let run = delivered(&agent).await;
-            let started = std::time::Instant::now();
-            let result = invoke_provider(
-                &agent,
-                &run,
-                &tilo_actions::remote::workspace_provider(&workspace_id().to_string()),
-                &format!("app.{WRITER}"),
-                "open",
-                serde_json::json!({}),
-            )
-            .await;
-            let error = result.expect_err("the served app has no window to open");
-            assert!(
-                error.to_string().contains("served by this session"),
-                "{error}"
-            );
-            assert!(
-                error
-                    .to_string()
-                    .contains("tl:so.tilo.word-processor:root-main"),
-                "the refusal names the resource to open instead: {error}"
-            );
-            assert!(
-                started.elapsed() < std::time::Duration::from_secs(2),
-                "it is answered at once, not left to the delivery wait: {:?}",
-                started.elapsed()
-            );
-            assert!(
-                launches.try_recv().is_err(),
-                "no launcher effect is asked for a served app"
             );
         })
         .await;

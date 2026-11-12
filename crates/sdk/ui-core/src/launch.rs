@@ -221,12 +221,12 @@ impl LaunchSpec {
         self
     }
 
-    /// Whether a native launch with `args` attaches to the session runtime: never one whose
-    /// record the session's document host keeps, which opens no record of its own
-    /// ([`crate::application::session_hosted_resource`]).
+    /// Whether a native launch with `args` attaches to the session runtime: the policy the
+    /// specification set ([`Self::runtime_attachment`]).
     pub fn attaches_runtime(&self, args: &LaunchArgs) -> bool {
-        crate::application::session_hosted_resource().is_none() && (self.runtime_attachment)(args)
+        (self.runtime_attachment)(args)
     }
+
     /// Adapt one common application definition. A runner must install an explicit host.
     pub fn from_definition(definition: &'static crate::application::ApplicationDefinition) -> Self {
         Self {

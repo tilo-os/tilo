@@ -171,8 +171,10 @@ All of that moves to the document host:
    WebAssembly module. The tilolang host already runs tilolang packages' code in
    a system process rather than the app's, so it is the starting point; native
    packages compile their model and verbs to the same kind of module.
-2. Native views get readings and submit actions over the launcher-made
-   connection; `tilo-app`'s view side is a client of that connection only.
+2. A Rust app's model runs as an instance kind of the workspace's tilolang
+   host, beside the tilolang packages': the app's windows, and an agent's
+   windowless launch, reach that instance, and the app's process keeps no
+   document of its own.
 3. Outbox workers become their own sandboxed launch, with their grants.
 4. Input gesture tokens and actor attribution move into the session's door.
 5. The identity broker connection, join proofs, channel keys and the peer

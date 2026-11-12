@@ -3338,10 +3338,6 @@ pub struct CallbackBinding {
     pub(crate) host_person: UserId,
     pub(crate) records: RecordStore,
     pub(crate) checkout: RecordCheckout,
-    /// The session's document host keeps this component's record: the
-    /// process holds none of it, so a pass reads the document it lent rather
-    /// than a record here (`docs/architecture/apps.md` §8 step 2).
-    pub(crate) hosted: bool,
     pub(crate) permissions: SharedPermissions,
     pub(crate) author: UserId,
     pub(crate) operation_context: Rc<tilo_actions::ActionContext>,
@@ -4451,12 +4447,6 @@ impl CallbackBinding {
         })?
     }
     fn generation(&self) -> Result<Option<u64>, BoundDispatchError> {
-        // A record the session keeps has no generation here: what the
-        // component shows follows the reading, not a store in this process
-        // (`docs/architecture/apps.md` §8 step 2).
-        if self.hosted {
-            return Ok(None);
-        }
         if self.check_record()?.is_some() {
             return ACTIVE.with_borrow(|active| {
                 active
@@ -4912,13 +4902,6 @@ impl CallbackBinding {
             };
         }
         let _phase = tilo_resource::profiling::Phase::start("ui.record_frame");
-        // A component the session serves holds no record here: what a control
-        // submits is resolved against what the component publishes, and is
-        // committed by the session over its connection (`one-app-model.md`
-        // §4).
-        if self.hosted {
-            return Ok(callback(outer, &ROOT));
-        }
         self.records
             .with_action_state(&self.checkout.id, |document, history, state| {
                 let frame = Rc::new(RefCell::new(Some(ActionFrame {
@@ -5000,13 +4983,6 @@ impl CallbackBinding {
             if !std::ptr::eq(document, outer) {
                 return Err(BoundDispatchError::Record(RecordOpenError::Busy));
             }
-            return Ok(callback(outer, &ROOT));
-        }
-        // A component the session serves holds no record here: what a pass
-        // reads is the document it lent, and what the component publishes
-        // comes from the state its view synced from the session's reading
-        // (`one-app-model.md` §4).
-        if self.hosted {
             return Ok(callback(outer, &ROOT));
         }
         self.records

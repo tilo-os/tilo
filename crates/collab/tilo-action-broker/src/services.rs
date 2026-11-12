@@ -267,14 +267,6 @@ pub trait LauncherServices: Send + Sync {
         let _ = (app, workspace);
         Ok(None)
     }
-    /// Whether this session runs `app`'s model itself, so it has no window process for a launch
-    /// to bring up: a plain `open` of it places its root through the session's own `open` step
-    /// (`docs/designs/app-language/one-app-model.md` §3) instead of waiting for a process that
-    /// never publishes. `None` for a host that launches every app.
-    fn served(&self, app: &str) -> Option<String> {
-        let _ = app;
-        None
-    }
     /// Snapshot the original launch facts while admitting this connection.
     /// Unsupported launchers retain no private window-instance authority.
     /// `window_instance` is the window the connection says it was made for:
