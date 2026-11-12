@@ -1954,16 +1954,18 @@ class PageActions(unittest.TestCase):
         review = {field['name']: field for field in heard(self.ok('fields', actor='rev'))['data']['fields']}
         self.assertEqual((review['Password']['value'], review['Password']['question'], review['Password']['set']['by']),
                          ('<14 characters hidden>', 'Password', 'ada'))
-        # A secret the page's own script writes is named as changed, never told.
+        # A secret the page's own script writes is named as changed, never
+        # told. What is known of a secret is its length, so a change of it
+        # is seen when its length changes.
         mark = len(self.h.seen)
-        self.main_world('(' + password + '.value = "battery-staple", 1)')
+        self.main_world('(' + password + '.value = "battery-staple-horse", 1)')
         told = self.told('page_changed', mark)
         self.assertEqual([(field['name'], field['how'], field['form'], field['question']) for field in told['fields']],
                          [('Password', 'page', 'form1', 'Password')], told)
         said.append(told)
         said.append(heard(self.ok('ledger', since=0, actor='cy')))
         everything = json.dumps(said)
-        for text in ('hunter2', 'battery', 'staple'):
+        for text in ('hunter2', 'battery', 'staple', 'horse'):
             self.assertNotIn(text, everything)
 
     def test_a_field_in_a_closed_shadow_tree_is_listed_and_said_to_be_out_of_reach(self):
@@ -2042,22 +2044,36 @@ class PageActions(unittest.TestCase):
         self.assertEqual((answered['data']['form'], answered['data']['signature']), ('form1', plain[0]['signature']))
 
     def test_reading_a_plain_page_s_forms_stays_quick(self):
-        # What a read of a plain page's forms costs, there and back: one
-        # form of thirty fields, and a long page that has no form. The times
-        # are printed for whoever compares two engines.
+        # What a read of a plain page's forms costs: one form of thirty
+        # fields, and a long page that has no form. The times are printed for
+        # whoever compares two engines: the read there and back, beside a
+        # read that looks at nothing of the page, which is what the way there
+        # and back costs alone; and the one look a read of a page's forms
+        # takes at every element, for a shadow tree or a component, timed in
+        # the page itself.
+        def timed(act):
+            took = []
+            for _ in range(40):
+                start = time.perf_counter()
+                act()
+                took.append((time.perf_counter() - start) * 1000)
+            took.sort()
+            return took[0], took[len(took) // 2]
+        look = ('(() => { const start = performance.now(); let met = 0;'
+                ' for (let turn = 0; turn < 200; turn++) for (const element of document.querySelectorAll("*"))'
+                ' if (element.shadowRoot || element.localName.includes("-")) { met++; break; }'
+                ' return [Math.round((performance.now() - start) / 200 * 10000) / 10000, met, document.querySelectorAll("*").length]; })()')
         for path, what, questions in (('/thirty', 'one form of 30 fields', 30), ('/plain-long', 'a 3000-line page', 0)):
             self.h.navigate(self.url + path)
             read = self.ok('forms')
             self.assertEqual(sum(len(form['fields']) for form in read['data']['forms']), questions, read['message'])
-            took = []
-            for _ in range(25):
-                start = time.perf_counter()
-                self.ok('forms')
-                took.append((time.perf_counter() - start) * 1000)
-            took.sort()
-            print(f'perf chromium forms read of {what}: least {took[0]:.2f} ms, middle {took[len(took) // 2]:.2f} ms',
-                  flush=True)
-            self.assertLess(took[len(took) // 2], 1000, took)
+            forms, nothing = timed(lambda: self.ok('forms')), timed(lambda: self.ok('ledger', since=0))
+            each, met, elements = self.main_world(look)
+            self.assertEqual(met, 0, 'a plain page has no component')
+            print(f'perf chromium forms read of {what}: least {forms[0]:.2f} ms, middle {forms[1]:.2f} ms; '
+                  f'a read of nothing of the page: least {nothing[0]:.2f} ms, middle {nothing[1]:.2f} ms; '
+                  f'one look at its {elements} elements for a component, in the page: {each:.4f} ms', flush=True)
+            self.assertLess(forms[1], 1000, forms)
 
     def test_the_engine_says_when_the_page_changes_a_field_or_a_form_itself(self):
         # Whoever reviews a page is told when the page's own script changes
