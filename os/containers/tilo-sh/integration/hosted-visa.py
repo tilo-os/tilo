@@ -56,6 +56,7 @@ import time
 import urllib.parse
 import urllib.request
 
+from approver import Person
 from tilo import AsyncTilo, ProtocolError, Refused, Run
 
 DOOR, SERVER_KEY, OUT, FORM_URL = sys.argv[1:5]
@@ -167,63 +168,6 @@ def check_leaves(question: dict, what: str) -> None:
     check(page.get("method") == "POST", f"the question about {what} names the method ({page})")
     check(page.get("destination"), f"the question about {what} names where it goes ({page})")
     check(page.get("picture"), f"the question about {what} shows the filled page ({page})")
-
-
-class Person:
-    """The person the page made, answering for themselves: `tilo-approve`
-    connects as one of their approving devices and answers what the host
-    asks them, printing the question it saw."""
-
-    def __init__(self) -> None:
-        check(APPROVER and os.path.isfile(APPROVER), f"the check holds its approver ({APPROVER})")
-        check(PERSON_ROOT and os.path.isdir(PERSON_ROOT), f"the person's root is held ({PERSON_ROOT})")
-        check(HOST, f"the host's address is named ({HOST})")
-        self.asked: list[dict] = []
-
-    def begin(self, answer: str, within: int = 180) -> "asyncio.Future[asyncio.subprocess.Process]":
-        """Start answering the next question, before the call that asks it:
-        the call waits for the person, so they answer beside it."""
-        return asyncio.ensure_future(self._start(answer, within))
-
-    async def _start(self, answer: str, within: int) -> asyncio.subprocess.Process:
-        return await asyncio.create_subprocess_exec(
-            APPROVER, "next", "--root", PERSON_ROOT, "--relay", HOST,
-            "--answer", answer, "--within", str(within),
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-
-    async def settle(self, started: "asyncio.Future[asyncio.subprocess.Process]", within: int = 180) -> list[dict]:
-        """The questions the process saw, once it answered or gave up."""
-        process = await started
-        try:
-            out, err = await asyncio.wait_for(process.communicate(), timeout=within + 30)
-        except TimeoutError:
-            process.kill()
-            out, err = await process.communicate()
-        questions = []
-        for line in out.decode().splitlines():
-            line = line.strip()
-            if not line.startswith("{"):
-                continue
-            seen = json.loads(line)
-            if seen.get("question"):
-                questions.append(seen["question"])
-            if "watched" in seen and seen["watched"]:
-                raise AssertionError(f"the person was asked {seen['watched']} unexpected questions")
-        if process.returncode not in (0, 1, 3):
-            raise AssertionError(f"the approver stopped ({process.returncode}): {err.decode()[-800:]}")
-        self.asked.extend(questions)
-        return questions
-
-    async def asked_nothing(self) -> None:
-        """Say that the host has no question for the person: a question left
-        waiting is still there to be seen, and the window answers nothing
-        until the person decides."""
-        questions = await self.settle(self.begin("none", within=2), within=2)
-        check(not questions, f"the person was asked nothing ({questions})")
-
-    def answered(self) -> int:
-        return len(self.asked)
 
 
 class Page:
@@ -356,7 +300,7 @@ async def fill_phase(report: dict[str, object]) -> int:
     agent = AsyncTilo(key=state["key"], door=DOOR)
     aws = agent.workspace(workspace)
     page = Page(aws, str(state["window"]))
-    person = Person()
+    person = Person(APPROVER, PERSON_ROOT, HOST, check=check)
     reviewer = None
 
     say("b. the agent fills the visa form through page actions, and the person is asked nothing")

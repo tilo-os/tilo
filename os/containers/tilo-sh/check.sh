@@ -379,6 +379,8 @@ if [[ $hosted == 1 ]]; then
   hosted_terminal() { # PHASE
     HOSTED_TERMINAL_CLI=$tilo HOSTED_TERMINAL_DOOR=$door \
       HOSTED_TERMINAL_PLANS=$plans HOSTED_TERMINAL_ACCOUNT=$vm_account \
+      HOSTED_TERMINAL_APPROVER=$approve HOSTED_TERMINAL_ROOT=$work/startup/root \
+      HOSTED_TERMINAL_RELAY=$relay_address \
       sdk_python "$here/integration/hosted-terminal.py" "$door" "$key" "$work/hosted" "$1"
   }
   launch=$SECONDS

@@ -56,6 +56,7 @@ import time
 
 from pathlib import Path
 
+from approver import Person
 from tilo import AsyncTilo, ProtocolError, Refused, Run
 
 import plans
@@ -70,6 +71,12 @@ PERSON_KEY_NAME = "Visa backend"
 AGENT_KEY_NAME = "Jane Doe's agent"
 CLI = os.environ.get("HOSTED_TERMINAL_CLI", "tilo")
 CLI_DOOR = os.environ.get("HOSTED_TERMINAL_DOOR", DOOR)
+# The person answering what the host asks before a command runs: a Terminal
+# run reaches outside the workspace's records, so a person's standing puts it
+# to them, and `tilo-approve` is the approving device that answers.
+APPROVER = os.environ.get("HOSTED_TERMINAL_APPROVER", "")
+PERSON_ROOT = os.environ.get("HOSTED_TERMINAL_ROOT", "")
+RELAY = os.environ.get("HOSTED_TERMINAL_RELAY", "")
 
 # The account the stack's relay places its workspaces' VMs for: the one the
 # plans file admits by (os/containers/tilo-sh/vm-host.sh). The provider names
@@ -182,6 +189,23 @@ async def state() -> dict[str, object]:
     return kept
 
 
+def person() -> Person:
+    """The person the check holds, as the device that answers their hosts."""
+    return Person(APPROVER, PERSON_ROOT, RELAY, check=check)
+
+
+async def asked(one: Person, call: object, answer: str = "allow", within: int = 120) -> tuple[object, list[dict]]:
+    """`call`, with the person answering what the host asks before it runs.
+
+    A Terminal run reaches outside the workspace's records, so the host puts
+    it to the person and the call waits: they answer beside it, as a person at
+    their desk would."""
+    started = one.begin(answer, within)
+    result = await call
+    questions = await one.settle(started, within)
+    return result, questions
+
+
 async def find_run(workspace: object, run: str) -> tuple[str, dict]:
     """The Terminal session record holding the run `run`, and the run as it is
     recorded: whichever session of the app the host opened."""
@@ -220,14 +244,21 @@ async def refused() -> dict[str, object]:
     agent = client(str(kept["key"]))
     try:
         aws = agent.workspace(workspace)
+        one = person()
         say("the agent asks the workspace's Terminal for a command, in its own run")
         began = time.perf_counter()
         # In a run, as an agent's commands go: the shell fails at once with
         # the refusal, where a person's own command would wait for the card.
         async with aws.run("A Linux command the account cannot pay for yet"):
-            answer = await outcome(aws.do("terminal#run", command=REFUSED_COMMAND))
+            answer, questions = await asked(
+                one, outcome(aws.do("terminal#run", command=REFUSED_COMMAND))
+            )
         seconds = time.perf_counter() - began
         say("answered", f"{seconds:.2f} s: {json.dumps(answer, default=str)[:400]}")
+        check(
+            len(questions) == 1,
+            f"the person was asked once before the command ran ({questions})",
+        )
         check(isinstance(answer, dict), f"the refusal is the run's answer ({answer!r})")
         refusal = answer.get("refusal") or {}
         message = str(refusal.get("message") or "")
@@ -312,13 +343,20 @@ async def terminal() -> dict[str, object]:
     """The workspace's Terminal, and the command that never ran in it."""
     kept = await state()
     workspace = str(kept["workspace"])
-    person = client(SERVER_KEY)
+    person_client = client(SERVER_KEY)
     try:
-        ows = person.workspace(workspace)
+        ows = person_client.workspace(workspace)
+        one = person()
         say("the person's own key runs a command in the workspace's Terminal")
         began = time.perf_counter()
-        answer = await outcome(ows.do("terminal#run", command=TERMINAL_COMMAND))
+        answer, questions = await asked(
+            one, outcome(ows.do("terminal#run", command=TERMINAL_COMMAND))
+        )
         seconds = time.perf_counter() - began
+        check(
+            len(questions) == 1,
+            f"the person was asked once before the command ran ({questions})",
+        )
         check(isinstance(answer, dict), f"the run answers what it did ({answer!r})")
         output = str(answer.get("output") or "")
         say("answered", f"{seconds:.2f} s, exit {answer.get('exit')}: {output.strip()[:400]}")
@@ -391,7 +429,7 @@ async def terminal() -> dict[str, object]:
             "history_versions": len(versions),
         }
     finally:
-        await person.aclose()
+        await person_client.aclose()
 
 
 def run_cli(workspace: str, key: str, command: str) -> tuple[int, str, str]:
@@ -414,10 +452,17 @@ async def agent() -> dict[str, object]:
     workspace = str(kept["workspace"])
     key = str(kept["key"])
     say("the agent's key runs a command in the VM through the tilo command")
+    one = person()
     began = time.perf_counter()
-    code, out, err = run_cli(workspace, key, AGENT_COMMAND)
+    started = one.begin("allow")
+    code, out, err = await asyncio.to_thread(run_cli, workspace, key, AGENT_COMMAND)
+    questions = await one.settle(started)
     seconds = time.perf_counter() - began
     say("answered", f"{seconds:.2f} s, exit {code}: {out.strip()[:400]}")
+    check(
+        len(questions) == 1,
+        f"the person was asked once before the command ran ({questions})",
+    )
     check(code == 0, f"the command answered the run ({code}): {err.strip()[-400:]}")
     check(out.strip().startswith("ok"), f"the run succeeded, as the command reads it ({out.strip()[:200]})")
     check("Linux " in out, f"what the command printed comes back ({out.strip()[:300]})")
@@ -470,13 +515,18 @@ async def isolated() -> dict[str, object]:
     """The Linux session's account, and the Browser session's, apart."""
     kept = await state()
     workspace = str(kept["workspace"])
-    person = client(SERVER_KEY)
+    person_client = client(SERVER_KEY)
     try:
-        ows = person.workspace(workspace)
+        ows = person_client.workspace(workspace)
+        one = person()
         say("a command runs as the tenant, and neither it nor the Browser user reads the other's files")
         began = time.perf_counter()
-        answer = await outcome(ows.do("terminal#run", command=ISOLATION_COMMAND))
+        answer, questions = await asked(one, outcome(ows.do("terminal#run", command=ISOLATION_COMMAND)))
         seconds = time.perf_counter() - began
+        check(
+            len(questions) == 1,
+            f"the person was asked once before the command ran ({questions})",
+        )
         check(isinstance(answer, dict), f"the run answers what it did ({answer!r})")
         output = str(answer.get("output") or "")
         say("answered", f"{seconds:.2f} s: {output.strip()[:600]}")
@@ -490,14 +540,21 @@ async def isolated() -> dict[str, object]:
         # refused, which is what proves them: a listing would be a leak.
         check(answer.get("exit") != 0, f"both reads were refused (exit {answer.get('exit')})")
         say("and the Browser user may not read the tenant's file")
-        other = await outcome(
-            ows.do(
-                "terminal#run",
-                command=(
-                    f"ls /home/tilo-browser && echo leaked"
-                    f" ; sudo -n -u tilo-browser -- cat {REFUSED_MARKER}.tenant && echo leaked"
-                ),
-            )
+        other, second = await asked(
+            one,
+            outcome(
+                ows.do(
+                    "terminal#run",
+                    command=(
+                        f"ls /home/tilo-browser && echo leaked"
+                        f" ; sudo -n -u tilo-browser -- cat {REFUSED_MARKER}.tenant && echo leaked"
+                    ),
+                )
+            ),
+        )
+        check(
+            len(second) == 1,
+            f"the person was asked once about the second command too ({second})",
         )
         text = str((other or {}).get("output") or "")
         say("answered", text.strip()[:400])
@@ -511,17 +568,23 @@ async def isolated() -> dict[str, object]:
             "account": ACCOUNT,
         }
     finally:
-        await person.aclose()
+        await person_client.aclose()
 
 
 async def gui() -> dict[str, object]:
     """Whether a hosted workspace has a Linux GUI app to open at all."""
     kept = await state()
     workspace = str(kept["workspace"])
-    person = client(SERVER_KEY)
+    person_client = client(SERVER_KEY)
     try:
-        ows = person.workspace(workspace)
-        answer = await outcome(ows.do("terminal#run", command=DISPLAY_COMMAND))
+        ows = person_client.workspace(workspace)
+        answer, questions = await asked(
+            person(), outcome(ows.do("terminal#run", command=DISPLAY_COMMAND))
+        )
+        check(
+            len(questions) == 1,
+            f"the person was asked once before the command ran ({questions})",
+        )
         output = str((answer or {}).get("output") or "")
         say("answered", output.strip()[:400])
         servers = [
@@ -541,7 +604,7 @@ async def gui() -> dict[str, object]:
         write_json("gui.json", {"answer": answer, "display_servers": servers})
         return {"display_servers": servers}
     finally:
-        await person.aclose()
+        await person_client.aclose()
 
 
 async def main() -> int:
