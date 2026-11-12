@@ -92,14 +92,17 @@ struct SelectionPreference {
     path: PathBuf,
 }
 
+/// What the page says about the download: its phase, the two catalogue
+/// messages it shows, and what went wrong when its hand-off stopped.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct DownloadPresentation {
     pub(super) phase: Option<WorkerPhase>,
-    pub(super) title: String,
-    /// Everything known about the download, for status readers.
-    pub(super) details: String,
-    /// The one sentence the page shows under the title.
-    pub(super) summary: String,
+    /// The message the card's heading says.
+    pub(super) title_key: &'static str,
+    /// The message the line under the heading says.
+    pub(super) sentence_key: &'static str,
+    /// What went wrong, when the download or its hand-off failed.
+    pub(super) failure: Option<String>,
     pub(super) pending: bool,
 }
 
@@ -107,9 +110,9 @@ impl Default for DownloadPresentation {
     fn default() -> Self {
         Self {
             phase: None,
-            title: crate::setup::strings::t("imager-setup-internal-download-title"),
-            details: "Choose Download Tilo after reviewing this setup.".into(),
-            summary: "Download Tilo when you have reviewed this setup.".into(),
+            title_key: "imager-setup-internal-download-title",
+            sentence_key: "imager-setup-internal-download-choose",
+            failure: None,
             pending: false,
         }
     }
@@ -350,20 +353,24 @@ impl InternalDownloadFlow {
         self.consumed = true;
         self.set_pending(
             PendingCommand::Consume,
-            &crate::setup::strings::t("imager-setup-internal-download-consuming"),
+            "imager-setup-internal-download-consuming",
         );
         Ok(())
     }
 
     /// The installation failure the worker reported for a consumed download.
-    pub(super) fn consume_failure(&self) -> Option<&str> {
+    pub(super) fn consume_failure(&self) -> Option<String> {
         (self.consumed
             && self.pending.is_none()
             && matches!(
                 self.presentation.phase,
                 Some(WorkerPhase::Failed | WorkerPhase::Cancelled)
             ))
-        .then_some(self.presentation.details.as_str())
+        .then(|| {
+            self.presentation.failure.clone().unwrap_or_else(|| {
+                crate::setup::strings::t("imager-setup-internal-download-cancelled-detail")
+            })
+        })
     }
 
     pub(super) fn offered_selection(&self) -> Option<SelectionKey> {
@@ -498,10 +505,16 @@ impl InternalDownloadFlow {
             .ok_or("The active download is unavailable.")?;
         if cancel {
             worker.cancel(token)?;
-            self.set_pending(PendingCommand::Cancel, "Cancelling download…");
+            self.set_pending(
+                PendingCommand::Cancel,
+                "imager-setup-status-cancelling-download",
+            );
         } else {
             worker.pause(token)?;
-            self.set_pending(PendingCommand::Pause, "Pausing download…");
+            self.set_pending(
+                PendingCommand::Pause,
+                "imager-setup-status-pausing-download",
+            );
         }
         Ok(())
     }
@@ -537,7 +550,7 @@ impl InternalDownloadFlow {
         self.token = Some(token);
         self.set_pending(
             PendingCommand::Discard,
-            "Discarding unfinished download data…",
+            "imager-setup-status-discarding-download",
         );
         Ok(())
     }
@@ -552,14 +565,17 @@ impl InternalDownloadFlow {
             .zip(self.token.as_ref())
             .ok_or("The verified download is no longer held.")?;
         worker.release(token)?;
-        self.set_pending(PendingCommand::Release, "Keeping download for later…");
+        self.set_pending(
+            PendingCommand::Release,
+            "imager-setup-status-keeping-download",
+        );
         Ok(())
     }
 
-    fn set_pending(&mut self, pending: PendingCommand, title: &str) {
+    fn set_pending(&mut self, pending: PendingCommand, title_key: &'static str) {
         self.pending = Some(pending);
         self.presentation.pending = true;
-        self.presentation.title = title.into();
+        self.presentation.title_key = title_key;
         self.revision = self.revision.wrapping_add(1);
     }
 
@@ -593,9 +609,8 @@ impl InternalDownloadFlow {
         let mut next = presentation_from_status(&status);
         if self.consumed && status.phase == WorkerPhase::Failed {
             // The download itself stayed verified; the installer helper stopped.
-            next.title = crate::setup::strings::t("imager-setup-internal-download-kept");
-            next.details = status.error.unwrap_or_default();
-            next.summary.clone_from(&next.details);
+            next.title_key = "imager-setup-internal-download-kept";
+            next.sentence_key = "imager-download-sentence-handoff-failed";
         }
         if next == self.presentation {
             return false;
@@ -633,125 +648,49 @@ impl InternalDownloadFlow {
 }
 
 fn presentation_from_status(status: &Status) -> DownloadPresentation {
-    presentation_from_facts(
-        status.phase,
-        status.committed,
-        status.progress,
-        status.finals,
-        status.residue,
-        status.uncertain,
-        status.error.as_deref(),
-    )
+    DownloadPresentation {
+        phase: Some(status.phase),
+        title_key: download_title_key(status.phase),
+        sentence_key: download_sentence_key(status.phase),
+        failure: status.error.clone(),
+        pending: false,
+    }
 }
 
-fn presentation_from_facts(
-    phase: WorkerPhase,
-    committed: [u64; 2],
-    progress: Option<crate::setup::internal_download::Progress>,
-    finals: [bool; 2],
-    residue: bool,
-    uncertain: bool,
-    error: Option<&str>,
-) -> DownloadPresentation {
-    let consumption: (String, String);
-    let (title, summary) = match phase {
-        WorkerPhase::Authenticating => (
-            crate::setup::strings::t("imager-download-title-downloading"),
-            "Checking the Tilo release.".to_owned(),
-        ),
-        WorkerPhase::Acquiring | WorkerPhase::Preparing => (
-            crate::setup::strings::t("imager-download-title-downloading"),
-            "Checking what was already downloaded.".to_owned(),
-        ),
-        WorkerPhase::Downloading => (
-            crate::setup::strings::t("imager-download-title-downloading"),
-            "Downloading and checking Tilo.".to_owned(),
-        ),
-        WorkerPhase::Ready => (
-            crate::setup::strings::t("imager-download-title-ready"),
-            "Download verified. Installation has not started.".to_owned(),
-        ),
-        WorkerPhase::Paused => (
-            crate::setup::strings::t("imager-download-title-paused"),
-            "Paused. Resuming checks what was already downloaded first.".to_owned(),
-        ),
-        WorkerPhase::Cancelled => (
-            crate::setup::strings::t("imager-download-title-cancelled"),
-            "Cancelled. Downloaded data may remain until you discard it.".to_owned(),
-        ),
-        WorkerPhase::Failed => (
-            crate::setup::strings::t("imager-download-title-failed"),
-            "The download did not finish.".to_owned(),
-        ),
-        WorkerPhase::Released => (
-            crate::setup::strings::t("imager-download-title-released"),
-            "The verified download is kept on this computer. Installation has not started."
-                .to_owned(),
-        ),
-        WorkerPhase::Discarded => (
-            crate::setup::strings::t("imager-download-title-discarded"),
-            "Unfinished download data was removed. Completed parts may remain.".to_owned(),
-        ),
-        WorkerPhase::Consuming => {
-            consumption = (
-                crate::setup::strings::t("imager-setup-internal-download-consuming"),
-                crate::setup::strings::t("imager-setup-internal-download-consuming-detail"),
-            );
-            (consumption.0.clone(), consumption.1.clone())
+/// The message the card's heading says during `phase`.
+fn download_title_key(phase: WorkerPhase) -> &'static str {
+    match phase {
+        WorkerPhase::Authenticating
+        | WorkerPhase::Acquiring
+        | WorkerPhase::Preparing
+        | WorkerPhase::Downloading => "imager-download-title-downloading",
+        WorkerPhase::Ready => "imager-download-title-ready",
+        WorkerPhase::Paused => "imager-download-title-paused",
+        WorkerPhase::Cancelled => "imager-download-title-cancelled",
+        WorkerPhase::Failed => "imager-download-title-failed",
+        WorkerPhase::Released => "imager-download-title-released",
+        WorkerPhase::Discarded => "imager-download-title-discarded",
+        WorkerPhase::Consuming => "imager-setup-internal-download-consuming",
+        WorkerPhase::Consumed => "imager-setup-internal-download-consumed",
+    }
+}
+
+/// The message the line under the heading says during `phase`.
+fn download_sentence_key(phase: WorkerPhase) -> &'static str {
+    match phase {
+        WorkerPhase::Authenticating => "imager-download-sentence-checking-release",
+        WorkerPhase::Acquiring | WorkerPhase::Preparing => {
+            "imager-download-sentence-checking-earlier"
         }
-        WorkerPhase::Consumed => {
-            consumption = (
-                crate::setup::strings::t("imager-setup-internal-download-consumed"),
-                crate::setup::strings::t("imager-setup-internal-download-consumed-detail"),
-            );
-            (consumption.0.clone(), consumption.1.clone())
-        }
-    };
-    let mut details = summary.to_string();
-    if let Some(progress) = progress {
-        details.push_str(&format!(
-            " Component {} of 2: {} bytes received in this attempt; {} bytes verified.",
-            progress.component.saturating_add(1).min(2),
-            progress.received,
-            progress.verified
-        ));
-    }
-    if committed != [0, 0] {
-        details.push_str(&format!(
-            " Retained download data: component 1 has {} bytes; component 2 has {} bytes.",
-            committed[0], committed[1]
-        ));
-    }
-    let final_count = finals.iter().filter(|retained| **retained).count();
-    if final_count > 0 {
-        let noun = if final_count == 1 {
-            "component is"
-        } else {
-            "components are"
-        };
-        details.push_str(&format!(
-            " {final_count} completed and verified {noun} retained."
-        ));
-    }
-    if residue {
-        details
-            .push_str(" Some download data remains and will be checked before another operation.");
-    }
-    if uncertain {
-        details.push_str(
-            " The saved download state may have changed; it will be checked again before another operation.",
-        );
-    }
-    if let Some(error) = error {
-        details.push_str(" Error: ");
-        details.push_str(error);
-    }
-    DownloadPresentation {
-        phase: Some(phase),
-        title: title.into(),
-        details,
-        summary: summary.to_string(),
-        pending: false,
+        WorkerPhase::Downloading => "imager-download-sentence-downloading",
+        WorkerPhase::Ready => "imager-download-sentence-ready",
+        WorkerPhase::Paused => "imager-download-sentence-paused",
+        WorkerPhase::Cancelled => "imager-download-sentence-cancelled",
+        WorkerPhase::Failed => "imager-download-sentence-failed",
+        WorkerPhase::Released => "imager-download-sentence-released",
+        WorkerPhase::Discarded => "imager-download-sentence-discarded",
+        WorkerPhase::Consuming => "imager-setup-internal-download-consuming-detail",
+        WorkerPhase::Consumed => "imager-setup-internal-download-consumed-detail",
     }
 }
 
@@ -1033,18 +972,19 @@ mod tests {
             flow.start_selected(key).unwrap();
             assert!(flow.has_pending_operation());
             wait_for(&mut flow, Phase::Ready);
-            assert_eq!(flow.presentation().title, "Download ready");
-            assert!(
-                flow.presentation()
-                    .details
-                    .contains("Download verified. Installation has not started.")
+            assert_eq!(
+                crate::setup::strings::t(flow.presentation().title_key),
+                "Download ready"
             );
             assert!(!flow.has_pending_operation());
 
             flow.release().unwrap();
             assert!(flow.has_pending_operation());
             wait_for(&mut flow, Phase::Released);
-            assert_eq!(flow.presentation().title, "Kept for later");
+            assert_eq!(
+                crate::setup::strings::t(flow.presentation().title_key),
+                "Kept for later"
+            );
             assert!(!flow.has_pending_operation());
         }
 
@@ -1293,7 +1233,10 @@ mod tests {
             flow.cancel().unwrap();
             flow.poll();
             assert!(flow.presentation().pending);
-            assert_eq!(flow.presentation().title, "Cancelling download…");
+            assert_eq!(
+                crate::setup::strings::t(flow.presentation().title_key),
+                "Cancelling download…"
+            );
             continue_tx.send(()).unwrap();
             wait_for(&mut flow, Phase::Cancelled);
             let cancelled = flow.worker.as_ref().unwrap().status().unwrap();
@@ -1304,7 +1247,6 @@ mod tests {
             assert!(!flow.accept_status(cancelled));
             assert!(flow.presentation().pending);
             wait_for(&mut flow, Phase::Discarded);
-            assert!(flow.presentation().details.contains("may remain"));
         }
 
         // Phase `dropping_held_ready_releases_leases_and_retains_verified_components`.
@@ -1392,109 +1334,6 @@ mod tests {
             drop(flow);
             unblock.join().unwrap();
             assert!(request_returned.load(Ordering::Acquire));
-        }
-    }
-
-    /// Terminal and paused presentation.
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn internal_download_wording_reports_only_known_retained_facts() {
-        // Phase `terminal_wording_retains_bytes_components_residue_uncertainty_and_original_error`.
-        // Catches normalizing away the coordinator's R1/R2 uncertainty and boundary errors.
-        {
-            for phase in [Phase::Failed, Phase::Cancelled] {
-                let presentation = presentation_from_facts(
-                    phase,
-                    [17, 29],
-                    None,
-                    [true, false],
-                    true,
-                    true,
-                    Some("journal normalization failed; held-reader boundary: readback changed"),
-                );
-                assert!(presentation.details.contains("17 bytes"));
-                assert!(presentation.details.contains("29 bytes"));
-                assert!(
-                    presentation
-                        .details
-                        .contains("1 completed and verified component")
-                );
-                assert!(presentation.details.contains("Some download data remains"));
-                assert!(presentation.details.contains("may have changed"));
-                assert!(
-                    presentation
-                        .details
-                        .contains("journal normalization failed")
-                );
-                assert!(
-                    presentation
-                        .details
-                        .contains("held-reader boundary: readback changed")
-                );
-                assert!(!presentation.details.contains("acknowledged prefix"));
-                assert!(!presentation.details.contains("private cache"));
-                assert_ne!(presentation.title, "Download ready");
-            }
-        }
-
-        // Phase `false_residue_makes_no_global_absence_claim`.
-        // Catches residue=false being upgraded into a claim that all retained data is absent.
-        {
-            let presentation = presentation_from_facts(
-                Phase::Discarded,
-                [0, 0],
-                None,
-                [false, false],
-                false,
-                false,
-                None,
-            );
-            assert!(!presentation.details.contains("no download data"));
-            assert!(!presentation.details.contains("cache cleared"));
-            assert!(presentation.details.contains("may remain"));
-        }
-
-        // Phase `paused_zero_fact_presentation_is_neutral_about_retained_data`.
-        // Catches a pause with no established retained facts claiming data or completed components.
-        {
-            let presentation = presentation_from_facts(
-                Phase::Paused,
-                [0, 0],
-                None,
-                [false, false],
-                false,
-                false,
-                None,
-            );
-            assert_eq!(presentation.title, "Download paused");
-            assert_eq!(
-                presentation.details,
-                "Paused. Resuming checks what was already downloaded first."
-            );
-        }
-
-        {
-            let presentation = presentation_from_facts(
-                Phase::Paused,
-                [512, 0],
-                None,
-                [true, false],
-                true,
-                true,
-                Some("pause boundary changed"),
-            );
-            assert!(presentation.details.contains("component 1 has 512 bytes"));
-            assert!(
-                presentation
-                    .details
-                    .contains("1 completed and verified component")
-            );
-            assert!(presentation.details.contains("Some download data remains"));
-            assert!(presentation.details.contains("may have changed"));
-            assert!(presentation.details.contains("pause boundary changed"));
         }
     }
 }

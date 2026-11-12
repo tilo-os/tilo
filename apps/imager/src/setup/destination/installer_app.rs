@@ -96,21 +96,13 @@ mod surface_tests;
 
 pub use console::{CONSOLE_WAKE, redact_recovery_material};
 
-/// Labels for the FIDO2 segmented selector, in display order. Index 0 (off)
+/// Messages naming the security-key choice, in display order. Index 0 (off)
 /// is the default; index 1 enrolls a hardware security key as an extra
 /// unlock factor. Only shown when encryption is on.
-pub const FIDO2_LABELS: [&str; 2] = ["No security key", "Enroll security key"];
-
-/// The heading of the media codecs opt-in.
-pub const CODECS_TITLE: &str = "Play more video and audio formats";
-
-/// What the Media step says once Install was pressed, above its Undo.
-pub const CODECS_CHOSEN: &str = "Chosen: installed once the new system is online";
-
-/// The one short line under the title. The installer only records the
-/// choice; the installed system downloads the formats once it is online.
-pub const CODECS_DESCRIPTION: &str = "Downloaded to this computer from the formats' publishers once \
-it is online. You can turn it off in Settings.";
+const FIDO2_KEYS: [&str; 2] = [
+    "installer-security-key-off",
+    "installer-security-key-enroll",
+];
 
 /// Default hostname seeded into the CRDT (and the installed system).
 const DEFAULT_HOSTNAME: &str = "tilo";
@@ -123,7 +115,8 @@ const DEFAULT_KEYMAP_NAME: &str = layouts::DEFAULT_DISPLAY_NAME;
 /// one that gives snapshots and rollback.
 const RECOMMENDED_FS: usize = 0;
 
-pub const INSTALL_METHOD_LABELS: [&str; 2] = ["Erase disk", "Install alongside"];
+/// Messages naming the two ways to install, in the segmented choice's order.
+const INSTALL_METHOD_KEYS: [&str; 2] = ["installer-method-erase", "installer-method-alongside"];
 /// The message naming the step's forward action: the one the published
 /// `next` gate carries, so the button and the action read alike.
 const NEXT_KEY: &str = "imager-installer-next";
@@ -140,18 +133,20 @@ fn connect_power_message(percent: u8) -> String {
     )
 }
 
+/// What installing alongside `dev` changes, and the firmware caveat that
+/// stands whatever the plan: the review's description reads it.
 fn alongside_install_impact(guided: bool, dev: &str) -> String {
-    let change = if guided {
-        format!(
-            "Three new Tilo partitions (EFI, boot, and encrypted root) will be created and formatted only in the reviewed unallocated space on {dev}. Existing OS partitions are preserved."
-        )
-    } else {
-        format!(
-            "Only the prepared Tilo boot and root partitions on {dev} will be formatted. The existing EFI partition and other OS partitions are preserved."
-        )
-    };
-    format!(
-        "{change} Firmware/Secure Boot changes can still trigger a Windows BitLocker recovery prompt; save that recovery key before continuing."
+    let change = crate::setup::strings::t_args(
+        if guided {
+            "installer-alongside-change-guided"
+        } else {
+            "installer-alongside-change-prepared"
+        },
+        &[("device", ArgValue::Text(dev.to_owned()))],
+    );
+    crate::setup::strings::t_args(
+        "installer-alongside-change-note",
+        &[("change", ArgValue::Text(change))],
     )
 }
 
@@ -346,8 +341,13 @@ const STEP_KEYS: [&str; 9] = [
 
 /// What the breadcrumb calls each step.
 fn step_captions() -> Vec<String> {
-    STEP_KEYS
-        .iter()
+    captions(&STEP_KEYS)
+}
+
+/// What `keys` say, in the window's language: a choice's segments and a
+/// short list of labels read as words, never as the catalogue's keys.
+fn captions(keys: &[&str]) -> Vec<String> {
+    keys.iter()
         .map(|key| crate::setup::strings::t(key))
         .collect()
 }
@@ -2519,7 +2519,7 @@ impl InstallerApp {
             ));
         } else {
             children.push(Box::new(seg_choice(
-                &INSTALL_METHOD_LABELS,
+                captions(&INSTALL_METHOD_KEYS),
                 ["erase", "alongside"]
                     .iter()
                     .map(|method| {
@@ -2899,8 +2899,8 @@ impl InstallerApp {
                 .with_role(TextRole::Body),
         ));
         children.push(Box::new(seg_choice(
-            &FIDO2_LABELS,
-            (0..FIDO2_LABELS.len())
+            captions(&FIDO2_KEYS),
+            (0..FIDO2_KEYS.len())
                 .map(|i| self.control(DestinationEffect::SetSecurityKey { enabled: i == 1 }))
                 .collect(),
             usize::from(self.fido2),
@@ -3025,7 +3025,7 @@ impl InstallerApp {
             )));
             children.push(centered_media_control(Box::new(
                 ActionButton::new(
-                    &crate::setup::strings::t("installer-media-undo"),
+                    "installer-media-undo",
                     self.control(DestinationEffect::SetMediaCodecs { enabled: false }),
                 )
                 .quiet()
@@ -3036,7 +3036,7 @@ impl InstallerApp {
         } else {
             children.push(centered_media_control(Box::new(
                 ActionButton::new(
-                    &crate::setup::strings::t("installer-media-install"),
+                    "installer-media-install",
                     self.control(DestinationEffect::SetMediaCodecs { enabled: true }),
                 )
                 .primary()
@@ -3044,19 +3044,16 @@ impl InstallerApp {
                 .with_test_id("codecs_install"),
             )));
             children.push(centered_media_control(Box::new(
-                ActionButton::new(
-                    &crate::setup::strings::t("installer-media-skip"),
-                    self.next_control(),
-                )
-                .quiet()
-                .with_test_id("codecs_skip"),
+                ActionButton::new("installer-media-skip", self.next_control())
+                    .quiet()
+                    .with_test_id("codecs_skip"),
             )));
             children.push(Box::new(Spacer::fixed(theme.tokens.spacing.s6)));
             children.push(Box::new(
                 Row::new()
                     .with_padding(0.0, 0.0)
                     .push(Box::new(ActionButton::new(
-                        &crate::setup::strings::t("installer-media-back"),
+                        "installer-media-back",
                         self.back_control(),
                     )))
                     .push(Box::new(Spacer::new())),
@@ -3086,7 +3083,7 @@ impl InstallerApp {
             .filter_map(|index| FILESYSTEMS.get(*index).copied())
             .collect();
         children.push(Box::new(seg_choice(
-            &labels,
+            labels.iter().map(|name| (*name).to_owned()).collect(),
             labels
                 .iter()
                 .map(|filesystem| {
@@ -4944,6 +4941,9 @@ mod tests {
 
     #[test]
     fn the_media_step_is_one_install_button_and_review_repeats_it() {
+        let title = crate::setup::strings::t("installer-media-title");
+        let description = crate::setup::strings::t("installer-media-note");
+        let chosen_copy = crate::setup::strings::t("installer-media-chosen");
         let mut app = InstallerApp::for_shot(Step::Media);
         let _ = build(&mut app);
         let composed = app.composed.element().unwrap();
@@ -4954,10 +4954,10 @@ mod tests {
             "nothing is chosen yet"
         );
         for absent in ["RPM Fusion", "Cisco", "patent", "licence"] {
-            assert!(!CODECS_DESCRIPTION.contains(absent), "{absent}");
+            assert!(!description.contains(absent), "{absent}");
         }
         assert!(
-            find_accessible(composed, CODECS_DESCRIPTION).is_some(),
+            find_accessible(composed, &description).is_some(),
             "the rendered codec control must expose the formats source explanation"
         );
         let resources = app.published();
@@ -4970,14 +4970,14 @@ mod tests {
             install
                 .description
                 .as_deref()
-                .is_some_and(|description| description.contains(CODECS_DESCRIPTION)),
+                .is_some_and(|description| description.contains(&description)),
             "{:?}",
             install.description
         );
         let mut options = InstallerApp::for_shot(Step::Options);
         let _ = build(&mut options);
         assert!(
-            find_accessible(options.composed.element().unwrap(), CODECS_TITLE).is_none(),
+            find_accessible(options.composed.element().unwrap(), &title).is_none(),
             "Options no longer carries the formats"
         );
 
@@ -4987,7 +4987,7 @@ mod tests {
         let chosen = app.composed.element().unwrap();
         assert!(has_test_id(chosen, "codecs_undo"));
         assert!(!has_test_id(chosen, "codecs_install"));
-        assert!(find_accessible(chosen, CODECS_CHOSEN).is_some());
+        assert!(find_accessible(chosen, &chosen_copy).is_some());
 
         app.step = Step::Review;
         app.dirty_structure = true;

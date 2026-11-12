@@ -371,7 +371,7 @@ impl SetupApp {
             worker_tx,
             worker_rx,
             worker_launcher,
-            status: "Choose an available experience to begin.".into(),
+            status: super::strings::t("imager-setup-status-choose-experience"),
             status_is_error: false,
             composed: ui::widget::Composed::default(),
             starts_when_live: false,
@@ -551,7 +551,7 @@ impl SetupApp {
         match self.desktop_flow.start_install() {
             Ok(()) => {
                 (self.desktop_offer)();
-                self.status = "Rechecking this host before download…".into();
+                self.status = super::strings::t("imager-setup-status-rechecking-before-download");
             }
             Err(error) => {
                 self.status = error;
@@ -584,18 +584,20 @@ impl SetupApp {
         self.status_is_error = false;
         match command {
             SetupCommand::Next => {
-                self.status = "Review is the last setup step.".into();
+                self.status = super::strings::t("imager-setup-status-review-last");
                 self.status_is_error = true;
             }
             SetupCommand::InstallDesktop => self.start_desktop_install(),
             SetupCommand::CancelDesktopDownload => {
                 if self.desktop_flow.cancel_download() {
-                    self.status = "Cancelling the package download…".into();
+                    self.status = super::strings::t("imager-setup-status-cancelling-package");
                 }
             }
             SetupCommand::RetryDesktop if self.retry_guided_desktop() => {}
             SetupCommand::RetryDesktop => match self.desktop_flow.retry() {
-                Ok(()) => self.status = "Rechecking this host before retry…".into(),
+                Ok(()) => {
+                    self.status = super::strings::t("imager-setup-status-rechecking-before-retry");
+                }
                 Err(error) => {
                     self.status = error;
                     self.status_is_error = true;
@@ -606,17 +608,20 @@ impl SetupApp {
                 let result = if on_full_os_review {
                     self.internal_download_flow
                         .as_mut()
-                        .ok_or_else(|| crate::setup::strings::t("imager-setup-error-download-unavailable"))
+                        .ok_or_else(|| {
+                            crate::setup::strings::t("imager-setup-error-download-unavailable")
+                        })
                         .and_then(|flow| {
-                            let key = flow
-                                .offered_selection()
-                                .ok_or("No Full Tilo download is currently offered.")?;
+                            let key = flow.offered_selection().ok_or(super::strings::t(
+                                "imager-setup-error-download-not-offered",
+                            ))?;
                             flow.start_selected(key)
                         })
                 } else {
-                    Err("Full Tilo downloads can start only from the Full Tilo review.".into())
+                    Err(super::strings::t("imager-setup-error-download-review-only"))
                 };
-                self.apply_internal_command_result(result, "Downloading Tilo…");
+                let pending = super::strings::t("imager-setup-status-downloading");
+                self.apply_internal_command_result(result, &pending);
             }
             SetupCommand::PauseInternalDownload => {
                 let result = self
@@ -624,15 +629,17 @@ impl SetupApp {
                     .as_mut()
                     .ok_or_else(|| crate::setup::strings::t("imager-setup-error-download-unavailable"))
                     .and_then(InternalDownloadFlow::pause);
-                self.apply_internal_command_result(result, "Pausing download…");
+                let pending = super::strings::t("imager-setup-status-pausing-download");
+                self.apply_internal_command_result(result, &pending);
             }
             SetupCommand::ResumeInternalDownload => {
                 let result = self
                     .internal_download_flow
                     .as_mut()
-                    .ok_or_else(|| "No saved download is available.".to_string())
+                    .ok_or_else(|| super::strings::t("imager-setup-error-no-saved-download"))
                     .and_then(InternalDownloadFlow::resume);
-                self.apply_internal_command_result(result, "Downloading Tilo…");
+                let pending = super::strings::t("imager-setup-status-downloading");
+                self.apply_internal_command_result(result, &pending);
             }
             SetupCommand::CancelInternalDownload => {
                 let result = self
@@ -640,27 +647,29 @@ impl SetupApp {
                     .as_mut()
                     .ok_or_else(|| crate::setup::strings::t("imager-setup-error-download-unavailable"))
                     .and_then(InternalDownloadFlow::cancel);
-                self.apply_internal_command_result(result, "Cancelling download…");
+                let pending = super::strings::t("imager-setup-status-cancelling-download");
+                self.apply_internal_command_result(result, &pending);
             }
             SetupCommand::DiscardInternalDownload => {
                 let result = self
                     .internal_download_flow
                     .as_mut()
-                    .ok_or_else(|| "No unfinished download data is available.".to_string())
+                    .ok_or_else(|| super::strings::t("imager-setup-error-no-unfinished-download"))
                     .and_then(InternalDownloadFlow::discard);
-                self.apply_internal_command_result(result, "Discarding unfinished download data…");
+                let pending = super::strings::t("imager-setup-status-discarding-download");
+                self.apply_internal_command_result(result, &pending);
             }
             SetupCommand::ReleaseInternalDownload => {
                 let result = self
                     .internal_download_flow
                     .as_mut()
-                    .ok_or_else(|| "No verified download is held.".to_string())
+                    .ok_or_else(|| super::strings::t("imager-setup-error-no-verified-download"))
                     .and_then(InternalDownloadFlow::release);
-                self.apply_internal_command_result(result, "Keeping download for later…");
+                let pending = super::strings::t("imager-setup-status-keeping-download");
+                self.apply_internal_command_result(result, &pending);
             }
             SetupCommand::InternalInstallUnavailable => {
-                self.status =
-                    "Installation has not started. Protected staging is not available yet.".into();
+                self.status = super::strings::t("imager-setup-status-staging-unavailable");
                 self.status_is_error = true;
             }
             SetupCommand::InstallInternal
@@ -732,9 +741,7 @@ impl SetupApp {
             if self.on_review_for(Experience::Desktop) {
                 match self.desktop_flow.state() {
                     DesktopFlowState::Installed { .. } => {
-                        self.status =
-                            "Tilo Desktop is installed and verified. Sign out when you are ready."
-                                .into();
+                        self.status = super::strings::t("imager-desktop-installed-sign-out");
                         self.status_is_error = false;
                     }
                     DesktopFlowState::Failed { message, .. } => {
@@ -753,7 +760,7 @@ impl SetupApp {
             if self.internal_download_revision != flow.revision() {
                 self.internal_download_revision = flow.revision();
                 if on_full_os_review {
-                    self.status.clone_from(&flow.presentation().title);
+                    self.status = super::strings::t(flow.presentation().title_key);
                     self.status_is_error = matches!(
                         flow.presentation().phase,
                         Some(super::internal_cache::coordinator::Phase::Failed)
@@ -944,7 +951,7 @@ impl SetupApp {
             {
                 error.to_string()
             } else {
-                presentation.summary.clone()
+                super::strings::t(presentation.sentence_key)
             };
             content = content.push(Box::new(
                 Text::new(&summary)
@@ -999,14 +1006,16 @@ impl SetupApp {
             if any {
                 content = content.push(Box::new(actions));
             }
-            return Section::new(vec![Box::new(content)])
-                .with_header(SectionHeader::heading(presentation.title.clone()));
+            return Section::new(vec![Box::new(content)]).with_header(SectionHeader::heading(
+                super::strings::t(presentation.title_key),
+            ));
         }
-        let detail = self.internal_download_error.as_deref().unwrap_or(
-            "Tilo can't be downloaded on this computer, so installation has not started.",
-        );
+        let detail = self
+            .internal_download_error
+            .clone()
+            .unwrap_or_else(|| super::strings::t("imager-desktop-cannot-download"));
         content = content.push(Box::new(
-            Text::new(detail)
+            Text::new(&detail)
                 .with_id("setup.internal.status")
                 .with_live(Politeness::Assertive),
         ));
@@ -1534,7 +1543,6 @@ impl SetupApp {
             .internal_download_flow
             .as_ref()
             .and_then(InternalDownloadFlow::consume_failure)
-            .map(str::to_string)
         {
             self.internal_install.abort_stage("download", detail);
             true

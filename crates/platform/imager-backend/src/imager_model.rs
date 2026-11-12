@@ -467,28 +467,6 @@ impl Action {
             Action::Install => "install",
         }
     }
-    /// The plain-language name of the whole operation, for titles and reviews.
-    pub fn title(&self) -> &'static str {
-        match self {
-            Action::Flash => "Write image",
-            Action::Install => "Install Tilo",
-        }
-    }
-    /// The imperative verb for the primary button and the step caption —
-    /// deliberately short and unambiguous ("Write" vs "Install").
-    pub fn verb(&self) -> &'static str {
-        match self {
-            Action::Flash => "Write",
-            Action::Install => "Install",
-        }
-    }
-    /// Past-tense form for the Done screen ("written" / "installed").
-    pub fn past(&self) -> &'static str {
-        match self {
-            Action::Flash => "written",
-            Action::Install => "installed",
-        }
-    }
     pub fn from_key(k: &str) -> Action {
         match k {
             "install" => Action::Install,
@@ -566,17 +544,6 @@ impl Step {
             Step::Confirm => 3,
             Step::Write => 4,
             Step::Done => 5,
-        }
-    }
-    /// Short step-indicator caption.
-    pub fn title(&self) -> &'static str {
-        match self {
-            Step::Source => "Source",
-            Step::Drive => "Drive",
-            Step::Customize => "Customize",
-            Step::Confirm => "Confirm",
-            Step::Write => "Write",
-            Step::Done => "Done",
         }
     }
     /// The next step in the flow (saturates at the last step).

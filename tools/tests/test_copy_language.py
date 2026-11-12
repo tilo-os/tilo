@@ -1039,6 +1039,74 @@ class CopyLanguageTests(unittest.TestCase):
                 "it is stored in, reads in English in every language, so it is "
                 "copy; a name the person gave, a count, or a word the app "
                 "resolved through its catalogue is not")
+    def _root(self, files: dict[str, str]) -> Path:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, root)
+        locales = root / "apps/demo/locales"
+        locales.mkdir(parents=True)
+        (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+        (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+        for name, text in files.items():
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        return root
+
+    def test_a_constant_that_holds_words_is_copy_where_it_is_written(self):
+        root = self._root({
+            "apps/demo/src/lib.rs": "\n".join([
+                "const INSTALL_METHODS: [&str; 2] = [\"Erase disk\", \"Install alongside\"];",
+                "const BUTTON_IDS: [&str; 2] = [\"erase\", \"alongside\"];",
+                "fn choice() -> Bound {",
+                "    seg_choice(&INSTALL_METHODS, controls(), 0, \"method\")",
+                "}",
+                "fn ids() -> Bound {",
+                "    seg_choice(&BUTTON_IDS, controls(), 0, \"ids\")",
+                "}",
+                "fn seg_choice(labels: &[&str], controls: Vec<Control>, selected: usize,",
+                "              test_id: &str) -> Bound {",
+                "    let segments = labels.iter().map(|label| Segment::new(*label)).collect();",
+                "    Bound::new(Box::new(ToggleGroup::new(segments, selected)), None)",
+                "}",
+                "fn controls() -> Vec<Control> { Vec::new() }",
+            ]) + "\n",
+        })
+        self.assertEqual(
+            [text for _, _, text in copy.source_copy_literals(root)],
+            ["Erase disk", "Install alongside"],
+            "a label array reaches a segment through its name alone, so the words "
+            "are reported where the constant writes them, and a table of ids is not")
+
+    def test_a_sentence_behind_a_type_alias_still_hands_its_words_back(self):
+        root = self._root({
+            "apps/demo/src/lib.rs": "\n".join([
+                "type Blocked = Option<(&'static str, String)>;",
+                "fn off_step(step: Step, current: Step) -> Blocked {",
+                "    (step != current).then(|| {",
+                "        (",
+                '            "other_step",',
+                '            format!("This belongs to the {} step; the wizard is on {}.",',
+                "                    step_name(step), step_name(current)),",
+                "        )",
+                "    })",
+                "}",
+                "fn step_name(step: Step) -> &'static str { step.key() }",
+                "fn row(app: &App) -> Row {",
+                "    Row::new().with_description(",
+                "        off_step(Step::Disk, app.step)",
+                "            .map(|(_, reason)| reason)",
+                "            .unwrap_or_default(),",
+                "    )",
+                "}",
+            ]) + "\n",
+        })
+        found = [text for _, _, text in copy.source_copy_literals(root)]
+        self.assertEqual(
+            found,
+            ["This belongs to the {} step; the wizard is on {}."],
+            "a reason behind a type alias reaches the constructor it is painted "
+            "through, so the sentence is copy even though its signature names no "
+            "string type")
 
     def test_the_tree_passes(self):
         self.assertEqual(

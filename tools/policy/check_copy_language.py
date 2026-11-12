@@ -596,6 +596,11 @@ TEXT_CONSTRUCTORS = (
     (".draw_text(", 1),
     (".draw_text_weighted(", 1),
     (".draw_style(", 1),
+    ("Segment::new(", 0),
+    ("Stepper::new(", 0),
+    ("Banner::error(", 0),
+    ("Banner::warning(", 0),
+    ("Banner::info(", 0),
 )
 
 # Where a surface's own words are painted: the roots whose crates draw a
@@ -609,10 +614,6 @@ COPY_FIELDS = (
     "title", "label", "subtitle", "tooltip", "description", "placeholder",
     "body", "message", "hint", "summary", "detail", "caption", "reason",
 )
-
-# A function that keeps a word instead of passing a caller's argument on: its
-# value is what a constructor paints.
-RETURNS_WORDS = re.compile(r"->\s*(?:&\s*(?:'static\s+)?str\b|String\b|Cow<)")
 
 
 # What a run reports to the person whose task it is, in a message the task's
@@ -1088,6 +1089,12 @@ HELPER_CALL = r"(?<![\w$]){name}\s*\("
 # called by is the type's own name, which tells `ActionButton::new` from the
 # `new` every other type has.
 IMPLEMENTED_TYPE = re.compile(r"\bimpl(?:\s*<[^>{;]*>)?\s+([^{;]*?)\s*\{")
+# A constant or static holding a value: `const TITLE: &str = "Move";`,
+# `const LABELS: [&str; 2] = ["Erase", "Keep"]`.
+WORD_CONSTANT = re.compile(
+    r"(?m)^\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:const|static)\s+"
+    r"([A-Z][A-Z0-9_]*)\s*(?::[^=]+)?=(?!=)"
+)
 # A catalogue lookup: what a window paints is the message `key` names, so a
 # helper that hands its parameter here takes a key, not words. A call site
 # filling that parameter with English words (`"Refresh disks"`) paints nothing
@@ -1199,6 +1206,20 @@ def helper_table(paths: list[Path]) -> dict[str, set[int]]:
                 if begin < end:
                     painted_at.add((begin, code[begin:end]))
                 at = code.find(call, at + len(call), body_end)
+        # What a function iterates and paints one element of, it paints whole:
+        # `labels.iter().map(|label| Segment::new(*label))` draws every label it
+        # is given, so the caller's argument is copy like any constructor's.
+        painted_variables = {
+            found.group(1)
+            for _, source in painted_at
+            if (found := re.fullmatch(r"\s*[*&]?\s*([a-z_][A-Za-z0-9_]*)\s*", source))
+        }
+        iterated = [
+            parameter for parameter in names
+            if parameter and parameter != "self" and painted_variables
+            and re.search(rf"(?<![\w$]){re.escape(parameter)}\s*\.\s*"
+                          r"(?:iter|into_iter|iter_mut)\s*\(", code[brace:body_end])
+        ]
         keys_at: set[tuple[int, str]] = set()
         for lookup in KEY_LOOKUP.finditer(code, brace, body_end):
             begin, end = argument(code, lookup.end(), 0)
@@ -1215,6 +1236,8 @@ def helper_table(paths: list[Path]) -> dict[str, set[int]]:
             if not parameter or parameter == "self":
                 continue
             if any(bare(source, parameter) for _, source in painted_at):
+                lands.setdefault(number, set()).add(index)
+            if parameter in iterated:
                 lands.setdefault(number, set()).add(index)
             if any(bare(source, parameter) for _, source in keys_at):
                 lands.setdefault(number, set()).add(index)
@@ -1329,20 +1352,18 @@ def returned_words(code: str, starts: list[int],
     return found
 
 
-def returning_words(root: Path,
-                    paths: list[Path]) -> dict[str, list[tuple[str, int, str]]]:
-    """Per function name of one crate, the words it hands back, with where they
-    are written.
+FILE_WORDS: dict[str, dict[str, list[tuple[str, int, str]]]] = {}
 
-    A name keeps its place only when every definition of it hands copy back: a
-    crate that uses one name for two jobs (`line` as a painted row and as a
-    page's outline) says nothing about the word a call site gives it.
-    """
-    bodies: list[tuple[str, Path, list[rust_source.Literal]]] = []
-    for path in paths:
-        text = path.read_text(errors="replace")
-        if "fn " not in text:
-            continue
+
+def file_returning_words(root: Path, path: Path) -> dict[str, list[tuple[str, int, str]]]:
+    """Per function name of one file, the words it hands back, with where they
+    are written. A file is read once however many crates build on it."""
+    key = str(path)
+    if key in FILE_WORDS:
+        return FILE_WORDS[key]
+    table: dict[str, list[tuple[str, int, str]]] = {}
+    text = path.read_text(errors="replace")
+    if "fn " in text:
         code, literals = rust_source.lex(text)
         starts = sorted(literal.start for literal in literals if not literal.byte)
         by_start = {literal.start: literal for literal in literals if not literal.byte}
@@ -1354,27 +1375,42 @@ def returning_words(root: Path,
         kept = rust_source.blank_test_items("".join(marked))
         for function in FUNCTION.finditer(code):
             brace = code.find("{", function.end())
-            if (brace < 0 or kept[function.start()] == " "
-                    or not RETURNS_WORDS.search(code[function.end():brace])):
+            if brace < 0 or kept[function.start()] == " ":
                 continue
             words = returned_words(code, starts, by_start, kept, brace,
                                    rust_source.matching(code, brace))
-            bodies.append((function.group(1), path, words))
-    by_name: dict[str, list[tuple[Path, list[rust_source.Literal]]]] = {}
-    for name, path, words in bodies:
-        by_name.setdefault(name, []).append((path, words))
-    table: dict[str, list[tuple[str, int, str]]] = {}
-    for name, definitions in by_name.items():
-        if not all(words for _, words in definitions):
-            continue
-        table[name] = sorted({
-            (path.relative_to(root).as_posix(),
-             rust_source.line_number(path.read_text(errors="replace"), literal.start),
-             literal.value)
-            for path, words in definitions
-            for literal in words
-        })
+            held = table.setdefault(function.group(1), [])
+            held.extend(
+                (path.relative_to(root).as_posix(),
+                 rust_source.line_number(text, literal.start), literal.value)
+                for literal in words
+            )
+    FILE_WORDS[key] = table
     return table
+
+
+def returning_words(root: Path, paths: list[Path],
+                    called: set[str] | None = None
+                    ) -> dict[str, list[tuple[str, int, str]]]:
+    """Per function name of one crate, the words it hands back, with where they
+    are written.
+
+    A name keeps its place only when every definition of it in these files
+    hands copy back: a crate that uses one name for two jobs (`line` as a
+    painted row and as a page's outline) says nothing about the word a call
+    site gives it. What a function returns is judged by the value it builds,
+    not by its signature: a reason behind a type alias (`-> Blocked`) or in a
+    tuple reaches a painter the same as a bare `&str` does.
+    """
+    table: dict[str, list[tuple[str, int, str]]] = {}
+    every: dict[str, bool] = {}
+    for path in paths:
+        for name, words in file_returning_words(root, path).items():
+            if called is not None and name not in called:
+                continue
+            every[name] = every.get(name, True) and bool(words)
+            table.setdefault(name, []).extend(words)
+    return {name: sorted(set(words)) for name, words in table.items() if every[name]}
 
 
 def stored_fields(code: str, starts: list[int],
@@ -1503,6 +1539,101 @@ def painted_literal_fields(code: str, starts: list[int],
                 continue
             if prose_words(word.value):
                 found.append(word)
+    return found
+
+
+WORD_CONSTANT_TABLE_CACHE: dict[tuple[str, str], dict[str, list[tuple[str, int, str]]]] = {}
+
+
+def word_constants(code: str, starts: list[int],
+                   by_start: dict[int, rust_source.Literal],
+                   kept: str) -> dict[str, list[rust_source.Literal]]:
+    """Per constant and static, the English words it holds.
+
+    A constant keeps its words out of every painting call site: `const LABELS:
+    [&str; 2] = ["Erase disk", "Keep"]` reaches a label, a station caption or a
+    reason through its name alone, so a German window would paint the source
+    language from a place no constructor argument shows.
+    """
+    found: dict[str, list[rust_source.Literal]] = {}
+    for match in WORD_CONSTANT.finditer(code):
+        begin = match.end()
+        end = statement_end(code, begin)
+        held = [by_start[start] for start in starts
+                if begin <= start < end and kept[start] == "x"]
+        if not held or not all(english_words(literal.value) for literal in held):
+            continue
+        found[match.group(1)] = held
+    return found
+
+
+def word_constant_table(root: Path,
+                        paths: list[Path]) -> dict[str, list[tuple[str, int, str]]]:
+    """Per constant name of one crate, its words and where they are written."""
+    table: dict[str, list[tuple[str, int, str]]] = {}
+    for path in paths:
+        text = path.read_text(errors="replace")
+        if "const " not in text and "static " not in text:
+            continue
+        code, literals = rust_source.lex(text)
+        starts = sorted(literal.start for literal in literals if not literal.byte)
+        by_start = {literal.start: literal for literal in literals if not literal.byte}
+        marked = list(code)
+        for literal in literals:
+            for index in range(literal.start, literal.end):
+                if marked[index] != "\n":
+                    marked[index] = "x"
+        kept = rust_source.blank_test_items("".join(marked))
+        for name, held in word_constants(code, starts, by_start, kept).items():
+            table.setdefault(name, []).extend(
+                (path.relative_to(root).as_posix(),
+                 rust_source.line_number(text, literal.start), literal.value)
+                for literal in held
+            )
+    return {name: sorted(set(words)) for name, words in table.items()}
+
+
+CALLED_NAME = re.compile(r"\b([a-z_][A-Za-z0-9_]*)\s*\(")
+PATH_DEPENDENCY = re.compile(r'path\s*=\s*"([^"]+)"')
+
+
+def called_names(paths: list[Path]) -> set[str]:
+    """Every name called by the code in `paths`."""
+    named: set[str] = set()
+    for path in paths:
+        named.update(CALLED_NAME.findall(path.read_text(errors="replace")))
+    return named
+
+
+def dependency_sources(root: Path, crate: str, called: set[str]) -> list[Path]:
+    """The sources of the local crates `crate` builds on that define one of the
+    functions it calls.
+
+    A window asks a backend method for the words it paints (`Disk::label()`,
+    `Step::title()`), and those words are written in the crate that holds the
+    method. Only a file that defines a called name is read, so a large
+    dependency tree costs little.
+    """
+    manifest = root / crate / "Cargo.toml"
+    if not manifest.is_file() or not called:
+        return []
+    found = []
+    for match in PATH_DEPENDENCY.finditer(manifest.read_text(errors="replace")):
+        target = (root / crate / match.group(1)).resolve()
+        if not target.is_dir() or not target.is_relative_to(root):
+            continue
+        relative = target.relative_to(root)
+        if "src" not in relative.parts and not (target / "src").is_dir():
+            continue
+        for path in sorted(target.rglob("*.rs")):
+            within = path.relative_to(root)
+            if ("src" not in within.parts or "target" in within.parts
+                    or any(part.startswith(".") for part in within.parts)
+                    or rust_source.is_test_file(within)):
+                continue
+            text = path.read_text(errors="replace")
+            if any(f"fn {name}" in text for name in called):
+                found.append(path)
     return found
 
 
@@ -1676,6 +1807,7 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
     returning: dict[str, dict[str, list[tuple[str, int, str]]]] = {}
     naming: dict[str, dict[str, list[tuple[str, int, str]]]] = {}
     fields: dict[str, set[tuple[str, str]]] = {}
+    constants: dict[str, dict[str, list[tuple[str, int, str]]]] = {}
     found = []
     for path in sources:
         unit = path.relative_to(root).as_posix()
@@ -1721,6 +1853,11 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
                 for (body, end_of_body), literal in stored:
                     if body <= at < end_of_body and kept[literal.start] == "x":
                         hits.append(literal)
+            # Words a constant reaches this painted place with: the constant's
+            # own definition is where the source language is written.
+            for name, words in (constants.get(crate) or {}).items():
+                if named_in(code, begin, close, name):
+                    found.extend(words)
 
         bindings = (copy_bindings(code, starts, by_start, kept)
                     if window or labels else {})
@@ -1750,8 +1887,14 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
         if window:
             if crate not in helpers:
                 helpers[crate] = helper_table(by_crate[crate])
-                returning[crate] = returning_words(root, by_crate[crate])
+                called = called_names(by_crate[crate])
+                returning[crate] = returning_words(
+                    root,
+                    by_crate[crate] + dependency_sources(root, crate, called),
+                    called,
+                )
                 naming[crate] = named_tuple_words(root, by_crate[crate])
+                constants[crate] = word_constant_table(root, by_crate[crate])
             ranges = []
             for call, index in TEXT_CONSTRUCTORS:
                 start = code.find(call)

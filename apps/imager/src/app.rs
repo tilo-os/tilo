@@ -725,10 +725,22 @@ impl ImagerApp {
     }
 }
 
+/// The catalogue message naming `step` in the station rail.
+fn step_message(step: Step) -> &'static str {
+    match step {
+        Step::Source => "imager-step-source",
+        Step::Drive => "imager-step-drive",
+        Step::Customize => "imager-step-customize",
+        Step::Confirm => "imager-step-confirm",
+        Step::Write => "imager-step-write",
+        Step::Done => "imager-step-done",
+    }
+}
+
 /// The complete legacy route, retained by unguided station regressions.
 #[cfg(test)]
-fn stepper_labels() -> [&'static str; 6] {
-    Step::all().map(|step| step.title())
+fn stepper_labels() -> [String; 6] {
+    Step::all().map(|step| crate::setup::strings::t(step_message(step)))
 }
 
 // =========================================================================
@@ -870,7 +882,7 @@ impl ImagerApp {
         let mut stepper = ui::widget::Stepper::new(
             self.visible_steps()
                 .iter()
-                .map(|step| step.title().to_string())
+                .map(|step| crate::setup::strings::t(step_message(*step)))
                 .collect(),
         )
         .with_id("imager.stepper")
@@ -1432,11 +1444,20 @@ impl ImagerApp {
     }
 
     /// The active phase, its share done, and what it is called.
-    fn phase(&self) -> (f64, &'static str) {
+    fn phase(&self) -> (f64, String) {
         match (self.progress.phase, self.action) {
-            (JobPhase::Verifying, _) => (self.progress.verify_frac, "Verifying"),
-            (_, Action::Install) => (self.progress.write_frac, "Installing"),
-            (_, Action::Flash) => (self.progress.write_frac, "Writing"),
+            (JobPhase::Verifying, _) => (
+                self.progress.verify_frac,
+                crate::setup::strings::t("imager-phase-verifying"),
+            ),
+            (_, Action::Install) => (
+                self.progress.write_frac,
+                crate::setup::strings::t("imager-phase-installing"),
+            ),
+            (_, Action::Flash) => (
+                self.progress.write_frac,
+                crate::setup::strings::t("imager-phase-writing"),
+            ),
         }
     }
 
@@ -1465,7 +1486,10 @@ impl ImagerApp {
         if let Some(src) = &self.source
             && let Some(eta) = self.progress.eta_secs(src.size)
         {
-            meta.push(format!("about {} left", fmt_eta(eta)));
+            meta.push(crate::setup::strings::t_args(
+                "imager-writing-eta",
+                &[("time", ui::i18n::ArgValue::Text(fmt_eta(eta)))],
+            ));
         }
         let next = CATALOG.t(if self.progress.phase == JobPhase::Verifying {
             "imager-writing-verify-now"
@@ -4059,6 +4083,43 @@ mod tests {
             && n.value().is_some()));
     }
 
+    /// The writer's progress caption, the time left and the stations read in
+    /// the window's language.
+    #[test]
+    fn the_writers_progress_and_stations_read_in_the_windows_language() {
+        let catalog = &crate::resource::CATALOG;
+        let previous = catalog.current_locale();
+        catalog.set_locale("de-DE");
+        let mut app = ImagerApp::new();
+        app.action = Action::Install;
+        let (_, caption) = app.phase();
+        app.action = Action::Flash;
+        let (_, writing) = app.phase();
+        let stations: Vec<String> = Step::all()
+            .iter()
+            .map(|step| crate::setup::strings::t(step_message(*step)))
+            .collect();
+        let eta = crate::setup::strings::t_args(
+            "imager-writing-eta",
+            &[("time", ui::i18n::ArgValue::Text("3 Minuten".into()))],
+        );
+        catalog.set_locale(&previous);
+        assert_eq!(caption, "Wird installiert");
+        assert_eq!(writing, "Wird geschrieben");
+        assert_eq!(
+            stations,
+            [
+                "Quelle",
+                "Laufwerk",
+                "Anpassen",
+                "Bestätigen",
+                "Schreiben",
+                "Fertig"
+            ]
+        );
+        assert_eq!(eta, "noch etwa 3 Minuten");
+    }
+
     /// Step stations and headings at compact and wide layouts.
     #[test]
     #[allow(
@@ -4068,8 +4129,8 @@ mod tests {
     fn step_rail_keeps_six_stations_inside_the_viewport() {
         assert_eq!(ImagerApp::new().visible_steps(), Step::all());
         assert_eq!(stepper_labels().len(), 6);
-        assert_eq!(stepper_labels().first(), Some(&"Source"));
-        assert_eq!(stepper_labels().last(), Some(&"Done"));
+        assert_eq!(stepper_labels().first().map(String::as_str), Some("Source"));
+        assert_eq!(stepper_labels().last().map(String::as_str), Some("Done"));
         for viewport in [(1280, 800), (320, 640)] {
             let (app, doc) = seeded_app();
             let h = harness(app, doc, viewport);
@@ -4500,7 +4561,7 @@ mod tests {
         assert_eq!(
             app.visible_steps()
                 .iter()
-                .map(Step::title)
+                .map(|step| crate::setup::strings::t(step_message(*step)))
                 .collect::<Vec<_>>(),
             ["Source", "Drive", "Confirm", "Write", "Done"]
         );
