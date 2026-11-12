@@ -426,7 +426,7 @@ pre .v { color: #8fd6e6; }
   body { font-size: 1rem; }
   article > h1 + p, article > .crumb + h1 + p { font-size: 1.08rem; }
   h2 { font-size: 1.32rem; }
-  .code { margin-left: -1rem; margin-right: -1rem; border-radius: 0; box-shadow: none; }
+  .code { margin-left: -1rem; margin-right: -1rem; border-radius: 0; box-shadow: none; border-block: 1px solid var(--code-rule); }
   pre { padding: 0.9rem 1rem 1rem; font-size: 0.82rem; }
   .pager { grid-template-columns: 1fr; }
   .pager .next { grid-column: 1; }
