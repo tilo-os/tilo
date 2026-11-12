@@ -30,6 +30,10 @@ const HISTORY: usize = 2_000;
 /// The posts timed in each chat, after one that warms the part.
 const MEASURED: usize = 10;
 
+/// How much dearer a post may be into the full chat than into the empty one:
+/// what the timing noise of a busy machine costs, not a cost that grows.
+const BUDGET: f64 = 1.2;
+
 /// The words a post says: about what a member writes, so the chat grows at
 /// the rate a real one does.
 fn words(index: usize) -> String {
@@ -123,19 +127,19 @@ async fn post(
     }
 }
 
-// A post still costs more the longer the chat has run: 248 ms into a chat
-// holding nothing, 5.9 s into one holding two thousand messages. What is left
-// is the host capturing a record whole where its heads would answer, and the
-// app measuring every row of a timeline it did not change. Ignored until a
-// post is the same at both sizes.
+// A post still costs more once the chat holds a conversation: 294 ms into a
+// chat holding ten messages, 827 ms into one holding forty, 853 ms into one
+// holding two thousand. What is left is a record whose writes are sealed being
+// opened whole every time a device merges a change into it: the plaintext of
+// such a record is assembled from every write its channel's keys open, and a
+// page merging a post pays for the chat's history to be opened again — 285 ms
+// to 355 ms of each post here. Reading only the changes since the heads a
+// reader holds (which the host and its pages now do) takes that cost away for
+// a record held in the clear; a sealed one needs the opened history kept, so
+// that a write opens what it added and nothing else. Ignored until a post is
+// the same at both sizes.
 
-// A post still costs more the longer the chat has run: 274 ms into a chat
-// holding nothing, 698 ms into one holding two thousand messages. What is
-// left is the host reading a record it merges from the workspace as the whole
-// document, and the app measuring every row of a timeline it did not change.
-// Ignored until a post is the same at both sizes.
-
-#[ignore = "a post costs 2.5 times as much into a chat of 2,000 messages: 274 ms and 698 ms"]
+#[ignore = "a post costs 2.9 times as much into a chat of 2,000 messages: 294 ms and 853 ms"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_post_costs_the_same_however_long_the_chat_has_run() {
     let (owner, _) = tilo_user_identity::UserIdentity::generate("Pace host", 1);
@@ -260,7 +264,7 @@ async fn a_post_costs_the_same_however_long_the_chat_has_run() {
         long.as_secs_f64() * 1000.0
     );
     assert!(
-        long <= fresh * 2 + Duration::from_millis(20),
+        long <= fresh.mul_f64(BUDGET) + Duration::from_millis(20),
         "a post costs {:.0} ms into an empty chat and {:.0} ms into one holding {HISTORY} \
          messages: it grows with the chat",
         fresh.as_secs_f64() * 1000.0,
