@@ -18,9 +18,10 @@ use std::sync::Arc;
 
 use super::columns;
 use super::derive::{Columns, field_value, item_path, placed_in};
+use super::overlay::Overlay;
 use super::{Clock, Index, IndexError, META_CLOCK, Snapshot, TYPE, Writer};
 use crate::schema::{ColumnSchema, TypeSchema, lookup};
-use tilolang::pred::Pred;
+use tilolang::pred::{Lit, Pred};
 use tilolang_runtime::query::{ClockField, NextChange};
 
 impl Index {
@@ -111,13 +112,17 @@ impl Index {
     /// When what the filters of `ty` hold of next changes as the clock runs: the value of one of
     /// `fields` (each field the query compared with the clock, [`ClockField`]) that lies closest
     /// after it, so the view that asked wakes when that item comes to count, and not before.
+    /// `written` is what the store's own writes hold that the index has not taken in yet, which
+    /// reads answer from all along: a value one of them gives the field is a moment to wake at
+    /// too, or a snooze an action sets would only be known once the record brought it back.
     /// Answering `Unknown` when the index cannot place the field leaves the clock's grain to
-    /// wake the view instead, and `Never` when it keeps no later value at all.
+    /// wake the view instead, and `Never` when it holds no later value at all.
     pub fn next_change(
         self: &Arc<Self>,
         ty: &str,
         fields: &[ClockField],
         clock: Clock,
+        written: &Overlay,
     ) -> Result<NextChange, IndexError> {
         let Some(schema) = lookup(ty) else {
             return Ok(NextChange::Unknown);
@@ -140,16 +145,20 @@ impl Index {
                 continue;
             };
             looked = true;
+            let mut moments = Vec::new();
             for (list, _) in snapshot.lists_from(columns::SCOPE)? {
                 if !of_column(&list, &spec.name) {
                     continue;
                 }
-                let Some(at) = first_after(&snapshot, &list, &after)? else {
-                    continue;
-                };
-                // A value `v` the clock passes at `now + offset` changes what the filter holds
-                // of its item at `v - offset`: when the offseted clock reaches it. The clock is
-                // read to the minute, so that is the minute boundary it reaches it on.
+                if let Some(at) = first_after(&snapshot, &list, &after)? {
+                    moments.push(at);
+                }
+            }
+            moments.extend(written_change(&snapshot, written, schema, spec, &after)?);
+            // A value `v` the clock passes at `now + offset` changes what the filter holds
+            // of its item at `v - offset`: when the offseted clock reaches it. The clock is
+            // read to the minute, so that is the minute boundary it reaches it on.
+            for at in moments {
                 let at = minute(at.saturating_sub(*offset));
                 next = Some(next.map_or(at, |seen| seen.min(at)));
             }
@@ -214,6 +223,48 @@ fn crossed(
     for (list, _) in snapshot.lists_from(columns::SCOPE)? {
         if of_column(&list, &spec.name) {
             out.extend(ids_in(snapshot, &list, Some((&lo, &hi)))?);
+        }
+    }
+    Ok(out)
+}
+
+/// The instants the store's own writes give the column `spec` of the type `schema` past the value
+/// `after`: the values the index does not hold yet, and reads answer from the writes all along
+/// ([`Overlay`]). A resource the writes gave another type is not this type's, and one they took
+/// away holds nothing.
+fn written_change(
+    snapshot: &Arc<Snapshot>,
+    written: &Overlay,
+    schema: &TypeSchema,
+    spec: &ColumnSchema,
+    after: &str,
+) -> Result<Vec<i64>, IndexError> {
+    let Some(field) = schema.field(&spec.name) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for (resource, _) in written.values_of(&field.id) {
+        let Some(Some(value)) = written.field(resource, &field.id) else {
+            continue;
+        };
+        let held = match written.text(resource, TYPE) {
+            Some(held) => held,
+            None => snapshot.text(resource, TYPE)?,
+        };
+        if held.as_deref() != Some(schema.id.as_str()) {
+            continue;
+        }
+        let Ok(lit) = tilolang_runtime::store::lit_of(&field.id, value, &Lit::Absent) else {
+            continue;
+        };
+        let Some(text) = columns::write(spec.kind, &lit) else {
+            continue;
+        };
+        if text.as_str() <= after {
+            continue;
+        }
+        if let Some(at) = tilolang::calendar::instant(&text) {
+            out.push(at);
         }
     }
     Ok(out)
