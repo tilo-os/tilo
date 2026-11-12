@@ -1188,6 +1188,7 @@ def judge_person(facts: dict, run: Run, name: str, source_person: dict, source_i
                                 60, interval=2.0)
             facts["passwords"] = "listed" if listed else sorted(password_items(vm))
             if not listed:
+                run.write(f"invoke-list-logins-{name}.txt", invoke_excerpt(vm))
                 problems.append(f"Passwords lists {sorted(password_items(vm))}, not the vault's "
                                 f"{passwords}")
         except (Failed, VmError) as exc:
