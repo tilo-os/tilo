@@ -32,7 +32,10 @@ use crate::event_popovers::{PopoverAnchors, PopoverKind as FormPopover};
 use crate::model::{Event, Palette, Priority, Recurrence, Task};
 use ui::widget::DrawChild;
 
-const DONE: &str = "Done";
+/// The sheet's primary answer, which closes the editor.
+fn done_label() -> String {
+    crate::resource::t("calendar-done")
+}
 
 /// One dropdown of the editor with the value it last published, so a pick
 /// is applied to the model exactly once.
@@ -513,7 +516,8 @@ impl CalendarApp {
                 let width = self.detail_body_w();
                 let probe = self.form_layout(Rect::new(0.0, 0.0, width, 0.0), text, &theme);
                 let content_h = probe.notes_top + self.notes_content_h.max(notes_min);
-                let actions = [ModalAction::primary(DONE)];
+                let done = done_label();
+                let actions = [ModalAction::primary(&done)];
                 let natural = modal_dialog::layout(
                     window,
                     &self.sheet_spec(&actions, content_h),
@@ -931,7 +935,8 @@ impl CalendarApp {
         let Some(layout) = self.modal.clone() else {
             return;
         };
-        let actions = [ModalAction::primary(DONE).hovered(
+        let done = done_label();
+        let actions = [ModalAction::primary(&done).hovered(
             layout
                 .actions
                 .first()

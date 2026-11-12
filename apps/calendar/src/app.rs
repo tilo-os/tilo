@@ -3115,13 +3115,17 @@ impl CalendarApp {
                         self.model
                             .projects
                             .iter()
-                            .find(|project| project.id == *id)
-                            .map_or_else(|| "project".to_string(), |project| project.name.clone()),
+                            .find(|project| project.id == *id)?
+                            .name
+                            .clone(),
                     ),
                 };
                 (
                     target,
-                    format!("Show tasks in {label}"),
+                    crate::resource::t_args(
+                        "calendar-a11y-show-tasks-in",
+                        &[("list", ui::i18n::ArgValue::from(label))],
+                    ),
                     Role::RadioButton,
                     AccessState::new()
                         .focusable(true)
@@ -3130,7 +3134,7 @@ impl CalendarApp {
             }
             Action::CloseList => (
                 "calendar.list:close".into(),
-                "Close task list".into(),
+                crate::resource::t("calendar-close-list"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
@@ -3138,16 +3142,16 @@ impl CalendarApp {
                 let calendar = self
                     .accounts
                     .all_calendars()
-                    .find_map(|(_, calendar)| (calendar.id == *id).then_some(calendar));
-                let (name, current_visible) = calendar.map_or_else(
-                    || ("calendar".to_string(), false),
-                    |calendar| (calendar.name.clone(), calendar.visible),
-                );
+                    .find(|(_, calendar)| calendar.id == *id)?
+                    .1;
                 (
                     format!("{}:visibility", crate::actions::calendar_resource_id(id)),
-                    format!("Show calendar {name}"),
+                    crate::resource::t_args(
+                        "calendar-a11y-show-calendar",
+                        &[("calendar", ui::i18n::ArgValue::from(calendar.name.clone()))],
+                    ),
                     Role::Checkbox,
-                    AccessState::new().focusable(true).checked(current_visible),
+                    AccessState::new().focusable(true).checked(calendar.visible),
                 )
             }
             Action::ToggleAccountCollapsed(id) => {
@@ -3155,21 +3159,25 @@ impl CalendarApp {
                     .accounts
                     .accounts
                     .iter()
-                    .find(|account| account.id == *id);
-                let (name, expanded) = account.map_or_else(
-                    || ("calendar account".to_string(), false),
-                    |account| (account.label().to_string(), !account.collapsed),
-                );
+                    .find(|account| account.id == *id)?;
                 (
                     format!("calendar.account:{id}:expanded"),
-                    format!("{name} calendars"),
+                    crate::resource::t_args(
+                        "calendar-a11y-account-calendars",
+                        &[(
+                            "account",
+                            ui::i18n::ArgValue::from(account.label().to_string()),
+                        )],
+                    ),
                     Role::Button,
-                    AccessState::new().focusable(true).expanded(expanded),
+                    AccessState::new()
+                        .focusable(true)
+                        .expanded(!account.collapsed),
                 )
             }
             Action::CloseDetail => (
                 "calendar.back".into(),
-                "Done".into(),
+                crate::resource::t("calendar-done"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
@@ -3209,25 +3217,25 @@ impl CalendarApp {
                 AccessState::new().focusable(true),
             ),
             Action::OpenEvent(id) => {
-                let label = self.model.event(*id).map_or_else(
-                    || "event".to_string(),
-                    |event| event.display_title().to_string(),
-                );
+                let label = self.model.event(*id)?.display_title().to_string();
                 (
                     format!("{}:open", crate::actions::event_resource_id(*id)),
-                    format!("Open event {label}"),
+                    crate::resource::t_args(
+                        "calendar-a11y-open-event",
+                        &[("title", ui::i18n::ArgValue::from(label))],
+                    ),
                     Role::Button,
                     AccessState::new().focusable(true),
                 )
             }
             Action::OpenTask(id) => {
-                let label = self
-                    .model
-                    .task(*id)
-                    .map_or_else(|| "task".to_string(), |task| task.title.clone());
+                let label = self.model.task(*id)?.title.clone();
                 (
                     format!("{}:open", crate::actions::task_resource_id(*id)),
-                    format!("Open task {label}"),
+                    crate::resource::t_args(
+                        "calendar-a11y-open-task",
+                        &[("title", ui::i18n::ArgValue::from(label))],
+                    ),
                     Role::Button,
                     AccessState::new().focusable(true),
                 )
@@ -3239,24 +3247,26 @@ impl CalendarApp {
                     _ => None,
                 };
                 let id = id?;
-                let task = self.model.task(id);
-                let (label, done) = task.map_or_else(
-                    || ("task".to_string(), false),
-                    |task| (task.title.clone(), task.done),
-                );
+                let task = self.model.task(id)?;
                 (
                     format!("{}:toggle", crate::actions::task_resource_id(id)),
-                    format!(
-                        "Mark task {label} {}",
-                        if done { "incomplete" } else { "complete" }
+                    crate::resource::t_args(
+                        "calendar-a11y-toggle-task",
+                        &[
+                            ("title", ui::i18n::ArgValue::from(task.title.clone())),
+                            (
+                                "done",
+                                ui::i18n::ArgValue::from(if task.done { "true" } else { "false" }),
+                            ),
+                        ],
                     ),
                     Role::Checkbox,
-                    AccessState::new().focusable(true).checked(done),
+                    AccessState::new().focusable(true).checked(task.done),
                 )
             }
             Action::DeleteEvent(id) => (
                 format!("{}:delete", crate::actions::event_resource_id(*id)),
-                "Delete event".into(),
+                crate::resource::t("calendar-a11y-delete-event"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
