@@ -75,12 +75,10 @@ impl ResourceApp for Scratchpad {
         let editor = cx
             .input(cx.paths().body)
             .with_id("note-editor")
-            .with_accessible_name(ui::i18n::I18nManager::lookup_plain("scratchpad-note-name"))
+            .with_accessible_name(crate::locales::CATALOG.t("scratchpad-note-name"))
             .with_plain_chrome()
             .with_text_role(NOTE_ROLE)
-            .with_placeholder(ui::i18n::I18nManager::lookup_plain(
-                "scratchpad-placeholder",
-            ))
+            .with_placeholder(crate::locales::CATALOG.t("scratchpad-placeholder"))
             .multiline(true);
         // The note is a centred column at the readable measure, inset from
         // the window by the page gutter: a wide window keeps lines short
@@ -93,9 +91,7 @@ impl ResourceApp for Scratchpad {
         // Saving is the system's job: the window says when a save stalls or
         // fails. Say only that the note is not kept on this device at all.
         let status = Text::from_state(&cx.save_status(), |status| match status {
-            RecordSaveStatus::MemoryOnly => {
-                ui::i18n::I18nManager::lookup_plain("scratchpad-memory-only")
-            }
+            RecordSaveStatus::MemoryOnly => crate::locales::CATALOG.t("scratchpad-memory-only"),
             RecordSaveStatus::Saved | RecordSaveStatus::Saving | RecordSaveStatus::Failed(_) => {
                 String::new()
             }
@@ -141,7 +137,7 @@ pub fn opening(body: &str) -> String {
         .unwrap_or_default();
     let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
     if line.is_empty() {
-        return ui::i18n::I18nManager::lookup_plain("scratchpad-note");
+        return crate::locales::CATALOG.t("scratchpad-note");
     }
     // A bar elides what it cannot show; the tab label stays short enough to
     // read at a glance.

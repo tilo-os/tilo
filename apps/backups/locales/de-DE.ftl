@@ -86,3 +86,30 @@ backups-restore-note = Die ganze Sicherung wird in einen neuen oder leeren Ordne
 backups-heading-snapshots = Sicherungen
 backups-a11y-order = Reihenfolge der Sicherungen
 backups-a11y-window = Sicherungen
+
+## Fakten, Eigenschaftsnamen und Bereichstitel
+backups-section-contents = Inhalt
+backups-stored-on = Gespeichert auf
+backups-size = Größe
+backups-taken = Erstellt
+backups-encryption = Verschlüsselung
+backups-folder = Ordner
+backups-source = Quelle
+backups-failure = Fehler
+backups-changed = Geändert
+backups-retention = Aufbewahrung
+backups-type = Typ
+backups-status = Status
+backups-last-backup = Letzte Sicherung
+backups-capacity = Kapazität
+backups-free = Frei
+backups-used = Belegt
+backups-kind = Art
+backups-schedule = Zeitplan
+
+## Felder der Aufbewahrungsregel
+backups-retention-heading = Aufzubewahrende Sicherungen
+backups-keep-hourly = Stündliche Sicherungen aufbewahren
+backups-keep-daily = Tägliche Sicherungen aufbewahren
+backups-keep-weekly = Wöchentliche Sicherungen aufbewahren
+backups-keep-monthly = Monatliche Sicherungen aufbewahren

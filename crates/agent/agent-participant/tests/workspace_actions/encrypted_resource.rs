@@ -81,10 +81,10 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     );
     publisher
         .peer
-        .write(route.clone(), &source.take_mutation().unwrap())
+        .write(route.clone(), &source.take_mutation().unwrap().unwrap())
         .unwrap();
     let part_route = part_route(&workspace.workspace, &part);
-    for (_, mutation) in source.take_record_mutations() {
+    for (_, mutation) in source.take_record_mutations().unwrap() {
         publisher.peer.write(part_route.clone(), &mutation).unwrap();
     }
     publisher.peer.barrier().unwrap().recv().unwrap().unwrap();

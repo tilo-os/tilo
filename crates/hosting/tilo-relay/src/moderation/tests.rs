@@ -241,8 +241,8 @@ fn a_report_restricts_through_the_room_and_undoes_the_flood_as_the_bot() {
     assert!(enforced.failures.is_empty(), "{:?}", enforced.failures);
 
     // What the bot did reaches the workspace like anyone's change.
-    page.apply(&bot.take_mutation().unwrap()).unwrap();
-    for (record, mutation) in bot.take_record_mutations() {
+    page.apply(&bot.take_mutation().unwrap().unwrap()).unwrap();
+    for (record, mutation) in bot.take_record_mutations().unwrap() {
         page.apply_record(&record, &mutation).unwrap();
     }
     assert!(

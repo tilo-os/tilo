@@ -199,7 +199,7 @@ impl Workspace {
                 .into_iter()
                 .filter(|id| !before.contains(id))
                 .collect();
-            (page.take_record_mutations(), added)
+            (page.take_record_mutations().unwrap(), added)
         };
         for (record, mutation) in taken {
             match mutation {

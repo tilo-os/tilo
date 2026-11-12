@@ -50,3 +50,7 @@ feeds-feed-actions = Feed actions
 ## Window and accessibility copy
 feeds-a11y-text-size = Text size
 feeds-a11y-subscriptions = Subscriptions
+
+## Facts, property labels and section titles
+feeds-a11y-star = Star { $article }
+feeds-a11y-tag = Tag { $tag }

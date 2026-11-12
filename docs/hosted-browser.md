@@ -252,8 +252,12 @@ is asked about one departure twice.
 A departure no action asked for, such as a page posting on its own or a
 download the page started, waits on nobody's invocation. The window publishes
 it as the wait it is — `send-held-request` and `keep-held-request` of
-`browser.page`, each bound to the hold's id and stating it as their one
-accepted argument — and the session in the VM reports each one it publishes to
+`browser.page`, each bound to the number the window holds it under and stating
+it as their one accepted argument, beside what leaves: the page it leaves
+from, what it does, the method, where it goes, and the picture of the filled
+page when the window kept one. The number is the window's own, one per hold:
+a request and a download the engine counts alike are two holds with two
+numbers. The session in the VM reports each hold the window publishes to
 the relay, naming that invocation. The relay puts it to the person as it puts
 any page action, and their answer comes back to the session as the
 confirmation their allow runs it with: the same witness the relay signs for a

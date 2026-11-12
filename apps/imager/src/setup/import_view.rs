@@ -2,6 +2,7 @@
 
 use crate::page;
 use crate::page::Frame;
+use crate::resource::CATALOG;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use ui::widget::TaffyTreeExt;
@@ -2182,14 +2183,18 @@ impl ImportApp {
         ));
         let body = page::related()
             .push(Box::new(PropertyList::new(vec![
-                Property::new("Folder", source).with_kind(TextKind::Identifier),
-                Property::new("Copy to", destination).with_kind(TextKind::Identifier),
+                Property::new(CATALOG.t("imager-import-folder"), source)
+                    .with_kind(TextKind::Identifier),
+                Property::new(CATALOG.t("imager-import-copy-to"), destination)
+                    .with_kind(TextKind::Identifier),
             ])))
             .push(Box::new(
                 Text::new(&crate::setup::strings::t("installer-import-copy-note")).dimmed(),
             ))
             .push(Box::new(actions));
-        Section::new(vec![Box::new(body)]).with_header(SectionHeader::heading("Copy a folder"))
+        Section::new(vec![Box::new(body)]).with_header(SectionHeader::heading(
+            CATALOG.t("imager-import-section-copy"),
+        ))
     }
 
     /// The loaded page of a copy's issues, one row each, then what else
@@ -2285,21 +2290,21 @@ impl ImportApp {
         }
         let mut facts = vec![
             Property::new(
-                "From",
+                CATALOG.t("imager-import-from"),
                 operation
                     .source()
                     .map_or_else(|error| error, |path| shown_path(&path)),
             )
             .with_kind(TextKind::Identifier),
             Property::new(
-                "To",
+                CATALOG.t("imager-import-to"),
                 operation
                     .destination()
                     .map_or_else(|error| error, |path| shown_path(&path)),
             )
             .with_kind(TextKind::Identifier),
             Property::new(
-                "Checked",
+                CATALOG.t("imager-import-checked"),
                 format!(
                     "{} in {} {}",
                     ui::format::size(operation.verified_bytes()),
@@ -2317,13 +2322,16 @@ impl ImportApp {
             && !path.as_os_str().is_empty()
         {
             facts.push(
-                Property::new("Now copying", path.display().to_string())
-                    .with_kind(TextKind::Identifier),
+                Property::new(
+                    CATALOG.t("imager-import-copying"),
+                    path.display().to_string(),
+                )
+                .with_kind(TextKind::Identifier),
             );
         }
         if operation.issue_count() > 0 {
             facts.push(Property::new(
-                "Needs attention",
+                CATALOG.t("imager-import-attention"),
                 items_phrase(operation.issue_count() as u64),
             ));
         }
@@ -2533,7 +2541,9 @@ impl ImportApp {
                     .push(Box::new(controls)),
             ));
         }
-        Section::new(items).with_header(SectionHeader::heading("From your Desktop setup"))
+        Section::new(items).with_header(SectionHeader::heading(
+            CATALOG.t("imager-import-section-desktop"),
+        ))
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
@@ -2543,7 +2553,9 @@ impl ImportApp {
                 Section::new(vec![Box::new(
                     Text::new(&error).with_live(Politeness::Assertive),
                 )])
-                .with_header(SectionHeader::heading("Folders can't be copied right now")),
+                .with_header(SectionHeader::heading(
+                    &CATALOG.t("imager-import-section-unavailable"),
+                )),
             ));
         }
         if let Some(c) = &self.continuation {
@@ -2562,9 +2574,9 @@ impl ImportApp {
             })
             .collect();
         if !copies.is_empty() {
-            body = body.push(Box::new(
-                Section::new(copies).with_header(SectionHeader::heading("Copies")),
-            ));
+            body = body.push(Box::new(Section::new(copies).with_header(
+                SectionHeader::heading(CATALOG.t("imager-import-section-copies")),
+            )));
         }
         if self.continuation.is_some() {
             body = body.push(Box::new(self.journey_choices()));

@@ -174,7 +174,11 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
                     tracing::warn!(%person, %failure, "moderation step failed");
                 }
             }
-            Ok::<_, String>((replica.take_mutation(), replica.take_record_mutations()))
+            let taken = |error: tilo_agent_participant::AppError| error.to_string();
+            Ok::<_, String>((
+                replica.take_mutation().map_err(taken)?,
+                replica.take_record_mutations().map_err(taken)?,
+            ))
         })
         .await
         .map_err(|error| error.to_string())??;

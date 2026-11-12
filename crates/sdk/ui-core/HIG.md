@@ -314,9 +314,17 @@ If an app hand-rolls text editing, it will get these wrong — use the shared co
   its outcome ("Move", "Allow"), never "Continue" or "OK".
 - One thing has one name everywhere; `tools/policy/copy_glossary.toml` lists
   the names that had rivals ("Password", "Power", "Keyboard shortcuts").
+- A window that ships a translation resolves everything it paints through its
+  catalogue, values included: a sentence built around a name, a count or a
+  date is a message with variables and, where it counts, plural branches, not
+  a `format!` handed to a label. A count reads in the reader's grammar
+  ("1 message", "2 Nachrichten").
 - `tools/policy/check_copy_language.py` checks every `locales/*.ftl` for
   these classes (old copy is listed per catalogue in
-  `copy_language_baseline/`, which only shrinks), and `tilo_copy_lint`
+  `copy_language_baseline/`, which only shrinks), and rejects an English
+  literal or `format!` sentence handed to a window's text constructors (a
+  label, a section title, a property's name, an accessible name) unless
+  `copy_source_literals.toml` says why no catalogue carries it; `tilo_copy_lint`
   rejects `{:?}` handed to a copy builder.
 - Settings toggles live in **Settings**, not duplicated as always-on top-bar
   chips.

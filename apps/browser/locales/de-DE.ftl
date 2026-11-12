@@ -430,3 +430,10 @@ browser-a11y-search-engine = Suchmaschine
 browser-a11y-clear-on-quit = Daten beim Schließen des Browsers löschen
 browser-a11y-block-ads = Werbung und Tracker blockieren
 browser-settings-title = Einstellungen
+
+## Fakten, Eigenschaftsnamen und Bereichstitel
+browser-save-login = Anmeldung für { $site } speichern?
+browser-section-saved-accounts = Gespeicherte Konten
+browser-section-forms = Formulare auf dieser Seite
+browser-action-keep-page = Seite so lassen, wie sie ist
+browser-action-let-leave = Freigeben: { $request }

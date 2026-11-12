@@ -48,6 +48,7 @@ use crate::model::{Route, SearchType, TubeModel};
 use crate::resource::Library;
 use crate::screens;
 use crate::widgets::SharedPlayer;
+use ui::i18n::ArgValue;
 use ui::tilo_resource::{Edit, Invoke};
 use ui::widget::DrawChild;
 
@@ -1653,26 +1654,30 @@ impl Widget for TubeApp {
         let tube = self.tube.borrow();
         let model = &tube.model;
         let route = match &model.route {
-            Route::Home => "Home".to_string(),
-            Route::Trending => "Trending".to_string(),
-            Route::Subscriptions => "Subscriptions".to_string(),
-            Route::Queue => "Shared watch queue".to_string(),
+            Route::Home => t("tube-nav-home"),
+            Route::Trending => t("tube-nav-trending"),
+            Route::Subscriptions => t("tube-nav-subscriptions"),
+            Route::Queue => t("tube-queue-shared"),
             Route::Watch(id) => model
                 .video(id)
-                .map_or_else(|| "Video".to_string(), |video| video.title.clone()),
+                .map_or_else(|| t("tube-video"), |video| video.title.clone()),
             Route::Channel(id) => model
                 .channel(id)
-                .map_or_else(|| "Creator".to_string(), |channel| channel.name.clone()),
+                .map_or_else(|| t("tube-creator"), |channel| channel.name.clone()),
             Route::Playlist(id) => model
                 .playlist(id)
-                .map_or_else(|| "Playlist".to_string(), |playlist| playlist.title.clone()),
-            Route::History => "Watch history".to_string(),
-            Route::Settings => "Settings".to_string(),
-            Route::Search(query) => format!("Search: {query}"),
+                .map_or_else(|| t("tube-playlist"), |playlist| playlist.title.clone()),
+            Route::History => t("tube-nav-history"),
+            Route::Settings => t("tube-nav-settings"),
+            Route::Search(query) => crate::i18n::t_args(
+                "tube-search-heading",
+                &[("query", ArgValue::Text(query.clone()))],
+            ),
         };
         Some(
             AccessNode::new(Role::Window)
-                .with_name(format!("Tube — {route}"))
+                .with_name(t("tube-nav-name"))
+                .with_description(route)
                 .with_state(AccessState::new().busy(model.feed_loading)),
         )
     }

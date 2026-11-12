@@ -201,7 +201,10 @@ function sweepProfiles() {
   }
 }
 
-/** A headless browser on a fresh profile. */
+/** A headless browser on a fresh profile. `TILO_CHROME_ARGS` adds flags of the machine's own,
+ * space separated: headless Chrome draws WebGPU with SwiftShader unless told to use the GPU, so a
+ * run that wants the machine's GPU (a recording) passes `--enable-gpu --use-angle=vulkan
+ * --enable-features=Vulkan --ignore-gpu-blocklist` there. */
 export async function launch({args = []} = {}) {
   sweepProfiles();
   const profile = mkdtempSync(join(throwawayDir(), 'tilo-chrome-'));
@@ -224,6 +227,7 @@ export async function launch({args = []} = {}) {
     '--disable-renderer-backgrounding',
     '--disable-backgrounding-occluded-windows',
     ...args,
+    ...(process.env.TILO_CHROME_ARGS ?? '').split(/\s+/).filter(Boolean),
     'about:blank',
   ];
   // The existing subreaper owns even detached utility processes. Chromium's

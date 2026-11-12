@@ -24,8 +24,8 @@ use tilo_desktop::profile_card::{
     OtherPerson, ProfileAction, ProfileCard, ProfileChoice, ProfileGroup, ProfileModel,
 };
 use tilo_desktop_model::DesktopTree;
-use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect, DeskEffect};
+use tilo_desktop_surface::{DesktopHandle, HostAction};
 use tilo_session_core::door::{Look, Published};
 use ui::host_operation::ResourceOperationStart;
 use ui::kurbo::{Affine, Point, Rect, Size, Vec2};
@@ -61,6 +61,9 @@ pub enum PeopleAsk {
     Colour(String),
     /// Open the Settings page a card action names, such as their identities or an identity backup.
     Settings(String),
+    /// Do the host action this person's own card offers, as the palette and a banner hand theirs
+    /// back: the choice the ask on their avatar waits for is answered here too.
+    HostAction(String),
     /// Ask this of the agent of `client`, through its card in Console.
     Agent {
         client: String,
@@ -845,7 +848,7 @@ impl Panel {
             colour_id: settings_store::identity::COLOUR.get(),
             can_rename: true,
             ask_name: own.label.trim().is_empty(),
-            actions: Self::own_actions(),
+            actions: self.own_actions(),
             availability: own.availability,
             // Their own words: what this device read off their steps is not theirs to edit.
             status: own
@@ -861,10 +864,24 @@ impl Panel {
         }
     }
 
-    /// What the session offers this person about who they are: the pages where their identities are
-    /// kept and backed up, and where another of their devices is paired.
-    fn own_actions() -> Vec<ProfileAction> {
-        vec![
+    /// What the session offers this person about who they are: what the host offers about their
+    /// identity while it still offers it — keeping their name and work on this device, the choice the
+    /// ask on their avatar waits for — and the pages where their identities are kept and backed up,
+    /// and where another of their devices is paired.
+    fn own_actions(&self) -> Vec<ProfileAction> {
+        let mut actions: Vec<ProfileAction> = self
+            .handle
+            .host_actions()
+            .into_iter()
+            .filter(HostAction::is_personal)
+            .map(|action| ProfileAction {
+                id: action.id,
+                title: action.title,
+                group: ProfileGroup::Identity,
+                icon: ui::icons::Icon::Fingerprint,
+            })
+            .collect();
+        actions.extend([
             ProfileAction {
                 id: "identities".to_owned(),
                 title: crate::i18n::t("profile-action-identities"),
@@ -883,7 +900,8 @@ impl Panel {
                 group: ProfileGroup::Devices,
                 icon: ui::icons::Icon::MonitorSmartphone,
             },
-        ]
+        ]);
+        actions
     }
 
     /// The Settings page an own-card action names.
@@ -959,6 +977,15 @@ impl Panel {
                         self.asks
                             .borrow_mut()
                             .push(PeopleAsk::Settings(link.to_owned()));
+                    } else if self
+                        .handle
+                        .host_actions()
+                        .iter()
+                        .any(|action| action.id == id)
+                    {
+                        // What the host offered the card: the choice it asks for, answered here
+                        // rather than on the avatar the ask waits on.
+                        self.asks.borrow_mut().push(PeopleAsk::HostAction(id));
                     }
                 }
                 // Nobody else's card asks these of this session, and this person's own keeps none

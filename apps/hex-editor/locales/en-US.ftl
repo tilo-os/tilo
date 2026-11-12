@@ -31,3 +31,11 @@ hex-editor-window-detail = The bytes of one file, edited byte by byte.
 
 ## Window and accessibility copy
 hex-editor-inspector = Inspector
+
+## Facts, property labels and section titles
+hex-a11y-status = { $file }; { $bytes ->
+    [one] one byte
+   *[other] { $bytes } bytes
+}; cursor at hexadecimal { $cursor }; { $mode } mode; { $endian }
+hex-a11y-no-file = No file open. Open a local file to inspect its bytes.
+hex-offset-readout = Offset 0x{ $offset } ({ $cursor })

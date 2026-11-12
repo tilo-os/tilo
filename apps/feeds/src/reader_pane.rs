@@ -26,8 +26,10 @@ use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::app::{Core, Shared};
+use crate::i18n::CATALOG;
 use crate::model::{BlockKind, ContentBlock, Filter, Id, ReadFont, TagKey};
 use crate::reader_theme::ReaderPalette;
+use ui::i18n::ArgValue;
 
 /// A leaf that fills its column, registered for the host's sweeps.
 pub(crate) fn fill_leaf<W: Widget + 'static>(
@@ -512,7 +514,9 @@ impl Core {
                 .find_map(|(rect, found)| (*found == key).then_some(*rect))?;
             Some(
                 AccessNode::new(Role::Link)
-                    .with_name(format!("Tag {tag}"))
+                    .with_name(
+                        CATALOG.t_args("feeds-a11y-tag", &[("tag", ArgValue::Text(tag.clone()))]),
+                    )
                     .with_description(crate::i18n::t("feeds-articles-with-tag"))
                     .with_state(AccessState::new().focusable(true))
                     .with_bounds(rect)

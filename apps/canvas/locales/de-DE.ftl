@@ -479,3 +479,6 @@ canvas-combine = Formen kombiniert
 canvas-pictures-unavailable = Dafür braucht es ein Bild des Kunstwerks, das hier noch nicht entstehen kann.
 
 canvas-pictures-decoding = Dafür braucht es ein Bild, das noch decodiert wird. Frage gleich noch einmal.
+
+## Fakten, Eigenschaftsnamen und Bereichstitel
+canvas-a11y-artwork = { $width } mal { $height } Einheiten, { $layers } Ebenen, { $marks } Markierungen, { $selected } ausgewählt; inspect listet sie auf, look zeigt sie

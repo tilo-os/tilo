@@ -16,6 +16,7 @@ use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
@@ -31,6 +32,7 @@ use ui::widget::{
 };
 use ui::{TextKind, TextRole};
 
+use crate::i18n::CATALOG;
 use crate::model::{Message, MessageId};
 use crate::state::{Intent, MailState, ReaderChoice, Shared};
 use crate::util::{format_absolute, local_minutes};
@@ -657,7 +659,10 @@ impl MessageReader {
             Some(wide),
         );
         y += ctx.line_box(TextRole::Body);
-        let from = format!("From {}", queued.account);
+        let from = CATALOG.t_args(
+            "mail-from",
+            &[("sender", ArgValue::Text(queued.account.clone()))],
+        );
         ctx.text_role(
             &from,
             TextRole::Body,

@@ -512,9 +512,13 @@ impl DesktopSearch {
         // are the search's answer, so a source still out does not make it
         // searching. With nothing ready yet, it is still searching while a
         // source owes a row; a query that found nothing at all, with no
-        // source left to answer, is settled too.
+        // source left to answer, is settled too. Rows that answer an earlier
+        // query are no answer to the text in the field: an Enter on them
+        // waits for the typed query's rows (`take_waiting_enter`).
         self.sources.is_none()
-            || (self.rows_placed() && (!self.rows.is_empty() || !self.expecting()))
+            || (self.shown_query.as_deref() == Some(self.palette.query())
+                && self.rows_placed()
+                && (!self.rows.is_empty() || !self.expecting()))
     }
 
     /// Whether rows are still expected to join the ones shown: a source has

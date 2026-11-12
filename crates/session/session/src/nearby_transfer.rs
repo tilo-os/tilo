@@ -2370,6 +2370,7 @@ mod transfers_between_devices {
                 continuity: permitted(),
                 wake: Arc::new(|| {}),
                 fabric: None,
+                relays: tilo_endpoint_reachability::relays(),
             },
             None,
             None,

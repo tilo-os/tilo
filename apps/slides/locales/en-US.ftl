@@ -215,3 +215,10 @@ slides-a11y-close-shortcuts = Close keyboard shortcuts
 slides-a11y-presentation-controls = Presentation controls
 slides-a11y-controls = Slides controls
 slides-a11y-editor = Presentation editor with slide canvas and notes
+
+## Facts, property labels and section titles
+slides-a11y-slide-canvas = Slide { $slide } canvas
+slides-a11y-slide-window = Showing slides { $first } through { $last } of { $count }
+slides-a11y-slide-of = Slide { $slide } of { $count }
+slides-a11y-elapsed = Elapsed { $time }
+slides-a11y-presenting = Presenting { $deck }

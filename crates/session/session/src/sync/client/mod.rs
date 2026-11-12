@@ -1082,6 +1082,9 @@ pub struct Entry {
     /// Where this device keeps its part of the person's device fabric between runs, one
     /// checkpoint per device key; `None` keeps nothing (a test, a stand-in session).
     pub fabric: Option<std::path::PathBuf>,
+    /// The relays the person's setting names ([`tilo_endpoint_reachability::relays`]), which this
+    /// device's endpoint holds back until something needs it dialable.
+    pub relays: tilo_endpoint_reachability::EndpointRelays,
 }
 
 impl Client {
@@ -1127,7 +1130,7 @@ impl Client {
         let device_actions = Arc::new(std::sync::OnceLock::new());
         let serving = Arc::clone(&device_actions);
         let endpoint_handle = Arc::new(std::sync::OnceLock::new());
-        let bound_endpoint = Arc::clone(&endpoint_handle);
+        let binding = plane::Bound::new(Arc::clone(&endpoint_handle), entry.relays);
         // The live plane's relay role, when this device may serve one, is one more protocol on the
         // endpoint this session binds.
         let mut live = engine
@@ -1151,7 +1154,7 @@ impl Client {
                         ready,
                     },
                     wake,
-                    Serving::new(bound_endpoint, plane_link, serving, beside, documents),
+                    Serving::new(binding, plane_link, serving, beside, documents),
                 );
             })?;
         let (publisher, endpoint, reachability) = wait_for_bound(&bound)?;
@@ -1792,11 +1795,12 @@ pub(crate) fn fabric_checkpoint(state: &std::path::Path, device: &DeviceId) -> s
 }
 
 /// The endpoint the peer actor binds, and the relays held back from it until something needs this
-/// device dialable: the person's choice ([`tilo_endpoint_reachability::relays`]) for a device with
-/// an identity, none for a session that takes part as nobody and stays on this machine's loopback.
+/// device dialable: the person's `relays` for a device with an identity, none for a session that
+/// takes part as nobody and stays on this machine's loopback.
 #[cfg(target_os = "linux")]
 fn endpoint_for(
     identity: Option<&HostIdentity>,
+    relays: &tilo_endpoint_reachability::EndpointRelays,
 ) -> Result<(iroh::endpoint::Builder, iroh::RelayMap), String> {
     let Some(identity) = identity else {
         let builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -1807,14 +1811,12 @@ fn endpoint_for(
         return Ok((builder, iroh::RelayMap::empty()));
     };
     let key = iroh::SecretKey::from_bytes(&identity.signing_key()?.to_bytes());
-    // The relays are the person's ([`tilo_endpoint_reachability::relays`]) and held back
-    // ([`tilo_endpoint_reachability`]): binding with an empty relay map keeps net report, address
-    // discovery and port mapping off the network until a workspace this session shows has someone
-    // else in it. A peer's key also resolves on the local network
+    // The relays are held back ([`tilo_endpoint_reachability`]): binding with an empty relay map
+    // keeps net report, address discovery and port mapping off the network until a workspace this
+    // session shows has someone else in it. A peer's key also resolves on the local network
     // ([`tilo_endpoint_reachability::lan`]), so two of the person's devices that share one find
     // each other while their relays rest, and with their own relay (or none) that is what finds
     // them.
-    let relays = tilo_endpoint_reachability::relays();
     let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(key)
         .address_lookup(tilo_endpoint_reachability::lan())
@@ -1824,7 +1826,7 @@ fn endpoint_for(
             .address_lookup(tilo_endpoint_reachability::collaborating())
             .address_lookup(iroh::address_lookup::DnsAddressLookup::n0_dns());
     }
-    Ok((builder, relays.relays))
+    Ok((builder, relays.relays.clone()))
 }
 
 /// Where an admitted peer's app document goes so this device's apps see it as they see this

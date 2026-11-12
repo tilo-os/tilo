@@ -36,3 +36,10 @@ remote-describe-forget-host-key = Remove this device's stale SSH host-key pin; r
 
 ## Window and accessibility copy
 remote-a11y-window = Remote
+
+## Facts, property labels and section titles
+remote-action-trust-host-key = Explicitly trust { $algorithm } { $fingerprint } for this device only after out-of-band verification.
+remote-action-open-session = Open a live session to this saved connection. { $detail }
+remote-nearby-devices = Nearby devices
+remote-other-connections = Other connections
+remote-pinned = Pinned

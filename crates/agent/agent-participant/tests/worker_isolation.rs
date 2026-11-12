@@ -35,7 +35,7 @@ fn a_confined_record_kept_at_an_older_storage_version_sends_its_migration() {
     use ui::tilo_resource::evolution::{VERSION_KEY, stored_version};
     let app = "so.tilo.chat";
     let mut page = common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
-    let Some(DocumentMutation::Snapshot(snapshot)) = page.take_mutation() else {
+    let Some(DocumentMutation::Snapshot(snapshot)) = page.take_mutation().unwrap() else {
         panic!("a new record is published whole");
     };
     let mut kept = automerge::AutoCommit::load(&snapshot).unwrap();
@@ -156,7 +156,7 @@ fn a_confined_record_is_edited_in_its_worker_and_converges_with_a_page() {
     let app = "so.tilo.scratchpad";
     let note = common::scratchpad_body("").0;
     let mut page = common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
-    let Some(DocumentMutation::Snapshot(snapshot)) = page.take_mutation() else {
+    let Some(DocumentMutation::Snapshot(snapshot)) = page.take_mutation().unwrap() else {
         panic!("a new record is published whole");
     };
     let agent = common::confined(
@@ -206,7 +206,9 @@ fn a_confined_record_is_edited_in_its_worker_and_converges_with_a_page() {
     // And back: the page's edit reaches the worker, and is never taken as
     // the agent's own.
     page.invoke(&note, &edit("Ada's revision"), false).unwrap();
-    agent.apply(&page.take_mutation().unwrap()).unwrap();
+    agent
+        .apply(&page.take_mutation().unwrap().unwrap())
+        .unwrap();
     assert!(agent.body().contains("Ada's revision"), "{}", agent.body());
     assert!(agent.take_mutation().unwrap().is_none());
 }
@@ -303,7 +305,7 @@ fn an_appearance_given_to_the_worker_is_recorded_on_the_change() {
     let app = "so.tilo.scratchpad";
     let note = common::scratchpad_body("").0;
     let mut page = common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
-    let Some(DocumentMutation::Snapshot(snapshot)) = page.take_mutation() else {
+    let Some(DocumentMutation::Snapshot(snapshot)) = page.take_mutation().unwrap() else {
         panic!("a new record is published whole");
     };
     let agent = common::confined(

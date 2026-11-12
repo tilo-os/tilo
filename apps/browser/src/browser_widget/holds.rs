@@ -46,6 +46,13 @@
 //! page publishes for an answer is a number of this window's own, one per
 //! hold: an answer or an ending meant for one hold never reaches another.
 //!
+//! A published hold states what leaves beside its number: the page it leaves
+//! from, what the page does, the method and where it goes ([`Held::facts`]),
+//! and the filled page as a picture kept in the workspace's content store
+//! ([`Held::picture`]), so the person a host asks sees what leaves and not
+//! only a name for it. The picture is kept only for a hold that waits: one
+//! turned away as one too many is asked about by nobody.
+//!
 //! The tab's record says all of it ([`crate::page_record`]). The engine sets
 //! down that a departure was held, under the actor whose action reached it,
 //! and how it ended: let leave, kept, or dropped unanswered. It cannot know
@@ -131,6 +138,12 @@ pub(crate) struct Held {
     /// What this window names it by: the number its published answers state.
     /// One number is one hold, whatever the engine calls it.
     number: u32,
+    /// The page it leaves from, by its origin: what the person is told they
+    /// are on, where the page itself is not the destination.
+    page: String,
+    /// The filled page as a picture, by its content address, when this window
+    /// kept one: what the person is shown before they allow it.
+    picture: Option<String>,
     /// The file a download would save, when the engine named it: the person
     /// is told which one they allow.
     file: Option<String>,
@@ -157,6 +170,23 @@ impl Held {
     /// The number this window names it by, which its answers state.
     pub(crate) const fn number(&self) -> u32 {
         self.number
+    }
+
+    /// The departure as the person's question carries it, by the names a
+    /// reader reads it by: the page it leaves from, what it does, the method
+    /// and where it goes.
+    pub(crate) fn facts(&self) -> [(&'static str, String); 4] {
+        [
+            ("page", self.page.clone()),
+            ("kind", self.request.kind.as_str().to_owned()),
+            ("method", self.request.method.clone()),
+            ("destination", self.request.origin.clone()),
+        ]
+    }
+
+    /// The filled page, by the content address this window kept it under.
+    pub(crate) fn picture(&self) -> Option<&str> {
+        self.picture.as_deref()
     }
 
     /// Whether somebody answered it, to let it leave or to keep the page as
@@ -199,17 +229,35 @@ pub(crate) struct Holds {
 }
 
 impl Holds {
-    /// Hold `request`, or say why not: the engine reports one request once,
-    /// and the window asks the person about [`MAX_HELD`] at once.
-    pub(crate) fn hold(&mut self, request: HeldRequest, file: Option<String>) -> Taken {
-        let key = HeldKey::of(&request);
+    /// Why the window would not hold `request`, when it would not: it holds
+    /// it already or it is no request the engine could have reported, or as
+    /// many as it asks the person about already wait. `None` for a request it
+    /// would take. Asked before anything is kept for a hold, so nothing is
+    /// kept for one that will never be asked about.
+    pub(crate) fn refuses(&self, request: &HeldRequest) -> Option<Taken> {
+        let key = HeldKey::of(request);
         if !request.valid() || self.held.iter().any(|held| held.key == key) {
-            return Taken::Known;
+            return Some(Taken::Known);
         }
         let waiting = self.held.iter().filter(|held| !held.answered()).count();
-        if waiting >= MAX_HELD {
-            return Taken::TooMany;
+        (waiting >= MAX_HELD).then_some(Taken::TooMany)
+    }
+
+    /// Hold `request`, or say why not: the engine reports one request once,
+    /// and the window asks the person about [`MAX_HELD`] at once. `page` is
+    /// the origin the page it leaves from is on, and `picture` the filled
+    /// page kept as content, when the window kept one.
+    pub(crate) fn hold(
+        &mut self,
+        request: HeldRequest,
+        page: String,
+        picture: Option<String>,
+        file: Option<String>,
+    ) -> Taken {
+        if let Some(refused) = self.refuses(&request) {
+            return refused;
         }
+        let key = HeldKey::of(&request);
         // The next number no hold of this window still has.
         let mut number = self.last.checked_add(1).unwrap_or(1);
         while self.held.iter().any(|held| held.number == number) {
@@ -220,6 +268,8 @@ impl Holds {
             request,
             key,
             number,
+            page,
+            picture,
             file,
             asked: None,
             releasing: None,
@@ -358,10 +408,23 @@ impl BrowserWidget {
     /// What the person is asked about `request`, whose run reached it: the
     /// action answers that it needs them, and their allow releases it.
     pub(crate) fn hold_asked(&mut self, request: &HeldRequest) {
-        let number = match self.holds.hold(request.clone(), None) {
+        let page = self.held_page();
+        // The filled page is kept as content only for a hold that will wait
+        // for an answer. One the window holds already, or turns away as one
+        // too many, is asked about by nobody: a page that posts in a loop
+        // would otherwise fill the workspace's store with pictures no
+        // question shows.
+        let picture = match self.holds.refuses(request) {
+            None => self.kept_hold_picture(request),
+            Some(_) => None,
+        };
+        let number = match self
+            .holds
+            .hold(request.clone(), page.clone(), picture, None)
+        {
             Taken::Held(number) => number,
             Taken::Known => return,
-            Taken::TooMany => return self.turn_away(request),
+            Taken::TooMany => return self.turn_away(request, &page),
         };
         self.structure_dirty = true;
         let Some(operation) = self.page_operation.take() else {
@@ -384,16 +447,18 @@ impl BrowserWidget {
                 "kind": request.kind.as_str(),
                 "method": request.method,
                 "origin": request.origin,
+                "page": page,
             })),
         ));
         self.structure_dirty = true;
     }
 
-    /// Turn `request` away at once: as many requests as the window asks the
-    /// person about already wait. The engine drops it, so nothing of it
-    /// leaves and nothing stays paused, and the action whose run reached it
-    /// is told why, instead of being left to think the page took it.
-    fn turn_away(&mut self, request: &HeldRequest) {
+    /// Turn `request`, which the page at `page` was about to send, away at
+    /// once: as many requests as the window asks the person about already
+    /// wait. The engine drops it, so nothing of it leaves and nothing stays
+    /// paused, and the action whose run reached it is told why, instead of
+    /// being left to think the page took it.
+    fn turn_away(&mut self, request: &HeldRequest, page: &str) {
         self.release_held(HeldKey::of(request), false, AnsweredBy::TooMany);
         let Some(operation) = self.page_operation.take() else {
             return;
@@ -412,6 +477,7 @@ impl BrowserWidget {
                 "kind": request.kind.as_str(),
                 "method": request.method,
                 "origin": request.origin,
+                "page": page,
                 "waiting": MAX_HELD,
             })),
         ));
@@ -458,9 +524,16 @@ impl BrowserWidget {
         AnsweredBy::admitted(actor)
     }
 
+    /// The page this window shows, by its origin: what a hold's question
+    /// names as the page it leaves from.
+    pub(crate) fn held_page(&self) -> String {
+        origin_of(&self.current_uri)
+    }
+
     /// Send one held request on its way (`allow`) or drop it, as `invoker`
     /// (nobody: the person at the window), and answer the invocation that
-    /// waited for the release once the engine says it is over.
+    /// waited for the release once the engine says it is over. `id` is the
+    /// number the window published the hold under.
     pub(crate) fn answer_hold(
         &mut self,
         id: &str,
@@ -546,6 +619,14 @@ impl BrowserWidget {
         }
     }
 
+    /// The picture `request` carries of the filled page, kept as this
+    /// window's content so the person's question can name it: `None` when the
+    /// engine painted none, or this window has nowhere to keep one.
+    fn kept_hold_picture(&self, request: &HeldRequest) -> Option<String> {
+        let picture = request.capture.as_deref()?;
+        Self::kept_picture(picture, self.content.as_ref()?).ok()
+    }
+
     /// A download the page started in a window an agent operates waits for the
     /// person like every other departure: the engine holds it, and its answer
     /// is the download's own.
@@ -553,7 +634,10 @@ impl BrowserWidget {
         let mut request = HeldRequest::new(id, HeldKind::Download);
         request.method = "GET".into();
         request.origin = origin_of(url);
-        match self.holds.hold(request, shown_file(name)) {
+        match self
+            .holds
+            .hold(request, self.held_page(), None, shown_file(name))
+        {
             Taken::Held(_) => {
                 self.structure_dirty = true;
                 true

@@ -91,3 +91,11 @@ sheets-window-detail = Editable workbook with formula bar and sheet tabs
 
 ## Window and accessibility copy
 sheets-numbers-none = No numbers in this range
+
+## Facts, property labels and section titles
+sheets-a11y-comment-by = Comment by { $author }
+sheets-a11y-chart-extent = { $start }:{ $end }; open, rename, change its type or cells, or delete from the chart card
+sheets-a11y-worksheet = Worksheet; selected range { $range }; { $columns } columns by { $rows } rows; only the visible grid window is announced
+sheets-a11y-row = Row { $row }
+sheets-a11y-cell = Column { $column }, row { $row }
+sheets-a11y-column = Column { $letter }

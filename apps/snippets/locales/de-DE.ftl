@@ -98,3 +98,7 @@ snippets-record-use = { $item } kopiert
 snippets-rename-folder = Ordner { $folder } in { $to } umbenannt
 snippets-rename-tag = Tag { $tag } in { $to } umbenannt
 snippets-remove-tag = Tag { $tag } von allen Snippets entfernt
+
+## Fakten, Eigenschaftsnamen und Bereichstitel
+snippets-a11y-tag = Schlagwort: { $tag }
+snippets-a11y-folder = Ordner: { $folder }

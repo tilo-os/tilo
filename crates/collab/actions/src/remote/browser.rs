@@ -46,6 +46,41 @@ pub const STOP: &str = "stop-browser";
 pub const SEND_HELD: &str = "send-held-request";
 /// The page action that drops a held request, leaving the page as it was.
 pub const KEEP_HELD: &str = "keep-held-request";
+/// The prefix of the context facets a held departure is reported under:
+/// `browser.departure.page`, `.kind`, `.method`, `.destination` and
+/// `.picture`. The window states them on the action it publishes and the
+/// session holding it reports them, so the person asked about a departure
+/// sees what leaves and from where, not only a label for it.
+pub const DEPARTURE_FACET: &str = "browser.departure";
+
+/// The facet stating one part of a departure: `name` as a person's question
+/// reads it (`page`, `kind`, `method`, `destination`, `picture`) and its
+/// `value`.
+#[must_use]
+pub fn departure_facet(name: &str, value: impl Into<String>) -> crate::ActionFacet {
+    crate::ActionFacet::new(format!("{DEPARTURE_FACET}.{name}"), value)
+}
+
+/// Every departure facet `context` carries, by the name it states it under,
+/// in the order the facets are written.
+#[must_use]
+pub fn departure_facts(context: Option<&crate::ActionContext>) -> Vec<(String, String)> {
+    let prefix = format!("{DEPARTURE_FACET}.");
+    context
+        .map(|context| {
+            context
+                .facets
+                .iter()
+                .filter_map(|facet| {
+                    Some((
+                        facet.key.strip_prefix(&prefix)?.to_owned(),
+                        facet.value.clone(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
 
 /// Set in the session's own environment: it serves a browser
 /// environment, and reports on its standard output.

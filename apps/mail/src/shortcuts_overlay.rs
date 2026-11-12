@@ -238,7 +238,7 @@ impl MailShortcutsOverlay {
     pub fn accessibility(&self) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Role};
         AccessNode::new(Role::Dialog)
-            .with_name(ui::i18n::I18nManager::lookup_plain("mail-shortcuts-title"))
+            .with_name(crate::i18n::t("mail-shortcuts-title"))
             .with_bounds(self.card_rect().unwrap_or(Rect::ZERO))
             .with_state(AccessState::new().modal(true))
             .with_children(

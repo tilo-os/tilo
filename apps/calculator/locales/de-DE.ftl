@@ -52,3 +52,10 @@ calculator-currency = Währung
 calculator-quantity = Menge
 calculator-unit-conversion = Einheiten umrechnen
 calculator-unit-conversion-description = Rechne einen Betrag offline von einer Einheit in eine andere um.
+
+## Fakten, Eigenschaftsnamen und Bereichstitel
+calculator-graph-add = { $kind } hinzufügen
+calculator-graph-delete = { $kind } { $number } löschen
+calculator-graph-show = { $kind } { $number } anzeigen
+calculator-graph-field = Formel { $kind } { $number }
+calculator-next-unit = { $unit } zur nächsten Einheit wechseln

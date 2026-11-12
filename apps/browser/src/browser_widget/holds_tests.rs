@@ -441,6 +441,22 @@ fn a_request_the_page_sends_on_its_own_is_published_and_answered() {
         "the person is told where it goes: {}",
         send.type_mut().label
     );
+    // The departure itself is stated beside the id, so a host holding this
+    // window in a VM of the person's asks them what leaves, not a name for it.
+    let stated = |name: &str| {
+        send.params()
+            .iter()
+            .find(|param| param.name == name)
+            .and_then(|param| param.choices.first())
+            .map(ToString::to_string)
+    };
+    assert_eq!(stated("page").as_deref(), Some("https://shop.example"));
+    assert_eq!(stated("kind").as_deref(), Some("request"));
+    assert_eq!(stated("method").as_deref(), Some("POST"));
+    assert_eq!(
+        stated("destination").as_deref(),
+        Some("https://orders.example")
+    );
     let encoded = send
         .build_json(serde_json::json!({"id": "1"}).as_object().expect("an id"))
         .expect("the answer names the held request");
@@ -449,6 +465,43 @@ fn a_request_the_page_sends_on_its_own_is_published_and_answered() {
         .admit(answer, effect_operation(&encoded.payload))
         .expect("the answer is accepted");
     assert_eq!(held_answers(&engine), vec![(4, true)]);
+}
+
+/// A hold whose engine painted the filled page publishes that picture by its
+/// content address, so the person asked about it is shown what they allow.
+#[test]
+fn a_held_departure_names_the_picture_of_the_filled_page() {
+    let (engine, mut widget, doc, root) =
+        page_in(BrowsingMode::Visitor, "https://visa.example/apply");
+    let content = ui::content::ContentStore::memory();
+    widget.attach_content(content.clone());
+    let mut request = held_submit(4);
+    request.capture = Some(Arc::new(
+        ui::png::encode_rgba8(4, 4, &[200, 60, 60, 255].repeat(16)).expect("a png"),
+    ));
+    engine.hold(request);
+    widget.sync(&doc, &root);
+    let send = page_resource(&widget)
+        .actions
+        .into_iter()
+        .find(|action| action.id == "send-held-request")
+        .expect("the submission waits on the person");
+    let picture = send
+        .params()
+        .iter()
+        .find(|param| param.name == "picture")
+        .and_then(|param| param.choices.first())
+        .map(ToString::to_string)
+        .expect("the question names the picture of the filled page");
+    let hash = ui::tilo_actions::content_hash(&picture)
+        .expect("the picture is content, named by its hash");
+    let kept = content
+        .read(hash)
+        .expect("and kept where the person reads it");
+    assert!(
+        kept.starts_with(b"\x89PNG"),
+        "the bytes the window kept are the page's picture"
+    );
 }
 
 #[test]
@@ -843,6 +896,14 @@ fn a_hold_beyond_those_the_window_asks_about_is_turned_away_at_once() {
         panic!("the click is told that what it reached was dropped: {update:?}");
     };
     assert_eq!(error.code, "browser.page.too_many_held");
+    assert_eq!(
+        error
+            .details
+            .as_ref()
+            .and_then(|details| details["page"].as_str()),
+        Some("https://shop.example"),
+        "and names the page it would have left from"
+    );
     assert!(
         error.message.contains("8 requests") && error.message.contains("https://visa.example"),
         "it says why and what: {}",
@@ -1118,4 +1179,308 @@ fn an_allow_that_comes_after_the_windows_deadline_does_not_run_the_action_again(
     widget.expire_holds_at(std::time::Instant::now() + std::time::Duration::from_secs(60 * 60));
     assert_eq!(held_answers(&engine), vec![(1, false)]);
     allowed_after_its_hold_ended(&engine, &mut widget, &doc, &root, submit);
+}
+
+/// What one published answer states under `name`, as a host reading the page
+/// reads it.
+fn stated(action: &ui::tilo_actions::ActionSpec, name: &str) -> Option<String> {
+    action
+        .params()
+        .iter()
+        .find(|param| param.name == name)
+        .and_then(|param| param.choices.first())
+        .map(ToString::to_string)
+}
+
+/// A host that holds this window for the person reads each published hold by
+/// the number stated on it and by what it says leaves, and answers with that
+/// number. A request and a download the engine gave one number are two rows:
+/// each states its own number beside its own page, kind and destination, and
+/// the number stated beside the download answers the download.
+#[test]
+fn each_published_hold_states_its_own_number_beside_what_leaves() {
+    let (engine, mut widget, doc, root) =
+        page_in(BrowsingMode::Visitor, "https://shop.example/order");
+    let mut request = HeldRequest::new(1, HeldKind::Request);
+    request.method = "POST".into();
+    request.origin = "https://orders.example".into();
+    engine.hold(request);
+    engine.push_event(WebViewEvent::NativeDownloadRequested {
+        id: 1,
+        url: "https://files.example/return.pdf".into(),
+        name: "return.pdf".into(),
+    });
+    widget.sync(&doc, &root);
+    let rows = |widget: &BrowserWidget| -> Vec<[Option<String>; 5]> {
+        page_resource(widget)
+            .actions
+            .iter()
+            .filter(|action| action.id == "send-held-request")
+            .map(|action| {
+                ["id", "kind", "page", "method", "destination"].map(|name| stated(action, name))
+            })
+            .collect()
+    };
+    let said = |row: [&str; 5]| row.map(|value| Some(value.to_owned()));
+    assert_eq!(
+        rows(&widget),
+        [
+            said([
+                "1",
+                "request",
+                "https://shop.example",
+                "POST",
+                "https://orders.example"
+            ]),
+            said([
+                "2",
+                "download",
+                "https://shop.example",
+                "GET",
+                "https://files.example"
+            ]),
+        ],
+        "each hold is one row: its own number, and what leaves"
+    );
+    // The host answers with the number stated beside the download.
+    let send = answer_payload(&widget, "send-held-request", 2);
+    widget
+        .admit(
+            ui::tilo_actions::InvocationId::new(),
+            effect_operation(&send),
+        )
+        .expect("the answer is accepted");
+    assert!(
+        engine.commands().into_iter().any(|command| matches!(
+            command,
+            WebViewCommand::DownloadDecision {
+                id: 1,
+                allow: true,
+                ..
+            }
+        )),
+        "the download is saved"
+    );
+    assert!(
+        held_answers(&engine).is_empty(),
+        "and the request of the same engine number still waits"
+    );
+    widget.sync(&doc, &root);
+    assert_eq!(
+        rows(&widget),
+        [said([
+            "1",
+            "request",
+            "https://shop.example",
+            "POST",
+            "https://orders.example"
+        ])],
+        "which the page goes on publishing as it was"
+    );
+}
+
+/// The filled page is kept as content for a hold that waits, so the person
+/// asked about it is shown it. A hold turned away as one too many is asked
+/// about by nobody, and no picture of the page is kept for it: a page that
+/// posts in a loop does not fill the workspace's store.
+#[test]
+fn a_hold_turned_away_as_one_too_many_keeps_no_picture_of_the_page() {
+    let (engine, mut widget, doc, root) =
+        page_in(BrowsingMode::Visitor, "https://shop.example/order");
+    let content = ui::content::ContentStore::memory();
+    widget.attach_content(content.clone());
+    let painted = |shade: u8| {
+        Arc::new(ui::png::encode_rgba8(4, 4, &[shade, 60, 60, 255].repeat(16)).expect("a png"))
+    };
+    let posting = |id: u32, shade: u8| {
+        let mut request = HeldRequest::new(id, HeldKind::Request);
+        request.method = "POST".into();
+        request.origin = "https://orders.example".into();
+        request.capture = Some(painted(shade));
+        request
+    };
+    for (id, shade) in (1..=8).zip([10, 20, 30, 40, 50, 60, 70, 80]) {
+        engine.hold(posting(id, shade));
+    }
+    widget.sync(&doc, &root);
+    assert_eq!(
+        widget
+            .holds
+            .waiting()
+            .filter(|held| held.picture().is_some())
+            .count(),
+        8,
+        "each hold that waits names the picture of its page"
+    );
+    engine.hold(posting(9, 200));
+    widget.sync(&doc, &root);
+    assert_eq!(
+        held_answers(&engine),
+        vec![(9, false)],
+        "the ninth is turned away at once"
+    );
+    // What a store names a picture by is what it holds: another store names
+    // these two the same.
+    let named = |shade: u8| {
+        ui::content::ContentStore::memory()
+            .put(&painted(shade))
+            .expect("a picture has a name")
+    };
+    assert!(
+        content.read(&named(80)).is_some(),
+        "a picture a waiting hold names is kept"
+    );
+    assert!(
+        content.read(&named(200)).is_none(),
+        "nothing is kept of a page nobody is asked about"
+    );
+}
+
+/// The action whose run reached a hold is told what waits: the number the
+/// window holds it under, which answers it, and the page it leaves from
+/// beside where it goes.
+#[test]
+fn an_action_that_reached_a_hold_is_told_its_number_and_the_page_it_leaves_from() {
+    let (engine, mut widget, doc, root) =
+        page_in(BrowsingMode::Visitor, "https://visa.example/apply");
+    engine.hold(held_submit(7));
+    let submit = start(
+        &mut widget,
+        "submit-page",
+        &serde_json::json!({"element": "d1e9"}),
+    );
+    widget.sync(&doc, &root);
+    let update = answer(&mut widget, &doc, &root, submit);
+    assert!(needs_the_person(&update), "{update:?}");
+    let ui::tilo_actions::InvocationUpdate::Failed { error, .. } = &update else {
+        unreachable!()
+    };
+    let details = error.details.as_ref().expect("what waits is said");
+    assert_eq!(
+        (
+            details["held"].as_u64(),
+            details["page"].as_str(),
+            details["origin"].as_str(),
+            details["method"].as_str()
+        ),
+        (
+            Some(1),
+            Some("https://visa.example"),
+            Some("https://visa.example"),
+            Some("POST")
+        ),
+        "{details}"
+    );
+}
+
+/// A host reports a hold to the person once, by its number, and never asks
+/// about that number again. So a number is one hold's for as long as the
+/// window lives: a hold that comes after another ended is not given the
+/// number the first one had, or nobody would ever be asked about it.
+#[test]
+fn a_number_one_hold_had_is_not_given_to_the_next() {
+    let (engine, mut widget, doc, root) =
+        page_in(BrowsingMode::Visitor, "https://shop.example/order");
+    let posting = |id: u32| {
+        let mut request = HeldRequest::new(id, HeldKind::Request);
+        request.method = "POST".into();
+        request.origin = "https://orders.example".into();
+        request
+    };
+    let numbers = |widget: &BrowserWidget| -> Vec<String> {
+        published_answers(widget)
+            .into_iter()
+            .map(|(number, _)| number)
+            .collect()
+    };
+    engine.hold(posting(1));
+    widget.sync(&doc, &root);
+    assert_eq!(numbers(&widget), ["1"]);
+    // The page went on without it: the hold is over, and nothing waits.
+    engine.push_event(WebViewEvent::HeldRequestClosed { id: 1 });
+    widget.sync(&doc, &root);
+    assert!(numbers(&widget).is_empty());
+    // The page posts again, and the engine may well count from where it was.
+    engine.hold(posting(2));
+    widget.sync(&doc, &root);
+    assert_eq!(
+        numbers(&widget),
+        ["2"],
+        "the next hold has a number nobody was asked about before"
+    );
+}
+
+/// Whatever becomes of a hold, whoever is asked about it while it waits is
+/// asked by what it sends: the page it leaves from, what it does, the method,
+/// where it goes, and the picture of the filled page. That is so for a hold
+/// somebody then keeps and for one whose page then goes away, and once
+/// either is over the page states nothing of it.
+#[test]
+fn a_hold_states_what_leaves_until_it_is_kept_or_its_page_goes_away() {
+    let (engine, mut widget, doc, root) =
+        page_in(BrowsingMode::Visitor, "https://shop.example/order");
+    widget.attach_content(ui::content::ContentStore::memory());
+    let posting = |id: u32| {
+        let mut request = HeldRequest::new(id, HeldKind::Request);
+        request.method = "POST".into();
+        request.origin = "https://orders.example".into();
+        request.capture = Some(Arc::new(
+            ui::png::encode_rgba8(4, 4, &[200, 60, 60, 255].repeat(16)).expect("a png"),
+        ));
+        request
+    };
+    // Each question the page states: its number and what leaves, and
+    // whether it names a picture of the page.
+    let asked = |widget: &BrowserWidget| -> Vec<([Option<String>; 5], bool)> {
+        page_resource(widget)
+            .actions
+            .iter()
+            .filter(|action| action.id == "send-held-request")
+            .map(|action| {
+                (
+                    ["id", "page", "kind", "method", "destination"]
+                        .map(|name| stated(action, name)),
+                    stated(action, "picture")
+                        .is_some_and(|picture| ui::tilo_actions::content_hash(&picture).is_some()),
+                )
+            })
+            .collect()
+    };
+    let leaving = |number: &str| {
+        (
+            [
+                number,
+                "https://shop.example",
+                "request",
+                "POST",
+                "https://orders.example",
+            ]
+            .map(|value| Some(value.to_owned())),
+            true,
+        )
+    };
+    engine.hold(posting(1));
+    widget.sync(&doc, &root);
+    assert_eq!(asked(&widget), [leaving("1")], "the hold that waits");
+    // Somebody keeps the page as it is.
+    let keep = answer_payload(&widget, "keep-held-request", 1);
+    widget
+        .admit(
+            ui::tilo_actions::InvocationId::new(),
+            effect_operation(&keep),
+        )
+        .expect("the answer is accepted");
+    widget.sync(&doc, &root);
+    assert!(asked(&widget).is_empty(), "a kept hold asks nobody");
+    engine.push_event(WebViewEvent::HeldRequestClosed { id: 1 });
+    // The page posts again, and then the tab shows another page.
+    engine.hold(posting(2));
+    widget.sync(&doc, &root);
+    assert_eq!(asked(&widget), [leaving("2")], "the next hold that waits");
+    engine.push_event(WebViewEvent::HeldRequestClosed { id: 2 });
+    widget.sync(&doc, &root);
+    assert!(
+        asked(&widget).is_empty(),
+        "a hold whose page went away asks nobody"
+    );
 }

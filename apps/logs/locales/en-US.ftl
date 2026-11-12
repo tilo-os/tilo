@@ -18,3 +18,10 @@ logs-clear-filters = Cleared the journal filters
 ## Window and accessibility copy
 logs-severity = Severity
 logs-a11y-entries = Journal entries
+
+## Facts, property labels and section titles
+logs-boot-id = Boot ID
+logs-transport = Transport
+logs-host = Host
+logs-process-id = Process ID
+logs-program = Program

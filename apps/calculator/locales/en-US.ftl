@@ -52,3 +52,10 @@ calculator-currency = Currency
 calculator-quantity = Quantity
 calculator-unit-conversion = Unit conversion
 calculator-unit-conversion-description = Convert an amount from one unit to another, offline.
+
+## Facts, property labels and section titles
+calculator-graph-add = Add { $kind }
+calculator-graph-delete = Delete { $kind } { $number }
+calculator-graph-show = Show { $kind } { $number }
+calculator-graph-field = { $kind } { $number } formula
+calculator-next-unit = Change { $unit } to the next unit

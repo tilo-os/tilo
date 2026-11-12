@@ -307,7 +307,14 @@ impl HostedWorkspace {
         let (payload, _) =
             IrohWorkspaceHostHintV1::authenticate_transport_hint(&self.hint).unwrap();
         let endpoint = local_endpoint(&self.governor_key).await;
-        let dialed = link.dial(&endpoint, payload.endpoint_addr).await.unwrap();
+        let dialed = link
+            .dial(
+                &endpoint,
+                payload.endpoint_addr,
+                payload.host_device_certificate.device_public_key,
+            )
+            .await
+            .unwrap();
         let running = link.clone();
         tilo_rt::app().spawn(async move {
             let _ = dialed.run(&running).await;

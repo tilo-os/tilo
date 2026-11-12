@@ -134,3 +134,63 @@ mail-shortcuts-title = Tastenkürzel
 
 ## Fenster- und Barrierefreiheits-Texte
 mail-a11y-mailboxes = Postfächer
+
+## Was das Fenster zeigt
+mail-view-drawer = Ordnerleiste
+mail-view-reading = Lesebereich
+mail-view-list = Nachrichtenliste
+mail-view-all = Ordner, Nachrichtenliste und Lesebereich
+
+## Fakten, Eigenschaftsnamen und Bereichstitel
+mail-a11y-current-view = Aktuelle Ansicht: { $view }
+mail-a11y-reading = Geöffnet: { $subject }
+mail-a11y-save-attachment = Anhang { $file } ({ $size }) speichern
+mail-a11y-refused = Der Server hat diese Nachricht abgelehnt: { $reason }
+mail-a11y-cancel-sending = Senden an { $to } abbrechen
+mail-a11y-outbox-row = An { $to }: { $subject }
+mail-a11y-no-messages = Keine Nachrichten in { $folder }
+mail-status-send-failed = Senden fehlgeschlagen: { $error }
+mail-purge-body = { $count ->
+    [one] Eine Nachricht im Papierkorb wird aus diesem Postfach und auf dem Server gelöscht. Das lässt sich nicht rückgängig machen.
+   *[other] { $count } Nachrichten im Papierkorb werden aus diesem Postfach und auf dem Server gelöscht. Das lässt sich nicht rückgängig machen.
+}
+mail-status-attach-failed = { $name } konnte nicht angehängt werden: { $error }
+mail-status-attached = { $name } angehängt
+
+mail-status-picker-failed = Die Anhangsauswahl ließ sich nicht öffnen: { $error }
+
+mail-status-archived = { $count ->
+    [one] Eine Nachricht archiviert
+   *[other] { $count } Nachrichten archiviert
+}
+mail-status-trashed = { $count ->
+    [one] Eine Nachricht in den Papierkorb verschoben
+   *[other] { $count } Nachrichten in den Papierkorb verschoben
+}
+mail-status-marked-read = { $count ->
+    [one] Eine Nachricht als gelesen markiert
+   *[other] { $count } Nachrichten als gelesen markiert
+}
+mail-status-marked-unread = { $count ->
+    [one] Eine Nachricht als ungelesen markiert
+   *[other] { $count } Nachrichten als ungelesen markiert
+}
+mail-status-deleted = { $count ->
+    [one] Eine Nachricht gelöscht
+   *[other] { $count } Nachrichten gelöscht
+}
+mail-status-account-not-saved = Konto ausgewählt, aber die Einstellung ließ sich nicht speichern: { $error }
+mail-status-purged = { $count ->
+    [one] Eine Nachricht aus dem Papierkorb endgültig gelöscht
+   *[other] { $count } Nachrichten aus dem Papierkorb endgültig gelöscht
+}
+mail-status-purge-nothing = Nichts gelöscht; die ausgewählten Nachrichten haben sich vor der Bestätigung geändert
+mail-status-preferences-not-saved = Deine Mail-Einstellungen ließen sich nicht speichern: { $error }
+
+mail-from = Von { $sender }
+mail-status-copy-cancelled = Speichern des Anhangs abgebrochen
+mail-status-copy-saved = Kopie gespeichert als { $file }
+mail-status-selection-cancelled = Auswahl des Anhangs abgebrochen
+mail-status-selection-composer-closed = Auswahl des Anhangs abgebrochen, weil das Verfassen-Fenster geschlossen wurde
+mail-status-picker-disconnected = Die Anhangsauswahl wurde getrennt, bevor eine Datei gewählt war
+mail-status-choose-file = Wähle eine Datei zum Anhängen

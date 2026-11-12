@@ -2188,8 +2188,7 @@ impl CameraApp {
                 .selected_camera
                 .as_ref()
                 .and_then(|selected| devices.iter().position(|device| device == selected));
-            self.chooser
-                .set_label(ui::i18n::I18nManager::lookup_plain("camera-title"));
+            self.chooser.set_label(crate::CATALOG.t("camera-title"));
             self.chooser.set_items(devices);
             self.chooser.set_viewport(self.rect);
             self.chooser.open_at(self.chooser_anchor, selected);
@@ -3214,7 +3213,7 @@ impl Widget for CameraApp {
         }
         Some(
             AccessNode::new(Role::Window)
-                .with_name(ui::i18n::I18nManager::lookup_plain("camera-title"))
+                .with_name(crate::CATALOG.t("camera-title"))
                 .with_bounds(self.rect)
                 .with_children(controls),
         )

@@ -35,6 +35,68 @@ fn a_retryable_failure_leaves_the_id_free_to_run_again() {
     );
 }
 
+/// A full ledger makes room by forgetting what settled, never an invocation
+/// still to run or running: forgotten, it would never run, or leave its
+/// caller no answer, and a retry under its id would run it twice.
+#[test]
+fn a_full_ledger_forgets_only_settled_invocations() {
+    use tilo_actions::remote::{InvokeRequest, RemoteActionTarget};
+    use tilo_actions::{InvocationId, InvocationUpdate};
+    let caller = tilo_actions::remote::Caller::local_person("ada");
+    let request = || InvokeRequest {
+        on_behalf_of: None,
+        invocation: InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: "record:so.tilo.notes".into(),
+            address: tilo_actions::door::ActionAddress::new("notes.page", "append"),
+        },
+        argument: tilo_actions::remote::InvokeArgument::default(),
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+    };
+    let mut ledger = super::Ledger::default();
+    let pending = request().invocation;
+    let first = InvokeRequest {
+        invocation: pending,
+        ..request()
+    };
+    assert!(ledger.insert(&caller, first));
+    for _ in 1..super::ledger::REMEMBERED {
+        assert!(ledger.insert(&caller, request()));
+    }
+    assert!(
+        !ledger.insert(&caller, request()),
+        "with every invocation unsettled, a new one is refused, not one of them dropped"
+    );
+    assert!(
+        ledger.entries.contains_key(&pending),
+        "the pending write is kept"
+    );
+
+    let settled = ledger.order[1];
+    if let Some(entry) = ledger.entries.get_mut(&settled) {
+        entry.update = InvocationUpdate::Succeeded {
+            invocation: settled,
+            output: tilo_actions::ActionOutput::default(),
+        };
+    }
+    assert!(
+        ledger.insert(&caller, request()),
+        "a settled one makes room"
+    );
+    assert!(
+        !ledger.entries.contains_key(&settled),
+        "the settled one is forgotten"
+    );
+    assert!(
+        ledger.entries.contains_key(&pending),
+        "the oldest, still pending, is kept"
+    );
+}
+
 #[test]
 fn a_request_waits_only_for_the_keys_of_what_it_reads() {
     let workspace = tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap();

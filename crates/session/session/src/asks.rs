@@ -63,6 +63,19 @@ impl Shared {
                 people::PeopleAsk::Settings(link) => {
                     crate::quick_settings::open_settings(self, &link);
                 }
+                // The person's own card offers what the ask on their avatar asks: choosing it there
+                // answers that ask, which goes as it does when they answer it on the avatar.
+                people::PeopleAsk::HostAction(id) => {
+                    if self
+                        .handle
+                        .personal_ask()
+                        .is_some_and(|ask| ask.action.id == id)
+                    {
+                        self.handle.answer_personal_ask();
+                    } else {
+                        self.host_action(&id);
+                    }
+                }
             }
         }
         let asks = std::mem::take(&mut *self.asks.borrow_mut());

@@ -41,7 +41,10 @@ fn an_agent_acts_through_the_view_and_the_window_sees_it() {
     let mut app = TestApp::<TallyApp>::new().unwrap();
     app.invoke(Tally::RENAME.with("visitors")).unwrap();
     let mut view = attached(&app, writer());
-    assert!(view.take_changes().is_none(), "mounting writes nothing");
+    assert!(
+        view.take_changes().unwrap().is_none(),
+        "mounting writes nothing"
+    );
 
     let bump = tilo_actions::ActionAddress::new("test.tally", "bump");
     assert!(
@@ -52,8 +55,14 @@ fn an_agent_acts_through_the_view_and_the_window_sees_it() {
     );
     view.invoke(&bump, &serde_json::Map::new(), false).unwrap();
     assert!(view.landed().is_some(), "the action ran in the view");
-    let changes = view.take_changes().expect("the agent's own change");
-    assert!(view.take_changes().is_none(), "nothing is taken twice");
+    let changes = view
+        .take_changes()
+        .unwrap()
+        .expect("the agent's own change");
+    assert!(
+        view.take_changes().unwrap().is_none(),
+        "nothing is taken twice"
+    );
 
     assert!(
         matches!(changes, DocumentMutation::Incremental(_)),
@@ -76,13 +85,55 @@ fn the_view_refuses_what_the_participant_may_not_do() {
     let mut view = attached(&app, reader);
     let bump = tilo_actions::ActionAddress::new("test.tally", "bump");
     assert!(view.invoke(&bump, &serde_json::Map::new(), false).is_err());
-    assert!(view.take_changes().is_none());
+    assert!(view.take_changes().unwrap().is_none());
+}
+
+/// A host answers a write by what it collects of it: a change that could not
+/// be collected is a failure, never "nothing changed", and it is not lost.
+#[test]
+fn a_change_that_cannot_be_collected_fails_and_goes_with_the_next_call() {
+    let mut app = TestApp::<TallyApp>::new().unwrap();
+    let mut view = attached(&app, writer());
+    view.invoke_typed(&Tally::BUMP.invoke(), false).unwrap();
+
+    let taken = view.while_records_busy(AttachedView::take_changes).unwrap();
+    let error = taken.expect_err("a change that could not be collected is not 'nothing changed'");
+    assert!(error.contains("could not be collected"), "{error}");
+
+    merge(&mut app, &mut view);
+    assert_eq!(app.state().count, 1, "the change goes with the next call");
+}
+
+/// A peer's change that arrives while this participant's own cannot be set
+/// aside is refused, leaving the record as it was: its own change still goes
+/// out, the peer's merges once asked again.
+#[test]
+fn a_peers_change_is_refused_while_own_changes_cannot_be_set_aside() {
+    let mut app = TestApp::<TallyApp>::new().unwrap();
+    let mut view = attached(&app, writer());
+    view.invoke_typed(&Tally::RENAME.with("ours"), false)
+        .unwrap();
+    app.invoke(Tally::BUMP.invoke()).unwrap();
+    let theirs = DocumentMutation::Snapshot(app.read_document(|doc| doc.clone().save()));
+
+    let merged = view.while_records_busy(|view| view.merge(&theirs)).unwrap();
+    assert!(merged.is_err(), "the peer's change waits");
+    assert_eq!(count(&view), 0, "nothing of the peer's was merged");
+
+    assert!(view.merge(&theirs).unwrap(), "merged once asked again");
+    assert_eq!(count(&view), 1);
+    merge(&mut app, &mut view);
+    assert_eq!(
+        app.state().name,
+        "ours",
+        "the participant's own change still goes"
+    );
 }
 
 /// What the view did and has not sent yet, merged into the person's window.
 fn merge(app: &mut TestApp<TallyApp>, view: &mut AttachedView) {
     let Some(DocumentMutation::Incremental(bytes) | DocumentMutation::Snapshot(bytes)) =
-        view.take_changes()
+        view.take_changes().unwrap()
     else {
         return;
     };
@@ -332,7 +383,7 @@ fn a_view_that_writes_as_it_opens_a_joined_record_is_refused() {
 
     // A view that writes nothing on open joins as before.
     let tally = TestApp::<TallyApp>::new().unwrap();
-    assert!(attached(&tally, writer()).take_changes().is_none());
+    assert!(attached(&tally, writer()).take_changes().unwrap().is_none());
 }
 
 /// A ledger whose view looks up what is asked for off the UI thread, as a
@@ -473,9 +524,9 @@ fn an_action_answers_once_the_work_it_caused_has_landed() {
     for entry in ["lamps", "chairs"] {
         view.invoke_typed(&Ledger::ASK.with(entry), false).unwrap();
         assert_eq!(answer(&view), format!("{entry}: found"));
-        let changed = view.take_changes();
+        let changed = view.take_changes().unwrap();
         assert!(changed.is_some(), "the ask and its answer leave together");
-        assert!(view.take_changes().is_none());
+        assert!(view.take_changes().unwrap().is_none());
     }
     let did: Vec<String> = view
         .read(|doc| tilo_resource::history::versions(&mut doc.clone()))

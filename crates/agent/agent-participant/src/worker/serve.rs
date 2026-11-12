@@ -262,7 +262,7 @@ impl Worker {
                     }
                 }
             }
-            Request::TakeMutation => Reply::Mutation(replica.take_mutation().map(wire_mutation)),
+            Request::TakeMutation => taken_mutation(replica),
             Request::Apply { snapshot, bytes } => {
                 applied(replica.apply(&mutation(snapshot, bytes)))
             }
@@ -273,16 +273,7 @@ impl Worker {
             } => record_change(&record, mutation(snapshot, bytes), |record, change| {
                 applied(replica.apply_record(record, &change))
             }),
-            Request::TakeRecordMutations => Reply::RecordMutations(
-                replica
-                    .take_record_mutations()
-                    .into_iter()
-                    .map(|(record, mutation)| {
-                        let (snapshot, bytes) = wire_mutation(mutation);
-                        (record.as_str().to_owned(), snapshot, bytes)
-                    })
-                    .collect(),
-            ),
+            Request::TakeRecordMutations => taken_record_mutations(replica),
             request @ (Request::AskWorkspace | Request::Wanted | Request::Answered { .. }) => {
                 workspace_reply(replica, request)
             }
@@ -678,5 +669,31 @@ impl ReadSession {
             arguments,
         )?;
         started.completed().ok_or_else(refused)
+    }
+}
+
+/// The replica's own changes since the last take, or why they could not be
+/// collected: a failure, never "nothing changed", so a write that made them
+/// is not answered as done.
+fn taken_mutation(replica: &mut crate::Replica) -> Reply {
+    match replica.take_mutation() {
+        Ok(mutation) => Reply::Mutation(mutation.map(wire_mutation)),
+        Err(error) => Reply::Failed(error.to_string()),
+    }
+}
+
+/// [`taken_mutation`], for the records held beside the replica's own.
+fn taken_record_mutations(replica: &mut crate::Replica) -> Reply {
+    match replica.take_record_mutations() {
+        Ok(taken) => Reply::RecordMutations(
+            taken
+                .into_iter()
+                .map(|(record, mutation)| {
+                    let (snapshot, bytes) = wire_mutation(mutation);
+                    (record.as_str().to_owned(), snapshot, bytes)
+                })
+                .collect(),
+        ),
+        Err(error) => Reply::Failed(error.to_string()),
     }
 }

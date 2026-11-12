@@ -794,10 +794,17 @@ impl Replica {
         self.view.resources()
     }
 
-    /// This participant's changes since the last call, or `None`. The first
-    /// call on a new record returns the whole document as a snapshot.
-    pub fn take_mutation(&mut self) -> Option<DocumentMutation> {
-        self.view.take_changes()
+    /// This participant's changes since the last call, or `None` when it
+    /// changed nothing. The first call on a new record returns the whole
+    /// document as a snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Merge`] when the changes could not be collected:
+    /// a write that made them is not saved, and must not be answered as
+    /// done. They stay in the record and go with the next call.
+    pub fn take_mutation(&mut self) -> Result<Option<DocumentMutation>, AppError> {
+        self.view.take_changes().map_err(AppError::Merge)
     }
 
     /// Merge another participant's durable change into the view's record.
@@ -886,14 +893,15 @@ impl Replica {
     /// This participant's changes to the records held beside this one
     /// since the last call, by record: a part it started whole, any other
     /// as its new changes.
-    pub fn take_record_mutations(&mut self) -> Vec<(RecordId, DocumentMutation)> {
-        self.records_beside()
-            .into_iter()
-            .filter_map(|record| {
-                let mutation = self.view.take_record_changes(&record)?;
-                Some((record, mutation))
-            })
-            .collect()
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::take_mutation`]: none is taken then, every part's changes
+    /// go with the next call.
+    pub fn take_record_mutations(&mut self) -> Result<Vec<(RecordId, DocumentMutation)>, AppError> {
+        self.view
+            .take_records_beside_changes()
+            .map_err(AppError::Merge)
     }
 
     /// Read `record`: this replica's own, or one held beside it.

@@ -640,9 +640,9 @@ impl ComposeWindow {
             body_plain: String::new(),
             plain_body: {
                 // The body stands on the window like the rich editor does.
-                let mut b = TextInput::local().multiline(true).with_placeholder(
-                    ui::i18n::I18nManager::lookup_plain("mail-compose-placeholder-body"),
-                );
+                let mut b = TextInput::local()
+                    .multiline(true)
+                    .with_placeholder(crate::i18n::t("mail-compose-placeholder-body"));
                 b.set_plain_chrome(true);
                 b
             },
@@ -780,10 +780,8 @@ impl ComposeWindow {
             (Role::Dialog, true)
         };
         AccessNode::new(role)
-            .with_name(ui::i18n::I18nManager::lookup_plain("mail-compose-a11y"))
-            .with_description(ui::i18n::I18nManager::lookup_plain(
-                "mail-compose-a11y-description",
-            ))
+            .with_name(crate::i18n::t("mail-compose-a11y"))
+            .with_description(crate::i18n::t("mail-compose-a11y-description"))
             .with_bounds(self.rect)
             .with_state(AccessState::new().modal(modal))
             .with_children(children)

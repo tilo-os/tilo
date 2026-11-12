@@ -38,3 +38,20 @@ passwords-export-acknowledge = Mir ist klar, dass die Datei nicht verschlüsselt
 ## Fenster- und Barrierefreiheits-Texte
 passwords-confirm-export = Bestätige, dass du das verstehst, bevor du eine Datei wählst.
 passwords-a11y-vault = Tresor
+
+## Fakten, Eigenschaftsnamen und Bereichstitel
+passwords-and-more = { $count ->
+    [one] Und ein weiterer
+   *[other] Und { $count } weitere
+}
+passwords-allowed-apps = Zugelassene Apps
+passwords-review-about = Über diese Prüfung
+passwords-encryption-key = Verschlüsselungsschlüssel
+passwords-checked-against = Geprüft gegen
+passwords-checked = Geprüfte Passwörter
+passwords-review-attention = Braucht Aufmerksamkeit
+passwords-review-done = Nichts zu beheben
+passwords-review-empty = Noch nichts zu prüfen
+passwords-last-changed = Zuletzt geändert
+passwords-notes = Notizen
+passwords-tags = Tags

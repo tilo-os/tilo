@@ -131,7 +131,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
             false,
         )
         .unwrap();
-    let mutation = queued.take_mutation().unwrap();
+    let mutation = queued.take_mutation().unwrap().unwrap();
     browser.peer.close();
     drop(browser);
     browser = Browser::open_workspace(&hosted, &device, &host, &workspace.workspace).await;
@@ -201,7 +201,11 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
             false,
         )
         .unwrap();
-    publish_participant(&mut browser, &route, &maintainer.take_mutation().unwrap());
+    publish_participant(
+        &mut browser,
+        &route,
+        &maintainer.take_mutation().unwrap().unwrap(),
+    );
     let before = resolved_status(&mut browser, &submission).await;
     browser.peer.close();
     drop(browser);
@@ -582,7 +586,7 @@ fn submit_local_participant(
             false,
         )
         .unwrap();
-    if let Some(mutation) = replica.take_mutation() {
+    if let Some(mutation) = replica.take_mutation().unwrap() {
         publish_participant(browser, route, &mutation);
     }
 }

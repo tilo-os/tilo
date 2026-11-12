@@ -212,3 +212,10 @@ slides-a11y-close-shortcuts = Tastenkürzel schließen
 slides-a11y-presentation-controls = Steuerung der Präsentation
 slides-a11y-controls = Steuerung von Slides
 slides-a11y-editor = Editor für Präsentationen mit Folienfläche und Notizen
+
+## Fakten, Eigenschaftsnamen und Bereichstitel
+slides-a11y-slide-canvas = Folienfläche { $slide }
+slides-a11y-slide-window = Zeigt Folien { $first } bis { $last } von { $count }
+slides-a11y-slide-of = Folie { $slide } von { $count }
+slides-a11y-elapsed = Verstrichen: { $time }
+slides-a11y-presenting = { $deck } wird vorgeführt

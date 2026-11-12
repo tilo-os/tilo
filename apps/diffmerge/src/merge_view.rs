@@ -19,6 +19,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use ui::framework::{Dispatcher, TextControl};
+use ui::i18n::ArgValue;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -34,6 +35,7 @@ use ui::widget::{
 
 use crate::doc::{HunkChoice, MergeInputs, Session};
 use crate::highlight;
+use crate::i18n::CATALOG;
 use crate::i18n::{count, t, t_args};
 use crate::model::{MergeHunk, MergeModel, Resolution};
 use crate::pane::{self, CodeMetrics};
@@ -472,7 +474,10 @@ impl MergeView {
         if self.is_compact() {
             controls.extend(SourcePane::ALL.into_iter().map(|source| {
                 AccessNode::new(Role::ToggleButton)
-                    .with_name(format!("Show {} source", source.label()))
+                    .with_name(CATALOG.t_args(
+                        "diffmerge-a11y-show-source",
+                        &[("source", ArgValue::Text(source.label()))],
+                    ))
                     .with_description(t("diff-a11y-switch-merge-source"))
                     .with_action_target(format!("{SOURCE_TARGET}{}", source.tag()))
                     .with_state(
@@ -494,7 +499,16 @@ impl MergeView {
                 HunkChoice::Both => t("take-both"),
             };
             AccessNode::new(Role::Button)
-                .with_name(format!("{label} for change {}", hit.hunk.saturating_add(1)))
+                .with_name(CATALOG.t_args(
+                    "diffmerge-a11y-for-change",
+                    &[
+                        ("choice", ArgValue::Text(label)),
+                        (
+                            "change",
+                            ArgValue::Text(hit.hunk.saturating_add(1).to_string()),
+                        ),
+                    ],
+                ))
                 .with_description(t("diff-a11y-resolve-hunk"))
                 .with_action_target(format!("diffmerge.merge.resolve:{}:{choice}", hit.hunk))
                 .with_bounds(hit.rect)
@@ -1312,7 +1326,10 @@ impl Widget for MergeView {
         if self.is_compact() {
             children.extend(SourcePane::ALL.into_iter().map(|source| {
                 AccessNode::new(Role::ToggleButton)
-                    .with_name(format!("Show {} source", source.label()))
+                    .with_name(CATALOG.t_args(
+                        "diffmerge-a11y-show-source",
+                        &[("source", ArgValue::Text(source.label()))],
+                    ))
                     .with_description(t("diff-a11y-switch-merge-source"))
                     .with_action_target(format!("{SOURCE_TARGET}{}", source.tag()))
                     .with_state(
@@ -1332,13 +1349,22 @@ impl Widget for MergeView {
                 HunkChoice::Theirs => "theirs",
                 HunkChoice::Both => "both",
             };
-            let label = match hit.choice {
-                HunkChoice::Ours => "Take ours",
-                HunkChoice::Theirs => "Take theirs",
-                HunkChoice::Both => "Take both",
-            };
+            let label = t(match hit.choice {
+                HunkChoice::Ours => "take-ours",
+                HunkChoice::Theirs => "take-theirs",
+                HunkChoice::Both => "take-both",
+            });
             AccessNode::new(Role::Button)
-                .with_name(format!("{label} for change {}", hit.hunk.saturating_add(1)))
+                .with_name(CATALOG.t_args(
+                    "diffmerge-a11y-for-change",
+                    &[
+                        ("choice", ArgValue::Text(label)),
+                        (
+                            "change",
+                            ArgValue::Text(hit.hunk.saturating_add(1).to_string()),
+                        ),
+                    ],
+                ))
                 .with_description(t("diff-a11y-resolve-hunk"))
                 .with_action_target(format!("diffmerge.merge.resolve:{}:{choice}", hit.hunk))
                 .with_bounds(hit.rect)

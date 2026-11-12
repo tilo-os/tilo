@@ -70,8 +70,10 @@ use crate::editor_view::{EditorView, LspAsk, SyncText};
 use crate::explorer::{ExplorerEvent, ExplorerEvents, ExplorerFeed};
 use crate::lint;
 use crate::model::{Language, NodeId as TreeId, NodeKind, Project, Session};
+use crate::resource::CATALOG;
 use crate::search;
 use crate::status_bar::{StatusModel, StatusState};
+use ui::i18n::ArgValue;
 use ui::time::Instant;
 
 pub(crate) fn language_from_label(label: &str) -> Option<Language> {
@@ -2747,7 +2749,10 @@ impl Widget for CodeApp {
         }
         Some(
             AccessNode::new(Role::Document)
-                .with_name(format!("Code: {}", self.session.project.name))
+                .with_name(CATALOG.t_args(
+                    "code-editor-a11y-code",
+                    &[("project", ArgValue::Text(self.session.project.name.clone()))],
+                ))
                 .with_description(
                     crate::resource::CATALOG.t("code-editor-a11y-document-description"),
                 )

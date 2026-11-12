@@ -34,3 +34,6 @@ code-editor-code-help-close = Schließen
 ## Barrierefreiheit
 code-editor-a11y-document = Code-Editor
 code-editor-a11y-document-description = Code-Editor: Dateibaum, Dateikopf, Dokument und unteres Panel zum Durchgehen des Projekts.
+
+## Fakten, Eigenschaftsnamen und Bereichstitel
+code-editor-a11y-code = Code: { $project }

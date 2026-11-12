@@ -86,3 +86,11 @@ clocks-minutes = { $minutes } min
 clocks-one-hour = 1 hour
 clocks-hours = { $hours } hours
 clocks-hours-minutes = { $hours } h { $minutes } min
+
+## Facts, property labels and section titles
+clocks-timer-duration = Timer duration: { $name }
+
+## A timer's duration fields
+clocks-field-hours = Hours
+clocks-field-minutes = Minutes
+clocks-field-seconds = Seconds

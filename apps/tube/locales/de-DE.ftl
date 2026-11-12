@@ -213,3 +213,11 @@ tube-record = Ein Video angesehen
 tube-import = Auf einem anderen Gerät angesehene Videos übernommen
 tube-forget = Ein Video aus dem Ansehverlauf entfernt
 tube-clear = Den Ansehverlauf gelöscht
+
+## Fakten, Eigenschaftsnamen und Bereichstitel
+tube-search-heading = Suche: { $query }
+
+tube-queue-shared = Gemeinsame Warteschlange
+tube-video = Video
+tube-creator = Kanal
+tube-playlist = Playlist

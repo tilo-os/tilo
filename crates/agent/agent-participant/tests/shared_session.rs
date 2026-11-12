@@ -425,7 +425,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         record: page.wire_record().to_owned(),
     };
     browser
-        .write(route.clone(), &page.take_mutation().unwrap())
+        .write(route.clone(), &page.take_mutation().unwrap().unwrap())
         .unwrap();
     let receipt = browser.barrier().unwrap();
     wait_for("the page's record to be durable", || async {

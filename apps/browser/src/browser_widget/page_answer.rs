@@ -212,7 +212,7 @@ impl BrowserWidget {
 
     /// A picture of the page kept as content the answer can name, or why it
     /// could not be kept.
-    fn kept_picture(
+    pub(super) fn kept_picture(
         image: &[u8],
         content: &ui::content::ContentStore,
     ) -> Result<String, &'static str> {

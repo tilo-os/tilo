@@ -86,3 +86,30 @@ backups-restore-note = The whole snapshot is restored into a new or empty folder
 backups-heading-snapshots = Snapshots
 backups-a11y-order = Order of snapshots
 backups-a11y-window = Backups
+
+## Facts, property labels and section titles
+backups-section-contents = Contents
+backups-stored-on = Stored on
+backups-size = Size
+backups-taken = Taken
+backups-encryption = Encryption
+backups-folder = Folder
+backups-source = Source
+backups-failure = Failure
+backups-changed = Changed
+backups-retention = Retention
+backups-type = Type
+backups-status = Status
+backups-last-backup = Last backup
+backups-capacity = Capacity
+backups-free = Free
+backups-used = Used
+backups-kind = Kind
+backups-schedule = Schedule
+
+## Retention policy fields
+backups-retention-heading = Snapshots to keep
+backups-keep-hourly = Hourly snapshots to keep
+backups-keep-daily = Daily snapshots to keep
+backups-keep-weekly = Weekly snapshots to keep
+backups-keep-monthly = Monthly snapshots to keep

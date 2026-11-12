@@ -33,14 +33,26 @@ pub struct AgentQuestion {
     pub undoable: bool,
     /// The workspace it acts in.
     pub workspace: String,
+    /// The page the question is about, by its origin, when it asks about one:
+    /// what leaves goes from there.
+    #[serde(default)]
+    pub page: Option<String>,
+    /// The filled page as a picture, by its content address, when the host
+    /// kept one: what the person sees before they allow it.
+    #[serde(default)]
+    pub picture: Option<String>,
 }
 
 impl AgentQuestion {
     /// The sheet asking it, as request `handle`: Allow once, or Deny. The
     /// title says who wants to do what; the run, the record, the arguments
-    /// and what it risks follow.
+    /// and what it risks follow, and the picture of the page it leaves from.
     #[must_use]
     pub fn dialog(&self, handle: &str) -> Dialog {
+        let mut facts = self.arguments.clone();
+        if let Some(page) = self.page.as_ref().filter(|page| !page.is_empty()) {
+            facts.insert(0, (word("network-agent-question-page"), page.clone()));
+        }
         Dialog {
             handle: handle.to_owned(),
             title: words(
@@ -56,8 +68,9 @@ impl AgentQuestion {
                 "network-agent-question-detail",
                 &[("resource", &self.resource), ("workspace", &self.workspace)],
             ),
-            facts: self.arguments.clone(),
+            facts,
             caution: self.consequence(),
+            picture: self.picture.clone(),
             body: Body::Review,
             confirm_label: word("network-agent-question-allow"),
             cancel_label: word("portal-deny"),

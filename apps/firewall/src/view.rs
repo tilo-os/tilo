@@ -14,6 +14,7 @@ use std::rc::Rc;
 use ui::LocalState;
 use ui::a11y::AccessNode;
 use ui::fact::{Measure, Measured};
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::tokens::{Rhythm, TextRole};
@@ -29,6 +30,7 @@ use ui::widget::{
 use ui::window_toolbar::{ToolbarAction, ToolbarView, ToolbarViews};
 
 use crate::blocked::BlockedReport;
+use crate::locales::CATALOG;
 use crate::model::{Action, FirewallConfig, Proto, Rule, RuleId, ServiceCatalog, Zone, ZoneKind};
 
 /// What a control in the window asks for. The app applies each one to the
@@ -494,17 +496,21 @@ fn stats(zone: &Zone) -> StatGroup {
 
 fn details(zone: &Zone) -> Section {
     let interfaces = if zone.interfaces.is_empty() {
-        Property::new("Interfaces", "None")
+        Property::new(CATALOG.t("firewall-interfaces"), "None")
     } else {
-        Property::new("Interfaces", zone.interfaces.join(", ")).with_kind(TextKind::Identifier)
+        Property::new(CATALOG.t("firewall-interfaces"), zone.interfaces.join(", "))
+            .with_kind(TextKind::Identifier)
     };
     let masquerading = if zone.masquerade { "On" } else { "Off" };
     Section::titled(
-        "Details",
+        CATALOG.t("firewall-section-details"),
         vec![Box::new(PropertyList::new(vec![
             interfaces,
-            Property::new("Unmatched traffic", zone.target.outcome()),
-            Property::new("Masquerading", masquerading),
+            Property::new(
+                CATALOG.t("firewall-unmatched-traffic"),
+                zone.target.outcome(),
+            ),
+            Property::new(CATALOG.t("firewall-masquerading"), masquerading),
         ]))],
     )
 }
@@ -599,7 +605,10 @@ fn rule_table(
                 Box::new(
                     Toggle::from_state(&state)
                         .with_id(&format!("firewall-rule-enabled-{}", row.id))
-                        .with_accessible_name(&format!("Enable the {} rule", row.title)),
+                        .with_accessible_name(&CATALOG.t_args(
+                            "firewall-a11y-enable-rule",
+                            &[("rule", ArgValue::Text(row.title.clone()))],
+                        )),
                 )
             }),
         ColumnDef::new("edit", "", ColumnWidth::Auto).with_widget(move |row: &RuleRow, _| {
@@ -783,9 +792,7 @@ fn add_rule_dialog(zone: ZoneKind, draft: &Draft, intents: &Intents) -> ModalDia
         TextInput::from_state(&draft.source)
             .with_id("firewall-rule-source")
             .with_kind(TextInputKind::Path)
-            .with_placeholder(ui::i18n::I18nManager::lookup_plain(
-                "firewall-source-anywhere",
-            )),
+            .with_placeholder(crate::locales::CATALOG.t("firewall-source-anywhere")),
     );
     fields.push(match &draft.source_error {
         Some(error) => source.with_error(error),
@@ -865,9 +872,9 @@ fn blocked_page(model: &PageModel<'_>, intents: &Intents) -> Element {
                         .numeric(),
                 ))
                 .push(Box::new(
-                    Text::new(&format!(
-                        "packets in the last {} min",
-                        report.window_minutes
+                    Text::new(&CATALOG.t_args(
+                        "firewall-packets-window",
+                        &[("minutes", ArgValue::Text(report.window_minutes.to_string()))],
                     ))
                     .with_role(TextRole::Caption)
                     .dimmed(),
@@ -978,15 +985,20 @@ fn switch_dialog(which: PendingSwitch, intents: &Intents) -> ModalDialog<Text> {
 fn delete_dialog(rule: &Rule, intents: &Intents) -> ModalDialog<Text> {
     let what = RuleRow::of(rule);
     let source = what.source.as_deref().unwrap_or("anywhere");
-    let body = format!(
-        "{} over {} from {} will no longer be {}.",
-        what.title,
-        what.protocol,
-        source,
-        match what.action {
-            Action::Allow => "allowed",
-            Action::Deny => "denied",
-        }
+    let body = CATALOG.t_args(
+        "firewall-delete-rule-body",
+        &[
+            ("rule", ArgValue::Text(what.title.clone())),
+            ("protocol", ArgValue::Text(what.protocol.to_owned())),
+            ("source", ArgValue::Text(source.to_owned())),
+            (
+                "action",
+                ArgValue::Text(match what.action {
+                    Action::Allow => CATALOG.t("firewall-state-allowed"),
+                    Action::Deny => CATALOG.t("firewall-state-denied"),
+                }),
+            ),
+        ],
     );
     let confirm = intents.clone();
     let cancel = intents.clone();
@@ -1051,7 +1063,10 @@ fn services(zone: &Zone, wide: bool, switches: &Switches) -> DataTable<ServiceRo
                 Box::new(
                     Toggle::from_state(&state)
                         .with_id(&format!("firewall-service-{}", row.id))
-                        .with_accessible_name(&format!("Allow {}", row.name)),
+                        .with_accessible_name(&CATALOG.t_args(
+                            "firewall-a11y-allow-service",
+                            &[("service", ArgValue::Text(row.name.to_owned()))],
+                        )),
                 )
             }),
     ]);

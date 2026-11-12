@@ -332,6 +332,14 @@ pub struct AccessNode {
     pub description: Option<String>,
     /// Never populated for [`protected`](AccessState::protected) elements.
     pub value: Option<String>,
+    /// How many UTF-16 code units a [`protected`](AccessState::protected)
+    /// value holds, which is what the characters a person typed into it
+    /// measure in a page's own field. A host that shows the interface as
+    /// HTML keeps the person's text in that field and never receives the
+    /// characters back, so this is how it learns the app cleared or replaced
+    /// them and its own field must let them go too. A masked field shows one
+    /// dot per character, so the count of them is already on screen.
+    pub value_length: Option<usize>,
     /// Direction-preserving UTF-8 byte endpoints for editable text. The
     /// AccessKit bridge converts these to grapheme indices in a `TextRun`.
     pub text_selection: Option<AccessibleTextSelection>,
@@ -435,6 +443,7 @@ impl AccessNode {
             name: None,
             description: None,
             value: None,
+            value_length: None,
             text_selection: None,
             state: AccessState::default(),
             live: None,
@@ -579,6 +588,13 @@ impl AccessNode {
 
     pub fn with_optional_value(mut self, value: Option<String>) -> Self {
         self.value = value;
+        self
+    }
+
+    /// Publish the length of a [`protected`](AccessState::protected) value
+    /// without its characters (see [`Self::value_length`]).
+    pub fn with_value_length(mut self, value_length: usize) -> Self {
+        self.value_length = Some(value_length);
         self
     }
 

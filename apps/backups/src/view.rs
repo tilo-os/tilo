@@ -26,6 +26,7 @@ use ui::widget::{
 };
 
 use crate::i18n;
+use crate::i18n::CATALOG;
 use crate::model::PolicyField;
 use crate::model::{
     Catalog, DestKind, Destination, Filter, Health, MAX_KEPT, Retention, RetentionPolicy, Schedule,
@@ -657,12 +658,16 @@ fn summary(catalog: &Catalog, filter: Filter<'_>, now: NaiveDateTime) -> StatGro
 /// Where a source lives and when it runs.
 fn source_details(source: &Source) -> PropertyList {
     let mut facts = vec![
-        Property::new("Folder", source.path.clone()).with_kind(TextKind::Identifier),
-        Property::new("Kind", source.kind.label()),
-        Property::new("Schedule", schedule_label(source.schedule)),
+        Property::new(CATALOG.t("backups-folder"), source.path.clone())
+            .with_kind(TextKind::Identifier),
+        Property::new(CATALOG.t("backups-kind"), source.kind.label()),
+        Property::new(
+            CATALOG.t("backups-schedule"),
+            schedule_label(source.schedule),
+        ),
     ];
     if !source.enabled {
-        facts.push(Property::new("Status", "Paused"));
+        facts.push(Property::new(CATALOG.t("backups-status"), "Paused"));
     }
     PropertyList::new(facts)
 }
@@ -671,18 +676,24 @@ fn source_details(source: &Source) -> PropertyList {
 /// the destination reports a capacity; nothing is estimated.
 fn destination_summary(dest: &Destination, catalog: &Catalog, now: NaiveDateTime) -> Element {
     let mut facts = vec![
-        Property::new("Kind", dest.kind.label()),
-        Property::new("Used", size(dest.used_bytes)).with_kind(TextKind::Numeric),
+        Property::new(CATALOG.t("backups-kind"), dest.kind.label()),
+        Property::new(CATALOG.t("backups-used"), size(dest.used_bytes))
+            .with_kind(TextKind::Numeric),
     ];
     if let Some(total) = dest.total_bytes {
         facts.push(
-            Property::new("Free", size(total.saturating_sub(dest.used_bytes)))
-                .with_kind(TextKind::Numeric),
+            Property::new(
+                CATALOG.t("backups-free"),
+                size(total.saturating_sub(dest.used_bytes)),
+            )
+            .with_kind(TextKind::Numeric),
         );
-        facts.push(Property::new("Capacity", size(total)).with_kind(TextKind::Numeric));
+        facts.push(
+            Property::new(CATALOG.t("backups-capacity"), size(total)).with_kind(TextKind::Numeric),
+        );
     }
     facts.push(Property::new(
-        "Encryption",
+        CATALOG.t("backups-encryption"),
         if dest.encrypted {
             "Encrypted"
         } else {
@@ -690,11 +701,20 @@ fn destination_summary(dest: &Destination, catalog: &Catalog, now: NaiveDateTime
         },
     ));
     if let Some(last) = catalog.last_backup(Filter::Destination(&dest.id)) {
-        facts.push(Property::new("Last backup", when(last.taken, now)));
+        facts.push(Property::new(
+            CATALOG.t("backups-last-backup"),
+            when(last.taken, now),
+        ));
     }
     match dest.health {
-        Health::Warning => facts.push(Property::new("Status", "Last run failed")),
-        Health::Unknown => facts.push(Property::new("Status", "Not checked yet")),
+        Health::Warning => facts.push(Property::new(
+            CATALOG.t("backups-status"),
+            "Last run failed",
+        )),
+        Health::Unknown => facts.push(Property::new(
+            CATALOG.t("backups-status"),
+            "Not checked yet",
+        )),
         Health::Ok => {}
     }
     let facts = PropertyList::new(facts);
@@ -825,14 +845,14 @@ fn retention_page(
     catalog: &Catalog,
     now: NaiveDateTime,
 ) -> Container {
-    let mut keep = FormSection::new("Snapshots to keep").grouped();
+    let mut keep = FormSection::new(CATALOG.t("backups-retention-heading")).grouped();
     for (field, state) in PolicyField::ALL.iter().zip(states) {
         keep = keep.field(Field::new(
-            format!("{} snapshots to keep", field.label()),
+            CATALOG.t(field.keep_label_key()),
             NumberInput::from_state(state)
                 .with_range(0.0, 999.0)
                 .with_id(&format!("backups-keep-{}", field.key()))
-                .with_accessible_name(format!("{} snapshots to keep", field.label())),
+                .with_accessible_name(CATALOG.t(field.keep_label_key())),
         ));
     }
     let counts = states.clone();
@@ -917,24 +937,35 @@ pub fn snapshot_details(
     let source = catalog.source(&snapshot.source_id);
     let dest = catalog.destination(&snapshot.dest_id);
     let mut facts = vec![
-        Property::new("Taken", when(snapshot.taken, now)),
-        Property::new("Status", snapshot.status.label()),
-        Property::new("Type", snapshot.kind.label()),
-        Property::new("Retention", snapshot.retention.label()),
-        Property::new("Size", size(snapshot.size_bytes)).with_kind(TextKind::Numeric),
-        Property::new("Changed", changed_size(snapshot)).with_kind(TextKind::Numeric),
+        Property::new(CATALOG.t("backups-taken"), when(snapshot.taken, now)),
+        Property::new(CATALOG.t("backups-status"), snapshot.status.label()),
+        Property::new(CATALOG.t("backups-type"), snapshot.kind.label()),
+        Property::new(CATALOG.t("backups-retention"), snapshot.retention.label()),
+        Property::new(CATALOG.t("backups-size"), size(snapshot.size_bytes))
+            .with_kind(TextKind::Numeric),
+        Property::new(CATALOG.t("backups-changed"), changed_size(snapshot))
+            .with_kind(TextKind::Numeric),
     ];
     if let Some(reason) = &snapshot.failure {
-        facts.push(Property::new("Failure", reason.clone()));
+        facts.push(Property::new(CATALOG.t("backups-failure"), reason.clone()));
     }
     if let Some(source) = source {
-        facts.push(Property::new("Source", source.name.clone()));
-        facts.push(Property::new("Folder", source.path.clone()).with_kind(TextKind::Identifier));
+        facts.push(Property::new(
+            CATALOG.t("backups-source"),
+            source.name.clone(),
+        ));
+        facts.push(
+            Property::new(CATALOG.t("backups-folder"), source.path.clone())
+                .with_kind(TextKind::Identifier),
+        );
     }
     if let Some(dest) = dest {
-        facts.push(Property::new("Stored on", dest.name.clone()));
         facts.push(Property::new(
-            "Encryption",
+            CATALOG.t("backups-stored-on"),
+            dest.name.clone(),
+        ));
+        facts.push(Property::new(
+            CATALOG.t("backups-encryption"),
             if dest.encrypted {
                 "Encrypted"
             } else {
@@ -989,18 +1020,22 @@ pub fn restore_dialog(
             Text::new(&crate::i18n::t("backups-restore-note")).with_role(TextRole::Body),
         ));
     let mut facts = vec![
-        Property::new("Taken", when(snapshot.taken, now)),
-        Property::new("Size", size(snapshot.size_bytes)).with_kind(TextKind::Numeric),
+        Property::new(CATALOG.t("backups-taken"), when(snapshot.taken, now)),
+        Property::new(CATALOG.t("backups-size"), size(snapshot.size_bytes))
+            .with_kind(TextKind::Numeric),
     ];
     if let Some(dest) = catalog.destination(&snapshot.dest_id) {
-        facts.push(Property::new("Stored on", dest.name.clone()));
+        facts.push(Property::new(
+            CATALOG.t("backups-stored-on"),
+            dest.name.clone(),
+        ));
     }
     body = body.push(Box::new(PropertyList::new(facts)));
     body = body.push(match file_tree(&snapshot.files) {
-        Some(tree) => {
-            Box::new(Section::new(vec![tree]).with_header(SectionHeader::group("Contents")))
-                as Element
-        }
+        Some(tree) => Box::new(
+            Section::new(vec![tree])
+                .with_header(SectionHeader::group(CATALOG.t("backups-section-contents"))),
+        ) as Element,
         None => Box::new(
             Text::new(&crate::i18n::t("backups-file-list-pending"))
                 .with_role(TextRole::Body)

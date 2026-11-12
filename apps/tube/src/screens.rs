@@ -8,6 +8,7 @@
 use std::sync::{Arc, Mutex};
 
 use ui::TextRole;
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::search::{SearchRequest, open_search_binding};
 use ui::theme::Theme;
@@ -21,6 +22,7 @@ use ui::widget::{
 
 use crate::action::{self, Action, ActionBus, SettingFlag};
 use crate::actions::TubeEffect;
+use crate::i18n::CATALOG;
 use crate::i18n::{arg, t, t_args};
 use crate::images::Imgs;
 use crate::model::{Category, Route, SearchType, SkipMode, TubeModel, Video};
@@ -1846,7 +1848,10 @@ pub fn search_results(ui: Ui<'_>, query: &str) -> Scrollable {
         }
     }
     page(vec![Box::new(Section::new(children).with_header(
-        SectionHeader::heading(format!("Search: {query}")),
+        SectionHeader::heading(CATALOG.t_args(
+            "tube-search-heading",
+            &[("query", ArgValue::Text(query.to_owned()))],
+        )),
     ))])
 }
 
