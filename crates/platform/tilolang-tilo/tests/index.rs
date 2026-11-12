@@ -710,7 +710,7 @@ fn what_the_store_writes_reads_back_before_the_record_holds_it() {
 
 /// An index file is open to one store at a time: redb holds it, so a second store is told it is
 /// open elsewhere rather than opening it. Each window of an app keeps its own for that reason
-/// ([`tilolang_tilo::index::record_dir`]).
+/// ([`tilolang_tilo::index::instance_dir`]).
 #[test]
 fn an_index_file_is_open_to_one_store_at_a_time() {
     let dir = TempDir::new("one-owner");

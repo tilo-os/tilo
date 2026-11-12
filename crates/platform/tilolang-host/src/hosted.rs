@@ -676,7 +676,7 @@ impl Hosted {
                 mode: Mode::Live,
                 device: None,
                 index_dir: kept.indexes.as_ref().map(|indexes| {
-                    tilolang_tilo::index::record_dir(
+                    tilolang_tilo::index::instance_dir(
                         indexes,
                         &spec.workspace,
                         record.route().record.as_deref(),

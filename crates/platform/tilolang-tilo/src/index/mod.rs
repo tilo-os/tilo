@@ -354,19 +354,24 @@ pub fn workspace_dir(base: &Path, workspace: &str) -> PathBuf {
     base.join("rooms").join(name)
 }
 
-/// The directory of the indexes of the record `record` of the workspace `workspace` under `base`,
-/// the instance `instance` keeps: the workspace's ([`workspace_dir`]) for the workspace's record of
-/// an app, and one of its own for another record (a member's own), so what one record holds is
-/// never shown as another's. An index file is open to one store at a time (redb holds it), so each
-/// instance keeps its own beside the record's: two windows of one app in a host both read their
-/// index rather than one of them opening the other's file and building its own in memory.
+/// The directory of the indexes of the record `record` of the workspace `workspace` under `base`: the
+/// workspace's ([`workspace_dir`]) for the workspace's record of an app, and one of its own for another
+/// record (a member's own), so what one record holds is never shown as another's.
 #[must_use]
-pub fn record_dir(base: &Path, workspace: &str, record: Option<&str>, instance: u64) -> PathBuf {
-    let of_record = match record {
+pub fn record_dir(base: &Path, workspace: &str, record: Option<&str>) -> PathBuf {
+    match record {
         None => workspace_dir(base, workspace),
         Some(record) => workspace_dir(base, &format!("{workspace}~{record}")),
-    };
-    of_record.join(format!("instance-{instance}"))
+    }
+}
+
+/// The directory of the indexes of `record` that the instance `instance` keeps under `base`: beside
+/// the record's ([`record_dir`]), an index file being open to one store at a time. Two windows of
+/// one app in one host both read their own index, rather than one of them opening the other's file
+/// and building its own rows in memory.
+#[must_use]
+pub fn instance_dir(base: &Path, workspace: &str, record: Option<&str>, instance: u64) -> PathBuf {
+    record_dir(base, workspace, record).join(format!("instance-{instance}"))
 }
 
 fn create_tables(txn: &WriteTransaction) -> Result<(), IndexError> {
