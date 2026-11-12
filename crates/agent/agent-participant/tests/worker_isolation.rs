@@ -443,16 +443,23 @@ fn content_the_workspace_holds_reaches_the_worker_an_operation_names_it_in() {
 fn content_an_app_stores_in_its_worker_is_kept_by_the_workspace() {
     let workspace = ContentStore::memory();
     let picture = png(2, 0x40);
-    let hash = tilo_content::hash_bytes(&picture);
     let inline = format!("data:image/png;base64,{}", base64(&picture));
     let agent = agents_record(CANVAS, Some(&workspace));
     open_picture(&agent, &inline).unwrap();
     agent.take_mutation().unwrap().unwrap();
-    assert!(agent.body().contains(&hash), "{}", agent.body());
+    let body = agent.body();
+    let reference = body
+        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')))
+        .find(|token| tilo_content::is_sealed(token))
+        .unwrap_or_else(|| panic!("the artwork names its picture sealed: {body}"));
     assert_eq!(
-        workspace.read(&hash).as_deref(),
+        workspace.read(reference).as_deref(),
         Some(picture.as_slice()),
         "the picture the worker stored is the workspace's now"
+    );
+    assert!(
+        !workspace.has(&tilo_content::hash_bytes(&picture)),
+        "the workspace holds it sealed alone"
     );
 }
 

@@ -366,15 +366,9 @@ impl Store {
         title: Option<String>,
         cx: &EffectCx<Workbook>,
     ) -> EffectAnswer {
-        let hash = ui::tilo_actions::content_hash(content.trim())
-            // A plan that carried the content gives its bare hash.
-            .or_else(|| {
-                let bare = content.trim();
-                (bare.len() == 64 && bare.bytes().all(|byte| byte.is_ascii_hexdigit()))
-                    .then_some(bare)
-            })
-            .ok_or_else(|| format!("`{content}` names no content: give `tilo.content:<hash>`"))?
-            .to_ascii_lowercase();
+        let hash = ui::tilo_actions::named_reference(content).ok_or_else(|| {
+            format!("`{content}` names no content: give `tilo.content:<reference>`")
+        })?;
         let source = format!("tilo.content:{hash}");
         let already: Vec<String> = cx
             .live()
@@ -393,7 +387,7 @@ impl Store {
         }
         let bytes = self
             .content_store()
-            .read(&hash)
+            .read(hash)
             .ok_or_else(|| format!("content `{hash}` is not on this device"))?;
         if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_IMPORT_FILE_BYTES {
             return self.failed(format!(

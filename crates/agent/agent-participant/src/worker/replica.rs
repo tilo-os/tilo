@@ -749,8 +749,10 @@ impl ConfinedReplica {
             if offered.is_empty() {
                 break;
             }
+            // Offered as the worker keeps them (sealed, or public): kept
+            // under the address the worker's references name.
             for bytes in offered {
-                match content.put(&bytes) {
+                match content.put_public(&bytes) {
                     Ok(hash) => {
                         inner.held.insert(hash);
                     }
