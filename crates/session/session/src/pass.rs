@@ -630,8 +630,12 @@ impl Session {
         self.publish_desk();
         // What the asks opened or closed of the chrome's own surfaces stands in the stack now, and
         // the clipboard panel a key asked for goes up beside the caret: the desk this pass lays out
-        // and publishes names them, not the one after.
-        self.with_chrome_mut(tilo_desktop::desktop_host::DesktopChrome::publish_overlays);
+        // and publishes names them, not the one after. Under the shell the chrome draws nothing:
+        // the desk's search it runs for the launcher is no surface the person sees, and standing in
+        // the stack it would take the launcher down.
+        if !self.shared.surfaces.shell {
+            self.with_chrome_mut(tilo_desktop::desktop_host::DesktopChrome::publish_overlays);
+        }
         self.follow_pending_paste();
         // Quick settings runs while the stack has its slot up, where the stack placed it.
         self.follow_quick_settings();
