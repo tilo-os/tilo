@@ -36,7 +36,6 @@ use tilolang_app::hosted::HostedWindow;
 use tilolang_host::TilolangHost;
 use tilolang_host::hosted::{Hosted, Spec};
 use tilolang_host::phrases::Phrases;
-use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::instance::record::InstanceRecord;
 use tilolang_tilo::runtime::store::Store as _;
 use ui::headless::FrameHarness;
@@ -50,6 +49,9 @@ mod cost;
 
 #[path = "hosted/menus.rs"]
 mod menus;
+
+#[path = "hosted/packages.rs"]
+mod packages;
 
 #[path = "hosted/offers.rs"]
 mod offers;
@@ -207,29 +209,6 @@ impl CollabTransport for Crowded {
         &mut self,
         _: &mut Vec<collaboration::ActionDirectoryRequest>,
     ) {
-    }
-}
-
-/// The package in `dir` (from this crate's), built with the packages it uses.
-fn package(dir: &str) -> Bundle {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(dir);
-    let dirs = tilolang::source::dependency_order(&dir, &[]).expect("the packages resolve");
-    let built = tilolang::source::compile_dirs(&dirs, &[], &mut tilolang::OsEntropy::default())
-        .expect("the packages compile");
-    let (package, used) = built.split_last().expect("the package is built last");
-    Bundle::new(&package.compiled, used.iter().map(|used| &used.compiled))
-}
-
-/// Where the package of the app `app` is, from this crate's: the apps the tests open are
-/// shipped with it, and the rich body is their `tests/` one.
-fn package_of(app: &str) -> &'static str {
-    match app {
-        NOTES => "../tl/notes",
-        RICHBODY => "tests/richbody",
-        SIGNED => "tests/signed",
-        TASKS => "../tl/tasks",
-        TODAY => "../tl/today",
-        other => panic!("no test package is {other}"),
     }
 }
 
@@ -632,7 +611,7 @@ impl Session {
         let wake: tilolang_tilo::background::Waker = woken.waker();
         let mut host = TilolangHost::new(storage, Arc::clone(&wake));
         let kept = host.kept(&spec.app).unwrap();
-        let bundle = Arc::new(package(package_of(&spec.app)));
+        let bundle = package(package_of(&spec.app));
         let (ours, theirs) = Channel::pair().unwrap();
         let watched = ours.as_fd().try_clone_to_owned().unwrap();
         let hosted = Hosted::with_record(
