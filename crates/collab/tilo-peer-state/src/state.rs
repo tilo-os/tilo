@@ -907,6 +907,35 @@ impl StatePeer {
             .cloned()
             .collect()
     }
+    /// Whether `other` holds everything authorization reads from this
+    /// replica as this one does: its governance, the certificates and
+    /// revocations it holds and the receipts its governance is checked
+    /// against. Its app records are not part of it. Copies are compared, not
+    /// contents, where a change detaches the copy: two that share it are
+    /// the same.
+    pub(crate) fn same_policy(&self, other: &Self) -> bool {
+        let (ours, theirs) = (&self.core, &other.core);
+        let governance = match (&ours.workspace_doc, &theirs.workspace_doc) {
+            (None, None) => true,
+            (Some(ours), Some(theirs)) => CachedDocument::same_state(ours, theirs),
+            _ => false,
+        };
+        governance
+            && ours.workspace == theirs.workspace
+            && ours.owner == theirs.owner
+            && ours.origin == theirs.origin
+            && ours.receipts == theirs.receipts
+            && (crate::shared::Shared::ptr_eq(&ours.certificates, &theirs.certificates)
+                || ours
+                    .certificates
+                    .iter()
+                    .map(|(key, cert)| (key, cert.as_ref()))
+                    .eq(theirs
+                        .certificates
+                        .iter()
+                        .map(|(key, cert)| (key, cert.as_ref()))))
+            && self.revocations() == other.revocations()
+    }
     pub fn revocations(&self) -> Vec<tilo_user_identity::RevocationEntry> {
         let mut entries = self.core.revocations.iter().cloned().collect::<Vec<_>>();
         entries.sort_by_key(|entry| entry.revoked_device_public_key);

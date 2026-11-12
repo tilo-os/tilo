@@ -167,6 +167,11 @@ impl DerefMut for CachedDocument {
     }
 }
 impl CachedDocument {
+    /// Whether `a` and `b` are copies of one document state no copy changed
+    /// since: a mutable borrow of a shared copy detaches it.
+    pub(crate) fn same_state(a: &Self, b: &Self) -> bool {
+        Arc::ptr_eq(&a.doc, &b.doc)
+    }
     /// The authority the document records for `workspace`, the one it
     /// governs: built once per document state, not on every member's
     /// lookup.

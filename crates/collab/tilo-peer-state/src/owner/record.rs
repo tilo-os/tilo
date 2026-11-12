@@ -125,6 +125,33 @@ pub(crate) struct StoredWorkspace {
 }
 
 impl StoredWorkspace {
+    /// Whether `other` gives this device the same standing in the workspace:
+    /// everything this record holds besides the replica, its generation and
+    /// what it published. Compared as stored, so a field the comparison
+    /// cannot read counts as changed.
+    pub(crate) fn same_standing(&self, other: &Self) -> bool {
+        let standing = |record: &Self| {
+            serde_json::to_vec(&(
+                record.version,
+                &record.workspace,
+                record.workspace_id,
+                &record.workspace_host,
+                &record.device,
+                &record.enrollment,
+                &record.vouched,
+                &record.host_hint,
+                record.continuity,
+                &record.workspace_memberships,
+                &record.effect_receipts,
+                &record.shortcut_change,
+                &record.join_ledger,
+                &record.join_admissions,
+            ))
+            .ok()
+        };
+        standing(self).is_some_and(|ours| Some(ours) == standing(other))
+    }
+
     /// Whether this device keeps the workspace's records itself: its own host orders the
     /// workspace's commits. A replica held on a host's answer ([`Self::vouched`]) never does,
     /// even under the host's own key: the host keeps the records and answers its writes.

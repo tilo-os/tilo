@@ -396,6 +396,12 @@ impl NativeCommittedView {
             .or(self.record.host_hint.as_ref())
             .ok_or_else(|| "the workspace's record holds no host hint".to_owned())
     }
+    /// Whether a publication of `peer` and `record` leaves everything
+    /// authorization reads from this view as it is: the replica's governance
+    /// ([`StatePeer::same_policy`]) and the record's standing in the workspace.
+    fn same_policy(&self, peer: &StatePeer, record: &record::StoredWorkspace) -> bool {
+        self.peer.same_policy(peer) && self.record.same_standing(record)
+    }
     fn security_digest(&self) -> Result<[u8; 32], String> {
         if let Some(digest) = self.security.get() {
             return Ok(*digest);
@@ -491,19 +497,26 @@ impl SharedOwner {
         current.fenced || current.denied.contains(&workspace) || !self.store.healthy()
     }
     /// Publish through the store; an uncertain failure fences every workspace.
+    ///
+    /// `policy` says whether the publication changes what authorization
+    /// decides on: the workspaces held, their governance, certificates and
+    /// revocations, or this device's standing in them. Its watchers re-check
+    /// on that, not on a write to an app record, which wakes the reads of
+    /// that record itself.
     fn publish(
         &self,
         next: &NativeAuthorityStorage,
         change: Change<'_>,
+        policy: bool,
         install: &mut dyn FnMut(),
     ) -> Result<(), String> {
         let result = self.store.publish(next, change, install);
         if result.is_err() && !self.store.healthy() {
             self.fence_all();
         }
-        // A new publication can change a workspace's tasks, which the broker
-        // offers as actions: it re-checks on this rather than on a clock.
-        policy_changed();
+        if policy && result.is_ok() {
+            policy_changed();
+        }
         result
     }
 }
@@ -602,7 +615,7 @@ impl NativeWorkspaceOwner {
             .ok_or("native storage generation exhausted")?;
         let mut continuity = 0;
         self.0
-            .publish(&next, Change::Released { workspace }, &mut || {
+            .publish(&next, Change::Released { workspace }, true, &mut || {
                 {
                     let mut current = self.0.current.write();
                     continuity = current
@@ -1065,22 +1078,25 @@ impl NativeWorkspaceOwner {
         // every member, and a replica taking in its workspace's governance
         // for the first time changes it whatever the governance says.
         let security = Arc::new(std::sync::OnceLock::new());
-        let changed = {
+        // And whether it changes what authorization decides on: most
+        // publications carry an app record's write and nothing else.
+        let (changed, policy) = {
             let current = self.0.current.read();
             if self.0.fenced(&current, workspace) {
                 return Err("native owner continuity is fenced".into());
             }
             match current.workspaces.get(&workspace) {
-                None => true,
+                None => (true, true),
                 Some(old)
                     if old.peer.admitted_workspace().is_some()
                         != published.admitted_workspace().is_some() =>
                 {
-                    true
+                    (true, true)
                 }
                 Some(old) => {
                     let digest = security_digest(&published, &record.device)?;
-                    old.security_digest()? != *security.get_or_init(|| digest)
+                    let changed = old.security_digest()? != *security.get_or_init(|| digest);
+                    (changed, changed || !old.same_policy(&published, &record))
                 }
             }
         };
@@ -1121,6 +1137,7 @@ impl NativeWorkspaceOwner {
                 workspace,
                 into: enrollment.and_then(|pending| pending.target.as_ref()),
             },
+            policy,
             &mut || {
                 let mut current = self.0.current.write();
                 if changed {

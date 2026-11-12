@@ -1062,6 +1062,11 @@ impl JoinedChannel {
         let keys = (self.record_read() == RecordRead::Sealed)
             .then(|| self.state.services.channel_keys.clone())
             .flatten();
+        // The context the last whole check passed with, and the announcement
+        // epoch it read before it: while nothing was announced since, nothing
+        // that check decided changed, and a write landing on the record is
+        // checked by its revision alone.
+        let mut checked: Option<(u64, NativeDocumentReadContext)> = None;
         loop {
             hold_until_changed(
                 &wake,
@@ -1073,7 +1078,20 @@ impl JoinedChannel {
                     if !self.holds_wait(generation) {
                         return Err("committed read wait was replaced".into());
                     }
-                    Ok(self.committed_read_unchanged(known_revision))
+                    let epoch = tilo_identity_host::policy_change::epoch();
+                    if let Some((at, context)) = &checked
+                        && *at == epoch
+                        && let Some(service) = &self.state.services.committed_documents
+                        && let Ok(Some(unchanged)) = service.unchanged(context, known_revision)
+                    {
+                        return Ok(unchanged.then_some(true));
+                    }
+                    let held = self.committed_read_unchanged(known_revision);
+                    checked = held
+                        .as_ref()
+                        .filter(|(announced, _)| *announced)
+                        .map(|(_, context)| (epoch, context.clone()));
+                    Ok(held.map(|(announced, _)| announced))
                 },
             )
             .await?;
@@ -1116,10 +1134,14 @@ impl JoinedChannel {
         })
     }
 
-    /// [`read_unchanged`] on this channel: `Some(announced)` while an Open
-    /// would answer exactly what the caller holds, where `announced` says
-    /// whether every input that can change that is announced or timed.
-    fn committed_read_unchanged(&self, known_revision: Option<[u8; 32]>) -> Option<bool> {
+    /// [`read_unchanged`] on this channel: `Some((announced, context))` while
+    /// an Open would answer exactly what the caller holds, where `announced`
+    /// says whether every input that can change that is announced or timed,
+    /// and `context` is the one the checks passed with.
+    fn committed_read_unchanged(
+        &self,
+        known_revision: Option<[u8; 32]>,
+    ) -> Option<(bool, NativeDocumentReadContext)> {
         let service = self.state.services.committed_documents.clone()?;
         let absent = self.committed_read.try_borrow().ok()?.absent;
         let context = read_unchanged(
@@ -1130,7 +1152,10 @@ impl JoinedChannel {
             known_revision,
             absent,
         )?;
-        Some(self.register_read_expiry(&context, service.as_ref()))
+        Some((
+            self.register_read_expiry(&context, service.as_ref()),
+            context,
+        ))
     }
 
     /// Register with [`tilo_identity_host::policy_change::wake_at`] the first
