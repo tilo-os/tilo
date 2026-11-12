@@ -15,9 +15,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-mod common;
-
-use common::endpoint;
+use crate::common::endpoint;
 
 use std::time::Duration;
 
@@ -28,8 +26,6 @@ use tilo_relay::workspace_join::WorkspaceJoinClient;
 use tilo_relay::workspaces::IssueInvitationRequest;
 use tilo_relay::{Relay, RelayConfig};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
-
-tilo_automerge_isolate::test_worker!();
 
 const SECOND: u64 = 1_000_000_000;
 

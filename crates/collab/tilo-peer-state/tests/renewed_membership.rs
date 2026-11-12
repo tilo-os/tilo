@@ -25,8 +25,6 @@ use tilo_peer_state::owner::{VerifiedNativeEnrollmentIntent, open_file};
 use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
-tilo_automerge_isolate::test_worker!();
-
 /// The workspace's admitted state, which also gives the governance a joining
 /// member admits.
 struct Admitted(StatePeer);

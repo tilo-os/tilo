@@ -6,7 +6,6 @@
     clippy::arithmetic_side_effects,
     reason = "in a test these are the assertion, not a hazard"
 )]
-tilo_automerge_isolate::test_worker!();
 
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use collab_types::CommitNamed as _;
