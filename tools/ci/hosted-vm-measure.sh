@@ -132,7 +132,10 @@ jq -n \
   --argjson clone_pages "$(printf '%s\n' "${pages[@]}" | jq -s .)" \
   --argjson clone_weight "$clone_weight" \
   --arg status "$(status)" \
-  '($cold_weight | max_by(.pss_kib)) as $cold
+  '# The cold VM is the one weighed both times: the template VM, booted beside
+   # it while the template was made, is gone by the second.
+   ($cold_weight | map(.pid)) as $before
+   | ($clone_weight | map(select(.pid as $pid | $before | index($pid))) | first) as $cold
    | ($clone_weight | map(select(.pid != $cold.pid) | .pss_kib)) as $pss
    | ($pss | add / length) as $clone_pss
    | {cold_page: $cold_page, cold_weight: $cold_weight, cold_pss_mib: ($cold.pss_kib / 1024 | floor),
