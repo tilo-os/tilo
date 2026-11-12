@@ -261,7 +261,6 @@ fn a_participant_that_does_not_host_the_workspace_admits_and_removes_members() {
             workspace,
             TransportOrigin::RetainedRelayDelta(cert_a.device_public_key),
             postcard::from_bytes(bytes).unwrap(),
-            Some(&key_a),
             now,
         )
         .unwrap();
@@ -345,7 +344,6 @@ fn a_participant_that_does_not_host_the_workspace_admits_and_removes_members() {
             workspace,
             TransportOrigin::RelayDelta(cert_b.device_public_key),
             message,
-            Some(&key_a),
             now,
         )
         .unwrap();
@@ -376,14 +374,13 @@ fn a_participant_that_does_not_host_the_workspace_admits_and_removes_members() {
         !is_member(&b, workspace, &cert_c, now),
         "B's own engine dropped C"
     );
-    for (label, owner, key) in [("A", &a, &key_a), ("C", &c, &key_c)] {
+    for (label, owner) in [("A", &a), ("C", &c)] {
         for message in outgoing(&b, workspace, now) {
             owner
                 .receive(
                     workspace,
                     TransportOrigin::RelayDelta(cert_b.device_public_key),
                     message.clone(),
-                    Some(key),
                     now,
                 )
                 .unwrap_or_else(|error| panic!("{label} refuses B's removal: {error}"));
@@ -470,7 +467,6 @@ fn an_invitation_is_listed_and_cancelled_from_the_issuers_device() {
             workspace,
             TransportOrigin::RetainedRelayDelta(cert_a.device_public_key),
             postcard::from_bytes(bytes).unwrap(),
-            Some(&key_a),
             now,
         )
         .unwrap();
@@ -509,7 +505,6 @@ fn an_invitation_is_listed_and_cancelled_from_the_issuers_device() {
             workspace,
             TransportOrigin::RelayDelta(cert_b.device_public_key),
             message,
-            Some(&key_a),
             now,
         )
         .unwrap();
@@ -566,7 +561,6 @@ fn an_invitation_is_listed_and_cancelled_from_the_issuers_device() {
             workspace,
             TransportOrigin::RelayDelta(cert_b.device_public_key),
             message,
-            Some(&key_a),
             now,
         )
         .unwrap();
@@ -615,7 +609,6 @@ async fn a_link_admits_into_the_owner_and_the_owner_publishes_it() {
             workspace,
             TransportOrigin::RetainedRelayDelta(cert_a.device_public_key),
             postcard::from_bytes(bytes).unwrap(),
-            Some(&key_a),
             now,
         )
         .unwrap();

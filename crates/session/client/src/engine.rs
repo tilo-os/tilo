@@ -1181,7 +1181,7 @@ impl Engine {
                 request_id: cancellation_id(invite_id),
                 invite_id,
             },
-            &identity.signing_key()?,
+            identity.signer.as_ref(),
             now,
         )
     }
@@ -1193,12 +1193,10 @@ impl Engine {
         let Some(workspace) = WorkspaceId::parse(workspace) else {
             return false;
         };
-        let Ok(key) = self.identity().signing_key() else {
-            return false;
-        };
+        let key = self.identity().signer.as_ref();
         self.owner
             .with_current(workspace, |view| {
-                Ok(view.peer().governance().may_invite(&key, SystemTime::now()))
+                Ok(view.peer().governance().may_invite(key, SystemTime::now()))
             })
             .unwrap_or(false)
     }
@@ -1264,9 +1262,7 @@ impl Engine {
         let Some(workspace) = WorkspaceId::parse(workspace) else {
             return Vec::new();
         };
-        let Ok(key) = self.identity().signing_key() else {
-            return Vec::new();
-        };
+        let key = self.identity().signer.as_ref();
         self.owner
             .with_current(workspace, |view| {
                 let now = SystemTime::now();
@@ -1280,7 +1276,7 @@ impl Engine {
                 .filter(|role| {
                     view.peer()
                         .governance()
-                        .may_invite_role(&key, (*role).into(), now)
+                        .may_invite_role(key, (*role).into(), now)
                 })
                 .collect())
             })
@@ -1335,7 +1331,7 @@ impl Engine {
                 inviter_name: None,
             },
             vec![hint],
-            &identity.signing_key()?,
+            identity.signer.as_ref(),
             now,
         )?;
         Ok(Issued {
@@ -1608,16 +1604,14 @@ impl Engine {
             },
             None => None,
         };
-        match identity.signing_key().and_then(|key| {
-            self.owner.create_workspace(
-                workspace,
-                name,
-                &identity.device_cert,
-                &key,
-                host_hint,
-                SystemTime::now(),
-            )
-        }) {
+        match self.owner.create_workspace(
+            workspace,
+            name,
+            &identity.device_cert,
+            identity.signer.as_ref(),
+            host_hint,
+            SystemTime::now(),
+        ) {
             Ok(_) => self.bind(slot, workspace),
             Err(error) => {
                 tracing::warn!(%error, %workspace, "the workspace was not founded here");
