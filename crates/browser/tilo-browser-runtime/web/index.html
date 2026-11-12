@@ -416,6 +416,9 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
       padding: max(24px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
       background: var(--fr-ground); color: var(--fr-ink); font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
       transition: opacity 260ms ease-out; color-scheme: dark;
+      /* Where the screen scrolls, its scrollbar is drawn in the screen's own tones, never the
+         browser's light default over a dark page. */
+      scrollbar-width: thin; scrollbar-color: var(--fr-edge) transparent;
     }
     @media (prefers-color-scheme: light) {
       [data-first-run] #first-run { color-scheme: light; }
