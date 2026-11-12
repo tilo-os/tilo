@@ -223,7 +223,6 @@ impl Moderation {
 
 #[resource(
     kind = "tilo.moderation",
-    label = "Moderation",
     params = moderation,
     version = 2,
     migrate = Moderation::upgrade,

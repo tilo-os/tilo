@@ -51,7 +51,6 @@ impl Weather {
 
 #[resource(
     kind = "weather.locations",
-    label = "Weather",
     search = Weather::search,
     read_content = Weather::read_document
 )]

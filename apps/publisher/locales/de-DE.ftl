@@ -52,3 +52,11 @@ publisher-proof-empty = Nenne eine Domain oder ein Forge-Konto, um zu sehen, woh
 
 ## What the window shows
 publisher-publish-at = Veröffentlichen bei { $place }
+
+## Actions
+
+so-tilo-publisher-key-copy-proof = Nachweis kopieren
+so-tilo-publisher-key-export-key = Schlüssel exportieren
+so-tilo-publisher-key-apply-for-namespaces = Namensräume beantragen
+so-tilo-publisher-key-check-status = Status prüfen
+publisher-profile = App-Veröffentlichung

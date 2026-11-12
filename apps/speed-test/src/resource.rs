@@ -55,7 +55,6 @@ impl SpeedTest {
 
 #[resource(
     kind = "speed-test.results",
-    label = "Internet speed test",
     read_content = SpeedTest::read_document
 )]
 impl SpeedTest {

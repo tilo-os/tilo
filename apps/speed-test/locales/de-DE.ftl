@@ -25,5 +25,13 @@ speed-test-up-and-ping = { $rate } Mbps hoch, { $ping } ms Ping
 speed-test-measures-against = Misst gegen { $server }
 speed-test-measures-nearest = Misst gegen den nächsten Cloudflare-Server
 
+## Actions
+
+so-tilo-speed-test-run-start = Test starten
+so-tilo-speed-test-run-stop = Test stoppen
+speed-test-results = Internet-Geschwindigkeitstest
+speed-test-results-record = Messung speichern
+speed-test-results-clear = Ergebnisse löschen
+
 ## A test that stopped
 speed-test-interrupted = Test unterbrochen

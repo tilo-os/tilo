@@ -64,7 +64,6 @@ impl Library {
 
 #[resource(
     kind = "tube.library",
-    label = "Tube",
     read_content = Library::read_document
 )]
 impl Library {

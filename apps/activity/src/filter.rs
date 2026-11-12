@@ -100,12 +100,11 @@ impl Filter {
 
 #[resource(
     kind = "activity.filter",
-    label = "Workspace activity",
     read_content = Filter::read_document
 )]
 impl Filter {
     /// Show every change again.
-    #[action]
+    #[action(label = "activity-clear-filters")]
     pub fn clear_filters(&mut self) {
         *self = Self::default();
     }

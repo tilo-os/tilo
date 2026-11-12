@@ -43,7 +43,6 @@ impl Note {
 
 #[resource(
     kind = "scratchpad.note",
-    label = "Note",
     read_content = Note::read_document
 )]
 impl Note {}

@@ -50,7 +50,6 @@ impl WatchHistory {
 
 #[resource(
     kind = "tube.watch-history",
-    label = "Watch history",
     read_content = WatchHistory::read_document
 )]
 impl WatchHistory {

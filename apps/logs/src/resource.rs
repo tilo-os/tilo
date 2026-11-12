@@ -54,7 +54,6 @@ impl Logs {
 
 #[resource(
     kind = "logs.journal",
-    label = "System journal",
     read_content = Logs::read_document
 )]
 impl Logs {

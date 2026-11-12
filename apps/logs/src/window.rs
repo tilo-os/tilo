@@ -467,7 +467,7 @@ impl Journal {
         if self.live_tail {
             statuses.push(EffectStatus::labelled(
                 JournalEffect::SET_LIVE_TAIL,
-                "Stop live tail",
+                crate::locales::CATALOG.t("logs-effects-stop-live-tail"),
             ));
         }
         if self.exporting {
@@ -1602,7 +1602,7 @@ mod tests {
         let before = app.agent_surface();
         assert_eq!(
             effect(&before, "set-live-tail").unwrap()["label"],
-            "Start live tail"
+            "Follow live"
         );
         app.effect(&JournalEffect::SetLiveTail {
             enabled: Some(true),
@@ -1611,7 +1611,7 @@ mod tests {
         app.settle();
         assert_eq!(
             effect(&app.agent_surface(), "set-live-tail").unwrap()["label"],
-            "Stop live tail"
+            "Stop following"
         );
         assert!(
             app.effect(&JournalEffect::SelectEntry {

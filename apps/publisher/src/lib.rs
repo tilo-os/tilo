@@ -65,7 +65,6 @@ impl Publisher {
 
 #[resource(
     kind = "publisher.profile",
-    label = "App Publisher",
     read_content = Publisher::read_document
 )]
 impl Publisher {}
@@ -171,12 +170,12 @@ struct Pane {
 #[effect(operation = "so.tilo.publisher.key")]
 pub enum KeyEffect {
     /// Create publisher key.
-    #[effect(privileged)]
+    #[effect(privileged, label = "publisher-create-key")]
     CreateKey,
     /// Copy namespace proof.
     CopyProof,
     /// Copy key for CI.
-    #[effect(attended, privileged)]
+    #[effect(attended, privileged, label = "publisher-copy-secret")]
     CopySecret,
     /// Export the key to a file the person chooses.
     #[effect(job, attended, privileged)]

@@ -46,6 +46,7 @@ impl Console {
     label = "Agent runs shown",
     effects = crate::ConsoleEffect,
     read_content = Console::read_document
+    effects = crate::ConsoleEffect
 )]
 impl Console {
     /// Show every agent's runs in every workspace again.

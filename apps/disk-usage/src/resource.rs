@@ -40,7 +40,6 @@ impl RecentFolders {
 
 #[resource(
     kind = "disk-usage.recent-folders",
-    label = "Recent folders",
     read_content = RecentFolders::read_document
 )]
 impl RecentFolders {
@@ -126,7 +125,6 @@ impl DiskUsage {
 
 #[resource(
     kind = "disk-usage",
-    label = "Disk Usage Analyzer",
     read_content = DiskUsage::read_document
 )]
 impl DiskUsage {}

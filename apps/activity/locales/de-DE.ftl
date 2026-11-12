@@ -81,3 +81,8 @@ activity-was = War { $before }
 # dem, was sie vorher hielten.
 activity-changed-fields = Was sich geändert hat, vorher und nachher
 activity-removed = Jetzt nichts
+
+## Actions
+
+activity-effects-remove-source = Quelle entfernen
+activity-filter = Aktivität im Arbeitsbereich

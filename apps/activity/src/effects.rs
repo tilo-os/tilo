@@ -11,7 +11,7 @@ use crate::{Nav, Provider};
 #[effect(operation = "activity.effects")]
 pub enum ActivityEffect {
     /// Select every change from one change through another in History.
-    #[effect(view, label = "Select through here")]
+    #[effect(view, label = "activity-select-through")]
     SelectThrough {
         #[param("Id of the change the selection starts at")]
         from: String,
@@ -19,13 +19,12 @@ pub enum ActivityEffect {
         to: String,
     },
     /// Read a morning source again.
-    #[effect(label = "Refresh source")]
+    #[effect(label = "activity-morning-refresh")]
     RefreshSource {
         #[param("Key of the morning source")]
         key: String,
     },
     /// Stop reading a morning source.
-    #[effect(label = "Remove source")]
     RemoveSource {
         #[param("Key of the morning source")]
         key: String,

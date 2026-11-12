@@ -31,3 +31,13 @@ logs-facet-unit = Einheit
 logs-facet-boot = Start
 logs-copy-message = Meldung kopieren
 logs-copy-entry = Eintrag kopieren
+
+## Actions
+
+logs-effects-refresh = Protokoll aktualisieren
+logs-effects-set-live-tail = Live mitlesen
+logs-effects-stop-live-tail = Nicht mehr mitlesen
+logs-effects-export-filtered-jsonl = Gefilterte Protokolle exportieren
+logs-effects-select-entry = Eintragsdetails anzeigen
+logs-journal = Systemprotokoll
+logs-journal-clear-filters = Filter zurücksetzen
