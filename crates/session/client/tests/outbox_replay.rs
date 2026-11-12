@@ -28,7 +28,7 @@ use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
 use support::{
-    admitted, enrol, holds, ready, route, say, start_host, start_host_at, start_peer, wait_for,
+    admitted, enrol, holds, ready, restart_host, route, say, start_host, start_peer, wait_for,
 };
 
 /// How many of `peer`'s writes to the workspace its replica's custody still holds.
@@ -99,20 +99,16 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let observer = enrol(&root, "phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    // The restarted host answers at the same web and iroh addresses, as a
-    // host that kept its place does.
-    let iroh_listen = "127.0.0.1:0".parse().unwrap();
-    let host = start_host_at(
+    // The restarted host comes up at the ports the kernel picks, its
+    // identity the one its pages hold.
+    let host = start_host(
         &root,
         &host_device,
         state.path(),
         "127.0.0.1:0".parse().unwrap(),
-        iroh_listen,
     )
     .await;
     let mut laptop = participant::Participant::start(&host.relay, &root).await;
-    let listen = host.web.addr;
-    let iroh_listen = host.iroh_listen();
 
     let store = Arc::new(MemoryPeerStore::default());
     let peer = tilo_session_client::start_session(
@@ -153,7 +149,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
     assert_ne!(peer.status().phase, TransportPhase::Connected);
     assert_eq!(peer.snapshot().synchronization, "pending");
 
-    let host = start_host_at(&root, &host_device, state.path(), listen, iroh_listen).await;
+    let host = restart_host(&root, &host_device, state.path()).await;
     laptop.reconnect(&host.relay, &root).await;
     peer.send(Cmd::Reconnect).unwrap();
     let receipt = peer.barrier().unwrap();

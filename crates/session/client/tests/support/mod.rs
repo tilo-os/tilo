@@ -225,26 +225,12 @@ pub async fn start_host_limiting(
     .await
 }
 
-/// A host that keeps its iroh address across a restart: it listens for iroh
-/// where `iroh_listen` names.
-pub async fn start_host_at(
-    root: &SigningKey,
-    host: &Device,
-    state: &Path,
-    web_listen: SocketAddr,
-    iroh_listen: SocketAddr,
-) -> TestHost {
-    start_host_serving(
-        root,
-        host,
-        state,
-        web_listen,
-        HostSettings {
-            iroh_listen: Some(iroh_listen),
-            ..HostSettings::default()
-        },
-    )
-    .await
+/// A host restarted with its state reset, at the ports the kernel picks: the
+/// same identity, and so the same endpoint its pages dial, which reaches its
+/// relay as it comes up, as a host process restarted does. Nothing of the
+/// stopped host's address is waited for or taken back.
+pub async fn restart_host(root: &SigningKey, host: &Device, state: &Path) -> TestHost {
+    start_host(root, host, state, "127.0.0.1:0".parse().unwrap()).await
 }
 
 /// What a test host serves beyond its secure listener.
@@ -252,9 +238,6 @@ pub async fn start_host_at(
 pub struct HostSettings<'a> {
     /// Plain HTTP too, here.
     pub plain_listen: Option<SocketAddr>,
-    /// Where its iroh endpoint listens; ephemeral unless a restarted host
-    /// must keep its address.
-    pub iroh_listen: Option<SocketAddr>,
     /// People (user roots) its operator trust policy lets connect.
     pub guests: &'a [[u8; 32]],
     /// The change and content budgets workspace guests are held to.
@@ -276,7 +259,6 @@ pub async fn start_host_serving(
 ) -> TestHost {
     let HostSettings {
         plain_listen,
-        iroh_listen,
         guests,
         limits,
         fetch_proxy,
@@ -288,18 +270,6 @@ pub async fn start_host_serving(
         member_limits: limits,
         ..Default::default()
     };
-    if let Some(iroh_listen) = iroh_listen {
-        // A stopped host's connection tasks let go of its socket shortly
-        // after its shutdown returns; a restart on the same address waits
-        // for that, as a restarted process waits for the old one to exit.
-        if iroh_listen.port() != 0 {
-            wait_for("the stopped host's iroh address to be free", || async {
-                std::net::UdpSocket::bind(iroh_listen).ok().map(drop)
-            })
-            .await;
-        }
-        cfg.iroh_listen = iroh_listen;
-    }
     if packet_relay {
         cfg.packet_relay = Some((std::net::Ipv4Addr::LOCALHOST, 0).into());
     }
@@ -432,13 +402,6 @@ impl TestHost {
     /// The host as a device reaches it over `carrier`.
     pub fn over(&self, carrier: Carrier) -> Host {
         self.iroh().over(carrier)
-    }
-
-    /// The address its iroh endpoint listens on, for a restart that keeps
-    /// it: a page dials the address it was given, so a host restarted
-    /// elsewhere is one it never finds again.
-    pub fn iroh_listen(&self) -> SocketAddr {
-        *self.relay.node_addr().ip_addrs().next().unwrap()
     }
 }
 

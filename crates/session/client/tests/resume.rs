@@ -24,7 +24,9 @@ use tilo_relay_protocol::workspaces::WorkspacesRequest;
 use tilo_session_client::{Cmd, Event, Link, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{enrol, hears, holds, ready, route, say, start_host_at, start_peer, wait_for};
+use support::{
+    enrol, hears, holds, ready, restart_host, route, say, start_host, start_peer, wait_for,
+};
 
 /// How many members' writes landed in `peer`'s replica since the last count.
 fn landed(peer: &Link) -> usize {
@@ -79,19 +81,16 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
     let author = enrol(&root, "browser", DeviceCapabilities::member());
     let observer = enrol(&root, "phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    // The restarted host answers at the same web and iroh addresses, as a
-    // host that kept its place does.
-    let host = start_host_at(
+    // The restarted host comes up at the ports the kernel picks, its
+    // identity the one its pages hold.
+    let host = start_host(
         &root,
         &host_device,
         state.path(),
         "127.0.0.1:0".parse().unwrap(),
-        "127.0.0.1:0".parse().unwrap(),
     )
     .await;
     let mut laptop = participant::Participant::start(&host.relay, &root).await;
-    let listen = host.web.addr;
-    let iroh_listen = host.iroh_listen();
 
     let author = start_peer(
         host.iroh(),
@@ -147,7 +146,7 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
     // was committed while the observer was away.
     drop(host.web);
     host.relay.shutdown().await;
-    let host = start_host_at(&root, &host_device, state.path(), listen, iroh_listen).await;
+    let host = restart_host(&root, &host_device, state.path()).await;
     laptop.reconnect(&host.relay, &root).await;
     author.send(Cmd::Reconnect).unwrap();
     ready(&[&author]).await;
