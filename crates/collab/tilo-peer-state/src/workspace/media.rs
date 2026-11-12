@@ -172,21 +172,30 @@ fn revocation_floors(doc: &AutoCommit) -> Result<RevocationFloors, MediaPolicyEr
     }
     let identities = strict_map(doc, &ROOT, "peer_identities_v1")?;
     let mut floors = BTreeMap::new();
-    for key in doc.keys(&identities) {
-        let row = crate::state::GovernedIdentity::decode(&strict_bytes(doc, &identities, &key)?)
-            .map_err(|_| MediaPolicyError::Malformed)?;
-        for entry in row.revocations {
-            if entry.user_public_key != row.device_cert.user_public_key {
-                return Err(MediaPolicyError::Binding);
+    super::read::WorkspaceRead::visit_entries(
+        &super::read::LegacyRead(doc),
+        &identities,
+        super::read::Selection::All,
+        &mut |_, values| {
+            let bytes =
+                super::read::strict_bytes_of(values).map_err(super::read::legacy_policy_error)?;
+            let row = crate::state::GovernedIdentity::decode(&bytes)
+                .map_err(|_| MediaPolicyError::Malformed)?;
+            for entry in row.revocations {
+                if entry.user_public_key != row.device_cert.user_public_key {
+                    return Err(MediaPolicyError::Binding);
+                }
+                tilo_user_identity::verify_revocation_entry(&entry)
+                    .map_err(|_| MediaPolicyError::Binding)?;
+                let floor = floors
+                    .entry((entry.user_public_key, entry.revoked_device_public_key))
+                    .or_insert(entry.revoked_at_ns);
+                *floor = (*floor).min(entry.revoked_at_ns);
             }
-            tilo_user_identity::verify_revocation_entry(&entry)
-                .map_err(|_| MediaPolicyError::Binding)?;
-            let floor = floors
-                .entry((entry.user_public_key, entry.revoked_device_public_key))
-                .or_insert(entry.revoked_at_ns);
-            *floor = (*floor).min(entry.revoked_at_ns);
-        }
-    }
+            Ok(())
+        },
+    )
+    .map_err(super::read::legacy_policy_error)?;
     Ok(floors)
 }
 
@@ -263,6 +272,7 @@ fn strict_string(
     super::read::strict_string(&super::read::LegacyRead(doc), parent, key)
         .map_err(super::read::legacy_policy_error)
 }
+#[cfg(test)]
 fn strict_bytes(
     doc: &impl ReadDoc,
     parent: &automerge::ObjId,

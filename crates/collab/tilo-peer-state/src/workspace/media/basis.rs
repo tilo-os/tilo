@@ -109,8 +109,8 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
         read::strict_map(workspace, &workspace.root(), "grants").map_err(strict_error)?;
     let mut grants = BTreeMap::new();
     workspace
-        .visit_keys(&grant_map, |key| {
-            let bytes = read::strict_bytes(workspace, &grant_map, key).map_err(strict_error)?;
+        .visit_entries(&grant_map, read::Selection::All, &mut |key, values| {
+            let bytes = read::strict_bytes_of(values).map_err(strict_error)?;
             let value = decoder.grant(&bytes)?;
             let encoded = work.encoded(&value)?;
             let key = work.text(key)?;
@@ -123,8 +123,8 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
         read::strict_map(workspace, &workspace.root(), "members").map_err(strict_error)?;
     let mut members = BTreeMap::new();
     workspace
-        .visit_keys(&member_map, |key| {
-            let bytes = read::strict_bytes(workspace, &member_map, key).map_err(strict_error)?;
+        .visit_entries(&member_map, read::Selection::All, &mut |key, values| {
+            let bytes = read::strict_bytes_of(values).map_err(strict_error)?;
             let role = decoder.member(&bytes)?;
             let key = work.text(key)?;
             work.tree_entry::<String, Role>()?;
@@ -135,8 +135,8 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
     let peers = read::strict_map(workspace, &workspace.root(), "peers").map_err(strict_error)?;
     let mut roster = BTreeSet::new();
     workspace
-        .visit_keys(&peers, |key| {
-            read::strict_string(workspace, &peers, key).map_err(strict_error)?;
+        .visit_entries(&peers, read::Selection::All, &mut |key, values| {
+            read::strict_string_of(values).map_err(strict_error)?;
             let device = super::canonical_key(key).map_err(policy)?;
             work.tree_entry::<[u8; 32], ()>()?;
             roster.insert(device);
@@ -149,8 +149,8 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
     let mut certificates = BTreeMap::new();
     let mut revocations = Vec::new();
     workspace
-        .visit_keys(&identities, |key| {
-            let bytes = read::strict_bytes(workspace, &identities, key).map_err(strict_error)?;
+        .visit_entries(&identities, read::Selection::All, &mut |key, values| {
+            let bytes = read::strict_bytes_of(values).map_err(strict_error)?;
             let row = &decoder.identity(key, &bytes)?;
             let device = super::canonical_key(key).map_err(policy)?;
             if device != row.device_cert.device_public_key {
