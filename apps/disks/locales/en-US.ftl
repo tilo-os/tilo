@@ -56,3 +56,14 @@ disks-severity-warning = Warning
 disks-severity-critical = Critical
 disks-severity-healthy = OK
 disks-empty-drives-hint = Attach a drive, then rescan.
+
+## What formatting a drive or a partition erases, in the question it asks first
+disks-format-loses-drive = { $count ->
+    [0] Everything on it is erased for good.
+    [one] Its partition and every file on it are erased for good.
+   *[other] Its { $count } partitions and every file on them are erased for good.
+}
+disks-format-loses-files = Every file on it is erased for good.
+disks-format-loses-files-on = Every file on “{ $label }” is erased for good.
+disks-format-loses-used = The { $size } of files on it are erased for good.
+disks-format-loses-used-on = The { $size } of files on “{ $label }” are erased for good.

@@ -4918,10 +4918,9 @@ fn font_rename_editor_commits_cancels_and_fits() {
             .iter()
             .find(|f| f.id == "serif")
             .expect("serif entry present");
-        assert_eq!(
-            serif.name,
-            ui::ReadingFace::Default.name(),
-            "cancel kept the original name"
+        assert!(
+            serif.name.is_empty(),
+            "cancel wrote no name: the serif face is still called what it is"
         );
     }
 

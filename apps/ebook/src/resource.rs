@@ -749,7 +749,7 @@ impl Ebook {
             .with_effect(&BooksEffect::Settings);
         for font in self.fonts.values() {
             place = place.with_child(
-                Derived::new(font.name.clone())
+                Derived::new(font.title())
                     .of_kind("font")
                     .identified(format!("font:{}", font.id))
                     .with_effect(&BooksEffect::ReadFont {
@@ -759,7 +759,7 @@ impl Ebook {
             );
         }
         for scheme in self.schemes.values() {
-            let mut child = Derived::new(scheme.name.clone())
+            let mut child = Derived::new(scheme.title())
                 .of_kind("color-scheme")
                 .identified(format!("scheme:{}", scheme.id))
                 .with_effect(&BooksEffect::ReadScheme {

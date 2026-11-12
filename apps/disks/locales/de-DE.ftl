@@ -56,3 +56,14 @@ disks-severity-warning = Warnung
 disks-severity-critical = Kritisch
 disks-severity-healthy = OK
 disks-empty-drives-hint = Schließe ein Laufwerk an und suche dann erneut.
+
+## Was das Formatieren eines Laufwerks oder einer Partition löscht, in der Frage davor
+disks-format-loses-drive = { $count ->
+    [0] Alles darauf wird endgültig gelöscht.
+    [one] Die Partition und alle Dateien darauf werden endgültig gelöscht.
+   *[other] Die { $count } Partitionen und alle Dateien darauf werden endgültig gelöscht.
+}
+disks-format-loses-files = Alle Dateien darauf werden endgültig gelöscht.
+disks-format-loses-files-on = Alle Dateien auf „{ $label }“ werden endgültig gelöscht.
+disks-format-loses-used = Die { $size } an Dateien darauf werden endgültig gelöscht.
+disks-format-loses-used-on = Die { $size } an Dateien auf „{ $label }“ werden endgültig gelöscht.

@@ -2880,7 +2880,10 @@ impl BooksApp {
             let new_id = Self::fresh_id("scheme", &ids);
             let mut dup = src.clone();
             dup.id.clone_from(&new_id);
-            dup.name = format!("{} copy", src.name);
+            dup.name = CATALOG.t_args(
+                "ebook-scheme-copy",
+                &[("scheme", ArgValue::Text(src.title()))],
+            );
             dup.builtin = false;
             dup.enabled = true;
             let pos = sc
@@ -2953,7 +2956,7 @@ impl BooksApp {
             .schemes
             .iter()
             .find(|s| s.id == id)
-            .map(|s| s.name.clone())
+            .map(ColorScheme::title)
             .unwrap_or_default();
         let mut field = EditableLabel::new(&name).with_text_role(TextRole::Body);
         field.begin_edit();
@@ -3029,7 +3032,7 @@ impl BooksApp {
     fn on_begin_rename_font(&mut self, id: String, doc: &mut ui::widget::Edits<'_>) {
         self.commit_rename(doc);
         let entry = self.fonts.iter().find(|e| e.id == id);
-        let name = entry.map(|e| e.name.clone()).unwrap_or_default();
+        let name = entry.map(FontEntry::title).unwrap_or_default();
         // Render the rename field in the font's own face, so the name
         // is typeset in the typeface it selects while you edit it.
         let fam = entry.map_or(FontChoice::SansSerif, |e| font_choice(&e.kind));
@@ -3065,7 +3068,14 @@ impl BooksApp {
                 let ids: Vec<String> = sc.iter().map(|s| s.id.clone()).collect();
                 let new_id = Self::fresh_id("scheme", &ids);
                 let n = sc.iter().filter(|s| !s.builtin).count() + 1;
-                let scheme = ColorScheme::from_bg(&new_id, &format!("Scheme {n}"), edit.rgb);
+                let name = CATALOG.t_args(
+                    "ebook-scheme-new",
+                    &[(
+                        "number",
+                        ArgValue::Number(f64::from(u32::try_from(n).unwrap_or(u32::MAX))),
+                    )],
+                );
+                let scheme = ColorScheme::from_bg(&new_id, &name, edit.rgb);
                 self.edit(
                     doc,
                     Ebook::paths().schemes.insert_as(
@@ -3168,15 +3178,7 @@ impl BooksApp {
             .or_else(|| self.fonts.first())
             .cloned()
             .or_else(|| default_fonts().first().cloned())
-            .unwrap_or_else(|| {
-                FontEntry::new(
-                    "default",
-                    FontKind::Default,
-                    &CATALOG.t("ebook-font-default"),
-                    1.0,
-                    true,
-                )
-            })
+            .unwrap_or_else(|| FontEntry::builtin("default", FontKind::Default, 1.0, true))
     }
 
     /// The fonts offered in the quick display-settings picker.
@@ -4776,8 +4778,14 @@ impl Widget for BooksApp {
             self.comment_overlay
                 .accessibility_nodes(&self.annotations, self.semantic_focus.as_deref())
         } else if self.reading_settings.is_open() {
+            let appearance = Appearance {
+                settings: &self.settings,
+                fonts: &self.fonts,
+                default_font_id: &self.default_font_id,
+                schemes: &self.schemes,
+            };
             self.reading_settings
-                .accessibility_nodes(&self.settings, self.semantic_focus.as_deref())
+                .accessibility_nodes(&appearance, self.semantic_focus.as_deref())
         } else {
             Vec::new()
         };
@@ -7103,17 +7111,14 @@ impl BooksApp {
         // Reading-settings floats above everything, anchored under the Aa
         // slot in the window's bar, and owns its own modal hit stack.
         let appearance_anchor = self.appearance_anchor(ctx.theme);
-        self.reading_settings.draw(
-            ctx,
-            self.rect,
-            appearance_anchor,
-            &Appearance {
-                settings: &self.settings,
-                fonts: &self.fonts,
-                default_font_id: &self.default_font_id,
-                schemes: &self.schemes,
-            },
-        );
+        let appearance = Appearance {
+            settings: &self.settings,
+            fonts: &self.fonts,
+            default_font_id: &self.default_font_id,
+            schemes: &self.schemes,
+        };
+        self.reading_settings
+            .draw(ctx, self.rect, appearance_anchor, &appearance);
 
         self.library = lib;
     }

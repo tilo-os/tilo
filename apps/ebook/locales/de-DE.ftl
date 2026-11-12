@@ -141,6 +141,27 @@ ebook-scheme-light = Hell
 ebook-scheme-sepia = Sepia
 ebook-scheme-dark = Dunkel
 ebook-scheme-high-contrast = Hoher Kontrast
+ebook-scheme-new = Farbschema { $number }
+ebook-scheme-copy = { $scheme } (Kopie)
+ebook-mode-paged = Seiten
+ebook-mode-continuous = Scrollen
+ebook-mode-two-pages = Zwei Seiten
+ebook-composition-justified = Blocksatz
+ebook-composition-ragged = Flatterrand
+
+## Die Leseerscheinungs-Leiste
+ebook-appearance-text-size = Textgröße
+ebook-appearance-line-spacing = Zeilenabstand
+ebook-appearance-layout = Seitenlayout
+ebook-appearance-alignment = Ausrichtung
+ebook-appearance-typeface = Schrift
+ebook-appearance-colours = Farben
+ebook-appearance-manage = Schriften und Farben
+
+## Die Bibliothekseinstellungen, solange kein Ordner beobachtet wird
+ebook-library-empty-title = Noch keine Ordner
+ebook-library-empty-message = Öffne ein Buch aus einem Ordner, um dessen Bücher zusammenzuhalten.
+ebook-library-empty-action = Buch öffnen
 
 ebook-get = Holen
 

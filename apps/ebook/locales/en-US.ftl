@@ -141,6 +141,27 @@ ebook-scheme-light = Light
 ebook-scheme-sepia = Sepia
 ebook-scheme-dark = Dark
 ebook-scheme-high-contrast = High contrast
+ebook-scheme-new = Scheme { $number }
+ebook-scheme-copy = { $scheme } copy
+ebook-mode-paged = Pages
+ebook-mode-continuous = Scroll
+ebook-mode-two-pages = Two pages
+ebook-composition-justified = Justified
+ebook-composition-ragged = Ragged
+
+## The reading-appearance popover
+ebook-appearance-text-size = Text size
+ebook-appearance-line-spacing = Line spacing
+ebook-appearance-layout = Layout
+ebook-appearance-alignment = Alignment
+ebook-appearance-typeface = Typeface
+ebook-appearance-colours = Colours
+ebook-appearance-manage = Fonts and schemes
+
+## The library settings page, before any folder is watched
+ebook-library-empty-title = No folders yet
+ebook-library-empty-message = Open a book from a folder to keep that folder's books together.
+ebook-library-empty-action = Open a book
 
 ebook-get = Get
 

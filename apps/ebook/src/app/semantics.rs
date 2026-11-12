@@ -7,7 +7,7 @@ use ui::i18n::ArgValue;
 use uuid::Uuid;
 
 use super::{Action, BooksApp, progress_label};
-use crate::model::HighlightColor;
+use crate::model::{ColorScheme, FontEntry, HighlightColor};
 use crate::resource::CATALOG;
 
 impl BooksApp {
@@ -159,7 +159,7 @@ impl BooksApp {
                 .fonts
                 .iter()
                 .find(|font| font.id == *id)
-                .map_or_else(|| id.clone(), |font| font.name.clone()),
+                .map_or_else(|| id.clone(), FontEntry::title),
             Action::SetReadTheme(theme) => CATALOG.t_args(
                 "ebook-reading-theme",
                 &[("theme", ArgValue::Text(theme.as_str().to_owned()))],
@@ -350,14 +350,14 @@ impl BooksApp {
         self.fonts
             .iter()
             .find(|font| font.id == id)
-            .map_or_else(|| id.to_string(), |font| font.name.clone())
+            .map_or_else(|| id.to_string(), FontEntry::title)
     }
 
     pub(super) fn scheme_name(&self, id: &str) -> String {
         self.schemes
             .iter()
             .find(|scheme| scheme.id == id)
-            .map_or_else(|| id.to_string(), |scheme| scheme.name.clone())
+            .map_or_else(|| id.to_string(), ColorScheme::title)
     }
 
     pub(super) fn semantic_role_state(&self, action: &Action) -> (Role, AccessState) {
