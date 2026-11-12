@@ -226,8 +226,10 @@ test('a wait-list invitation is the short link its site keeps, not the invitatio
   assert.equal(row.children[1].textContent, 'Invite');
   row.children[1].listeners.get('click')();
   await tick();
-  assert.deepEqual(calls.filter(call => Array.isArray(call) && call[0] === 'sealed'),
-    [['sealed', 'https://web.example/', ORIGIN, 'SIGNED-invitation']],
+  // The link kept ready for the one-press copy is sealed the same way as the
+  // row's: both are the site's short link, naming the host they admit into.
+  assert.deepEqual(calls.filter(call => Array.isArray(call) && call[0] === 'sealed').at(-1),
+    ['sealed', 'https://web.example/', ORIGIN, 'SIGNED-invitation'],
     'the invitation is sealed onto the page’s own site, naming the host it admits into');
   const share = document.body.children.find(form => form.dataset.card === 'share');
   assert.ok(share, 'a door that sends no mail shares the link instead');

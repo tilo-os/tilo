@@ -517,8 +517,10 @@ function askLine({label: text, action, save}) {
 }
 
 /** A link to hand on: shown to select, with a button that copies it
- * (inside the person's click, which a browser's clipboard asks for). */
-function shareCard({title, body, link}) {
+ * (inside the person's click, which a browser's clipboard asks for).
+ * `copied`: the link was just written from the press that opened this, so
+ * the button says so and the press is the only one a person makes. */
+function shareCard({title, body, link, copied = false}) {
   return new Promise(resolve => {
     const form = document.createElement('form');
     form.className = 'tilo-entry-card';
@@ -529,15 +531,19 @@ function shareCard({title, body, link}) {
     field.setAttribute('aria-label', 'Link');
     field.addEventListener('focus', () => field.select());
     const copy = Object.assign(document.createElement('button'), {type: 'button', textContent: 'Copy link'});
-    copy.addEventListener('click', async () => {
+    const took = async () => {
       try {
         await navigator.clipboard.writeText(link);
         copy.textContent = 'Copied';
+        return true;
       } catch {
         field.focus();
         copy.textContent = 'Select the link and copy it';
+        return false;
       }
-    });
+    };
+    copy.addEventListener('click', took);
+    if (copied) void took();
     const done = Object.assign(document.createElement('button'), {type: 'submit', textContent: 'Done'});
     form.addEventListener('submit', event => { event.preventDefault(); form.remove(); resolve(); });
     form.append(heading, about, field, copy, done);
@@ -1345,6 +1351,7 @@ export async function startEntryPage({mode}) {
         askWorkspaceName: save => askLine({label: 'Name of the new workspace', action: 'Create', save}),
         chooseMachine: origins => card('Create the workspace on', [...origins.map(origin => [new URL(origin).host, origin]), ['Cancel', null]]),
         share: shareCard,
+        copy: text => navigator.clipboard.writeText(text).then(() => true, () => false),
         waitingList: waitingCard,
         fail: text => card(text, [['Close', null]]),
       },
