@@ -559,8 +559,9 @@ const backOff = ({attempt, retryAfter = null, signal}) => new Promise((resolve, 
   signal?.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, {once: true});
 });
 
-/** This browser's device key for `profile`: the first one no other tab
- * holds, a new one when they all are (`device-custody.mjs`). */
+/** This tab's device key for `profile`: the one it held before a reload,
+ * else a free one this browser has, a new one when other tabs hold them all
+ * (`device-custody.mjs`). */
 const browserCustody = profile => openDeviceCustody({profile, storage: idbStorage()});
 
 /**
@@ -571,9 +572,9 @@ const browserCustody = profile => openDeviceCustody({profile, storage: idbStorag
  * what this browser kept for the previous host stays on this device in a
  * namespace of its own.
  *
- * A browser profile is one device of the person (`openCustody`, one device
- * key, which a tab waits for while another tab holds it): a browser whose
- * key no host has seen yet is a new device of the person. The workspace admits each device once, so a new device
+ * Each tab is a device of its own (`openCustody`, one device key per tab
+ * open at once): a tab that takes a key no host has seen yet is a new
+ * device of the person. The workspace admits each device once, so a new device
  * of a person whose root this page holds is admitted through the door; one
  * of a person paired from elsewhere pairs first, approved on one of their
  * devices, as on any new browser.
@@ -671,9 +672,9 @@ export async function joinViaHost({
     }
   };
   if (known?.userPublicKey !== identity.userPublicKey) return admitAnew();
-  // Another tab of this browser may hold the person's device key for this
-  // host: this one waits for it (`device-custody.mjs`), as the same device,
-  // so the membership stays and the door is not asked.
+  // Other tabs of this browser may hold every device key it has for this
+  // host (`custody-busy`): nothing the host refused, so the membership stays
+  // and the door is not asked, which would spend a seat to fail the same way.
   const custody = await openCustody(identityProfile(identity, known.origin));
   return withCustody(custody, async () => {
     // A key no host has seen yet is a new device of the person: the workspace

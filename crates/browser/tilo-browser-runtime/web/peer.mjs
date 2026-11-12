@@ -31,7 +31,7 @@ import {createPeerVoice} from './voice-peer.mjs';
 import {memberText} from './json-text.mjs';
 import {WEBKIT_WEBGPU_REFUSAL} from './webgpu-safety.mjs';
 import {AdmissionError} from './admission.mjs';
-import {idbStorage, openDeviceCustody} from './device-custody.mjs';
+import {idbStorage, openDeviceCustody, rememberBrowserDevice} from './device-custody.mjs';
 import {identityProfile} from './identity-profile.mjs';
 import {currentIdentity, fitDisplayName, IdentityError} from './identity.mjs';
 import {FETCH_PROXY_PATH} from './fetch-proxy.mjs';
@@ -89,11 +89,16 @@ export {identityProfile};
 
 /** The namespace of a profile's storage its peer keeps its certificate,
  * record (outbox, synced documents) and channel state in, until the host at
- * the profile's origin is set up again. A profile is one device of the
- * person, whichever of its tabs is open (`device-custody.mjs`). */
+ * the profile's origin is set up again. Each device key of the profile (a
+ * custody slot, `device-custody.mjs`: one per tab open at once) is a device
+ * of its own with a namespace of its own: slot 0 keeps this one, slot `n`
+ * the same name with `#n` after it. */
 export const PROFILE_DEVICE = 'tilo-browser-device';
-/** Which namespace each profile keeps its peer in now (`localStorage`):
- * absent for one still in its first namespace. */
+/** The name of a namespace for the custody slot `slot`. */
+const forSlot = (namespace, slot) => (slot ? `${namespace}#${slot}` : namespace);
+/** Which namespace each profile (and each slot past the first, as
+ * `profile#slot`) keeps its peer in now (`localStorage`): absent for one
+ * still in its first namespace. */
 const PROFILE_DEVICES = 'tilo-profile-devices';
 const readProfileDevices = namespaces => {
   try {
@@ -101,14 +106,15 @@ const readProfileDevices = namespaces => {
     return all && typeof all === 'object' && !Array.isArray(all) ? all : {};
   } catch { return {}; }
 };
-/** The namespace the peer of `profile` keeps its state in now. */
-export function profileDevice(profile, namespaces = globalThis.localStorage) {
-  const device = readProfileDevices(namespaces)[profile];
-  return typeof device === 'string' && device ? device : PROFILE_DEVICE;
+/** The namespace the peer of `profile`'s custody slot `slot` keeps its
+ * state in now. */
+export function profileDevice(profile, namespaces = globalThis.localStorage, slot = 0) {
+  const device = readProfileDevices(namespaces)[forSlot(profile, slot)];
+  return typeof device === 'string' && device ? device : forSlot(PROFILE_DEVICE, slot);
 }
-function keepProfileDevice(profile, device, namespaces) {
+function keepProfileDevice(profile, slot, device, namespaces) {
   const all = readProfileDevices(namespaces);
-  all[profile] = device;
+  all[forSlot(profile, slot)] = device;
   namespaces?.setItem(PROFILE_DEVICES, JSON.stringify(all));
 }
 /**
@@ -124,17 +130,17 @@ export async function renewDevice(custody, profile, {
 } = {}) {
   await custody.destroy();
   const renewed = await open(profile);
-  // Another tab may have made the profile's new key meanwhile: a key that is
-  // not new keeps the namespace it has.
-  if (renewed.created) keepProfileDevice(profile, `${PROFILE_DEVICE}:${hexKey(random(new Uint8Array(16)))}`, namespaces);
+  // Another tab may have taken the freed slot meanwhile: a key that is not
+  // new keeps the namespace it has.
+  if (renewed.created) keepProfileDevice(profile, renewed.slot ?? 0, forSlot(`${PROFILE_DEVICE}:${hexKey(random(new Uint8Array(16)))}`, renewed.slot ?? 0), namespaces);
   return renewed;
 }
-/** The namespace a profile keeps a host's state in once that host replaced
- * the one it kept state for: named after the host's device key, so it never
- * shares a record with another host's. */
-const hostNamespace = hostCert => {
+/** The namespace a profile's slot keeps a host's state in once that host
+ * replaced the one it kept state for: named after the host's device key, so
+ * it never shares a record with another host's. */
+const hostNamespace = (hostCert, slot) => {
   const key = hexKey(hostCert?.device_public_key);
-  return /^[0-9a-f]{64}$/.test(key) ? `${PROFILE_DEVICE}:${key}` : undefined;
+  return /^[0-9a-f]{64}$/.test(key) ? forSlot(`${PROFILE_DEVICE}:${key}`, slot) : undefined;
 };
 /** The wasm runtime, loaded through the page host. */
 const pageRuntime = async desktop => (desktop ?? await import('./host.mjs')).loadRuntime?.();
@@ -457,7 +463,10 @@ async function connect({
   signal?.throwIfAborted();
   const surfaceModule = async () => desktop ?? await import('./host.mjs');
   let storage;
-  device ??= profile ? profileDevice(profile, namespaces) : PROFILE_DEVICE;
+  // Each device key of the profile (each tab open at once) is a device of
+  // its own, with its own certificate, record and channel state.
+  const slot = custody.slot ?? 0;
+  device ??= profile ? profileDevice(profile, namespaces, slot) : PROFILE_DEVICE;
   if (profile) {
     const surface = await surfaceModule();
     if (typeof surface.openProfileStorage !== 'function') throw new Error('profile storage is unavailable');
@@ -672,7 +681,7 @@ async function connect({
    * documents) stays in its own namespace, untouched and never opened for
    * this host. */
   async function adoptHost(hostCert) {
-    const fresh = hostNamespace(hostCert);
+    const fresh = hostNamespace(hostCert, slot);
     if (!ownNamespace || !storage || !fresh || fresh === device) throw new AdmissionError('host-changed', HOST_CHANGED);
     unsubscribeStorage?.();
     const previous = storage;
@@ -684,7 +693,7 @@ async function connect({
     store = profileStore(runtime, profile, device);
     channelVault = await vaultOf();
     unsubscribeStorage = watchStorage();
-    keepProfileDevice(profile, device, namespaces);
+    keepProfileDevice(profile, slot, device, namespaces);
   }
 
   async function certificate() {
@@ -748,6 +757,8 @@ async function connect({
       storage ? undefined : bytes => { store.put(PEER_RECORD, bytes).catch(() => {}); },
       channelVault,
     );
+    // Settings lists this browser's tabs' device keys as one entry.
+    if (profile) rememberBrowserDevice(certified, namespaces);
     peer.subscribe(publish);
     if (!reached) siteHostCheck ??= setTimeout(checkSiteHost, SITE_HOST_CHECK_MS);
     if (workspace) {
@@ -1451,13 +1462,13 @@ export async function joinWorkspace(options) {
  * (this very key, this person, the same host, not ending soon) is the shared
  * entry's to decide (`invitationEntry`, `doorEntry`).
  */
-async function keptDeviceCertificate({runtime, profile, store, desktop, namespaces = globalThis.localStorage}) {
+async function keptDeviceCertificate({runtime, profile, slot = 0, store, desktop, namespaces = globalThis.localStorage}) {
   let opened;
   try {
     if (!store) {
       const surface = desktop ?? await import('./host.mjs');
       if (!profile || typeof surface.openProfileStorage !== 'function') return null;
-      const device = profileDevice(profile, namespaces);
+      const device = profileDevice(profile, namespaces, slot);
       opened = await surface.openProfileStorage(profile, device);
       store = profileStore(runtime, profile, device);
     }
@@ -1587,7 +1598,7 @@ async function join({
   const custodyForWasm = custody.kind === 'sealed-seed' ? await custody.unseal() : custody;
   signal?.throwIfAborted();
   onProgress?.({phase: 'asking'});
-  const held = certified ?? await keptDeviceCertificate({runtime, profile, store: connectOptions.store,
+  const held = certified ?? await keptDeviceCertificate({runtime, profile, slot: custody.slot, store: connectOptions.store,
     desktop: connectOptions.desktop, namespaces: connectOptions.namespaces});
   // The shared entry chooses the certificate (the one this very key holds
   // from this host, else one the root makes now) and has the workspace admit

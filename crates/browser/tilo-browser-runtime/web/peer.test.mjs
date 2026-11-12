@@ -532,19 +532,20 @@ test('a renewed device is a new key in a namespace of its own; what the old key 
   const namespaces = {getItem: key => rows.get(key) ?? null, setItem: (key, value) => rows.set(key, value)};
   const profile = 'tilo-identity:ee@host.example:8443';
   let destroyed = false;
-  const old = {created: false, destroy: async () => { destroyed = true; }};
+  const old = {slot: 1, created: false, destroy: async () => { destroyed = true; }};
   const opened = [];
-  const open = async name => { opened.push(name); return {created: true}; };
+  const open = async name => { opened.push(name); return {slot: 1, created: true}; };
   const renewed = await renewDevice(old, profile, {open, namespaces, random: bytes => bytes.fill(0xab)});
   assert.ok(destroyed, 'the old key is forgotten');
   assert.deepEqual(opened, [profile]);
   assert.equal(renewed.created, true);
-  assert.equal(profileDevice(profile, namespaces), `${PROFILE_DEVICE}:${'ab'.repeat(16)}`);
-  // Another tab made the profile's new key first: the key opened instead is
-  // not new, and keeps the namespace it has.
-  const taken = await renewDevice({destroy: async () => {}}, profile, {open: async () => ({created: false}), namespaces});
+  assert.equal(profileDevice(profile, namespaces, 1), `${PROFILE_DEVICE}:${'ab'.repeat(16)}#1`);
+  assert.equal(profileDevice(profile, namespaces, 0), PROFILE_DEVICE, 'other slots stay where they were');
+  // Another tab took the freed slot first: the key opened instead is not
+  // new, and keeps its namespace.
+  const taken = await renewDevice({slot: 0, destroy: async () => {}}, profile, {open: async () => ({slot: 2, created: false}), namespaces});
   assert.equal(taken.created, false);
-  assert.equal(profileDevice(profile, namespaces), `${PROFILE_DEVICE}:${'ab'.repeat(16)}`);
+  assert.equal(profileDevice(profile, namespaces, 2), `${PROFILE_DEVICE}#2`);
 });
 
 test('a device the host set up again admitted keeps its state apart; what was kept for the previous host is never opened for it', async () => {

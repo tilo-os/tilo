@@ -1,7 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {openDeviceCustody, CustodyError} from './device-custody.mjs';
+import {openDeviceCustody, CustodyError, MAX_SLOTS} from './device-custody.mjs';
 import {fakeLocks} from './testing/fake-storage.mjs';
+
+/** A tab's `sessionStorage`: its own, kept across its reloads. */
+function memorySession(rows = new Map()) {
+  return {
+    rows,
+    getItem: key => (rows.has(key) ? rows.get(key) : null),
+    setItem: (key, value) => { rows.set(key, String(value)); },
+    removeItem: key => { rows.delete(key); },
+  };
+}
+
+/** What a tab opens its custody with: its locks and its own session. Tabs
+ * here share one module, so none asks the others over a channel. */
+const tab = (locks, name, session = memorySession()) => ({locks: locks.manager(name), session, broadcast: null});
 
 function memoryStorage() {
   const rows = new Map();
@@ -16,7 +30,7 @@ function memoryStorage() {
 test('a WebCrypto device key is non-extractable, signs, and survives reopening', async () => {
   const storage = memoryStorage();
   const locks = fakeLocks();
-  const custody = await openDeviceCustody({profile: 'p', storage, locks: locks.manager('tab-1')});
+  const custody = await openDeviceCustody({profile: 'p', storage, ...tab(locks, 'tab-1')});
   assert.equal(custody.kind, 'webcrypto-ed25519');
   assert.equal(custody.publicKey.length, 32);
   const stored = storage.rows.get('device-key:p');
@@ -30,81 +44,71 @@ test('a WebCrypto device key is non-extractable, signs, and survives reopening',
   custody.close();
   await new Promise(resolve => setImmediate(resolve));
 
-  const again = await openDeviceCustody({profile: 'p', storage, locks: locks.manager('tab-1')});
+  const again = await openDeviceCustody({profile: 'p', storage, ...tab(locks, 'tab-1')});
   assert.deepEqual(again.publicKey, custody.publicKey);
   again.close();
 });
 
-// Whether a promise has settled yet, after the turns a lock hand-off takes.
-const settled = async promise => {
-  let done = false;
-  promise.then(() => { done = true; }, () => { done = true; });
-  for (let turn = 0; turn < 5; turn++) await new Promise(resolve => setImmediate(resolve));
-  return done;
-};
-
-test('a second tab of the browser waits for the device key and is the same device', async () => {
+test('a second tab takes a key of its own while the first holds one', async () => {
   const storage = memoryStorage();
   const locks = fakeLocks();
-  const first = await openDeviceCustody({profile: 'p', storage, locks: locks.manager('tab-1'), onWait: () => {}});
-  const said = [];
-  const second = openDeviceCustody({profile: 'p', storage, locks: locks.manager('tab-2'), onWait: waiting => said.push(waiting)});
-  assert.equal(await settled(second), false, 'it waits while the first tab holds the key');
-  assert.deepEqual(said, [true], 'and says that it waits');
-  assert.deepEqual([...storage.rows.keys()], ['device-key:p'], 'no second key is made meanwhile');
+  const first = await openDeviceCustody({profile: 'p', storage, ...tab(locks, 'tab-1')});
+  const second = await openDeviceCustody({profile: 'p', storage, ...tab(locks, 'tab-2')});
+  assert.deepEqual([first.slot, first.created, second.slot, second.created], [0, true, 1, true]);
+  assert.notDeepEqual(second.publicKey, first.publicKey, 'each tab is a device of its own');
+  assert.ok(storage.rows.has('device-key:p') && storage.rows.has('device-key:p#1'));
+  // Closing resolves once the key is free: the next tab takes it at once.
   await first.close();
-  const opened = await second;
-  assert.deepEqual([opened.created, said], [false, [true, false]]);
-  assert.deepEqual(opened.publicKey, first.publicKey, 'one device of the person, not one per tab');
-  await opened.close();
+  const third = await openDeviceCustody({profile: 'p', storage, ...tab(locks, 'tab-3')});
+  assert.deepEqual([third.slot, third.created], [0, false]);
+  assert.deepEqual(third.publicKey, first.publicKey);
+  second.close(); third.close();
 });
 
-test('two tabs and a reload under contention: one device, however the key changes hands', async () => {
+test('a tab takes the first free slot, reuses released ones, and adds one only when all are held', async () => {
   const storage = memoryStorage();
   const locks = fakeLocks();
-  const open = tab => openDeviceCustody({profile: 'p', storage, locks: locks.manager(tab), onWait: () => {}});
-  const a = await open('a');
-  // A second tab waits; the first reloads: its new page asks for the key
-  // while the old one still holds it, and the old page then goes away.
-  const b = open('b');
-  const reloaded = open('a-reloaded');
-  assert.equal(await settled(b), false);
-  assert.equal(await settled(reloaded), false);
-  locks.terminate('a');
-  // One of them has the key, the other still waits for it.
-  const firstIn = await Promise.race([b.then(custody => ['b', custody]), reloaded.then(custody => ['a-reloaded', custody])]);
-  const other = firstIn[0] === 'b' ? reloaded : b;
-  assert.equal(await settled(other), false, 'the other waits, it does not become a device of its own');
-  await firstIn[1].close();
-  const secondIn = await other;
-  for (const custody of [firstIn[1], secondIn]) {
-    assert.equal(custody.created, false);
-    assert.deepEqual(custody.publicKey, a.publicKey);
-  }
-  assert.deepEqual([...storage.rows.keys()], ['device-key:p'], 'one device key for the browser profile');
-  await secondIn.close();
+  const open = name => openDeviceCustody({profile: 'p', storage, ...tab(locks, name)});
+  const tabs = [await open('a'), await open('b'), await open('c')];
+  assert.deepEqual(tabs.map(tab => tab.slot), [0, 1, 2]);
+  // The middle tab closes (or reloads): the next tab takes its slot back,
+  // with the same key, and no new one is made.
+  await tabs[1].close();
+  const reloaded = await open('b');
+  assert.deepEqual([reloaded.slot, reloaded.created], [1, false]);
+  assert.deepEqual(reloaded.publicKey, tabs[1].publicKey);
+  assert.equal(storage.rows.size, 3);
+  // Every slot held: a fourth key.
+  const fourth = await open('d');
+  assert.deepEqual([fourth.slot, fourth.created], [3, true]);
+  // All closed: the next tab takes the first slot again.
+  for (const tab of [tabs[0], reloaded, tabs[2], fourth]) await tab.close();
+  const again = await open('e');
+  assert.deepEqual([again.slot, again.created], [0, false]);
+  assert.equal(storage.rows.size, 4, 'keys are reused, never piled up');
+  again.close();
 });
 
-test('a tab that stops waiting makes no key, and an existing key is required only where one is', async () => {
+test('only a full pool is busy, and an existing key is required only where one is', async () => {
   const storage = memoryStorage();
   const locks = fakeLocks();
-  const held = await openDeviceCustody({profile: 'p', storage, locks: locks.manager('tab-1'), onWait: () => {}});
-  const leaving = new AbortController();
-  const waiting = openDeviceCustody({profile: 'p', storage, locks: locks.manager('tab-2'), onWait: () => {}, signal: leaving.signal});
-  leaving.abort(new Error('the tab closed'));
-  await assert.rejects(waiting, /the tab closed/);
-  assert.equal(storage.rows.size, 1);
-  // A link recipient with a key waits for it like any tab.
-  const linked = openDeviceCustody({profile: 'p', storage, locks: locks.manager('link'), requireExisting: true, onWait: () => {}});
-  await held.close();
-  assert.equal((await linked).created, false);
-  await (await linked).close();
+  const held = [];
+  for (let n = 0; n < MAX_SLOTS; n++) held.push(await openDeviceCustody({profile: 'p', storage, ...tab(locks, `tab-${n}`)}));
+  await assert.rejects(openDeviceCustody({profile: 'p', storage, ...tab(locks, 'one-too-many')}),
+    error => error instanceof CustodyError && error.code === 'custody-busy');
+  await held[5].close();
+  // A link recipient takes an existing key only: the free one.
+  const linked = await openDeviceCustody({profile: 'p', storage, ...tab(locks, 'link'), requireExisting: true});
+  assert.deepEqual([linked.slot, linked.created], [5, false]);
+  await assert.rejects(openDeviceCustody({profile: 'p', storage, ...tab(locks, 'link-2'), requireExisting: true}),
+    error => error instanceof CustodyError && error.code === 'custody-busy');
+  for (const custody of [...held, linked]) custody.close();
 });
 
 test('without WebCrypto Ed25519 the seed is stored only sealed', async () => {
   const storage = memoryStorage();
   const locks = fakeLocks();
-  const custody = await openDeviceCustody({profile: 'p', storage, locks: locks.manager('tab'), preferWebCrypto: false});
+  const custody = await openDeviceCustody({profile: 'p', storage, ...tab(locks, 'tab'), preferWebCrypto: false});
   assert.equal(custody.kind, 'sealed-seed');
   const stored = storage.rows.get('device-key:p');
   assert.equal(stored.wrapKey.extractable, false);
@@ -121,8 +125,8 @@ test('without WebCrypto Ed25519 the seed is stored only sealed', async () => {
 test('two profiles on one origin hold two device keys', async () => {
   const storage = memoryStorage();
   const locks = fakeLocks();
-  const a = await openDeviceCustody({profile: 'a', storage, locks: locks.manager('tab-1')});
-  const b = await openDeviceCustody({profile: 'b', storage, locks: locks.manager('tab-1')});
+  const a = await openDeviceCustody({profile: 'a', storage, ...tab(locks, 'tab-1')});
+  const b = await openDeviceCustody({profile: 'b', storage, ...tab(locks, 'tab-1')});
   assert.notDeepEqual(a.publicKey, b.publicKey);
   a.close(); b.close();
 });
@@ -133,15 +137,104 @@ test('a link recipient requires existing custody without creating a key', async 
   let generations = 0;
   const unavailableCrypto = {subtle: {generateKey: async () => { generations++; throw new Error('unexpected generation'); }}};
   await assert.rejects(openDeviceCustody({profile: 'existing', storage,
-    locks: locks.manager('tab-1'), crypto: unavailableCrypto, requireExisting: true}),
+    ...tab(locks, 'tab-1'), crypto: unavailableCrypto, requireExisting: true}),
     error => error instanceof CustodyError && error.code === 'custody-missing');
   assert.equal(generations, 0);
   assert.equal(storage.rows.size, 0);
   // The refusal releases custody, so the ordinary enrollment flow can continue.
-  const enrolled = await openDeviceCustody({profile: 'existing', storage, locks: locks.manager('tab-2')});
+  const enrolled = await openDeviceCustody({profile: 'existing', storage, ...tab(locks, 'tab-2')});
   await enrolled.close();
   const reopened = await openDeviceCustody({profile: 'existing', storage,
-    locks: locks.manager('tab-1'), requireExisting: true});
+    ...tab(locks, 'tab-1'), requireExisting: true});
   assert.deepEqual(reopened.publicKey, enrolled.publicKey);
   await reopened.close();
+});
+
+test('a reload takes its own slot back, waiting for the page before it, while other tabs are open', async () => {
+  const storage = memoryStorage();
+  const locks = fakeLocks();
+  const session = memorySession();
+  const first = await openDeviceCustody({profile: 'p', storage, ...tab(locks, 'tab-a-page-1', session)});
+  const other = await openDeviceCustody({profile: 'p', storage, ...tab(locks, 'tab-b')});
+  assert.deepEqual([first.slot, other.slot], [0, 1]);
+  // Twenty reloads of the first tab, each starting before the page it
+  // replaces let go of its key: every one is the same device.
+  let page = first;
+  for (let reload = 2; reload <= 21; reload++) {
+    const next = openDeviceCustody({profile: 'p', storage, ...tab(locks, `tab-a-page-${reload}`, session)});
+    await new Promise(resolve => setTimeout(resolve, 5));
+    page.close();
+    page = await next;
+    assert.deepEqual([page.slot, page.created], [0, false], `reload ${reload} is the same device`);
+  }
+  assert.deepEqual(page.publicKey, first.publicKey);
+  assert.equal(storage.rows.size, 2, 'two tabs, two devices, through every reload');
+  page.close(); other.close();
+});
+
+test('a duplicated tab, whose remembered slot a live tab holds, takes a slot of its own at once', async () => {
+  const storage = memoryStorage();
+  const locks = fakeLocks();
+  // Two pages: each its own module, as each tab loads it.
+  const pageA = await import('./device-custody.mjs?page=a');
+  const pageB = await import('./device-custody.mjs?page=b');
+  const broadcast = name => new BroadcastChannel(name);
+  const session = memorySession();
+  const original = await pageA.openDeviceCustody({profile: 'p', storage, locks: locks.manager('a'), session, broadcast, events: new EventTarget()});
+  // A duplicate copies the original's sessionStorage, so it remembers slot 0 too.
+  const started = Date.now();
+  const duplicate = await pageB.openDeviceCustody({profile: 'p', storage, locks: locks.manager('b'),
+    session: memorySession(new Map(session.rows)), broadcast, events: new EventTarget()});
+  assert.deepEqual([original.slot, duplicate.slot, duplicate.created], [0, 1, true]);
+  assert.ok(Date.now() - started < pageB.OWN_SLOT_WAIT_MS, 'it did not wait for the original to close');
+  await original.close(); await duplicate.close();
+});
+
+test('a page on its way out answers for no slot, so its reload waits for it', async () => {
+  const storage = memoryStorage();
+  const locks = fakeLocks();
+  const pageA = await import('./device-custody.mjs?page=leaving');
+  const pageB = await import('./device-custody.mjs?page=reloaded');
+  const broadcast = name => new BroadcastChannel(name);
+  const session = memorySession();
+  const events = new EventTarget();
+  const leaving = await pageA.openDeviceCustody({profile: 'p', storage, locks: locks.manager('old'), session, broadcast, events});
+  events.dispatchEvent(new Event('pagehide'));
+  const reloaded = pageB.openDeviceCustody({profile: 'p', storage, locks: locks.manager('new'), session, broadcast, events: new EventTarget()});
+  await new Promise(resolve => setTimeout(resolve, pageB.LIVE_ASK_MS + 100));
+  leaving.close();
+  const back = await reloaded;
+  assert.deepEqual([back.slot, back.created], [0, false]);
+  assert.deepEqual(back.publicKey, leaving.publicKey);
+  await back.close();
+});
+
+test('a new tab reuses a free slot that has a key before it makes another', async () => {
+  const storage = memoryStorage();
+  const locks = fakeLocks();
+  const open = name => openDeviceCustody({profile: 'p', storage, ...tab(locks, name)});
+  const [a, b, c] = [await open('a'), await open('b'), await open('c')];
+  await a.close();
+  await c.close();
+  // Slot 0 and slot 2 are free with keys: the lowest of them, no new key.
+  const next = await open('d');
+  assert.deepEqual([next.slot, next.created], [0, false]);
+  const after = await open('e');
+  assert.deepEqual([after.slot, after.created], [2, false]);
+  assert.equal(storage.rows.size, 3);
+  b.close(); next.close(); after.close();
+});
+
+test('a browser keeps each tab device certificate once, under one id', async () => {
+  const {rememberBrowserDevice, BROWSER_DEVICES} = await import('./device-custody.mjs');
+  const namespaces = memorySession();
+  const cert = key => JSON.stringify({cert: {device_public_key: [key, ...new Array(31).fill(0)], device_label: 'Browser'}, hostCert: {}});
+  rememberBrowserDevice(cert(1), namespaces);
+  rememberBrowserDevice(cert(2), namespaces);
+  rememberBrowserDevice(cert(1), namespaces);
+  const kept = JSON.parse(namespaces.getItem(BROWSER_DEVICES));
+  assert.match(kept.id, /^[0-9a-f]{32}$/);
+  assert.deepEqual(kept.certs.map(one => one.device_public_key[0]), [2, 1]);
+  rememberBrowserDevice('not json', namespaces);
+  assert.equal(JSON.parse(namespaces.getItem(BROWSER_DEVICES)).id, kept.id);
 });
