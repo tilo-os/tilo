@@ -773,6 +773,8 @@ def run_session(args: argparse.Namespace, out_dir: Path, session_root: Path) -> 
                             "dev.tilo.frame-loop-load",
                             "--seconds",
                             str(process_seconds),
+                            "--windows",
+                            str(args.load_windows),
                         ]
                         if args.load == "fullscreen":
                             ccmd.append("--fullscreen")
@@ -936,6 +938,12 @@ def main() -> None:
         metavar="PATH",
         help="the client a requested --load runs (default: tilo-loadclient beside the session; "
         "build it with `cargo build --release -p click-test-client --bin tilo-loadclient`)",
+    )
+    p.add_argument(
+        "--load-windows",
+        type=int,
+        default=1,
+        help="how many windows the load client keeps drawing (default 1)",
     )
     p.add_argument(
         "--launch-app",

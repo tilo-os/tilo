@@ -19,7 +19,9 @@ Two windows to type into:
 
 - **an installed app** (`--app so.tilo.notes`, or a tilolang app's id): opened
   through the desktop's own launcher, as a person opens it. Its own editor
-  answers each key with a commit, which is what a person feels.
+  answers each key with a commit, which is what a person feels. The run clicks
+  into the window first (`--click-at`) so the editor has the caret, and refuses
+  to type when a key changes nothing the app draws.
 - **the synthetic client** (the default): `crates/session/session/examples/
   latency_client.rs`, a window that answers every key with exactly one commit
   and draws nothing else, so the compositor's share of the latency stands alone.
@@ -39,7 +41,7 @@ a private runtime directory. Nothing here touches the desktop this runs from.
 
     # a native app and a tilolang app, through the desktop
     scripts/perf/headless_key_latency.py --label native-notes --app so.tilo.notes
-    scripts/perf/headless_key_latency.py --label tilolang-notes --app so.tilolang.notes
+    scripts/perf/headless_key_latency.py --label tilolang-notes --app so.tilo.lang.notes
 
     scripts/perf/headless_key_latency.py --compare target/key-latency/*.json
 """
@@ -184,6 +186,12 @@ def start_client(args: argparse.Namespace, session, env: dict) -> subprocess.Pop
         env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
+def app_frames(session, app: str) -> int:
+    """How many frames the app's window has committed: a rise is a key it answered."""
+    return max((int(row.get("frames") or 0) for row in session.windows()
+                if row.get("app_id") == app), default=0)
+
+
 def type_keys(session, args: argparse.Namespace, warmup: int, keys: int) -> None:
     """Press `keys` keys as a person does: at even places on the keyboard, at random phases of the
     display's refresh, so no position on the refresh grid is favoured."""
@@ -226,11 +234,22 @@ def measure(args: argparse.Namespace) -> dict:
             window = session.launch(args.app, deadline=args.app_timeout)
             session.answering(args.app, deadline=args.app_timeout)
             print(f"[key-latency] {args.app} window {window.get('title')!r}", flush=True)
-            if args.click_center:
-                rect = window.get("rect") or [0, 0, 0, 0]
-                left, top, width, height = (int(value) for value in rect)
-                session.click_at(left + width // 2, top + height // 2)
-                time.sleep(0.5)
+            # The window has the keyboard, but its editor has to have the caret before a key
+            # changes anything it draws: a click where the person types puts it there.
+            across, down = (float(part) for part in args.click_at.split(","))
+            rect = window.get("rect")
+            if rect is None:
+                sys.exit(f"[key-latency] {args.app} showed no window to type into")
+            left, top, width, height = (int(value) for value in rect)
+            session.click_at(left + int(width * across), top + int(height * down))
+            time.sleep(0.5)
+            frames_before = app_frames(session, args.app)
+            session.key("a")
+            time.sleep(0.5)
+            if app_frames(session, args.app) <= frames_before:
+                sys.exit(f"[key-latency] a key changed nothing {args.app} drew: its editor has "
+                         f"no caret at --click-at {args.click_at}; name another point of the "
+                         "window, as fractions of its width and height")
         else:
             client = start_client(args, session, os.environ)
             ready = wait_line(client, args.app_timeout)
@@ -320,9 +339,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--settle", type=float, default=2.0)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--app-timeout", type=float, default=120.0)
-    parser.add_argument("--click-center", action="store_true",
-                        help="click the middle of the app's window first, so its editor has the "
-                             "caret and answers the keys")
+    parser.add_argument("--click-at", default="0.5,0.5", metavar="ACROSS,DOWN",
+                        help="where in the app's window to click before typing, as fractions of "
+                             "its width and height, so the editor has the caret (default 0.5,0.5)")
     parser.add_argument("--compare", nargs="+", type=Path, metavar="RESULT.json",
                         help="print a table of earlier results and exit")
     return parser
