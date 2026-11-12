@@ -184,6 +184,7 @@ impl crate::Session {
             self.shared.chrome.borrow_mut().set_theme(theme.clone());
             self.shared.people.borrow().set_theme(theme.clone());
             self.readout.borrow_mut().set_theme(theme.clone());
+            crate::sheets::set_theme(&theme);
             if let Some(shell) = self.shell.as_mut() {
                 shell.set_theme(&theme);
             }

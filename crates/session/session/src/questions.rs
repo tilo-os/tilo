@@ -886,45 +886,47 @@ fn agent_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
     Some((asked.dialog(handle), Plan::Confirm))
 }
 
-/// What an agent's run asks before a step its grants leave to the person: the step, what it
-/// would do, and whether to allow it once, allow the agent every such step while it works here, or
-/// deny it ([`crate::run_questions`]).
+/// What an agent's run asks before a step its grants leave to the person, or an app before it takes
+/// another app's action: the step, what it would do, and whether to allow it once, allow the agent
+/// or the app every such step, or deny it ([`crate::run_questions`]).
 fn run_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
-    use crate::run_questions::{ALLOW_AGENT, ALLOW_ONCE, DENY, RunQuestion};
+    use crate::run_questions::{ALLOW_AGENT, ALLOW_ONCE, RunQuestion};
     let asked: RunQuestion = serde_json::from_value(details).ok()?;
-    let title = words(
-        "run-question-title",
-        &[("agent", &asked.agent), ("action", &asked.action)],
-    );
-    let mut detail = words("run-question-detail", &[("resource", &asked.resource)]);
-    for (label, value) in &asked.fields {
-        detail.push('\n');
-        detail.push_str(&words(
-            "run-question-field",
-            &[("label", label), ("value", value)],
-        ));
-    }
-    if !matches!(asked.risk.as_str(), "" | "none" | "low") {
-        detail.push('\n');
-        detail.push_str(&words(
+    // An app asking to take another app's action is named as the person knows both apps; a
+    // label that asks for more ("File a note…") is the step itself here, its arguments below it.
+    let (title, detail, always) = match &asked.target {
+        Some(target) => (
+            words(
+                "app-question-title",
+                &[
+                    ("app", &crate::app_names::app_name(&asked.agent)),
+                    ("target", &crate::app_names::app_name(target)),
+                ],
+            ),
+            asked.action.trim_end_matches('…').to_owned(),
+            word("portal-allow-always"),
+        ),
+        None => (
+            words(
+                "run-question-title",
+                &[("agent", &asked.agent), ("action", &asked.action)],
+            ),
+            words("run-question-detail", &[("resource", &asked.resource)]),
+            words("run-question-allow-agent", &[("agent", &asked.agent)]),
+        ),
+    };
+    let mut dialog = review(handle, title, String::new(), detail);
+    dialog.facts.clone_from(&asked.fields);
+    dialog.caution = (!matches!(asked.risk.as_str(), "" | "none" | "low")).then(|| {
+        words(
             "network-agent-question-risk",
             &[("risk", &tilo_sheets::portal::risk_words(&asked.risk))],
-        ));
-    }
-    let mut dialog = review(handle, title, asked.agent.clone(), detail);
-    let mut choices = vec![ALLOW_ONCE];
-    let mut labels = vec![word("portal-allow-once")];
-    if asked.may_allow_agent {
-        choices.push(ALLOW_AGENT);
-        labels.push(words(
-            "run-question-allow-agent",
-            &[("agent", &asked.agent)],
-        ));
-    }
-    choices.push(DENY);
-    labels.push(word("portal-deny"));
-    dialog.body = Body::Choices(labels);
-    Some((dialog, Plan::Choose(choices)))
+        )
+    });
+    // Three answers in one row: Deny (Escape too), the standing grant, and once, the default.
+    dialog.confirm_label = word("portal-allow-once");
+    dialog.alternate_label = asked.may_allow_agent.then_some(always);
+    Some((dialog, Plan::Choose(vec![ALLOW_ONCE, ALLOW_AGENT])))
 }
 
 /// Another of the person's devices asks for its disk-unlock half: the code on its boot screen is
@@ -1634,6 +1636,53 @@ mod tests {
             details,
         })
         .expect("the session composes this question")
+    }
+
+    /// An app asking to take another app's action names both apps, the step and what it would
+    /// run with, and answers on three buttons: deny, always and once; a step confirmed each time
+    /// offers no "always".
+    #[test]
+    fn an_apps_change_of_another_app_names_both_apps() {
+        let asked = |may_allow_agent| {
+            sheet(
+                crate::run_questions::KIND,
+                serde_json::to_value(crate::run_questions::RunQuestion {
+                    agent: "so.tilo.files".into(),
+                    target: Some("so.tilo.notes".into()),
+                    action: "Delete finished tasks…".into(),
+                    resource: "Tasks".into(),
+                    fields: vec![("Title".to_owned(), "Morning: 1 done".to_owned())],
+                    risk: "low".into(),
+                    may_allow_agent,
+                })
+                .unwrap(),
+            )
+        };
+        let shown = asked(true);
+        let files = crate::app_names::app_name("so.tilo.files");
+        let notes = crate::app_names::app_name("so.tilo.notes");
+        assert_eq!(
+            shown.dialog.title,
+            words("app-question-title", &[("app", &files), ("target", &notes)])
+        );
+        assert!(shown.dialog.heading.is_empty(), "the title names the app");
+        assert_eq!(shown.dialog.detail, "Delete finished tasks");
+        assert_eq!(
+            shown.dialog.facts,
+            vec![("Title".to_owned(), "Morning: 1 done".to_owned())]
+        );
+        assert!(
+            matches!(shown.dialog.body, Body::Review),
+            "no list beside the buttons"
+        );
+        assert_eq!(shown.dialog.confirm_label, word("portal-allow-once"));
+        assert_eq!(shown.dialog.cancel_label, word("portal-deny"));
+        assert_eq!(
+            shown.dialog.alternate_label,
+            Some(word("portal-allow-always"))
+        );
+        assert!(matches!(&shown.plan, Plan::Choose(choices) if choices.len() == 2));
+        assert_eq!(asked(false).dialog.alternate_label, None);
     }
 
     fn agent_question() -> Composed {

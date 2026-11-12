@@ -3,9 +3,6 @@
 //! the questions about the person's apps and the one deleting a workspace asks — each mounted over
 //! the desktop and what it shows, and handed to the session as the seat it speaks through.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use tilo_compositor::Compositor;
 use tilo_session_core::door::Doors;
 use tilo_sheets::Seat as _;
@@ -206,7 +203,7 @@ fn mount_lock_view(
             let sheet = sheet.standing_over_lock();
             let seat = sheet.seat().clone();
             seat.presentation().cover_every_display();
-            let sheet = Rc::new(RefCell::new(sheet));
+            let sheet = sheet.layer();
             compositor.add_host(sheet.clone());
             doors.add(sheet);
             Some(seat)
@@ -262,7 +259,7 @@ fn mount_sheet<S: tilo_sheets::Seat + 'static>(
     ) {
         Ok(sheet) => {
             let seat = sheet.seat().clone();
-            let sheet = Rc::new(RefCell::new(sheet));
+            let sheet = sheet.layer();
             compositor.add_host(sheet.clone());
             doors.add(sheet);
             Some(seat)

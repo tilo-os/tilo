@@ -215,6 +215,9 @@ pub struct Dialog {
     pub body: Body,
     pub confirm_label: String,
     pub cancel_label: String,
+    /// A second way to allow, beside the confirm button ("Always allow"): it
+    /// answers as choice 1, where confirming answers as choice 0.
+    pub alternate_label: Option<String>,
     /// The highlighted choice.
     pub selected: usize,
     /// The page of a paged review, and how many there are.
