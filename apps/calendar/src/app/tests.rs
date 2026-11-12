@@ -3356,7 +3356,8 @@ fn a_new_event_starts_at_the_next_quarter_hour_not_at_noon() {
 
 /// Escape dismisses the event sheet, whatever field inside it holds the
 /// keyboard: a sheet is the top transient surface, and every sheet in every
-/// app leaves on Escape the way the toolkit's own dialogs do.
+/// app leaves on Escape the way the toolkit's own dialogs do. A new event
+/// nothing was written into goes with it.
 #[test]
 fn escape_dismisses_the_event_sheet_even_with_a_field_focused() {
     let mut h = Harness::new(1280, 800);
@@ -3369,10 +3370,16 @@ fn escape_dismisses_the_event_sheet_even_with_a_field_focused() {
         h.app.title_input.is_focused(),
         "the sheet starts in its title"
     );
+    let before = h.app.model.events.len();
 
     h.press_named(winit::keyboard::NamedKey::Escape);
     assert!(
         !h.app.detail_open,
         "Escape closes the sheet rather than only leaving the field"
+    );
+    assert_eq!(
+        h.app.model.events.len(),
+        before - 1,
+        "the untouched draft went with the sheet"
     );
 }
