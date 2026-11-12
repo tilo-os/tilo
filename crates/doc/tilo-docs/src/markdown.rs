@@ -90,7 +90,6 @@ pub fn render(markdown: &str) -> Rendered {
     let events: Vec<Event<'_>> = Parser::new_ext(markdown, options).collect();
     let mut out: Vec<Event<'_>> = Vec::with_capacity(events.len());
     let mut headings = Vec::new();
-    let mut text = String::new();
     let mut slugger = Slugger::default();
     let mut links = Vec::new();
     let mut rest = events.as_slice();
@@ -107,7 +106,6 @@ pub fn render(markdown: &str) -> Rendered {
                 if *level == HeadingLevel::H1 {
                     continue;
                 }
-                append(&mut text, &title);
                 let number = heading_number(*level);
                 headings.push(Heading {
                     level: number,
@@ -163,13 +161,10 @@ pub fn render(markdown: &str) -> Rendered {
                 links.push(dest_url.to_string());
                 out.push(event.clone());
             }
-            Event::Text(words) | Event::Code(words) => {
-                append(&mut text, words);
-                out.push(event.clone());
-            }
             other => out.push(inert(other.clone())),
         }
     }
+    let text = prose(&events);
     let mut html = String::with_capacity(markdown.len().saturating_mul(2));
     crate::writer::push_html(&mut html, out);
     Rendered {
@@ -212,11 +207,36 @@ fn plain_text(events: &[Event<'_>]) -> String {
         .collect::<String>()
 }
 
-fn append(text: &mut String, words: &str) {
-    if !text.is_empty() && !text.ends_with(' ') {
-        text.push(' ');
+/// The prose as plain text: the title and code left out, and the words of
+/// two blocks or two lines kept apart.
+fn prose(events: &[Event<'_>]) -> String {
+    let mut text = String::new();
+    let mut skipping = false;
+    for event in events {
+        match event {
+            Event::Start(
+                Tag::Heading {
+                    level: HeadingLevel::H1,
+                    ..
+                }
+                | Tag::CodeBlock(_),
+            ) => skipping = true,
+            Event::End(TagEnd::Heading(HeadingLevel::H1) | TagEnd::CodeBlock) => skipping = false,
+            Event::Text(words) | Event::Code(words) if !skipping => text.push_str(words),
+            Event::End(
+                TagEnd::Paragraph
+                | TagEnd::Heading(_)
+                | TagEnd::Item
+                | TagEnd::TableCell
+                | TagEnd::BlockQuote(_)
+                | TagEnd::List(_),
+            )
+            | Event::SoftBreak
+            | Event::HardBreak => text.push(' '),
+            _ => {}
+        }
     }
-    text.push_str(words.trim());
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn heading_number(level: HeadingLevel) -> u8 {
@@ -336,10 +356,12 @@ mod tests {
             .collect();
         assert_eq!(ids, ["put-a-file-in", "tilo_do-and-you", "put-a-file-in-1"]);
         assert!(
-            page.text.starts_with("Lead. Put a file in"),
+            page.text.starts_with("Lead. Put a file in tilo_do and you"),
             "{}",
             page.text
         );
+        let inline = render("Run `tilo keys revoke <grant>`), then *stop*.\n");
+        assert_eq!(inline.text, "Run tilo keys revoke <grant>), then stop.");
     }
 
     #[test]

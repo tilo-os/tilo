@@ -172,26 +172,29 @@ function words(query) {
 // headings, then the description, then the text.
 function score(page, terms) {
   let total = 0;
-  let heading = null;
   for (const term of terms) {
     let best = 0;
     if (page.lower.title.includes(term)) best = page.lower.title.startsWith(term) ? 12 : 10;
-    const at = page.lower.headings.findIndex((text) => text.includes(term));
-    if (at >= 0) {
-      best = Math.max(best, 6);
-      heading ??= page.headings[at];
-    }
+    if (page.lower.headings.some((text) => text.includes(term))) best = Math.max(best, 6);
     if (page.lower.description.includes(term)) best = Math.max(best, 4);
     if (!best && page.lower.text.includes(term)) best = 1;
     if (!best) return null;
     total += best;
   }
+  // The heading that matches the most words is where the hit opens.
+  let heading = null;
+  let most = 0;
+  page.lower.headings.forEach((text, at) => {
+    const count = terms.filter((term) => text.includes(term)).length;
+    if (count > most) [heading, most] = [page.headings[at], count];
+  });
   return { total, heading };
 }
 
+// Around the most telling word: the longest one the text has.
 function excerpt(page, terms) {
-  const found = terms.map((term) => page.lower.text.indexOf(term)).filter((at) => at >= 0);
-  const position = found.length ? Math.min(...found) : 0;
+  const found = terms.filter((term) => page.lower.text.includes(term)).sort((a, b) => b.length - a.length);
+  const position = found.length ? page.lower.text.indexOf(found[0]) : 0;
   const start = Math.max(0, position - 60);
   const text = page.text.slice(start, start + 180);
   return (start > 0 ? "…" : "") + text + (start + 180 < page.text.length ? "…" : "");

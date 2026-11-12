@@ -289,6 +289,10 @@ blockquote { margin: 1.4em 0; padding-left: 1rem; border-left: 3px solid var(--r
 }
 
 .code-lang { align-self: center; font-size: 0.8rem; color: var(--code-dim); }
+/* A block with nothing to label keeps only its copy button, over its corner. */
+.code { position: relative; }
+.code-bar:has(.code-lang:empty) { position: absolute; top: 0.3rem; right: 0; min-height: 0; padding: 0 0.4rem; background: none; border: 0; }
+.code-bar:has(.code-lang:empty) + pre { padding-right: 4.5rem; }
 
 .tabs { display: flex; gap: 1.1rem; overflow-x: auto; scrollbar-width: none; }
 .tabs button {
