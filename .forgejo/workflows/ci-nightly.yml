@@ -110,6 +110,10 @@ jobs:
       # of rebuilding the workspace merely to add unused CI debuginfo.
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
+      # As t's runs build them (t.toml): a test binary without its symbol table is
+      # 56-58% smaller to link, store, move and load, and the packages whose tests read
+      # the table keep it ([profile.test.package.*] in Cargo.toml).
+      CARGO_PROFILE_TEST_STRIP: "symbols"
       CARGO_TERM_COLOR: never
       WGPU_BACKEND: vulkan
       VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.${{ matrix.arch }}.json
