@@ -10,15 +10,13 @@
 //! its bound, so its copy goes on following the record however long the
 //! workspace keeps writing. Every other device taking part in a channel does the
 //! same with its own copy and publishes the checkpoint
-//! ([`tilo_peer_state::PeerPublicationMut::compact_sealed_history`]): the
+//! ([`tilo_peer_state::PeerPublication::draft_sealed_compaction`]): the
 //! governor's copy follows that checkpoint like any other member write, and
 //! no device's history waits for someone else to fold it.
 
 use channel_crypto::ChannelContentKeys;
 use collab_types::{ArtifactId, ContentRetention, EncryptionMetadata, SignedOp};
-#[cfg(feature = "agents")]
 use ed25519_dalek::SigningKey;
-#[cfg(feature = "agents")]
 use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::StatePeer;
 
@@ -60,6 +58,33 @@ impl RecordKeys {
                 .seal_content(self.artifact, retention, plaintext)
                 .map_err(|error| error.to_string())
         }
+    }
+
+    /// Compact `record`'s sealed history in `candidate` as the host's `key`,
+    /// into `rebuilt` when the operator rebuilt the record, else into its
+    /// merged history.
+    fn compact(
+        &self,
+        candidate: &mut StatePeer,
+        (app, record): (&str, &str),
+        rebuilt: Option<Vec<u8>>,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<NeighbourMsg, String> {
+        let (mut open, mut seal) = (self.open(), self.seal(ContentRetention::Checkpoint));
+        let author = key.verifying_key().to_bytes();
+        let mut op = candidate.publication().draft_sealed_compaction(
+            (app, record),
+            rebuilt,
+            &mut open,
+            &mut seal,
+            author,
+            now,
+        )?;
+        collab_types::sign_op(&mut op, key).map_err(|error| error.to_string())?;
+        candidate
+            .publication_mut()
+            .admit_sealed_compaction(app, record, op, now)
     }
 }
 
@@ -475,18 +500,14 @@ impl Workspaces {
             .ok_or_else(|| super::CollaborationError::new("the record is held in the clear"))?;
         let now = SystemTime::now();
         let mut candidate = governed.peer().clone();
-        candidate
-            .publication_mut()
-            .compact_sealed_history_into(
-                app,
-                record,
-                rebuilt,
-                &mut keys.open(),
-                &mut keys.seal(ContentRetention::Checkpoint),
-                &self.inner.host.key,
-                now,
-            )
-            .map_err(super::CollaborationError::new)?;
+        keys.compact(
+            &mut candidate,
+            (app, record),
+            Some(rebuilt),
+            &self.inner.host.key,
+            now,
+        )
+        .map_err(super::CollaborationError::new)?;
         let collaboration = governed.collaboration().clone();
         governed.commit(candidate, &self.inner.host.key, now, |_, _| {
             Ok(collaboration)
@@ -662,11 +683,10 @@ impl Workspaces {
         let mut compacted = 0usize;
         for (app, record) in &due {
             let compaction = match workspace.record_keys(app, record).await {
-                Ok(Some(keys)) => candidate.publication_mut().compact_sealed_history(
-                    app,
-                    record,
-                    &mut keys.open(),
-                    &mut keys.seal(ContentRetention::Checkpoint),
+                Ok(Some(keys)) => keys.compact(
+                    &mut candidate,
+                    (app, record),
+                    None,
                     &self.inner.host.key,
                     now,
                 ),

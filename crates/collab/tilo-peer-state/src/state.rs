@@ -88,7 +88,7 @@ pub use seed::{seed_workspace, workspace_seed};
 mod sealed_compaction;
 mod sealed_history;
 pub use sealed_compaction::{
-    OpenedHistory, OpenedRecord, OpenedWrite, SealCheckpoint, SealDelta, UnmergedReason,
+    OpenedHistory, OpenedRecord, OpenedWrite, SealCheckpoint, UnmergedReason,
     UnmergedWrite,
 };
 /// The peer's own subjects: how a replica is built and who joins it, the
@@ -284,7 +284,7 @@ type SealedHistory = Vec<(Route, Vec<SignedOp>)>;
 
 /// Most sealed writes, and their bytes, one record keeps for a key holder.
 /// Past them a key holder compacts the history
-/// ([`PeerPublicationMut::compact_sealed_history`]).
+/// ([`PeerPublication::draft_sealed_compaction`]).
 const MAX_SEALED_OPS: usize = 4096;
 const MAX_SEALED_BYTES: usize = 16 * 1024 * 1024;
 

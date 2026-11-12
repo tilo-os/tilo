@@ -464,18 +464,18 @@ impl Joined {
         let ended = loop {
             tokio::select! {
                 ended = &mut running => break ended,
-                caught = caught_up.wait_for(|up| *up), if !live => {
-                    if caught.is_err() {
+                caught = async { caught_up.wait_for(|up| *up).await.is_ok() }, if !live => {
+                    if !caught {
                         break Err("the link closed".into());
                     }
                     live = true;
                     self.set_live(workspace, Some((Arc::clone(&link), host)));
-                    self.publish(&scope, &link, &mut sending);
+                    self.publish(&scope, &link, &mut sending).await;
                 }
                 frame = heard.recv() => match frame {
                     Ok(heard) => {
                         self.take(&scope, heard);
-                        self.publish(&scope, &link, &mut sending);
+                        self.publish(&scope, &link, &mut sending).await;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         break Err("the session fell behind the workspace's frames".into());
@@ -484,7 +484,7 @@ impl Joined {
                         break Err("the link closed".into());
                     }
                 },
-                () = wake.notified() => self.publish(&scope, &link, &mut sending),
+                () = wake.notified() => self.publish(&scope, &link, &mut sending).await,
             }
         };
         if let Err(reason) = ended {
@@ -641,7 +641,7 @@ impl Joined {
 
     /// Send `workspace`'s own writes, and what its sealed records lack, to its
     /// host: the link carries them to every member.
-    fn publish(
+    async fn publish(
         &self,
         scope: &Scope,
         link: &DirectSync,
@@ -653,10 +653,10 @@ impl Joined {
         if let Err(error) = self.owner.retire_outgoing(workspace) {
             tracing::warn!(%error, "joined workspace publication retirement not committed");
         }
+        if let (Ok(()), Some(keys)) = (scope.current(&self.custody), self.keys.get()) {
+            self.fold_and_renew(workspace, &keys).await;
+        }
         let sent = scope.current(&self.custody).and_then(|()| {
-            if let Some(keys) = self.keys.get() {
-                self.fold_and_renew(workspace, &keys)?;
-            }
             sending.drive(
                 &self.owner,
                 workspace,
@@ -677,34 +677,41 @@ impl Joined {
     /// A sealed record's history this device can read is this device's to
     /// fold: it writes its own checkpoint where the workspace's host used to.
     /// Then its sealed writes that expired in custody are sealed again.
-    fn fold_and_renew(
+    async fn fold_and_renew(
         &self,
         workspace: WorkspaceId,
         keys: &tilo_action_broker::channel_encryption::ChannelKeyAccess,
-    ) -> Result<(), String> {
-        let key = self.custody.signing_key()?;
-        match self.owner.compact_outgoing(
-            workspace,
-            &key,
-            &mut |write| keys.open_history_write(workspace, write),
-            &mut |app, record, snapshot| keys.seal_checkpoint(workspace, app, record, snapshot),
-            SystemTime::now(),
-        ) {
+    ) {
+        let signer = self.custody.signer.as_ref();
+        match self
+            .owner
+            .compact_outgoing(
+                workspace,
+                signer,
+                |write| keys.open_history_write(workspace, write),
+                |app, record, snapshot| keys.seal_checkpoint(workspace, app, record, snapshot),
+                SystemTime::now(),
+            )
+            .await
+        {
             Ok(0) => {}
             Ok(count) => tracing::debug!(count, "joined workspace sealed histories compacted"),
             Err(error) => {
                 tracing::debug!(%error, "joined workspace sealed history stays uncompacted");
             }
         }
-        if let Err(error) = self.owner.renew_outgoing(
-            workspace,
-            &key,
-            &mut |sealed| keys.renew_sealed(workspace, sealed),
-            SystemTime::now(),
-        ) {
+        if let Err(error) = self
+            .owner
+            .renew_outgoing(
+                workspace,
+                signer,
+                |sealed| keys.renew_sealed(workspace, sealed),
+                SystemTime::now(),
+            )
+            .await
+        {
             tracing::warn!(%workspace, %error, "native sealed write renewal blocked");
         }
-        Ok(())
     }
 
     /// `workspace`'s connected link, while there is one.

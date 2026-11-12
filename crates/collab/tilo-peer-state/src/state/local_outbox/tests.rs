@@ -5,6 +5,7 @@ use automerge::ROOT;
 use automerge::transaction::Transactable as _;
 use collab_types::CommitNamed as _;
 use collab_types::{DocumentMutation, Ed25519PublicKey, OpKind, SignedOp};
+use ed25519_dalek::SigningKey;
 use tilo_user_identity::DeviceCert;
 use tilo_user_identity::RevocationList;
 use web_time::Duration;

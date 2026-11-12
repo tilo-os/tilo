@@ -1642,13 +1642,13 @@ impl tilo_broker_core::custody::OwnerCustody for Engine {
         self.custody.check(owner, workspace_id, &self.identity)
     }
 
-    fn signing_key(
+    fn signer(
         &self,
         owner: &NativeWorkspaceOwner,
         workspace_id: WorkspaceId,
-    ) -> Result<ed25519_dalek::SigningKey, String> {
+    ) -> Result<Arc<dyn collab_types::signer::DeviceSigner>, String> {
         self.check_custody(owner, workspace_id)?;
-        self.identity.signing_key()
+        Ok(Arc::clone(&self.identity.signer))
     }
 
     /// Send the owner's outgoing custody of `workspace` to its peers soon: what was just committed

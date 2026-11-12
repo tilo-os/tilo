@@ -288,20 +288,26 @@ impl SealingMember {
             .await
             .peer()
             .clone();
-        let message = candidate
-            .publication_mut()
-            .compact_sealed_history(
-                app,
-                record,
+        let now = SystemTime::now();
+        let mut op = candidate
+            .publication()
+            .draft_sealed_compaction(
+                (app, record),
+                None,
                 &mut |op| self.open(op),
                 &mut |snapshot| {
                     self.keys
                         .seal_content(artifact, ContentRetention::Checkpoint, snapshot)
                         .map_err(|error| error.to_string())
                 },
-                &self.key,
-                SystemTime::now(),
+                self.key.verifying_key().to_bytes(),
+                now,
             )
+            .unwrap();
+        collab_types::sign_op(&mut op, &self.key).unwrap();
+        let message = candidate
+            .publication_mut()
+            .admit_sealed_compaction(app, record, op, now)
             .unwrap();
         // The compaction took this device's next place in the record's
         // sequence, as its engine's own writes see it: the writes after it

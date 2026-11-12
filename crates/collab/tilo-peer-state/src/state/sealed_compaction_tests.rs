@@ -315,17 +315,20 @@ fn mint(
     key: &SigningKey,
     now: SystemTime,
 ) -> Result<NeighbourMsg, String> {
-    peer.publication_mut().compact_sealed_history(
-        APP,
-        RECORD,
+    let mut op = peer.publication().draft_sealed_compaction(
+        (APP, RECORD),
+        None,
         &mut |op| open(keys, op),
         &mut |plaintext| {
             keys.seal_content(artifact(), ContentRetention::Checkpoint, plaintext)
                 .map_err(|error| error.to_string())
         },
-        key,
+        key.verifying_key().to_bytes(),
         now,
-    )
+    )?;
+    collab_types::sign_op(&mut op, key).map_err(|error| error.to_string())?;
+    peer.publication_mut()
+        .admit_sealed_compaction(APP, RECORD, op, now)
 }
 
 /// A compaction of `superseded`, sealed with `keys` but not signed.
@@ -513,8 +516,15 @@ fn minting_aborts_without_a_trace_when_any_write_cannot_be_compacted() {
     for (why, mut open, mut seal) in attempts {
         assert!(
             f.host
-                .publication_mut()
-                .compact_sealed_history(APP, RECORD, &mut *open, &mut *seal, &f.owner, now)
+                .publication()
+                .draft_sealed_compaction(
+                    (APP, RECORD),
+                    None,
+                    &mut *open,
+                    &mut *seal,
+                    f.owner.verifying_key().to_bytes(),
+                    now
+                )
                 .is_err(),
             "{why} is compacted"
         );
@@ -1216,7 +1226,7 @@ fn a_full_history_refuses_writes_until_a_verified_compaction_supersedes_it() {
         &other,
         more.clone(),
         now,
-        "compact_sealed_history",
+        "draft_sealed_compaction",
     );
 
     let compaction = forged(

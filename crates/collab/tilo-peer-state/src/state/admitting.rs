@@ -674,7 +674,7 @@ impl StatePeer {
     }
     fn retain_sealed(candidate: &mut Document, envelope: SignedOp) -> Result<(), AdmissionError> {
         let full = || -> AdmissionError {
-            "sealed record history is full; a key holder must compact it (StatePeer::compact_sealed_history)"
+            "sealed record history is full; a key holder must compact it (PeerPublication::draft_sealed_compaction)"
                 .into()
         };
         if envelope.kind == OpKind::Compaction {

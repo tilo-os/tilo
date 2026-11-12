@@ -21,6 +21,23 @@ pub enum Write {
 /// A write as the owner committed it, with its receipt.
 pub type Committed = (OwnerCommitRequest, OwnerCommitReceipt);
 
+/// Sign `envelope`, drafted in an owner's turn, with `signer`, this device's custody of its
+/// key, outside that turn.
+pub(crate) async fn sign(
+    signer: &dyn collab_types::signer::DeviceSigner,
+    envelope: &mut collab_types::SignedOp,
+) -> Result<(), String> {
+    let bytes = envelope
+        .signing_bytes()
+        .map_err(|error| error.to_string())?;
+    let signature = signer
+        .sign(bytes)
+        .await
+        .map_err(|error| error.to_string())?;
+    envelope.signature = collab_types::Signature::from_bytes(signature);
+    collab_types::verify_op(envelope).map_err(|error| error.to_string())
+}
+
 impl NativeWorkspaceOwner {
     /// Commit the writes `prepare` drafts from `workspace` as it stands, in order: each draft
     /// signed by `signer`, this device's custody of its key, outside the owner's turn. Commits as
@@ -51,15 +68,7 @@ impl NativeWorkspaceOwner {
                     let CommitOperation::Document { envelope, .. } = &mut request.operation else {
                         return Err("unsupported native owner commit family".into());
                     };
-                    let bytes = envelope
-                        .signing_bytes()
-                        .map_err(|error| error.to_string())?;
-                    let signature = signer
-                        .sign(bytes)
-                        .await
-                        .map_err(|error| error.to_string())?;
-                    envelope.signature = collab_types::Signature::from_bytes(signature);
-                    collab_types::verify_op(envelope).map_err(|error| error.to_string())?;
+                    sign(signer, envelope).await?;
                     request
                 }
             });

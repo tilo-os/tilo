@@ -919,8 +919,8 @@ fn a_members_sealed_compaction_is_published_as_a_checkpoint() {
     );
 }
 
-#[test]
-fn a_member_with_no_sealed_history_past_its_bound_compacts_nothing() {
+#[tokio::test]
+async fn a_member_with_no_sealed_history_past_its_bound_compacts_nothing() {
     let joined = enrolled();
     let (keys, _) = rotated_channel();
     commit_sealed(&joined, &keys);
@@ -930,24 +930,25 @@ fn a_member_with_no_sealed_history_past_its_bound_compacts_nothing() {
         .compact_outgoing(
             joined.workspace,
             &crate::owner::testing::member_key(),
-            &mut |_| {
+            |_| {
                 opened += 1;
                 Err("no history is due".to_owned())
             },
-            &mut |_, _, _| {
+            |_, _, _| {
                 sealed += 1;
                 Err("no history is due".to_owned())
             },
             joined.now,
         )
+        .await
         .unwrap();
     assert_eq!(compacted, 0);
     assert_eq!((opened, sealed), (0, 0), "nothing is opened or sealed");
     assert_eq!(sent(&joined.owner, joined.workspace, joined.now).len(), 1);
 }
 
-#[test]
-fn an_expired_sealed_write_is_renewed_through_its_key_holder_and_replaces_its_original() {
+#[tokio::test]
+async fn an_expired_sealed_write_is_renewed_through_its_key_holder_and_replaces_its_original() {
     let joined = enrolled();
     let (before, current) = rotated_channel();
     let original = commit_sealed(&joined, &before);
@@ -963,7 +964,7 @@ fn an_expired_sealed_write_is_renewed_through_its_key_holder_and_replaces_its_or
         .renew_outgoing(
             joined.workspace,
             &crate::owner::testing::member_key(),
-            &mut |op| {
+            |op| {
                 asked += 1;
                 let metadata = op.encryption.ok_or("not sealed")?;
                 let plaintext = current
@@ -979,6 +980,7 @@ fn an_expired_sealed_write_is_renewed_through_its_key_holder_and_replaces_its_or
             },
             later,
         )
+        .await
         .unwrap();
     assert_eq!(asked, 1);
     let status = joined
@@ -1027,8 +1029,8 @@ fn an_expired_sealed_write_is_renewed_through_its_key_holder_and_replaces_its_or
     }
 }
 
-#[test]
-fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
+#[tokio::test]
+async fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
     let joined = enrolled();
     let (keys, _) = rotated_channel();
     commit_sealed(&joined, &keys);
@@ -1042,9 +1044,10 @@ fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
         .renew_outgoing(
             joined.workspace,
             &crate::owner::testing::member_key(),
-            &mut |_| Err("this device holds no current key".into()),
+            |_| Err("this device holds no current key".into()),
             later,
         )
+        .await
         .unwrap();
     assert_eq!(record_on_disk(&joined.path), committed);
     assert_eq!(
@@ -1062,9 +1065,10 @@ fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
             .renew_outgoing(
                 joined.workspace,
                 &SigningKey::from_bytes(&[99; 32]),
-                &mut |_| panic!("another signer's renewal asked the key holder"),
+                |_| panic!("another signer's renewal asked the key holder"),
                 later,
             )
+            .await
             .is_err()
     );
 }

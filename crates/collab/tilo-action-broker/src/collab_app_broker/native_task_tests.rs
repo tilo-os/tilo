@@ -185,7 +185,7 @@ impl OwnerCommitService for Native {
                     Err("the workspace's governor records no receipt".into())
                 }
                 CommitOperation::EffectReceipt { .. } => {
-                    owner.commit_effect_receipt(&request, &key, std::time::SystemTime::now())
+                    owner.commit_effect_receipt(&request, std::time::SystemTime::now())
                 }
                 CommitOperation::WorkspaceMembershipCommand { .. } => owner
                     .commit_workspace_membership_command(

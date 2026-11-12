@@ -153,8 +153,8 @@ impl PeerWorkspace<'_> {
 
 impl PeerWorkspaceMut<'_> {
     /// Record `receipt`, the terminal audit of an invocation this device
-    /// served, in its person's own slice of the workspace, signed by `key`, the
-    /// device's own: the rule every receiver holds a writer to
+    /// served, in its person's own slice of the workspace, as the device's own
+    /// change: the rule every receiver holds a writer to
     /// ([`crate::workspace::effect_slices_kept`]). The actor is the device's
     /// person, or an agent acting for them. This creates no application
     /// record or capability. Answers whether the workspace changed.
@@ -162,10 +162,9 @@ impl PeerWorkspaceMut<'_> {
         self,
         caller: &tilo_user_identity::DeviceCert,
         receipt: &WorkspaceEffectReceipt,
-        key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        let candidate = self.own_effect_candidate(caller, key, now)?;
+        let candidate = self.own_effect_candidate(caller, now)?;
         let Some(mut candidate) = candidate else {
             return Err("effect workspace is absent".into());
         };
@@ -204,16 +203,12 @@ impl PeerWorkspaceMut<'_> {
 
     /// The workspace as `caller`, this device, writes its own effect receipts
     /// into it: under its actor, once its certificate and read permission
-    /// hold and `key` is its own.
+    /// hold.
     fn own_effect_candidate(
         &self,
         caller: &tilo_user_identity::DeviceCert,
-        key: &SigningKey,
         now: SystemTime,
     ) -> Result<Option<automerge::AutoCommit>, String> {
-        if key.verifying_key().to_bytes() != caller.device_public_key {
-            return Err("an effect receipt is signed by its recorder's own device".into());
-        }
         if self
             .peer
             .certificate(&caller.device_public_key, now)
@@ -272,18 +267,17 @@ impl PeerWorkspaceMut<'_> {
     }
 
     /// Anchor `caller`'s archived effect receipts at `root`, in its
-    /// person's slice of the workspace, signed by `key`, the device's own.
+    /// person's slice of the workspace, as the device's own change.
     pub fn set_workspace_effect_history_root(
         self,
         caller: &tilo_user_identity::DeviceCert,
         root: [u8; 32],
-        key: &SigningKey,
         now: SystemTime,
     ) -> Result<(), String> {
         use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
         use tilo_desktop_model::projection::WORKSPACE_EFFECT_HISTORY_KEY;
         let mut candidate = self
-            .own_effect_candidate(caller, key, now)?
+            .own_effect_candidate(caller, now)?
             .ok_or("effect workspace is absent")?;
         let object =
             |doc: &mut automerge::AutoCommit, parent: &automerge::ObjId, key: &str| match doc
