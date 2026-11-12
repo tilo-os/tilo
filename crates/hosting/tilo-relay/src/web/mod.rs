@@ -164,6 +164,35 @@ struct Web {
     door: Option<Arc<crate::door::WaitListDoor>>,
 }
 
+/// Where this host keeps the stand-ins it approves for people with.
+#[must_use]
+pub(crate) fn stand_ins_dir(state_root: &std::path::Path) -> std::path::PathBuf {
+    state_root.join("stand-ins")
+}
+
+/// Make this host the stand-in approver of `root`'s person, with a certificate
+/// their root signs: what a host that places browser sessions certifies them
+/// with.
+///
+/// # Errors
+///
+/// The state directory cannot be read or written, or the root would not sign.
+pub(crate) fn keep_stand_in(
+    state_root: &std::path::Path,
+    root: &ed25519_dalek::SigningKey,
+) -> Result<(), String> {
+    stand_in::keep(&stand_ins_dir(state_root), root)
+}
+
+/// The stand-in certificate and key this host keeps for `user`, when it keeps
+/// a live one.
+pub(crate) fn stand_in_for(
+    state_root: &std::path::Path,
+    user: &[u8; 32],
+) -> Option<(ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert)> {
+    stand_in::kept(&stand_ins_dir(state_root), user)
+}
+
 /// Checks the published origins against the listeners they front.
 fn checked_origins(config: &WebConfig) -> Result<(), String> {
     if config.public_origin.is_none()
@@ -325,7 +354,7 @@ impl Relay {
                 tilo_clock::unix_now_ns(),
             ),
             login_codes: Arc::new(login_codes::LoginCodes::new(public_origin.clone())),
-            stand_ins: Arc::new(stand_in::StandIns::new(self.state_root().join("stand-ins"))),
+            stand_ins: Arc::new(stand_in::StandIns::new(stand_ins_dir(self.state_root()))),
             door: config.door.clone(),
         });
         web.serve_stand_ins();

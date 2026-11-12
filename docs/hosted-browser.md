@@ -42,10 +42,13 @@ GPU) with Browser and the Chromium engine runtime it requires.
 The session is **a device of the workspace**, and the narrowest one there
 is: the relay certifies a fresh device for it, confines it to that workspace
 and that window's record (see [Isolation](#isolation)), and refuses it once
-the session stops. It opens the Browser window on the workspace's Browser record,
-so the window is live, published and subscribed like a Browser window on
-anyone's computer, and its page actions (`browser@<window>/page#read-page`,
-…) are the ones Browser already has.
+the session stops. It certifies it as the person's **stand-in**, the
+certificate their root signed for this host: only a stand-in may make a
+device. A host its person's owner runs holds their root (a deployment's root
+file), and makes itself that stand-in at start. It opens the Browser window
+on the workspace's Browser record, so the window is live, published and
+subscribed like a Browser window on anyone's computer, and its page actions
+(`browser@<window>/page#read-page`, …) are the ones Browser already has.
 
 ## Isolation
 
@@ -92,9 +95,10 @@ The relay places a workspace's Browser where its shells run
 ([`placed_shells.rs`](../crates/hosting/tilo-relay/src/placed_shells.rs)):
 
 1. Someone opens Browser: a person on the desk, or an agent with a scoped
-   key calling `app.so.tilo.browser#open`. The relay asks the placer for the
-   host of the workspace's VM; while every host is full the open waits and
-   says so once.
+   key calling `app.so.tilo.browser#open`. The workspace lists Browser among
+   its apps like any other, and the host opens the workspace's Browser record
+   for it. The relay asks the placer for the host of the workspace's VM;
+   while every host is full the open waits and says so once.
 2. The relay asks that host's member device, over the device plane, to open
    Browser, handing it the material below. The member asks its hosted-VM
    service, which wakes the VM and starts the session.
@@ -272,6 +276,7 @@ their Browser with `TILO_HOSTED_PLACER`, `TILO_HOSTED_MEMBERS`,
 `TILO_HOSTED_ACCOUNT` and `TILO_HOSTED_VM_SIZE` (as for shells), plus
 `TILO_HOSTED_BROWSER_RELAY` (`KEY@HOST:PORT`, the public address sessions
 reach it at), `TILO_HOSTED_BROWSER_ACTIONS` (the action ledger) and
-`TILO_HOSTED_PLANS`. A VM host serves Browser in its VMs when
-`TILO_VM_RELAY_ENDPOINT` is set; it keeps its templates under its state
-directory by itself.
+`TILO_HOSTED_PLANS`. A host that holds its person's root makes itself their
+stand-in from it at start (`room --root-file`), and keeps it in its state.
+A VM host serves Browser in its VMs when `TILO_VM_RELAY_ENDPOINT` is set; it
+keeps its templates under its state directory by itself.

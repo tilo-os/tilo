@@ -53,6 +53,8 @@ pub struct Options {
     pub feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
     /// Where the host runs its workspaces' Terminal sessions.
     pub shell: Option<Arc<tilo_relay::agents::HostShells>>,
+    /// The Browser this host places for its workspaces.
+    pub browsers: Option<Arc<tilo_relay::hosted_browser::HostedBrowsers>>,
     /// Serve the web routes as plain HTTP on loopback too, as a client that
     /// trusts no development certificate reaches them.
     pub plain: bool,
@@ -70,6 +72,7 @@ impl Default for Options {
             allowed_origins: Vec::new(),
             feedback_reviewer: None,
             shell: None,
+            browsers: None,
             plain: false,
             member_limits: None,
         }
@@ -122,7 +125,7 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
             catalogue: options.catalogue,
             feedback_reviewer: options.feedback_reviewer,
             shell: options.shell,
-            browsers: None,
+            browsers: options.browsers,
         },
     )
     .await

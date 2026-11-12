@@ -49,6 +49,7 @@
 //! acts on, fresh for every act.
 
 mod bounded;
+mod catalogue;
 mod catch_up;
 mod content;
 mod feedback;
@@ -56,6 +57,7 @@ mod keys;
 mod ledger;
 mod link;
 mod opened;
+mod placed;
 mod publish;
 mod reads;
 mod run_context;
@@ -77,7 +79,7 @@ use tilo_session_client::{Cmd, Event, Events, Link, Outbox};
 
 use crate::apps::{AppCatalogue, Seed};
 use crate::host::CatalogueFactory;
-use crate::participant::actions::{Outcome, door_outcome, open_row, record_of, record_provider};
+use crate::participant::actions::{Outcome, door_outcome, record_of, record_provider};
 use crate::worker::{ConfinedReplica, ConfinedViews};
 use crate::workspace_records::WorkspaceRecords;
 use catch_up::catch_up;
@@ -89,11 +91,10 @@ use run_context::{caller_context, said_run_title};
 use tilo_actions::InteractionPhase;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, APPLICATION_START_ACTION,
-    ActionHostError, ActorPlace, Caller, CallerPrincipal, CataloguePage, CatalogueProvider,
-    CatalogueQuery, CatalogueRow, Completer, Confirmation, InvocationReceipt, InvocationState,
-    InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage,
-    application_provider, application_provider_record, pending, provider_workspace,
-    workspace_provider,
+    ActionHostError, ActorPlace, Caller, CallerPrincipal, CataloguePage, CatalogueQuery,
+    CatalogueRow, Completer, Confirmation, InvocationReceipt, InvocationState, InvokeArgument,
+    InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage, application_provider,
+    application_provider_record, pending, provider_workspace,
 };
 use tilo_actions::{
     ActionFailure, ActionOutput, ConfirmationPolicy, InvocationId, InvocationUpdate, PROMPTED_PARAM,
@@ -1899,123 +1900,6 @@ impl Worker {
             .is_some_and(|who| self.admits_bounded(workspace, &who))
     }
 
-    fn catalogue_page(
-        &mut self,
-        workspace_id: u64,
-        caller: &Caller,
-        query: &CatalogueQuery,
-    ) -> Result<CataloguePage, ActionHostError> {
-        // A stranger is told nothing: the workspace's own records are for the
-        // people it admits, and for the person whose device runs this service.
-        // A view lookup is not a listing and carries its own governed check.
-        if query.view_resource.is_none() && !self.admits_member(workspace_id, caller) {
-            return Ok(CataloguePage::from_rows("0".into(), Vec::new(), query));
-        }
-        if let Some(provider) = query.provider.as_deref()
-            && let Some(page) =
-                self.registered_read_catalogue(workspace_id, caller, provider, query)
-        {
-            return Ok(page);
-        }
-        // A record named by its provider waits for its own keys; a listing
-        // waits for the workspace's once ([`catalogue_keys`], which the
-        // service's thread admitted this request by).
-        let keys = catalogue_keys(query);
-        let state = self.refresh(workspace_id, keys.read())?;
-        let revision = state.revision.to_string();
-        // A workspace nothing was written in yet is named by the provider
-        // asked for, so its new records are offered; one this member's replica
-        // holds nothing of yet — a public workspace sends its records when a
-        // device opens them — is named by the session it joined.
-        let asked = query.provider.as_deref().and_then(provider_workspace);
-        let Some(cluster_id) = state
-            .workspace
-            .clone()
-            .or_else(|| {
-                asked
-                    .filter(|named| room_workspace_id(named).ok() == Some(workspace_id))
-                    .map(str::to_owned)
-            })
-            .or_else(|| {
-                self.workspaces
-                    .get(&workspace_id)
-                    .and_then(|workspace| workspace.cluster_id(workspace_id))
-            })
-        else {
-            return Ok(CataloguePage::from_rows(revision, Vec::new(), query));
-        };
-        let routes = self.records(&state, &cluster_id);
-        let own_provider = workspace_provider(&cluster_id);
-        let wanted: Vec<DocumentRoute> = match query.provider.as_deref() {
-            Some(provider) if provider == own_provider => Vec::new(),
-            Some(provider) => {
-                let route = record_of(provider, &cluster_id)
-                    .filter(|route| routes.contains(route))
-                    .ok_or(ActionHostError::UnknownAction)?;
-                vec![route]
-            }
-            None => routes.iter().take(DEFAULT_ROWS_RECORDS).cloned().collect(),
-        };
-        let mut rows = Vec::new();
-        let bounded = self.bounded(caller);
-        for route in &wanted {
-            let provider = record_provider(route);
-            let mut descriptors = match self.listed(workspace_id, bounded.as_ref(), route, &state) {
-                Ok(descriptors) => descriptors,
-                Err(error) => {
-                    tracing::warn!(%error, record = %route.record, "workspace actions: a record did not mount");
-                    continue;
-                }
-            };
-            if let Some(link) = self.shared.link.get().cloned()
-                && let Ok(mut read) = reads::CanonicalRead::prepare(
-                    &self.catalogue,
-                    link.as_ref(),
-                    workspace_id,
-                    caller,
-                    route,
-                )
-                && read
-                    .recheck(link.as_ref(), workspace_id, caller, route)
-                    .is_ok()
-            {
-                descriptors.extend(read.operations());
-            }
-            rows.extend(descriptors.into_iter().map(|descriptor| {
-                CatalogueRow::for_action(provider.clone(), route.app_id.clone(), descriptor)
-            }));
-        }
-        if query
-            .provider
-            .as_deref()
-            .is_none_or(|provider| provider == own_provider)
-            && self.may_across(workspace_id, caller, ActionKind::Undoable)
-        {
-            rows.extend(self.open_rows(&cluster_id));
-        }
-        let mut page = CataloguePage::from_rows(revision, rows, query);
-        if query.provider.is_none() {
-            page.providers = routes
-                .iter()
-                .map(|route| CatalogueProvider {
-                    provider: record_provider(route),
-                    app_id: route.app_id.clone(),
-                    workspace: cluster_id.clone(),
-                    record_id: route.record.clone(),
-                    browsable: true,
-                })
-                .chain(std::iter::once(CatalogueProvider {
-                    provider: own_provider,
-                    app_id: String::new(),
-                    workspace: cluster_id.clone(),
-                    record_id: String::new(),
-                    browsable: false,
-                }))
-                .collect();
-        }
-        Ok(page)
-    }
-
     fn registered_read_catalogue(
         &self,
         workspace: u64,
@@ -2054,13 +1938,6 @@ impl Worker {
             rows,
             query,
         ))
-    }
-
-    fn open_rows(&self, workspace: &str) -> Vec<CatalogueRow> {
-        self.catalogue
-            .iter()
-            .map(|definition| open_row(workspace, definition.app_id()))
-            .collect()
     }
 
     fn invoke(&mut self, workspace_id: u64, invocation: InvocationId) -> InvocationReceipt {
@@ -2390,7 +2267,7 @@ impl Worker {
                 target.address.action == APPLICATION_OPEN_ACTION
                     || target.address.action == APPLICATION_START_ACTION
             })
-            .filter(|app| self.catalogue.get(app).is_some())
+            .filter(|app| self.catalogue.has(app))
             .ok_or_else(unknown_action)?
             .to_owned();
         self.open_new(workspace_id, named, &app, who.as_ref())
@@ -2640,41 +2517,46 @@ impl Worker {
                 (who.person.clone(), actor, Some(permissions))
             }
         };
-        // An app that keeps one record per workspace opens that record: the
-        // one the workspace holds when it has it, founded only when its host
-        // answered it holds none.
-        if self
-            .catalogue
-            .get(app)
-            .is_some_and(ui::application::ApplicationDefinition::keeps_workspace_record)
-        {
+        let (route, genesis) = if self.catalogue.placed(app).is_some() {
+            self.placed_route(workspace_id, workspace, app)?
+        } else {
+            // An app that keeps one record per workspace opens that record: the
+            // one the workspace holds when it has it, founded only when its host
+            // answered it holds none.
+            if self
+                .catalogue
+                .get(app)
+                .is_some_and(ui::application::ApplicationDefinition::keeps_workspace_record)
+            {
+                let route = DocumentRoute {
+                    app_id: app.to_owned(),
+                    cluster_id: workspace.to_owned(),
+                    record: String::new(),
+                };
+                if self.held_or_owed(workspace_id, &route)? {
+                    return Ok(ActionOutput {
+                        value: Some(serde_json::json!({
+                            "provider": record_provider(&route),
+                            "record": route.record,
+                        })),
+                        resources: Vec::new(),
+                    });
+                }
+            }
+            let hosted =
+                ConfinedReplica::open(&self.catalogue, app, workspace, &creator, &actor, Seed::New)
+                    .map_err(|error| refused(error.to_string()))?;
+            let hosted = self.lend(hosted, workspace);
             let route = DocumentRoute {
                 app_id: app.to_owned(),
                 cluster_id: workspace.to_owned(),
-                record: String::new(),
+                record: hosted.wire_record().to_owned(),
             };
-            if self.held_or_owed(workspace_id, &route)? {
-                return Ok(ActionOutput {
-                    value: Some(serde_json::json!({
-                        "provider": record_provider(&route),
-                        "record": route.record,
-                    })),
-                    resources: Vec::new(),
-                });
-            }
-        }
-        let hosted =
-            ConfinedReplica::open(&self.catalogue, app, workspace, &creator, &actor, Seed::New)
+            let genesis = hosted
+                .take_mutation()
                 .map_err(|error| refused(error.to_string()))?;
-        let hosted = self.lend(hosted, workspace);
-        let route = DocumentRoute {
-            app_id: app.to_owned(),
-            cluster_id: workspace.to_owned(),
-            record: hosted.wire_record().to_owned(),
+            (route, genesis)
         };
-        let genesis = hosted
-            .take_mutation()
-            .map_err(|error| refused(error.to_string()))?;
         if let (Some(permissions), Some(mutation)) = (&permissions, &genesis) {
             let unwritable =
                 bounded::refused_writes(permissions, (app, None), None, mutation, (None, false))
@@ -2686,11 +2568,12 @@ impl Worker {
         // When the host device takes part in the workspace's channels, it opens a
         // new record's channel for the member and hands it the keys, so the
         // first change goes out sealed instead of waiting for keys.
-        if let Some(keys) = self
-            .shared
-            .link
-            .get()
-            .and_then(|link| link.host_keys(&route, true))
+        if genesis.is_some()
+            && let Some(keys) = self
+                .shared
+                .link
+                .get()
+                .and_then(|link| link.host_keys(&route, true))
         {
             let keys = keys.map_err(|reason| {
                 Outcome::Rejected(ActionHostError::Unavailable {

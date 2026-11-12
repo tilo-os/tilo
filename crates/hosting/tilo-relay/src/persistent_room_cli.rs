@@ -1391,6 +1391,16 @@ pub(crate) async fn run(
         ..Default::default()
     };
     let identity = hosted_identity(&root, host, host_cert, &config.state_root)?;
+    // A host that places its workspaces' browser sessions certifies them as
+    // the person's stand-in, which it makes from the root it holds: nobody
+    // else approves for them here.
+    if tilo_relay::hosted_browser::HostedBrowsers::from_env()
+        .map_err(anyhow::Error::msg)?
+        .is_some()
+    {
+        tilo_relay::hosted_browser::keep_stand_in(&config.state_root, &root)
+            .map_err(anyhow::Error::msg)?;
+    }
     let hosted = start_relay_lending(
         config,
         identity,

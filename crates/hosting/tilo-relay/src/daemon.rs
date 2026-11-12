@@ -227,6 +227,17 @@ impl Relay {
         self.web.certification.clone()
     }
 
+    /// The stand-in certificate and key this host keeps for `user`, when it
+    /// keeps a live one: what it approves for them with.
+    #[cfg(feature = "web")]
+    #[must_use]
+    pub fn stand_in(
+        &self,
+        user: &[u8; 32],
+    ) -> Option<(ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert)> {
+        crate::web::stand_in_for(self.state_root(), user)
+    }
+
     /// Name the device of the session beside this node (the shell that runs
     /// the person's apps), which pages address to open apps there. Named
     /// once; a later call keeps the first.

@@ -92,6 +92,35 @@ use tilo_user_identity::{
 
 /// The app a hosted workspace opens Browser through.
 pub const APP: &str = "so.tilo.browser";
+/// What people read Browser's name as.
+pub const TITLE: &str = "Browser";
+
+/// Browser as a host that places its windows lists it: a workspace opens
+/// `app.so.tilo.browser`, and the record it makes is opened by the session in
+/// the workspace's VM. This host mounts nothing of the app.
+#[must_use]
+pub fn placed_app() -> tilo_agent_participant::PlacedApp {
+    tilo_agent_participant::PlacedApp {
+        app_id: APP,
+        title: TITLE,
+    }
+}
+
+/// Make this host the person's stand-in approver, from their root:
+/// a browser session joins a workspace as a device of theirs, and a stand-in
+/// is what certifies one. A host its person's owner runs holds their root
+/// (a deployment's root file); a stand-in this host already keeps live is
+/// left as it is.
+///
+/// # Errors
+///
+/// `state_root` is not writable, or the root would not sign the certificate.
+pub fn keep_stand_in(
+    state_root: &std::path::Path,
+    root: &ed25519_dalek::SigningKey,
+) -> Result<(), String> {
+    crate::web::keep_stand_in(state_root, root)
+}
 /// The resource the window's page actions are actions of (`browser.page`);
 /// their provider names the window (`browser@42`).
 pub const PAGE_RESOURCE: &str = "browser.page";
