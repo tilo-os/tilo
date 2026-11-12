@@ -305,6 +305,37 @@ fn a_write_ahead_of_what_it_builds_on_waits_and_is_decided_as_its_authors() {
     ));
 }
 
+/// What the door's own device writes (a window a member's agent opened through the host) is
+/// followed, never decided: a guest whose page holds it and sends everything it holds is judged
+/// by what the guest changed. Unfollowed, Ben's window would read as one the guest attributed
+/// to him.
+#[test]
+fn a_window_the_door_itself_opened_is_not_judged_as_the_next_writers() {
+    const GUEST: &str = "guest";
+    let base = workspace();
+    let mut followed = DesktopGuard::new(base.doc().clone());
+    let mut unfollowed = DesktopGuard::new(base.doc().clone());
+    // The host writes Ben's agent's window 3 itself.
+    let mut host = Page::of(&base, 9);
+    let opened = host.write(&desktop(&[(1, 100, ADA), (2, 200, BEN), (3, 300, BEN)]));
+    followed.absorb_write(&opened).unwrap();
+    // A guest's page holds it and sends the whole document, nothing of its own in it.
+    let mut guest = Page(host.0.with_actor(automerge::ActorId::from(vec![5; 16])));
+    let whole = DocumentMutation::Snapshot(guest.0.save());
+    let refused = unfollowed
+        .decide(&whole, &writer(GUEST, None, &moderates(GUEST)))
+        .unwrap_err();
+    assert!(
+        matches!(&refused, DesktopRefusal::NotTheirs { act, .. }
+            if act.id == 3 && act.act == Act::Attribute && act.owner.as_deref() == Some(BEN)),
+        "{refused}"
+    );
+    followed
+        .decide(&whole, &writer(GUEST, None, &moderates(GUEST)))
+        .unwrap();
+    assert_eq!(windows(&followed), vec![1, 2, 3]);
+}
+
 /// A window `id` opened in `strip`'s first group, as a member's page adds it.
 fn open_window(desktop: &mut SharedDesktop, id: u64, who: &str, record: &str) {
     let strip = &mut desktop.tree.workspaces[0].strips[0];

@@ -75,6 +75,25 @@ impl GovernedWorkspace {
         }
     }
 
+    /// Follow `envelope`, the host's own write to the shared desktop, in the desktop the
+    /// members' writes are decided against, once that is followed at all: before, it starts
+    /// from the governor's copy, which holds it.
+    async fn absorb_host_desktop_write(
+        &mut self,
+        envelope: &collab_types::SignedOp,
+    ) -> Result<(), String> {
+        if self.desktop.is_none() {
+            return Ok(());
+        }
+        let Readable::Whole(mutation) = self.readable_mutation(envelope).await? else {
+            return Ok(());
+        };
+        self.desktop_guard()
+            .await?
+            .absorb_write(&mutation)
+            .map_err(|error| error.to_string())
+    }
+
     /// What `envelope` carries, opened with the channel's keys when it is
     /// sealed and put back together when it is one segment of a larger
     /// write.
@@ -152,9 +171,7 @@ impl Workspaces {
         author: [u8; 32],
         body: &[u8],
     ) -> Result<(), String> {
-        if author == self.inner.host.cert.device_public_key {
-            return Ok(());
-        }
+        let host = author == self.inner.host.cert.device_public_key;
         // ignored-failure: a classifier; a write that does not decode is reported where the governor takes it in (Workspaces::absorb)
         let Ok(neighbour_wire::NeighbourMsg::AppDocument {
             app_id,
@@ -173,6 +190,12 @@ impl Workspaces {
             .await
             .map_err(|error| error.to_string())?;
         let mut governed = state.lock().await;
+        if host {
+            // What the host itself writes (a window an agent's action opened through the host's
+            // own session) is the workspace's: not decided, but followed, so the members' writes
+            // that build on it are decided against the desktop they saw.
+            return governed.absorb_host_desktop_write(&envelope).await;
+        }
         let now = tilo_clock::wall();
         let member = governed
             .peer()
