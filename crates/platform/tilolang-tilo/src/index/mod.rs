@@ -354,15 +354,19 @@ pub fn workspace_dir(base: &Path, workspace: &str) -> PathBuf {
     base.join("rooms").join(name)
 }
 
-/// The directory of the indexes of the record `record` of the workspace `workspace` under `base`: the
-/// workspace's ([`workspace_dir`]) for the workspace's record of an app, and one of its own for another
-/// record (a member's own), so what one record holds is never shown as another's.
+/// The directory of the indexes of the record `record` of the workspace `workspace` under `base`,
+/// the instance `instance` keeps: the workspace's ([`workspace_dir`]) for the workspace's record of
+/// an app, and one of its own for another record (a member's own), so what one record holds is
+/// never shown as another's. An index file is open to one store at a time (redb holds it), so each
+/// instance keeps its own beside the record's: two windows of one app in a host both read their
+/// index rather than one of them opening the other's file and building its own in memory.
 #[must_use]
-pub fn record_dir(base: &Path, workspace: &str, record: Option<&str>) -> PathBuf {
-    match record {
+pub fn record_dir(base: &Path, workspace: &str, record: Option<&str>, instance: u64) -> PathBuf {
+    let of_record = match record {
         None => workspace_dir(base, workspace),
         Some(record) => workspace_dir(base, &format!("{workspace}~{record}")),
-    }
+    };
+    of_record.join(format!("instance-{instance}"))
 }
 
 fn create_tables(txn: &WriteTransaction) -> Result<(), IndexError> {
@@ -421,21 +425,27 @@ fn decode_doc(sealed: &[u8]) -> Result<(String, ChunkNo), Corrupt> {
 
 impl Index {
     /// The index of `app` at `path`, if it holds a complete index of this format and of the
-    /// package's schema `schema`; else the file emptied (or made anew when it cannot be read
-    /// at all) for a build. An index whose file needs repairing (the process ended in the
-    /// middle of a commit) is built anew too: repairing reads the whole file.
+    /// package's schema `schema`; else the file emptied (or made anew when there is none) for a
+    /// build. An index whose file needs repairing (the process was killed in the middle of a
+    /// commit) is built anew too: repairing reads the whole file, and what it held is not trusted
+    /// anyway.
     pub fn open(path: &Path, app: &str, schema: &str) -> Result<Opened, IndexError> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| IndexError::Io(e.to_string()))?;
         }
-        let opened = Database::builder()
-            .set_cache_size(CACHE_BYTES)
-            .set_repair_callback(redb::RepairSession::abort)
-            .create(path);
+        // A file that is not there holds nothing to lose: it is made anew, and a fresh index
+        // that redb reads before its first commit is no index the person ever had.
+        let held = std::fs::metadata(path).is_ok_and(|meta| meta.len() > 0);
+        let mut builder = Database::builder();
+        builder.set_cache_size(CACHE_BYTES);
+        if held {
+            builder.set_repair_callback(redb::RepairSession::abort);
+        }
+        let opened = builder.create(path);
         let db = match opened {
             Ok(db) => db,
-            // Another index holds the file (a second window on the workspace): it is not this one's
-            // to empty.
+            // Another index holds the file (a window whose instance is not this one's): it is
+            // not this one's to empty.
             Err(redb::DatabaseError::DatabaseAlreadyOpen) => {
                 return Err(IndexError::Io("the index is open elsewhere".into()));
             }

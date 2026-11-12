@@ -16,7 +16,7 @@ use tilolang_runtime::value::{ResourceRef, Value};
 use tilolang_tilo::action::{Authorship, DynAction, DynEdit};
 use tilolang_tilo::chunk::{self, ChunkNo, Chunks};
 use tilolang_tilo::host::{Host, Opening};
-use tilolang_tilo::index::Contents;
+use tilolang_tilo::index::{Contents, Index, Opened};
 use tilolang_tilo::publish::PlanRequest;
 use tilolang_tilo::record::DynValue;
 
@@ -706,6 +706,30 @@ fn what_the_store_writes_reads_back_before_the_record_holds_it() {
     assert_eq!(listed(&ada).first(), Some(&moved));
     assert_eq!(listed(&ada), items(&ada, &root));
     assert_eq!(kept(&ada), anew(&ada, &lock));
+}
+
+/// An index file is open to one store at a time: redb holds it, so a second store is told it is
+/// open elsewhere rather than opening it. Each window of an app keeps its own for that reason
+/// ([`tilolang_tilo::index::record_dir`]).
+#[test]
+fn an_index_file_is_open_to_one_store_at_a_time() {
+    let dir = TempDir::new("one-owner");
+    let path = tilolang_tilo::index::file_of(dir.path(), APP);
+    let first = Index::open(&path, APP, "schema").unwrap();
+    assert!(
+        matches!(first, Opened::Empty(_)),
+        "a file made anew is empty"
+    );
+    let second = Index::open(&path, APP, "schema");
+    assert!(
+        second.is_err(),
+        "a second store opened the file the first holds"
+    );
+    drop(first);
+    assert!(
+        Index::open(&path, APP, "schema").is_ok(),
+        "closed, the file opens"
+    );
 }
 
 /// A directory of the test's own, removed when dropped.

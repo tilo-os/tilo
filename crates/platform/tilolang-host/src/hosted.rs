@@ -451,8 +451,8 @@ impl Platform for HostPlatform {
     }
 }
 
-/// Where an instance keeps what it keeps: its workspace record's on-disk copy and its indexes, under
-/// its package's directory in the host's storage.
+/// Where an instance keeps what it keeps: its workspace record's on-disk copy, and its own indexes,
+/// under its package's directory in the host's storage.
 pub struct Kept {
     pub documents: Rc<dyn durable_store::DurableStore>,
     pub indexes: Option<std::path::PathBuf>,
@@ -680,6 +680,7 @@ impl Hosted {
                         indexes,
                         &spec.workspace,
                         record.route().record.as_deref(),
+                        spec.instance,
                     )
                 }),
                 record_loader: None,

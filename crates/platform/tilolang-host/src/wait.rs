@@ -1,5 +1,5 @@
-//! What the host's loop waits on between its frames: its door, its own wake, its task's
-//! connection, and its instances' windows.
+//! What the host's loop waits on between its frames: its door, its own wake, a stop signal, its
+//! task's connection, and its instances' windows.
 //!
 //! Each descriptor is watched only for what the loop takes from it, so the wait ends only when
 //! the loop has something to do. A running instance's window is watched for what the window
@@ -84,6 +84,8 @@ pub struct Ready {
     pub door: bool,
     /// The host's wake was written: work off the frame has something for it.
     pub wake: bool,
+    /// The host was asked to stop ([`crate::stop`]).
+    pub stop: bool,
     /// The task's connection has something.
     pub task: bool,
     /// A window sent something or closed, or an opening instance's window closed.
@@ -94,18 +96,19 @@ impl Ready {
     /// Whether anything ended the wait.
     #[must_use]
     pub fn any(self) -> bool {
-        self.door || self.wake || self.task || self.windows
+        self.door || self.wake || self.stop || self.task || self.windows
     }
 }
 
-/// Wait until the door, the wake, the task or a window has something for the host, for at most
-/// `timeout_ms` (`-1`: as long as that takes; `0`: whether one has, without waiting).
+/// Wait until the door, the wake, a stop, the task or a window has something for the host, for at
+/// most `timeout_ms` (`-1`: as long as that takes; `0`: whether one has, without waiting).
 ///
 /// # Errors
 /// The wait itself failed (a signal's interruption is no failure: nothing is ready).
 pub fn wait(
     door: Option<BorrowedFd<'_>>,
     wake: BorrowedFd<'_>,
+    stop: Option<BorrowedFd<'_>>,
     host: &TilolangHost,
     timeout_ms: i32,
 ) -> std::io::Result<Ready> {
@@ -115,6 +118,11 @@ pub fn wait(
         revents: 0,
     };
     let mut fds = vec![watch(wake, libc::POLLIN)];
+    let stop_at = stop.map(|stop| {
+        let at = fds.len();
+        fds.push(watch(stop, libc::POLLIN));
+        at
+    });
     let door_at = door.map(|door| {
         let at = fds.len();
         fds.push(watch(door, libc::POLLIN));
@@ -156,6 +164,7 @@ pub fn wait(
     };
     Ok(Ready {
         wake: at(Some(0)),
+        stop: at(stop_at),
         door: at(door_at),
         task: at(task_at),
         windows: fds
