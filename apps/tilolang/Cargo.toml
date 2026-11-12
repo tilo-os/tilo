@@ -18,61 +18,11 @@ path = "src/lib.rs"
 name = "tilolang-app"
 path = "src/main.rs"
 
+# Every tilolang app's tests: one binary, its files included as modules by
+# `tests/it.rs` (a file per binary linked the whole crate once each).
 [[test]]
 name = "it"
 path = "tests/it.rs"
-
-# One package per process: Counter's binary of its own.
-[[test]]
-name = "counter"
-path = "tests/counter.rs"
-
-# The interaction layer (menus, hover toolbars, swipes) over a small package of its own.
-[[test]]
-name = "interaction"
-path = "tests/interaction.rs"
-
-# Rich text with references and times, as a reader sees it, over a package of its own.
-[[test]]
-name = "mentions"
-path = "tests/mentions.rs"
-
-# Views: the person's own views, an agent's answer among them, drawn live over the installed apps.
-[[test]]
-name = "views"
-path = "tests/views.rs"
-
-# The Board package with cards on it: its window's bindings, actions and card menus.
-[[test]]
-name = "board"
-path = "tests/board.rs"
-
-# Tasks' actions that ask for more: their forms, as a person fills them in.
-[[test]]
-name = "forms"
-path = "tests/forms.rs"
-
-# The Tasks package on a project's board: cards dragged within and between its lanes.
-[[test]]
-name = "tasks_board"
-path = "tests/tasks_board.rs"
-
-# The motion the Tasks package gets with no view asking for it: a check-off filling over frames,
-# and rows a person adds and removes arriving and leaving through the list's own motion.
-[[test]]
-name = "motion"
-path = "tests/motion.rs"
-
-# A hosted app's window, as a person uses it, against the tilolang host running its instance.
-[[test]]
-name = "hosted"
-path = "tests/hosted.rs"
-
-# One undo, run against the in-process window and against a tilolang host: the record's
-# platform history verb, both.
-[[test]]
-name = "history_undo"
-path = "tests/history_undo.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
