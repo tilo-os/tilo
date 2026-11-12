@@ -4309,11 +4309,12 @@ async fn install_sdk_encryption(
     let route = routes
         .get_mut(&key)
         .ok_or_else(|| "joined MLS route disappeared".to_string())?;
-    route
+    let mut keys = route
         .encryption
         .lock()
-        .map_err(|_| "MLS endpoint state is unavailable after a poisoned lock".to_string())?
-        .install_group(group);
+        .map_err(|_| "MLS endpoint state is unavailable after a poisoned lock".to_string())?;
+    keys.install_group(group);
+    key_fetch::hold_content_secret(&route.spec, &keys);
     Ok(())
 }
 

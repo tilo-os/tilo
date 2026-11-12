@@ -24,10 +24,13 @@
 //!   to persist. Neither does I/O of its own.
 //!
 //! Content a record references is sealed before it leaves the writer
-//! ([`ContentStore::sealing`]): each item under a fresh key, stored and
+//! ([`ContentStore::sealing`]): each item under a key of its own, stored and
 //! carried under the address of its ciphertext, named by a reference that
 //! carries the key ([`ContentRef`]). Only the record's readers open it;
-//! whoever stores or serves it holds ciphertext alone.
+//! whoever stores or serves it holds ciphertext alone. Where the members'
+//! content secret is at hand ([`ContentBackend::content_secret`]) the key
+//! derives from it and the bytes, so the same bytes stored twice are one
+//! item.
 //!
 //! Content is kept until someone who knows every reference collects the rest
 //! ([`ContentStore::collect_unreferenced`]): a store never guesses what is garbage, so content a
@@ -101,6 +104,18 @@ pub fn names(reference: &str, bytes: &[u8]) -> bool {
         Some(key) => tilo_seal::content::seal(key, bytes)
             .is_ok_and(|sealed| verify(parsed.address(), &sealed)),
     }
+}
+
+/// The key `plain` is sealed under where the members hold `secret`: BLAKE3 of the bytes, keyed by
+/// a key derived from the secret ([`ContentBackend::content_secret`]).
+fn convergent_key(secret: &tilo_seal::SymmetricKey, plain: &[u8]) -> tilo_seal::SymmetricKey {
+    let keyed = tilo_seal::SymmetricKey::from_bytes(blake3::derive_key(
+        "tilo record content key v1",
+        secret.expose_secret(),
+    ));
+    tilo_seal::SymmetricKey::from_bytes(
+        *blake3::keyed_hash(keyed.expose_secret(), plain).as_bytes(),
+    )
 }
 
 /// True when `bytes` really are the content named by `hash`.
@@ -269,6 +284,22 @@ pub trait ContentBackend: Send + Sync {
     fn workspace_scoped(&self) -> bool {
         false
     }
+
+    /// The secret the members who read what this store keeps hold, when it is at hand: a
+    /// sealing store ([`ContentStore::sealing`]) then seals each item under a key derived from
+    /// it and the item's bytes, rather than a fresh one, so the same bytes stored twice are the
+    /// same ciphertext under the same reference, kept and carried once.
+    ///
+    /// Whoever holds the secret learns which items are the same bytes, and can tell whether a
+    /// given item is among them; the members can tell that anyway, by opening both. Whoever does
+    /// not hold it (the hosts that keep and carry the ciphertext, a device removed before the
+    /// secret was derived) learns nothing: without the secret no key, and no address, follows
+    /// from any bytes. The key never leaves the reference, which travels inside the sealed
+    /// record, so a reader who joins later opens the item as before, and a reference sealed
+    /// under a fresh key opens as it always did.
+    fn content_secret(&self) -> Option<tilo_seal::SymmetricKey> {
+        None
+    }
 }
 
 /// A store a host keeps for one workspace alone
@@ -307,6 +338,10 @@ impl ContentBackend for OneWorkspace {
     fn workspace_scoped(&self) -> bool {
         true
     }
+
+    fn content_secret(&self) -> Option<tilo_seal::SymmetricKey> {
+        self.0.content_secret()
+    }
 }
 
 /// An app's handle to binary content: cheap to clone, passed to whatever needs it.
@@ -340,8 +375,10 @@ impl ContentStore {
         }
     }
 
-    /// This store, sealing what it stores: each item under a fresh key, kept under the address of
-    /// its ciphertext, and named by a reference that carries the key. The store a record's content
+    /// This store, sealing what it stores: each item under a key of its own, kept under the
+    /// address of its ciphertext, and named by a reference that carries the key. The key derives
+    /// from the members' content secret and the bytes when the backend holds one
+    /// ([`ContentBackend::content_secret`]), and is fresh otherwise. The store a record's content
     /// travels through seals, so the record's readers alone open it.
     #[must_use]
     pub fn sealing(self) -> Self {
@@ -500,9 +537,22 @@ impl ContentStore {
         if !self.seals {
             return self.backend.put(reader, mime);
         }
-        let key = tilo_seal::SymmetricKey::generate()
-            .map_err(|error| ContentError::Io(error.to_string()))?;
-        let mut sealed = tilo_seal::content::SealReader::new(&key, reader)
+        let secret = self.backend.content_secret();
+        // With the members' secret the key is the bytes' keyed hash, so they are read whole
+        // first. Such a key seals the one plaintext it was derived from, as a fresh one does, so
+        // the nonces sealing derives from a chunk's position never repeat under it.
+        let mut plain = Vec::new();
+        let key = match &secret {
+            Some(secret) => {
+                reader.read_to_end(&mut plain)?;
+                convergent_key(secret, &plain)
+            }
+            None => tilo_seal::SymmetricKey::generate()
+                .map_err(|error| ContentError::Io(error.to_string()))?,
+        };
+        let mut whole = plain.as_slice();
+        let source: &mut dyn Read = if secret.is_some() { &mut whole } else { reader };
+        let mut sealed = tilo_seal::content::SealReader::new(&key, source)
             .map_err(|error| ContentError::Io(error.to_string()))?;
         let stored = self.backend.put(&mut sealed, SEALED_MIME)?;
         Ok(Stored {

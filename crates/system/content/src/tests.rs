@@ -571,3 +571,75 @@ fn another_device_keeps_sealed_content_exactly_from_its_reference_and_bytes() {
         Err(ContentError::HashMismatch)
     );
 }
+
+/// A directory store whose members hold `secret`.
+struct Members(DirBackend, tilo_seal::SymmetricKey);
+
+impl ContentBackend for Members {
+    fn put(&self, reader: &mut dyn Read, mime: &str) -> Result<Stored, ContentError> {
+        self.0.put(reader, mime)
+    }
+
+    fn open(&self, hash: &str) -> Result<Option<ContentReader>, ContentError> {
+        self.0.open(hash)
+    }
+
+    fn has(&self, hash: &str) -> bool {
+        self.0.has(hash)
+    }
+
+    fn content_secret(&self) -> Option<tilo_seal::SymmetricKey> {
+        Some(self.1.clone())
+    }
+}
+
+#[test]
+fn the_same_bytes_stored_twice_by_members_are_one_sealed_item() {
+    let picture = [TINY_PNG, &vec![9_u8; 64 * 1024 + 3]].concat();
+    let secret = tilo_seal::SymmetricKey::generate().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let store = ContentStore::new(Members(DirBackend::new(dir.path()), secret)).sealing();
+    let reference = store.put(&picture).unwrap();
+    assert!(is_sealed(&reference));
+    let kept = files_under(dir.path());
+    let mut streamed = picture.as_slice();
+    assert_eq!(
+        store.put_reader(&mut streamed, "image/png").unwrap().hash,
+        reference,
+        "the same bytes, put again, are named alike"
+    );
+    assert_eq!(files_under(dir.path()), kept, "and kept once");
+    assert_eq!(store.read(&reference).as_deref(), Some(picture.as_slice()));
+    assert!(
+        files_under(dir.path())
+            .iter()
+            .all(|file| !file.windows(64).any(|w| w == &picture[..64])),
+        "sealed all the same"
+    );
+    // A reader with no secret (a device opening the record, a host) reads it
+    // by its reference, as any sealed item.
+    let reader = ContentStore::in_dir(dir.path());
+    assert_eq!(reader.read(&reference).as_deref(), Some(picture.as_slice()));
+    // A reference an earlier writer sealed under a fresh key still opens.
+    let fresh = reader.sealing().put(&picture).unwrap();
+    assert_ne!(fresh, reference);
+    assert_eq!(store.read(&fresh).as_deref(), Some(picture.as_slice()));
+    assert!(names(&reference, &picture));
+
+    let elsewhere = tempfile::tempdir().unwrap();
+    let other = ContentStore::new(Members(
+        DirBackend::new(elsewhere.path()),
+        tilo_seal::SymmetricKey::generate().unwrap(),
+    ))
+    .sealing();
+    let theirs = other.put(&picture).unwrap();
+    assert_ne!(
+        content_address(&theirs),
+        content_address(&reference),
+        "members of another workspace seal the same bytes to other ciphertext"
+    );
+    assert_ne!(
+        other.read(content_address(&theirs).unwrap().as_str()),
+        store.read(content_address(&reference).unwrap().as_str())
+    );
+}

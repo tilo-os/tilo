@@ -29,6 +29,9 @@ pub const MEDIA_STREAM_TAG_LEN: usize = 2;
 /// never one derived for another purpose.
 const MEDIA_KEY_DOMAIN: &[u8] = b"tilo-call-media-v1";
 
+/// Domain of the secret record content keys derive from.
+const RECORD_CONTENT_DOMAIN: &[u8] = b"tilo-record-content-v1";
+
 /// Content keys of one channel, as handed to an application endpoint.
 #[derive(Clone)]
 pub struct ChannelContentKeys {
@@ -157,6 +160,29 @@ impl ChannelContentKeys {
             ));
         }
         self.open_content(artifact, metadata, payload)
+    }
+
+    /// The secret the content a record references is sealed under now: a
+    /// BLAKE3 keyed hash, under the current epoch's content key, of
+    /// `"tilo-record-content-v1"`. The channel is left out, so every record
+    /// one key scope carries shares it, and the same bytes stored for two
+    /// of them are one item (`tilo_content::ContentStore::put_reader`).
+    ///
+    /// Holders of the epoch's key derive it, and nobody else: a device
+    /// removed before the epoch derives nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::MissingContentKey`] when this endpoint holds no key for the
+    /// current epoch.
+    pub fn record_content_secret(&self) -> Result<SymmetricKey> {
+        let content = self
+            .keyring
+            .get(self.epoch)
+            .ok_or(Error::MissingContentKey(self.epoch))?;
+        let mut hash = blake3::Hasher::new_keyed(content.expose_secret());
+        hash.update(RECORD_CONTENT_DOMAIN);
+        Ok(SymmetricKey::from_bytes(*hash.finalize().as_bytes()))
     }
 
     /// The key that seals one device's frames of one media stream under
@@ -369,6 +395,46 @@ mod tests {
             scope_keys.with_earlier(&earlier.for_unit(other)),
             Ok(keys) if keys.channel_id() == scope
         ));
+    }
+
+    #[test]
+    fn record_content_secret_is_the_scopes_for_every_unit_and_moves_with_the_epoch() {
+        let channel = ChannelId::new();
+        let mut group =
+            ChannelGroup::create(channel, MemberKey::generate("owner").unwrap()).unwrap();
+        let scope = group.content_keys().unwrap();
+        let secret = scope.record_content_secret().unwrap();
+        assert_eq!(
+            secret,
+            scope
+                .for_unit(ChannelId::new())
+                .record_content_secret()
+                .unwrap(),
+            "every record the scope carries shares it"
+        );
+        assert_ne!(
+            secret,
+            ChannelGroup::create(ChannelId::new(), MemberKey::generate("other").unwrap())
+                .unwrap()
+                .content_keys()
+                .unwrap()
+                .record_content_secret()
+                .unwrap(),
+            "another scope has its own"
+        );
+        let joiner = MemberKey::generate("joiner").unwrap();
+        group
+            .add_member(joiner.fresh_key_package().unwrap())
+            .unwrap();
+        assert_ne!(
+            secret,
+            group
+                .content_keys()
+                .unwrap()
+                .record_content_secret()
+                .unwrap(),
+            "a new epoch has a new one"
+        );
     }
 
     #[test]

@@ -2,8 +2,10 @@
 //! picture, an attachment), encrypted before they leave the writer's device,
 //! so whoever stores or carries them holds ciphertext alone.
 //!
-//! Every item has a fresh random key, which travels in the reference the
-//! record keeps, so the record's readers, and only they, open it. The content
+//! Every item has a key of its own, which travels in the reference the
+//! record keeps, so the record's readers, and only they, open it: a fresh
+//! random one, or one derived from the members' secret and the bytes, so the
+//! same bytes stored twice are one item (`tilo_content::ContentStore`). The content
 //! is sealed in chunks of [`CHUNK`] bytes, each XChaCha20-Poly1305 under a
 //! nonce made of its index and whether it is the last, so a reader opens and
 //! checks each chunk as it streams in, and a stream cut short or reordered
@@ -48,19 +50,6 @@ fn nonce(index: u64, last: bool) -> XNonce {
 
 const fn aad() -> &'static [u8] {
     Label::RecordContent.as_bytes()
-}
-
-/// How long `plain` bytes are once sealed.
-#[must_use]
-pub const fn sealed_len(plain: u64) -> u64 {
-    let chunks = if plain == 0 {
-        1
-    } else {
-        plain.div_ceil(CHUNK as u64)
-    };
-    (HEADER.len() as u64)
-        .saturating_add(plain)
-        .saturating_add(chunks.saturating_mul(TAG as u64))
 }
 
 /// Read `out.len()` bytes from `inner`, fewer only at its end.
@@ -309,7 +298,6 @@ mod tests {
         for len in [0, 1, CHUNK - 1, CHUNK, CHUNK + 1, 3 * CHUNK + 17] {
             let plain: Vec<u8> = (0..len).map(|i| u8::try_from(i % 251).unwrap()).collect();
             let sealed = seal(&key, &plain).unwrap();
-            assert_eq!(sealed.len() as u64, sealed_len(len as u64), "{len}");
             assert_eq!(
                 sealed,
                 seal(&key, &plain).unwrap(),

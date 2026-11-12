@@ -97,7 +97,33 @@ pub(crate) fn data_dir_content(directory: &std::path::Path) -> tilo_content::Con
     )
 }
 
+/// The content secret of `workspace`'s members, which every window of it in
+/// this process holds.
+fn workspace_secret(workspace: &str) -> Option<tilo_seal::SymmetricKey> {
+    static SECRETS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, tilo_seal::SymmetricKey>>,
+    > = std::sync::OnceLock::new();
+    let generated = tilo_seal::SymmetricKey::generate().ok()?;
+    Some(
+        SECRETS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(workspace.to_owned())
+            .or_insert(generated)
+            .clone(),
+    )
+}
+
 impl Profile {
+    /// The workspace the app opens in, on a temporary profile.
+    fn workspace(&self) -> Option<&str> {
+        match self {
+            Self::Temporary(_, workspace, _) | Self::Window(_, workspace, ..) => Some(workspace),
+            Self::DataDir(_) => None,
+        }
+    }
+
     /// The profile's settings, which the app's typed settings use instead of
     /// the person's.
     fn settings(&self) -> ui_core::storage::SettingsDocument {
@@ -2133,6 +2159,15 @@ fn open_app(
         (_, named) => prepare_on(&mut host, definition, instance, named, inputs)?,
     };
     let checkout = prepared.context.record().clone();
+    // The harness holds the workspace's keys, as the record's route does on a
+    // device: what the app stores is sealed under its members' secret.
+    if let Some(workspace) = profile.workspace() {
+        ui_core::collaboration::record_content::ContentLane::of(
+            opening.id,
+            super::app::record_wire(&checkout.id),
+        )
+        .hold_secret(workspace_secret(workspace));
+    }
     hand_launch(definition, arguments, &mut prepared)?;
     prepared.context.provide_launch_options(options);
     if private {
