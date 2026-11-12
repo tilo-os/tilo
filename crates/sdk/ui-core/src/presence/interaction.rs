@@ -523,15 +523,12 @@ impl PresenceCtx {
         // pointer then goes without, one tag for one agent, at its caret. The caret's tag names
         // the agent ("Claude Code · Agent") where this one would say what it does; a second tag
         // beside it, or floating where the pointer is, says the same agent twice.
+        // Its caret is where it acts then, so no pointer is drawn either: a pointer of its own
+        // stood on the very words the caret had just written, or apart from them where it last
+        // pointed.
         let worn = self.caret_tags().iter().any(|tag| tag.user == user);
         let bounds = if worn {
-            super::render::draw_agent_pointer_alone(
-                paint.scene,
-                paint.transform,
-                paint.theme,
-                (tip, viewport),
-                actor_color,
-            )
+            Rect::from_origin_size(tip, (0.0, 0.0))
         } else {
             let (bounds, tag) = super::render::draw_agent_nametag(
                 paint.scene,
@@ -1220,7 +1217,13 @@ mod tests {
         );
         let locus = Rect::new(100.0, 296.0, 400.0, 322.0);
         let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-        assert!(paint_marker(&mut presence, &agent, locus, viewport, "note", at, &theme).is_some());
+        let marker = paint_marker(&mut presence, &agent, locus, viewport, "note", at, &theme)
+            .expect("the action is marked");
+        assert!(
+            marker.bounds.is_zero_area(),
+            "and no pointer of its own beside the caret: {:?}",
+            marker.bounds
+        );
         let tags: Vec<String> = presence
             .caret_tags()
             .into_iter()
