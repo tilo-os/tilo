@@ -518,9 +518,13 @@ fn picture_size(src: &str, bytes: &[u8]) -> Result<(u32, u32), String> {
     Ok((width, height))
 }
 
+/// Pictures kept in one step, by what the caller named them by: a picture
+/// placed twice in one step is kept once, so the artwork names one content.
+pub type Kept = std::collections::HashMap<String, (String, (u32, u32))>;
+
 /// An image shape as authored: its picture kept by content and its frame
 /// filled in from the picture's size where it was left out.
-fn kept_image(shape: &mut crate::model::Shape) -> Result<(), String> {
+fn kept_image(shape: &mut crate::model::Shape, kept: &mut Kept) -> Result<(), String> {
     let crate::model::Shape::Image {
         src,
         width,
@@ -531,7 +535,14 @@ fn kept_image(shape: &mut crate::model::Shape) -> Result<(), String> {
     else {
         return Ok(());
     };
-    let (address, (pw, ph)) = keep_picture(src)?;
+    let given = src.clone();
+    let (address, (pw, ph)) = if let Some(known) = kept.get(&given) {
+        known.clone()
+    } else {
+        let stored = keep_picture(&given)?;
+        kept.insert(given, stored.clone());
+        stored
+    };
     *src = address;
     let [.., cw, ch] = crop.unwrap_or([0.0, 0.0, 1.0, 1.0]);
     let (natural_w, natural_h) = (f64::from(pw) * cw, f64::from(ph) * ch);
@@ -599,12 +610,13 @@ pub fn store(bytes: &[u8]) -> Result<String, String> {
 /// files and inline pictures kept as content, what the window shows. The
 /// invocation then carries the result, so every replica applies the same.
 mod prepare {
-    use super::{artwork, keep_picture, kept_image, title_of};
+    use super::{Kept, artwork, keep_picture, kept_image, title_of};
 
     /// A drawn picture given by path or inline is kept as content.
     pub(super) fn draw(params: &mut artwork::Draw) -> Result<(), String> {
+        let mut kept = Kept::new();
         for mark in &mut params.shapes.marks {
-            kept_image(&mut mark.shape)?;
+            kept_image(&mut mark.shape, &mut kept)?;
         }
         Ok(())
     }
@@ -612,7 +624,7 @@ mod prepare {
     /// A picture an edit gives by path or inline is kept as content.
     pub(super) fn edit_marks(params: &mut artwork::EditMarks) -> Result<(), String> {
         if let Some(shape) = &mut params.edit.shape {
-            kept_image(&mut shape.0)?;
+            kept_image(&mut shape.0, &mut Kept::new())?;
         }
         Ok(())
     }
