@@ -147,6 +147,11 @@ pub struct ViewState {
     /// Every `(resource, field)` read (the resource as `ResourceRef::id_string`), the view's
     /// dependencies.
     pub reads: Vec<(String, String)>,
+    /// Whether this run decides what an action shows or may do on a resource — a requirement, an
+    /// `applies` condition or a presentation — rather than drawing one: what it reads is kept as
+    /// an answer another turn reads again ([`crate::runtime::Reading`]), so a collection it
+    /// filters is the field it reads, which no item's own read names.
+    pub decides: bool,
     /// When the time it read (`today` in a query or a filter) next reads differently, in
     /// seconds since 1970 (UTC): it runs again then. `None` when it read no time.
     pub changes_at: Option<i64>,

@@ -522,12 +522,48 @@ struct Answers {
 struct Answered {
     /// Where the publications stood when the answer was read ([`Publications::moved`]).
     at: u64,
-    /// What can run on the resource by the action: `None` for an action whose app keeps no
-    /// requirement it can decide, which is offered as it is published.
-    said: Option<tilo_actions::Availability>,
+    /// What the app says of the action on the resource: what it is called there, the icon beside
+    /// it and whether it can run; `None` for an action whose app says nothing its subject
+    /// decides, which is offered as it is published.
+    said: Option<tilolang_tilo::host::Offered>,
     /// The fields reading the answer read; `None` for an answer that read beyond the workspace
     /// (the clock, the window's space, the person's view state), which moves without it moving.
     reads: Option<Vec<(String, String)>>,
+}
+
+/// A row that shows what an app says of an action on it: what it is called there, the icon
+/// beside it and whether it can run. The window's catalogue and the action directory carry the
+/// same answer, so both are shown it the same way.
+trait Shows {
+    fn shows(&mut self, offered: &tilolang_tilo::host::Offered);
+}
+
+impl Shows for ActionDescriptor {
+    fn shows(&mut self, offered: &tilolang_tilo::host::Offered) {
+        if let Some(label) = &offered.label {
+            self.action_label.clone_from(label);
+        }
+        if let Some(icon) = &offered.icon {
+            self.icon = Some(icon.clone());
+        }
+        if let Some(availability) = &offered.availability {
+            self.contract.availability = availability.clone();
+        }
+    }
+}
+
+impl Shows for collaboration::ExportedAction {
+    fn shows(&mut self, offered: &tilolang_tilo::host::Offered) {
+        if let Some(label) = &offered.label {
+            self.action_label.clone_from(label);
+        }
+        if let Some(icon) = &offered.icon {
+            self.icon = Some(icon.clone());
+        }
+        if let Some(availability) = &offered.availability {
+            self.contract.availability = availability.clone();
+        }
+    }
 }
 
 /// How many answers a window's rows keep: a person scrolling a list of ten thousand asks about
@@ -536,8 +572,8 @@ struct Answered {
 const ANSWERS_KEPT: usize = 8_192;
 
 impl Answers {
-    /// What can run on `resource` by `action`, as `host` says it now, with the publications
-    /// where `at` says: an answer read earlier stands while nothing it read moved
+    /// What the action `action` offers on `resource`, as `host` says it now, with the
+    /// publications where `at` says: an answer read earlier stands while nothing it read moved
     /// ([`Self::forget`]).
     fn answer(
         &mut self,
@@ -545,16 +581,13 @@ impl Answers {
         at: u64,
         resource: &str,
         action: &str,
-    ) -> Option<tilo_actions::Availability> {
+    ) -> Option<tilolang_tilo::host::Offered> {
         let key = (resource.to_owned(), action.to_owned());
         if let Some(answered) = self.said.get(&key) {
             return answered.said.clone();
         }
-        let (said, reads) = match host.availability_reading(resource, action) {
-            Some((availability, reading)) => (
-                Some(availability),
-                (!reading.beyond).then_some(reading.reads),
-            ),
+        let (said, reads) = match host.offered_reading(resource, action) {
+            Some((offered, reading)) => (Some(offered), (!reading.beyond).then_some(reading.reads)),
             None => (None, Some(Vec::new())),
         };
         if self.said.len() >= ANSWERS_KEPT {
@@ -573,33 +606,38 @@ impl Answers {
 
     /// Forget what a change reached since an answer was read ([`Publications::changed_since`]),
     /// and every answer when the packages loaded changed: an answer read nothing but the
-    /// workspace, so it stands until a field it read moves.
+    /// workspace, so it stands until a field it read moves. Whether a change reached one, which
+    /// is what a surface offering the actions must read again.
     fn forget(
         &mut self,
         publications: &Publications,
         packages: &[tilolang_tilo::runtime::PackageId],
-    ) {
+    ) -> bool {
         if packages != self.packages.as_slice() {
             self.packages = packages.to_vec();
             self.said.clear();
-            return;
+            return true;
         }
         let mut since: std::collections::HashMap<u64, Option<Moved>> =
             std::collections::HashMap::new();
+        let mut moved = false;
         self.said.retain(|_, answered| {
             let Some(reads) = &answered.reads else {
                 return false;
             };
-            match since
+            let reached_now = match since
                 .entry(answered.at)
                 .or_insert_with(|| publications.changed_since(answered.at))
             {
-                None | Some(Moved::Everything) => false,
-                Some(Moved::These(changed)) => !changed
+                None | Some(Moved::Everything) => true,
+                Some(Moved::These(changed)) => changed
                     .iter()
                     .any(|changed| reads.iter().any(|read| reached(changed, read))),
-            }
+            };
+            moved |= reached_now;
+            !reached_now
         });
+        moved
     }
 }
 
@@ -1166,15 +1204,22 @@ impl Hosted {
             if !shown.contains(&descriptor.address.resource) {
                 continue;
             }
-            if let Some(availability) = self.answers.answer(
-                &host,
-                at,
-                &descriptor.address.resource,
-                &descriptor.address.action,
-            ) {
-                descriptor.contract.availability = availability;
-            }
+            self.show_offer(&host, at, descriptor);
         }
+    }
+
+    /// What the app says of `descriptor`'s action on its resource now, as the window shows it:
+    /// what it is called there, the icon beside it, and whether it can run ([`Answers`]).
+    fn show_offer(&mut self, host: &Host, at: u64, descriptor: &mut ActionDescriptor) {
+        let Some(offered) = self.answers.answer(
+            host,
+            at,
+            &descriptor.address.resource,
+            &descriptor.address.action,
+        ) else {
+            return;
+        };
+        descriptor.shows(&offered);
     }
 
     /// Where the publications stand now: what an answer is read at, and how far it stands
@@ -1188,14 +1233,15 @@ impl Hosted {
 
     /// Forget the answers a change since reached ([`Answers::forget`]): what a window shows is
     /// answered again only where what it read moved, and rows no change reached keep theirs.
-    fn forget_answers(&mut self) {
+    /// Whether a change reached one, which is what a surface offering the actions reads again.
+    fn forget_answers(&mut self) -> bool {
         let surface = self.surface.borrow().clone();
         let Some(surface) = surface else {
-            return;
+            return false;
         };
         let publications = surface.publications.borrow();
         let packages = surface.host.package_ids();
-        self.answers.forget(&publications, &packages);
+        self.answers.forget(&publications, &packages)
     }
 
     /// The entries of the resources the change moved, and the keys of the entries it deleted:
@@ -1284,10 +1330,10 @@ impl Hosted {
                 let Some(descriptor) = row.descriptor.as_mut() else {
                     return;
                 };
-                if let Some(availability) =
+                if let Some(offered) =
                     answers.answer(&host, at, &descriptor.resource, &descriptor.action)
                 {
-                    descriptor.contract.availability = availability;
+                    descriptor.shows(&offered);
                 }
             });
         }
@@ -1877,7 +1923,11 @@ impl Hosted {
     /// Whether this turn's publishing is done; when the surface changed in more than labels
     /// since the broker took it, the caller builds it whole.
     ///
-    /// Nothing is validated again: no rule reads a label.
+    /// Nothing is validated again: no rule reads a label. A change no label moved with is done
+    /// here too when it read nothing an action offered on the window's rows reads either (a note's
+    /// body typed into): otherwise the caller reads what the app says of those actions again,
+    /// since that is not a label and the change may have moved it (a task checked off, and
+    /// `Clear done` can run now).
     fn relabel(&mut self, surface: &Rc<Surface>, inputs: SurfaceInputs) -> bool {
         let Some((from, taken)) = &self.published_from else {
             return false;
@@ -1888,6 +1938,21 @@ impl Hosted {
         let Some(labels) = surface.publications.borrow().labels_since(taken.0) else {
             return false;
         };
+        // What the app says of an action on a resource the surface holds — what it is called
+        // there, the icon beside it and whether it can run — is read again when a change reached
+        // it: a change the surface shows nothing of (a task checked off, and `Clear done` can run
+        // now) moves that and no label.
+        let answered = self.forget_answers();
+        if labels.is_empty() {
+            if answered {
+                return false;
+            }
+            self.published_from = Some((Rc::clone(surface), inputs));
+            return true;
+        }
+        if answered {
+            return false;
+        }
         let Some((descriptors, state)) = &mut self.published else {
             return false;
         };
@@ -1905,7 +1970,7 @@ impl Hosted {
                 }
             }
         }
-        self.directory_behind |= !labels.is_empty();
+        self.directory_behind = true;
         let changed: Vec<&str> = labels
             .iter()
             .map(|(resource, _)| resource.as_str())

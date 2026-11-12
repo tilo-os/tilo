@@ -306,6 +306,7 @@ impl Core {
         let Some(vs) = frames.view_mut() else {
             return;
         };
+        let deciding = vs.decides;
         let at = vs
             .colls
             .iter()
@@ -338,6 +339,14 @@ impl Core {
         // item: an item changing whether it is in, or where, is no change to the collection's
         // field.
         if seen.sweep == len && len > 0 && !coll.derived() {
+            seen.whole = true;
+            seen.at = Vec::new();
+            vs.reads.push((seen.resource.clone(), coll.field.clone()));
+        } else if deciding && coll.derived() && !seen.whole {
+            // What a requirement, an `applies` condition or a presentation read of a filtered
+            // collection is decided by every item's own fields, and it is kept as an answer
+            // another turn reads again ([`crate::runtime::Reading`]): that answer is the
+            // collection's field, which a change to any item under it reaches.
             seen.whole = true;
             seen.at = Vec::new();
             vs.reads.push((seen.resource.clone(), coll.field.clone()));
