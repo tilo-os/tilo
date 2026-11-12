@@ -5540,7 +5540,7 @@ impl VideoEditorApp {
         let body_h = header_h + groups_h + footer_h;
         let labels = ExportLabels::new();
         let actions = self.export_actions(&labels);
-        let spec = ModalSpec::new("Export project")
+        let spec = ModalSpec::new(&labels.title)
             .actions(&actions)
             .max_width(EXPORT_CARD_W);
         let modal = modal_layout_with_stacking_actions(self.rect, &spec, body_h, tr, theme);
@@ -8117,7 +8117,8 @@ impl VideoEditorApp {
     ) {
         let l = self.help_layout(tr, theme);
         let hit = l.modal.hit(self.last_mouse);
-        let spec = ModalSpec::new("Keyboard shortcuts").close_hovered(hit == Some(ModalHit::Close));
+        let title = crate::resource::CATALOG.t("video-editor-shortcuts-title");
+        let spec = ModalSpec::new(&title).close_hovered(hit == Some(ModalHit::Close));
         modal_dialog::paint_backdrop(scene, tf, tr, theme, &l.modal, &spec);
         let (ink, dim) = modal_dialog::ink(theme);
         let ty = &l.type_sizes;
@@ -8282,7 +8283,7 @@ impl VideoEditorApp {
         for (i, action) in actions.iter_mut().enumerate() {
             action.hovered = hit == Some(ModalHit::Action(i));
         }
-        let spec = ModalSpec::new("Export project")
+        let spec = ModalSpec::new(&labels.title)
             .actions(&actions)
             .max_width(EXPORT_CARD_W)
             .close_hovered(hit == Some(ModalHit::Close));
@@ -8522,7 +8523,8 @@ impl VideoEditorApp {
         let two_col = self.rect.width() / scale >= HELP_TWO_COLUMN_MIN_W;
         let (split, tallest) = help_columns(two_col, m);
         let content_h = line_sm + s3 + tallest;
-        let mut spec = ModalSpec::new("Keyboard shortcuts").body_height(content_h);
+        let title = crate::resource::CATALOG.t("video-editor-shortcuts-title");
+        let mut spec = ModalSpec::new(&title).body_height(content_h);
         if two_col {
             spec = spec.max_width(HELP_CARD_W);
         }
@@ -8630,6 +8632,7 @@ impl VideoEditorApp {
 
 /// What the export dialog's buttons say, in the window's language.
 struct ExportLabels {
+    title: String,
     cancel: String,
     close: String,
     export: String,
@@ -8639,6 +8642,7 @@ impl ExportLabels {
     fn new() -> Self {
         let catalog = &crate::resource::CATALOG;
         Self {
+            title: catalog.t("video-editor-export-title"),
             cancel: catalog.t("video-editor-cancel-export"),
             close: catalog.t("video-editor-close-export"),
             export: catalog.t("video-editor-start-export"),

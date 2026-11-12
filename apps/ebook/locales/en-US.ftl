@@ -230,5 +230,9 @@ ebook-settings-default-font = Default font
 ebook-write-comment = Write a comment
 ebook-write-note = Write a note
 
+## What the settings sheets are titled
+ebook-edit-scheme-title = Edit scheme
+ebook-add-font-title = Add a system font
+
 ## The buttons of the settings sheets
 ebook-done = Done

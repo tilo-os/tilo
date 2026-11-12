@@ -230,5 +230,9 @@ ebook-settings-default-font = Standardschrift
 ebook-write-comment = Kommentar schreiben
 ebook-write-note = Notiz schreiben
 
+## Wie die Blätter der Einstellungen heißen
+ebook-edit-scheme-title = Farbschema bearbeiten
+ebook-add-font-title = Eine Systemschriftart hinzufügen
+
 ## Die Schaltflächen der Einstellungsblätter
 ebook-done = Fertig

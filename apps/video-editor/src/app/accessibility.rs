@@ -1207,7 +1207,7 @@ impl VideoEditorApp {
             );
         }
         AccessNode::new(Role::Dialog)
-            .with_name(crate::resource::CATALOG.t("video-editor-a11y-export-dialog"))
+            .with_name(crate::resource::CATALOG.t("video-editor-export-title"))
             .with_key(ui::a11y::hash_key(&"export"))
             .with_state(AccessState::new().modal(true))
             .with_children(kids)
@@ -1261,7 +1261,7 @@ impl VideoEditorApp {
                 .with_state(AccessState::new().focusable(true)),
         );
         AccessNode::new(Role::Dialog)
-            .with_name(crate::resource::CATALOG.t("video-editor-a11y-shortcuts"))
+            .with_name(crate::resource::CATALOG.t("video-editor-shortcuts-title"))
             .with_key(ui::a11y::hash_key(&"help"))
             .with_state(AccessState::new().modal(true))
             .with_children(kids)

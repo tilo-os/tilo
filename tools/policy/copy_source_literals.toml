@@ -161,11 +161,6 @@ text = "That's the one. Starting a huddle to walk through the grid — jump in. 
 reason = "Sample conversation a headless screenshot stages, never a person's own window."
 
 [[allow]]
-file = "apps/mail/src/compose.rs"
-text = "Launch order\\n\\\n            Thanks both. The new order works for me: website first, then the press kit, then the email campaign.\\n\\\n            Website copy final by Wednesday\\n\\\n            Press kit review on Thursday\\n\\\n            Email campaign goes out last\\n\\\n            Let’s not send the campaign before the website is live."
-reason = "Sample mail the headless screenshot opens, never a person's own window."
-
-[[allow]]
 file = "apps/chat/src/live_share_panel.rs"
 text = "Ag"
 reason = "A measuring sample a list row lays out to find its height, never a word a person reads."
@@ -236,99 +231,14 @@ text = "Ag"
 reason = "A measuring sample a list row lays out to find its height, never a word a person reads."
 
 [[allow]]
-file = "apps/file-explorer/src/files_app.rs"
-text = "conflict must be keep-both, skip, replace or ask, not {other:?}"
-reason = "What the copy tool refuses an agent: a wrong argument name, never shown in a window."
-
-[[allow]]
-file = "apps/file-explorer/src/files_app.rs"
-text = "Files opens no `{anchor}`"
-reason = "What the open tool answers an agent about an anchor, never shown in a window."
-
-[[allow]]
-file = "apps/settings/src/panes/accessibility.rs"
-text = "`{code}` is not a dictation language code"
-reason = "What an action tells a caller that named an unknown argument value, never a window's copy."
-
-[[allow]]
-file = "apps/settings/src/panes/accessibility.rs"
-text = "`{typed}` is not the name of a pointer theme"
-reason = "What an action tells a caller that named an unknown pointer theme, never a window's copy."
-
-[[allow]]
-file = "apps/settings/src/panes/appearance.rs"
-text = "`{key}` is not an accent colour"
-reason = "What an action tells a caller that named an unknown accent colour, never a window's copy."
-
-[[allow]]
-file = "apps/settings/src/panes/appearance.rs"
-text = "`{choice}` is not an interface face"
-reason = "What an action tells a caller that named an unknown interface face, never a window's copy."
-
-[[allow]]
-file = "apps/settings/src/panes/appearance.rs"
-text = "`{key}` is not a translucency"
-reason = "What an action tells a caller that named an unknown translucency, never a window's copy."
-
-[[allow]]
-file = "apps/settings/src/panes/display.rs"
-text = "`{mode}` is not a mode of this display"
-reason = "What an action tells a caller that named an unknown display mode, never a window's copy."
-
-[[allow]]
-file = "apps/settings/src/panes/display.rs"
-text = "`{rotation}` is not a rotation"
-reason = "What an action tells a caller that named an unknown rotation, never a window's copy."
-
-[[allow]]
 file = "apps/settings/src/panes/network/vpn.rs"
 text = "WireGuard"
 reason = "A protocol's name, spelled the same in every language."
 
 [[allow]]
-file = "apps/settings/src/panes/speakers.rs"
-text = "there is no speaker {speaker}"
-reason = "What an action tells a caller that named an unknown speaker, never a window's copy."
-
-[[allow]]
-file = "apps/settings/src/panes/speakers.rs"
-text = "`{role}` is not a role"
-reason = "What an action tells a caller that named an unknown role, never a window's copy."
-
-[[allow]]
-file = "apps/tube/src/app.rs"
-text = "there is no screen `{screen}`"
-reason = "What an action tells a caller that named an unknown screen, never a window's copy."
-
-[[allow]]
-file = "crates/session/desktop-surface/src/navigation.rs"
-text = "Unknown verb: {error}"
-reason = "What the navigation door answers a caller that sent an unknown verb, never a window's copy."
-
-[[allow]]
-file = "crates/session/session/src/hosted_browser.rs"
-text = "the material is not the relay's: {error}"
-reason = "What the browser relay refuses a caller, never a window's copy."
-
-[[allow]]
 file = "crates/session/session/src/pairing.rs"
 text = "the device was not paired: {}"
 reason = "What the pairing door answers a caller, never a window's copy."
-
-[[allow]]
-file = "crates/session/session/src/plane.rs"
-text = "the arguments are not a JSON object: {error}"
-reason = "What the automation plane tells a caller, never a window's copy."
-
-[[allow]]
-file = "crates/session/session/src/shell/state.rs"
-text = "{text} is not a place on the desk"
-reason = "What the desk action tells a caller that named no known place, never a window's copy."
-
-[[allow]]
-file = "crates/session/session/src/shell/state.rs"
-text = "{text} is not a place to hang a surface"
-reason = "What the desk action tells a caller that named no known place, never a window's copy."
 
 [[allow]]
 file = "crates/session/session/src/sync/client/plane.rs"

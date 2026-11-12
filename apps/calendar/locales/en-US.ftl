@@ -163,6 +163,11 @@ calendar-quick-field = What to add
 calendar-quick-add = Add
 calendar-quick-cancel = Cancel
 
+## The title of the sheet that edits an event or a task
+
+calendar-event-detail-title = Event
+calendar-task-detail-title = Task
+
 ## The keys this window answers to
 
 calendar-help-title = Keyboard shortcuts

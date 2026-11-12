@@ -163,6 +163,11 @@ calendar-quick-field = Was hinzugefügt wird
 calendar-quick-add = Hinzufügen
 calendar-quick-cancel = Abbrechen
 
+## Der Titel des Blatts, das einen Termin oder eine Aufgabe bearbeitet
+
+calendar-event-detail-title = Termin
+calendar-task-detail-title = Aufgabe
+
 ## Die Tasten, auf die dieses Fenster hört
 
 calendar-help-title = Tastenkürzel

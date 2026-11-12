@@ -107,4 +107,5 @@ sheets-comment-you = You
 sheets-comment-someone = Someone
 
 ## The document settings sheet
+sheets-document-settings = Document settings
 sheets-done = Done

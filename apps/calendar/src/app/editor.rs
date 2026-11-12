@@ -462,17 +462,23 @@ impl<'a> Flow<'a> {
 
 impl CalendarApp {
     /// The sheet's title: what is being edited.
-    pub(super) fn sheet_title(&self) -> &'static str {
+    pub(super) fn sheet_title(&self) -> String {
         match self.selection {
-            Some(Sel::Task(_)) => "Task",
-            Some(Sel::Event(_)) if self.fresh_draft.is_some() => "New event",
-            _ => "Event",
+            Some(Sel::Task(_)) => crate::resource::t("calendar-task-detail-title"),
+            Some(Sel::Event(_)) if self.fresh_draft.is_some() => {
+                crate::resource::t("calendar-a11y-new-event")
+            }
+            _ => crate::resource::t("calendar-event-detail-title"),
         }
     }
 
     /// The modal sheet's spec: its title and its one action, Done.
-    fn sheet_spec<'a>(&self, actions: &'a [ModalAction<'a>], body_height: f64) -> ModalSpec<'a> {
-        ModalSpec::new(self.sheet_title())
+    fn sheet_spec<'a>(
+        title: &'a str,
+        actions: &'a [ModalAction<'a>],
+        body_height: f64,
+    ) -> ModalSpec<'a> {
+        ModalSpec::new(title)
             .actions(actions)
             .closable(false)
             .body_height(body_height)
@@ -518,10 +524,11 @@ impl CalendarApp {
                 let probe = self.form_layout(Rect::new(0.0, 0.0, width, 0.0), text, &theme);
                 let content_h = probe.notes_top + self.notes_content_h.max(notes_min);
                 let done = done_label();
+                let title = self.sheet_title();
                 let actions = [ModalAction::primary(&done)];
                 let natural = modal_dialog::layout(
                     window,
-                    &self.sheet_spec(&actions, content_h),
+                    &Self::sheet_spec(&title, &actions, content_h),
                     text,
                     &theme,
                 );
@@ -540,7 +547,12 @@ impl CalendarApp {
                         .filter(|y| *y <= room)
                         .fold(0.0, f64::max);
                     let body_h = if body_h > 0.0 { body_h } else { room };
-                    modal_dialog::layout(window, &self.sheet_spec(&actions, body_h), text, &theme)
+                    modal_dialog::layout(
+                        window,
+                        &Self::sheet_spec(&title, &actions, body_h),
+                        text,
+                        &theme,
+                    )
                 };
                 let max = (content_h - layout.body.height()).max(0.0);
                 let scroll = if self.shots_detail_scroll_to_end {
@@ -937,13 +949,14 @@ impl CalendarApp {
             return;
         };
         let done = done_label();
+        let title = self.sheet_title();
         let actions = [ModalAction::primary(&done).hovered(
             layout
                 .actions
                 .first()
                 .is_some_and(|r| r.contains(self.last_mouse)),
         )];
-        let spec = self.sheet_spec(&actions, layout.body.height());
+        let spec = Self::sheet_spec(&title, &actions, layout.body.height());
         modal_dialog::paint_backdrop(scene, t, text, theme, &layout, &spec);
         self.hits.push((layout.scrim, Action::CloseDetail));
         self.hits.push((layout.card, Action::Noop));

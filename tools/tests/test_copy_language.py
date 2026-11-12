@@ -359,6 +359,92 @@ class CopyLanguageTests(unittest.TestCase):
                 "it offers paints its label, whichever way the others are "
                 "emphasised, and one resolved through the catalogue is not copy")
 
+    def test_a_modal_sheets_title_is_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-settings = Document settings\n")
+            (locales / "de-DE.ftl").write_text("demo-settings = Dokumenteinstellungen\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn draw(&self) -> ModalSpec<'_> {",
+                '    ModalSpec::new("Document settings").body_height(self.body_h())',
+                "}",
+                "fn catalogued(&self) -> ModalSpec<'_> {",
+                '    let title = crate::i18n::t("demo-settings");',
+                "    ModalSpec::new(&title)",
+                "}",
+                "fn line_height(&self, text: &mut TextRenderer) -> f64 {",
+                "    let line = f64::from(",
+                '        text.measure_style("Ag", None, &self.style).1,',
+                "    );",
+                "    line",
+                "}",
+                "fn token(&self) -> Token {",
+                '    Token::new("Bearer token")',
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Document settings"],
+                "a sheet's title is the words a person reads above it, so a "
+                "literal handed to `ModalSpec::new` is copy, while the words "
+                "at another type's `new` are not: there they are a measurement "
+                "sample, an identifier or a message a person never reads. A "
+                "title the crate resolved through its catalogue is not copy "
+                "either")
+
+    def test_a_locals_words_are_read_in_the_function_that_binds_them(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-settings = Document settings\n")
+            (locales / "de-DE.ftl").write_text("demo-settings = Dokumenteinstellungen\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn empty_state(&self) -> Node {",
+                '    let title = "No folders yet";',
+                "    EmptyState::paint(self.area(), title)",
+                "}",
+                "fn sheet(&self) -> ModalSpec<'_> {",
+                '    let title = crate::i18n::t("demo-settings");',
+                "    ModalSpec::new(&title)",
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)], [],
+                "a local lives in the body that declares it: the words one "
+                "function stores in `title` are not what the sheet further down "
+                "the file hands its constructor")
+
+    def test_a_call_handed_fewer_arguments_than_a_label_paints_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn message(&self, anchor: &str) -> String {",
+                '    format!("Files opens no `{anchor}`")',
+                "}",
+                "fn close_button(&self) -> Button {",
+                '    let label = "Close";',
+                '    Button::new("demo.close")',
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)], [],
+                "a builder handed the id alone has no label to paint, so the "
+                "words before it in the file — a local it does not take, a "
+                "`format!` it does not take — are another call's")
+
     def test_a_plain_local_and_an_action_label_are_copy(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

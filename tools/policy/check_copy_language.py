@@ -538,6 +538,11 @@ TEXT_CONSTRUCTORS = (
     ("ArgValue::Text(", 0),
     ("Notification::new(", 0),
     ("Button::new(", 1),
+    # A sheet is titled by the words a person reads above it, so a literal
+    # handed to `ModalSpec::new` is the same defect as one handed a label. The
+    # type qualifies the name: `new` alone is every other type's constructor,
+    # whose argument may be a measurement string or a model id.
+    ("ModalSpec::new(", 0),
     ("Button::icon_only(", 2),
     ("ListRow::new(", 1),
     ("ModalAction::primary(", 0),
@@ -803,7 +808,8 @@ def struct_field(code: str, begin: int, end: int, name: str) -> tuple[int, int]:
 
 def argument(code: str, start: int, index: int) -> tuple[int, int]:
     """The `index`th (0-based) argument of the call whose bracket opens at
-    `start - 1`, or an empty range when the call has fewer arguments."""
+    `start - 1`, or an empty range at the call's close when it has fewer
+    arguments: a call that hands nothing there paints nothing."""
     end = rust_source.matching(code, start - 1) - 1
     begin = position = start
     seen = 0
@@ -817,7 +823,7 @@ def argument(code: str, start: int, index: int) -> tuple[int, int]:
             seen += 1
             begin = position + 1
         position += 1
-    return (begin, end) if seen == index else (0, 0)
+    return (begin, end) if seen == index else (end, end)
 
 
 def surfaces(root: Path) -> list[str]:
@@ -974,19 +980,27 @@ def bound_names(binding: re.Match[str]) -> list[tuple[str, int | None]]:
     return [(binding.group(3), None)] if binding.group(3) else []
 
 
-def copy_bindings(code: str, starts: list[int],
-                  by_start: dict[int, rust_source.Literal],
-                  kept: str) -> dict[str, list[rust_source.Literal]]:
-    """Words a constructor is handed through the name they are stored in.
+def copy_bindings(code: str, starts: list[int], by_start: dict[int, rust_source.Literal],
+                  kept: str) -> dict[str, list[tuple[tuple[int, int], rust_source.Literal]]]:
+    """Words a constructor is handed through the name they are stored in, and
+    the body the name is bound in.
 
     Only a value that is the sentence counts: a `format!`, a `match`/`if` that
     picks one (in a tuple pattern, the tuple's element at that name's
     position), or a plain literal. A sentence built inside a call — an error in
     `ok_or_else(|| format!(…))?` — is an outcome the surface shows in its own
     words, not a value a constructor gets handed.
+
+    A local lives in the body that declares it: the same name in another
+    function (`title` in one empty state, `title` in a sheet further down the
+    file) holds its own words, and a constructor reading one does not read the
+    other.
     """
-    found: dict[str, list[rust_source.Literal]] = {}
+    scopes = function_scopes(code)
+    found: dict[str, list[tuple[tuple[int, int], rust_source.Literal]]] = {}
     for binding in BINDING.finditer(code):
+        scope = next(((body, close) for body, close in scopes
+                      if body <= binding.start() < close), (0, len(code)))
         begin = binding.end()
         end = statement_end(code, begin)
         value = code[begin:end].lstrip()
@@ -1014,7 +1028,7 @@ def copy_bindings(code: str, starts: list[int],
                                  if kept[literal.start] == "x"
                                  and english_words(literal.value))
                 for literal in dict.fromkeys(words):
-                    found.setdefault(name, []).append(literal)
+                    found.setdefault(name, []).append((scope, literal))
     return found
 
 
@@ -1039,16 +1053,31 @@ def stored_literal(code: str, starts: list[int],
     return literal
 
 
-def named_in(code: str, begin: int, end: int, name: str) -> bool:
-    """Whether `name` is used as a whole identifier inside `[begin, end)`."""
+def named_position(code: str, begin: int, end: int, name: str) -> int:
+    """Where `name` is used as a whole identifier inside `[begin, end)`, or -1."""
     at = code.find(name, begin, end)
     while at >= 0:
         before = code[at - 1 : at]
         after = code[at + len(name) : at + len(name) + 1]
         if not (before.isalnum() or before == "_" or after.isalnum() or after == "_"):
-            return True
+            return at
         at = code.find(name, at + len(name), end)
-    return False
+    return -1
+
+
+def named_in(code: str, begin: int, end: int, name: str) -> bool:
+    """Whether `name` is used as a whole identifier inside `[begin, end)`."""
+    return named_position(code, begin, end, name) >= 0
+
+
+def function_scopes(code: str) -> list[tuple[int, int]]:
+    """The body of each of the file's functions, as `(brace, close)`."""
+    scopes = []
+    for function in FUNCTION.finditer(code):
+        brace = code.find("{", function.end())
+        if brace >= 0:
+            scopes.append((brace, rust_source.matching(code, brace)))
+    return scopes
 
 
 FUNCTION = re.compile(r"\bfn\s+([a-z_][A-Za-z0-9_]*)\s*(?:<[^>]*>)?\s*\(")
@@ -1686,10 +1715,11 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
                 if kept[literal.start] == "x" and english_words(literal.value):
                     hits.append(literal)
             for name, stored in bindings.items():
-                if not named_in(code, begin, close, name):
+                at = named_position(code, begin, close, name)
+                if at < 0:
                     continue
-                for literal in stored:
-                    if kept[literal.start] == "x":
+                for (body, end_of_body), literal in stored:
+                    if body <= at < end_of_body and kept[literal.start] == "x":
                         hits.append(literal)
 
         bindings = (copy_bindings(code, starts, by_start, kept)
@@ -1727,19 +1757,21 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
                 start = code.find(call)
                 while start >= 0:
                     begin, end = argument(code, start + len(call), index)
-                    sentences(begin, end, rust_source.matching(code, start + len(call) - 1),
-                              bindings)
-                    ranges.append((begin, end))
-                    found.extend(words_returned_in(code, begin, end, returning[crate]))
+                    if begin < end:
+                        sentences(begin, end,
+                                  rust_source.matching(code, start + len(call) - 1), bindings)
+                        ranges.append((begin, end))
+                        found.extend(words_returned_in(code, begin, end, returning[crate]))
                     start = code.find(call, start + len(call))
             for call, index in SPEC_BUILDERS:
                 start = code.find(call)
                 while start >= 0:
                     begin, end = argument(code, start + len(call), index)
-                    sentences(begin, end, rust_source.matching(code, start + len(call) - 1),
-                              bindings)
-                    ranges.append((begin, end))
-                    found.extend(words_returned_in(code, begin, end, returning[crate]))
+                    if begin < end:
+                        sentences(begin, end,
+                                  rust_source.matching(code, start + len(call) - 1), bindings)
+                        ranges.append((begin, end))
+                        found.extend(words_returned_in(code, begin, end, returning[crate]))
                     start = code.find(call, start + len(call))
             for words in naming[crate].values():
                 found.extend(words)
@@ -1756,6 +1788,8 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
                 for hand in pattern.finditer(code):
                     for index in indexes:
                         begin, end = argument(code, hand.end(), index)
+                        if begin >= end:
+                            continue
                         sentences(begin, end, end, bindings)
                         ranges.append((begin, end))
                         found.extend(words_returned_in(code, begin, end,

@@ -1050,7 +1050,8 @@ impl BooksApp {
             .first()
             .is_some_and(|rect| rect.contains(self.cursor));
         let actions = [done];
-        let spec = ModalSpec::new("Edit scheme")
+        let title = crate::resource::CATALOG.t("ebook-edit-scheme-title");
+        let spec = ModalSpec::new(&title)
             .actions(&actions)
             .body_height(body_h)
             .max_width(f64::from(theme.tokens.metrics.panel_width_list) + f64::from(spacing.s16));
@@ -1210,7 +1211,8 @@ impl BooksApp {
             .collect();
         let row_h = ui::chrome::nav_row_height(theme);
         let wanted = fams.len() as f64 * row_h;
-        let spec = ModalSpec::new("Add a system font")
+        let title = crate::resource::CATALOG.t("ebook-add-font-title");
+        let spec = ModalSpec::new(&title)
             .body_height(wanted)
             .max_width(f64::from(theme.tokens.metrics.panel_width_list))
             .close_hovered(self.modal_close.contains(self.cursor));
