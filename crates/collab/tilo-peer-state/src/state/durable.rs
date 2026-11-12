@@ -478,6 +478,7 @@ impl StatePeer {
                 tilo_automerge_isolate::load(&bytes)
                     .map(CachedDocument::from)
                     .map_err(err)
+                    .and_then(|doc| doc.stored_as(&bytes))
             })
             .transpose()?;
         // A governance a build before this layout wrote is brought up once,
@@ -510,7 +511,8 @@ impl StatePeer {
                 Document {
                     doc: tilo_automerge_isolate::load(&document.bytes)
                         .map(CachedDocument::from)
-                        .map_err(err)?,
+                        .map_err(err)?
+                        .stored_as(&document.bytes)?,
                     channel,
                     encryption_required: document.encryption_required,
                     covered: document.covered,
