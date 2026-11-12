@@ -10,7 +10,9 @@
 //! in it; each further device of theirs, and of someone they invite, joins by
 //! an invitation the workspace's host issues and only that person can redeem,
 //! over the collaboration endpoint; and a person the workspace never admitted
-//! is refused and keeps nothing.
+//! is refused and keeps nothing; and two people's own desktops sharing a
+//! workspace one of them hosts, with no site at all, see each other come and
+//! go on the workspace's live plane.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -147,6 +149,40 @@ fn two_people_on_two_devices_each_meet_in_one_workspace() {
             );
         }
     }
+}
+
+/// Two people on their own desktops, neither of them a host, share a workspace one of them hosts:
+/// the device hosting it relays its live plane, so each sees the other present, and sees them leave.
+#[test]
+fn two_peoples_own_desktops_see_each_other_come_and_go_without_a_site() {
+    let ada = Person::new("Ada");
+    let bob = Person::new("Bob");
+    let mut ada_desktop = ada.device("Ada's desktop");
+    let mut bob_desktop = bob.device("Bob's desktop");
+    ada_desktop.start();
+    tilo_test_env::wait_until("Ada's desk shows the workspace it made", || {
+        ada_desktop.showing().is_some()
+    });
+    let workspace = ada_desktop
+        .showing()
+        .expect("the workspace Ada's desk made");
+    let invitation = common::people::shared_invitation(&ada_desktop, "editor", bob.public);
+    bob_desktop.join(&invitation);
+    bob_desktop.wait_holding(&workspace);
+    bob_desktop.wait_showing(&workspace);
+
+    let ada_seat = ada_desktop.publisher().expect("the seat Ada is at");
+    let bob_seat = bob_desktop.publisher().expect("the seat Bob is at");
+    ada_desktop.wait_present(&workspace, &bob_seat);
+    bob_desktop.wait_present(&workspace, &ada_seat);
+
+    bob_desktop.stop();
+    tilo_test_env::wait_until(format!("Ada's desktop says Bob left {workspace}"), || {
+        !ada_desktop
+            .present(&workspace)
+            .iter()
+            .any(|(seat, _)| *seat == bob_seat)
+    });
 }
 
 #[test]

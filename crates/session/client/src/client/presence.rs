@@ -57,6 +57,9 @@ pub struct Presence {
     /// Where this device's word of itself goes on each workspace's presence track, as the transport
     /// it says on carries it: `None` on a host that says presence nowhere.
     saying: Option<Arc<dyn SayPresence>>,
+    /// Why the last word was not said on the live plane, while it was not: told once when saying
+    /// starts failing or fails for another reason, and once when it is said again.
+    unsaid: RefCell<Option<String>>,
     /// What this device calls itself, from its certificate: the name its person's other devices are
     /// told apart by. Empty on a device that named none.
     device: String,
@@ -84,6 +87,7 @@ impl Presence {
             said: RefCell::new(Vec::new()),
             sent_wave: RefCell::new(None),
             saying,
+            unsaid: RefCell::new(None),
             device: device.name.clone(),
         }
     }
@@ -523,9 +527,17 @@ impl Presence {
             return;
         };
         for (sequence, frame) in frames {
-            if let Err(error) = saying.say(ws, sequence, &frame) {
-                tracing::warn!(%error, "presence was not said on the live plane");
+            let said = saying.say(ws, sequence, &frame).err();
+            let mut unsaid = self.unsaid.borrow_mut();
+            if *unsaid == said {
+                continue;
             }
+            if let Some(error) = &said {
+                tracing::warn!(%error, "presence is not said on the live plane");
+            } else {
+                tracing::info!("presence is said on the live plane again");
+            }
+            *unsaid = said;
         }
     }
 

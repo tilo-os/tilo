@@ -482,13 +482,12 @@ where two sessions fit — a container, never the seat's own host.
 Who is here is read from a session's own state: its dump's `peers` carries the
 row of the seat it is at, and one workspace row per workspace it takes part in
 with everyone present there, as the roster every surface draws is read.
-Presence itself travels on the workspace's live plane, which only a member whose
-certificate may act as a host relays (`crates/session/session/src/live.rs`);
-`two_people_on_two_devices_each_meet_in_one_workspace`
-(`crates/session/session/tests/people.rs`) is the proof of it, with a site
-hosting the workspace and two people at two devices each. Two sessions alone
-have no such member, so a real session on a desk with nobody hosting the
-workspace says nothing there.
+Presence itself travels on the workspace's live plane, which a member that may act
+as a host relays, or else the device hosting the workspace
+(`crates/session/session/src/live.rs`): two people's own desktops in a workspace
+one of them hosts see each other without a site
+(`two_peoples_own_desktops_see_each_other_come_and_go_without_a_site` in
+`crates/session/session/tests/people.rs`).
 
 If you want to do it by hand without Python, use `socat` (Ncat doesn't have `-q`):
 
