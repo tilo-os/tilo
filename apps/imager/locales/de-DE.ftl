@@ -1747,7 +1747,7 @@ imager-writing-eta = noch etwa { $time }
 imager-step-source = Quelle
 imager-step-drive = Laufwerk
 imager-step-customize = Anpassen
-imager-step-confirm = Bestätigen
+imager-step-confirm = Prüfen
 imager-step-write = Schreiben
 imager-step-done = Fertig
 

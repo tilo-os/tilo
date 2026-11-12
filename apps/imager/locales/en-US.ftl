@@ -2602,7 +2602,7 @@ imager-writing-eta = about { $time } left
 imager-step-source = Source
 imager-step-drive = Drive
 imager-step-customize = Customize
-imager-step-confirm = Confirm
+imager-step-confirm = Review
 imager-step-write = Write
 imager-step-done = Done
 

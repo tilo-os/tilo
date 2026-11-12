@@ -4235,7 +4235,7 @@ mod tests {
                     if n.role() == ui::accesskit::Role::ProgressIndicator
                         && matches!(
                             n.label(),
-                            Some("Source" | "Drive" | "Customize" | "Confirm" | "Write" | "Done")
+                            Some("Source" | "Drive" | "Customize" | "Review" | "Write" | "Done")
                         )
                     {
                         stepper = Some(r);
@@ -4563,7 +4563,7 @@ mod tests {
                 .iter()
                 .map(|step| crate::setup::strings::t(step_message(*step)))
                 .collect::<Vec<_>>(),
-            ["Source", "Drive", "Confirm", "Write", "Done"]
+            ["Source", "Drive", "Review", "Write", "Done"]
         );
         assert_eq!(app.stepper_current(), 2);
         app.go_to_station(2);
