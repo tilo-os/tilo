@@ -354,10 +354,11 @@ class SelectorTests(unittest.TestCase):
             self.assertEqual(both["scoped_tests"], {})
         with self.subTest(phase='a read input is never treated as quality only'):
             self.setUp()
-            (self.root / "DEVELOPMENT.md").write_text("")
+            (self.root / "docs/policies.md").parent.mkdir(parents=True)
+            (self.root / "docs/policies.md").write_text("")
             manifest = ci_select.path_suites.parse(
-                '[[cargo]]\npackage = "leaf"\ninputs = ["DEVELOPMENT.md"]\nreaders = ["leaf/src/lib.rs"]\n')
-            plan = ci_select.make_plan(self.metadata, self.root, ["DEVELOPMENT.md"], 2,
+                '[[cargo]]\npackage = "leaf"\ninputs = ["docs/policies.md"]\nreaders = ["leaf/src/lib.rs"]\n')
+            plan = ci_select.make_plan(self.metadata, self.root, ["docs/policies.md"], 2,
                                        suite_manifest=manifest)
             self.assertTrue(plan["rust_required"])
             self.assertIn("leaf", plan["tested"])
@@ -1077,7 +1078,7 @@ class SelectorTests(unittest.TestCase):
                     self.assertTrue(ci_select.ALWAYS_PACKAGES.issubset(plan["selected"]))
         with self.subTest(phase='audited developer docs omit only rust'):
             self.setUp()
-            paths = ["AGENTS.md", "DEVELOPMENT.md", "docs/ci-performance.md", "docs/ci-emergency-relief.md", "docs/headless-testing.md"]
+            paths = ["AGENTS.md", "docs/headless-testing.md", "docs/policies.md"]
             for changes in [[path] for path in paths] + [paths + ["docs/designs/ci.md"]]:
                 with self.subTest(changes=changes):
                     plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
@@ -1102,7 +1103,7 @@ class SelectorTests(unittest.TestCase):
             self.assertTrue(deleted["security_required"])
         with self.subTest(phase='developer docs do not mask mixed changes or full override'):
             self.setUp()
-            for doc in ["AGENTS.md", "DEVELOPMENT.md", "docs/ci-performance.md", "docs/ci-emergency-relief.md", "docs/headless-testing.md"]:
+            for doc in ["AGENTS.md", "docs/headless-testing.md", "docs/policies.md"]:
                 for extra, force in [(None, True), ("leaf/src/lib.rs", False),
                                      ("Cargo.lock", False), ("docs/packaging.md", False)]:
                     with self.subTest(doc=doc, extra=extra, force=force):
@@ -1121,10 +1122,8 @@ class SelectorTests(unittest.TestCase):
             self.install_quality_helpers()
             prose = [
                 "AGENTS.md",
-                "DEVELOPMENT.md",
-                "docs/ci-performance.md",
-                "docs/ci-emergency-relief.md",
                 "docs/headless-testing.md",
+                "docs/policies.md",
                 "docs/designs/ci.md",
             ]
             for path in prose:
@@ -1216,7 +1215,7 @@ class SelectorTests(unittest.TestCase):
             self.setUp()
             self.install_builder_recipe()
             self.install_quality_helpers()
-            for extras in ([], ["docs/ci-performance.md"], ["tools/ci/affected_packages.py"]):
+            for extras in ([], ["docs/policies.md"], ["tools/ci/affected_packages.py"]):
                 with self.subTest(extras=extras):
                     plan = ci_select.make_plan(
                         self.metadata, self.root, ["os/Containerfile.builder", *extras], 2)
@@ -1297,7 +1296,7 @@ class SelectorTests(unittest.TestCase):
             self.setUp()
             self.install_quality_helpers()
             for source, test in ci_select.QUALITY_ONLY_HELPERS.items():
-                for changes in ([source], [test], [source, test, "docs/ci-emergency-relief.md"]):
+                for changes in ([source], [test], [source, test, "docs/policies.md"]):
                     with self.subTest(changes=changes):
                         plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
                         self.assertFalse(plan["rust_required"])
@@ -1346,20 +1345,17 @@ class SelectorTests(unittest.TestCase):
             recipe = self.root / "os/Containerfile.builder"
             recipe.parent.mkdir(parents=True, exist_ok=True)
             recipe.write_text("FROM scratch\n")
-            # Exact file set from PR #86, whose first two checks selected all 140
-            # Rust packages even though every change was CI orchestration or its test.
+            # PR #86's first two checks selected all 140 Rust packages even
+            # though every change was CI orchestration or its test.
             changes = [
                 ".forgejo/workflows/check.yml",
-                ".forgejo/workflows/ci-legacy-apps.yml",
-                ".forgejo/workflows/release-relay.yml",
                 "os/Containerfile.builder",
                 "os/tests/test_builder_candidate_workflow.py",
                 "tools/ci/affected_packages.py",
                 "tools/policy/run.sh",
-                "tools/tests/test_ci_check_aggregate.py",
-                "tools/tests/test_ci_queue_relief.py",
                 "tools/tests/test_ci_receipt.sh",
                 "tools/tests/test_ci_select.py",
+                "tools/tests/test_ci_test_shard_environment.py",
                 "tools/tests/test_workflow_package_paths.py",
             ]
             plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
@@ -1373,7 +1369,6 @@ class SelectorTests(unittest.TestCase):
             self.install_control_inputs()
             changes = [
                 ".forgejo/workflows/check.yml",
-                "tools/tests/test_ci_check_aggregate.py",
                 "tools/tests/test_resolve_ci_builder.py",
                 "tools/ci/affected_packages.py",
                 "tools/tests/test_ci_select.py",
@@ -1414,17 +1409,7 @@ class SelectorTests(unittest.TestCase):
             self.assertFalse(plan["rust_required"])
             self.assertEqual(plan["selected"], [])
             self.assertEqual(plan["matrix"], {"include": []})
-        with self.subTest(phase='builder cache policy does not compile unrelated rust'):
-            self.setUp()
-            self.install_quality_helpers()
-            self.install_control_inputs()
-            changes = [
-                ".forgejo/workflows/build-ci-builder.yml",
-                "tools/tests/test_cargo_download_cache_action.py",
-            ]
-            plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
-            self.assertFalse(plan["rust_required"])
-        with self.subTest(phase='builder reuse policy does not compile unrelated rust'):
+        with self.subTest(phase='builder observers do not compile unrelated rust'):
             self.setUp()
             self.install_quality_helpers()
             self.install_control_inputs()
@@ -1432,8 +1417,7 @@ class SelectorTests(unittest.TestCase):
                 ".forgejo/workflows/build-ci-builder.yml",
                 "os/tests/test_builder_candidate_workflow.py",
                 "os/tests/workflow_dependency_invariants.sh",
-                "tools/tests/test_cargo_download_cache_action.py",
-                "tools/tests/test_cosign_install_action.py",
+                "tools/tests/test_ci_native_mold.py",
             ]
             plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
             self.assertFalse(plan["rust_required"])
@@ -2307,6 +2291,242 @@ class HakariPackageTests(unittest.TestCase):
     def test_the_hakari_package_constant_names_the_configured_package(self):
         config = tomllib.loads((REPO_ROOT / ".config/hakari.toml").read_text())
         self.assertEqual(config["hakari-package"], ci_select.HAKARI_PACKAGE)
+
+
+NEXTEST_CONFIG = """\
+experimental = ["setup-scripts"]
+
+[profile.ci]
+slow-timeout = { period = "30s", terminate-after = 16 }
+retries = 0
+
+[scripts.setup.chat-siblings]
+command = ["bash", "tools/build-sibling-binaries.sh", "chat:chat"]
+
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(leaf) and binary(chat_2x2)"
+setup = "chat-siblings"
+
+[profile.ci.junit]
+path = "junit.xml"
+"""
+
+CAPABILITIES_CONFIG = """\
+[capabilities.UserNamespace]
+variable = "TILO_REQUIRE_USERNS"
+mapped = true
+
+[[capabilities.UserNamespace.tests]]
+probe = "mount-namespace"
+filter = "package(leaf) and test(=native_home_seeds)"
+
+[capabilities.NetworkTunnel]
+variable = "TILO_REQUIRE_TUN"
+mapped = true
+
+[[capabilities.NetworkTunnel.tests]]
+probe = "network-tunnel"
+filter = "package(middle) and test(=packets_cross_two_network_namespaces)"
+"""
+
+
+class ConfigSelectionTests(unittest.TestCase):
+    """A test-run configuration change selects the packages whose tests it changes.
+
+    The configuration compiles nothing. What it changes is which of a package's
+    tests run and in what environment, so those packages are checked and tested
+    without their dependants; a value that decides every test's run keeps the
+    complete workspace.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        (self.root / "Cargo.toml").write_text("[workspace]\n")
+
+    def metadata(self) -> dict:
+        # Every member depends on workspace-hack, as a real workspace does.
+        dependencies = {"base": ["workspace-hack"], "middle": ["base"], "leaf": ["middle"]}
+        return {"packages": [
+            {"name": name,
+             "manifest_path": str(self.root / name / "Cargo.toml"),
+             "targets": [{"name": name}],
+             "dependencies": [{"name": dep, "path": str(self.root / dep)}
+                              for dep in dependencies.get(name, [])]}
+            for name in ("base", "middle", "leaf", "tilo-ui", "workspace-hack",
+                         "tilo-doc", "tilo-doc-codecs", "tilo-app-package", "collab-types")
+        ]}
+
+    def plan(self, path: str, resolved, changes: list[str] | None = None) -> dict:
+        return ci_select.make_plan(self.metadata(), self.root, changes or [path], 2,
+                                   resolved_inputs=resolved)
+
+    def resolve(self, path: str, before: str | None, after: str | None):
+        return ci_select.resolve_config_file(
+            path, before and before.encode(), after and after.encode(), self.metadata())
+
+    def test_a_filter_change_reaches_only_the_packages_it_names(self):
+        path = ".config/nextest.toml"
+        edited = NEXTEST_CONFIG.replace(
+            'filter = "package(leaf) and binary(chat_2x2)"',
+            'filter = "package(leaf) and (binary(chat_2x2) or binary(device_branch))"')
+        with self.subTest(phase='an edited entry selects its package, not its dependants'):
+            resolved = self.resolve(path, NEXTEST_CONFIG, edited)
+            self.assertEqual(resolved.seeds, frozenset())
+            self.assertEqual(resolved.dev_only, {"leaf"})
+            plan = self.plan(path, {path: resolved})
+            self.assertFalse(plan["full"])
+            self.assertEqual(set(plan["selected"]), {"leaf"} | ci_select.ALWAYS_PACKAGES)
+            self.assertEqual(set(plan["tested"]), {"leaf"} | ci_select.ALWAYS_PACKAGES)
+            self.assertIn(path, plan["reason"])
+        with self.subTest(phase='a removed entry selects the package it named'):
+            removed = NEXTEST_CONFIG.replace(
+                '[[profile.ci.scripts]]\nplatform = { host = \'cfg(target_os = "linux")\' }\n'
+                'filter = "package(leaf) and binary(chat_2x2)"\nsetup = "chat-siblings"\n\n', "")
+            self.assertNotEqual(removed, NEXTEST_CONFIG)
+            self.assertEqual(self.resolve(path, NEXTEST_CONFIG, removed).dev_only, {"leaf"})
+        with self.subTest(phase='a setup command change reaches the entries that name it'):
+            edited = NEXTEST_CONFIG.replace('"chat:chat"', '"chat:chat", "chat-again:chat"')
+            self.assertEqual(self.resolve(path, NEXTEST_CONFIG, edited).dev_only, {"leaf"})
+        with self.subTest(phase='a comment-only edit changes no test run'):
+            commented = NEXTEST_CONFIG + "\n# Chat's acceptance drives the app itself.\n"
+            resolved = self.resolve(path, NEXTEST_CONFIG, commented)
+            self.assertEqual(resolved.dev_only, frozenset())
+            plan = self.plan(path, {path: resolved})
+            self.assertFalse(plan["full"])
+            self.assertEqual(set(plan["selected"]), ci_select.ALWAYS_PACKAGES)
+
+    def test_a_value_every_test_reads_keeps_the_full_workspace(self):
+        path = ".config/nextest.toml"
+        for phase, after in (
+            ("a profile timeout", NEXTEST_CONFIG.replace("retries = 0", "retries = 1")),
+            ("the junit path", NEXTEST_CONFIG.replace('path = "junit.xml"', 'path = "j.xml"')),
+            ("a filter that names no package",
+             NEXTEST_CONFIG.replace('"package(leaf) and binary(chat_2x2)"', '"all()"')),
+            ("a filter that names an unknown package",
+             NEXTEST_CONFIG.replace("package(leaf)", "package(gone)")),
+            ("an unknown table", NEXTEST_CONFIG + '\n[profile.ci.slow]\nx = 1\n'),
+        ):
+            with self.subTest(phase=phase):
+                self.assertIsNone(self.resolve(path, NEXTEST_CONFIG, after))
+                self.assertTrue(self.plan(path, {})["full"])
+        with self.subTest(phase='an added or removed file'):
+            for before, after in ((None, NEXTEST_CONFIG), (NEXTEST_CONFIG, None),
+                                  (NEXTEST_CONFIG, "[profile.ci\n")):
+                self.assertIsNone(self.resolve(path, before, after))
+
+    def test_the_shared_filters_and_capabilities_name_their_packages(self):
+        with self.subTest(phase='a golden filter change selects the packages it names'):
+            path = ".config/nextest-filters.toml"
+            before = 'golden = "package(tilo-ui)"\npush_only = "package(leaf)"\n'
+            after = 'golden = "package(leaf)"\npush_only = "package(leaf)"\n'
+            resolved = self.resolve(path, before, after)
+            self.assertEqual(resolved.dev_only, {"tilo-ui", "leaf"})
+            self.assertEqual(set(self.plan(path, {path: resolved})["tested"]),
+                             {"tilo-ui", "leaf"} | ci_select.ALWAYS_PACKAGES)
+        with self.subTest(phase='a capability group change reaches its own tests'):
+            path = ".config/nextest-capabilities.toml"
+            after = CAPABILITIES_CONFIG.replace('variable = "TILO_REQUIRE_TUN"',
+                                                'variable = "TILO_REQUIRE_TUNNEL"')
+            self.assertEqual(self.resolve(path, CAPABILITIES_CONFIG, after).dev_only, {"middle"})
+            renamed = CAPABILITIES_CONFIG.replace("test(=native_home_seeds)", "test(=home_seeds)")
+            self.assertEqual(self.resolve(path, CAPABILITIES_CONFIG, renamed).dev_only, {"leaf"})
+            # A filter that names no package selects across every package.
+            self.assertIsNone(self.resolve(
+                path, CAPABILITIES_CONFIG, CAPABILITIES_CONFIG.replace("package(leaf) and ", "")))
+        with self.subTest(phase='a capability value a group does not bound keeps the workspace'):
+            path = ".config/nextest-capabilities.toml"
+            orphan = CAPABILITIES_CONFIG.replace(
+                '[[capabilities.NetworkTunnel.tests]]\nprobe = "network-tunnel"\n'
+                'filter = "package(middle) and test(=packets_cross_two_network_namespaces)"\n', "")
+            self.assertIsNone(self.resolve(path, CAPABILITIES_CONFIG, orphan))
+
+    def test_hakari_selects_workspace_hack_which_every_member_builds_with(self):
+        path = ".config/hakari.toml"
+        before = 'hakari-package = "workspace-hack"\nresolver = "2"\n'
+        self.assertEqual(self.resolve(path, before, before).dev_only, frozenset())
+        resolved = self.resolve(path, before, 'hakari-package = "workspace-hack"\nresolver = "3"\n')
+        self.assertEqual(resolved.seeds, {"workspace-hack"})
+        plan = self.plan(path, {path: resolved})
+        self.assertFalse(plan["full"])
+        # Every member builds with the unified features, so all of them are checked.
+        self.assertEqual(set(plan["selected"]),
+                         {"base", "middle", "leaf", "workspace-hack"} | ci_select.ALWAYS_PACKAGES)
+        with self.subTest(phase='a workspace without the configured package keeps the workspace'):
+            metadata = {"packages": [{"name": "base", "manifest_path": str(self.root / "base/Cargo.toml"),
+                                      "targets": [{"name": "base"}], "dependencies": []}]}
+            self.assertIsNone(ci_select.resolve_config_file(
+                path, before.encode(), 'hakari-package = "workspace-hack"\nresolver = "3"\n'.encode(),
+                metadata))
+
+    def test_git_revisions_feed_test_run_config_attribution(self):
+        path = ".config/nextest.toml"
+        config = self.root / path
+        config.parent.mkdir()
+        config.write_text(NEXTEST_CONFIG)
+        def git(*args: str) -> str:
+            return subprocess.check_output(["git", *args], cwd=self.root, text=True).strip()
+        git("init", "-q", "-b", "main")
+        git("config", "user.email", "ci@example.invalid")
+        git("config", "user.name", "CI")
+        git("add", path)
+        git("commit", "-qm", "base")
+        base = git("rev-parse", "HEAD")
+        config.write_text(NEXTEST_CONFIG.replace(
+            'filter = "package(leaf) and binary(chat_2x2)"',
+            'filter = "package(leaf) and (binary(chat_2x2) or binary(device_branch))"'))
+        git("commit", "-qam", "extend the filter")
+        changes = ci_select.changed_files(self.root, base, "HEAD")
+        self.assertEqual(changes, [path])
+        resolved = ci_select.resolve_manifest_inputs(self.root, base, "HEAD", self.metadata(), changes)
+        self.assertEqual(set(resolved), {path})
+        plan = self.plan(path, resolved, changes)
+        self.assertFalse(plan["full"])
+        self.assertEqual(set(plan["tested"]), {"leaf"} | ci_select.ALWAYS_PACKAGES)
+
+
+class MapHygieneTests(unittest.TestCase):
+    """Every path the selector names exists, so its narrow decisions stay reachable.
+
+    An entry for a file that was deleted silently changes what a plan selects: a
+    control input loses its observers and falls back to the complete workspace,
+    and a stale document in the prose list would excuse a new one. The selection
+    is only as good as the map, so the map is checked against the tree.
+    """
+
+    def test_every_mapped_path_exists(self):
+        missing = []
+        for source, observer in ci_select.QUALITY_ONLY_HELPERS.items():
+            for path in (source, observer):
+                if not (REPO_ROOT / path).is_file():
+                    missing.append(path)
+        for source, observers in ci_select.QUALITY_ONLY_CONTROL_INPUTS.items():
+            for path in (source, *observers):
+                if not (REPO_ROOT / path).is_file():
+                    missing.append(path)
+        for path in (*ci_select.NON_COMPILING_DOCS, *ci_select.PIN_FILES, *ci_select.GLOBAL_FILES,
+                     ci_select.EXTERNAL_ASSET_MANIFEST, ci_select.VENDORED_TEST_RUNNER,
+                     ci_select.DESKTOP_GATE_MANIFEST):
+            if not (REPO_ROOT / path).is_file():
+                missing.append(path)
+        for crate, inputs in ci_select.VENDORED_TEST_CRATES.items():
+            for path in (crate, *inputs):
+                if not (REPO_ROOT / path).exists():
+                    missing.append(path)
+        for desk in ci_select.DESK_PACKAGES:
+            if not (REPO_ROOT / desk).is_dir():
+                missing.append(desk)
+        self.assertEqual(sorted(set(missing)), [])
+
+    def test_every_test_run_config_file_is_attributed(self):
+        # A new file under .config/ selects the complete workspace; listing it
+        # here forces the decision it deserves.
+        files = {path.relative_to(REPO_ROOT).as_posix()
+                 for path in (REPO_ROOT / ci_select.CONFIG_DIRECTORY).iterdir() if path.is_file()}
+        self.assertEqual(files - set(ci_select.FILTER_CONFIG_FILES) - {ci_select.FEATURE_CONFIG_FILE},
+                         set())
 
 
 if __name__ == "__main__":

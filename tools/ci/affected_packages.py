@@ -8,7 +8,10 @@ dev-depends on one of those (a dev-dependency reaches only the dependent's own
 test, example and bench targets, not the library its dependents link).  Root
 Cargo.toml and Cargo.lock changes are attributed to the packages they reach
 when the difference can be proved, lockfile edges by the same kinds;
-other repository-wide build inputs fall back to the complete workspace.
+other repository-wide build inputs fall back to the complete workspace. A
+test-run configuration change (.config/nextest*.toml) is attributed to the
+packages its filters name, and .config/hakari.toml to workspace-hack, whose
+features every member builds with.
 Ordinary feedback checks the closure on x86 and tests changed packages, their
 direct dependants (within one shard's cost) and contract suites; --full
 qualifies both native architectures.
@@ -109,9 +112,6 @@ PIN_FILES = ("os/kernel-snapshot.env",)
 # Security, layout and workflow policy checks remain mandatory outside Rust.
 NON_COMPILING_DOCS = {
     "AGENTS.md",
-    "DEVELOPMENT.md",
-    "docs/ci-performance.md",
-    "docs/ci-emergency-relief.md",
     "docs/headless-testing.md",
     "docs/policies.md",
 }
@@ -187,33 +187,19 @@ QUALITY_ONLY_CONTROL_INPUTS = {
     # observe their request gate, paths, architecture selection and delegation.
     "os/dev/rpm-snapshot-fingerprint.py": (
         "os/tests/test_rpm_snapshot_fingerprint.py",
-        "tools/tests/test_rpm_pin_contract.py",
     ),
     "os/dev/resolve-rpm-snapshot.sh": (
         "os/tests/test_rpm_snapshot_fingerprint.py",
-        "tools/tests/test_rpm_pin_contract.py",
     ),
     ".forgejo/workflows/build-ci-builder.yml": (
         "os/tests/test_builder_candidate_workflow.py",
         "os/tests/workflow_dependency_invariants.sh",
-        "tools/tests/test_cargo_download_cache_action.py",
         "tools/tests/test_ci_native_mold.py",
-        "tools/tests/test_cosign_install_action.py",
     ),
     ".forgejo/workflows/check.yml": (
-        "tools/tests/test_ci_check_aggregate.py",
-        "tools/tests/test_ci_queue_relief.py",
         "tools/tests/test_ci_receipt.sh",
         "tools/tests/test_ci_test_shard_environment.py",
         "tools/tests/test_resolve_ci_builder.py",
-    ),
-    ".forgejo/workflows/ci-legacy-apps.yml": (
-        "tools/tests/test_ci_queue_relief.py",
-        "os/tests/test_builder_candidate_workflow.py",
-    ),
-    ".forgejo/workflows/release-relay.yml": (
-        "tools/tests/test_workflow_package_paths.py",
-        "os/tests/workflow_dependency_invariants.sh",
     ),
 }
 NATIVE_RUNNERS = runner_labels.NATIVE
@@ -229,9 +215,30 @@ GLOBAL_FILES = {
 }
 GLOBAL_PREFIXES = (
     ".cargo/",
-    ".config/",
     "vendor/",
 )
+# Test-run configuration: which tests run, in which environment, under which
+# limits. A change here is attributed to the packages its filters name; a file
+# in CONFIG_DIRECTORY that is not listed keeps the complete workspace.
+CONFIG_DIRECTORY = ".config/"
+FILTER_CONFIG_FILES = (
+    ".config/nextest.toml",
+    ".config/nextest-filters.toml",
+    ".config/nextest-capabilities.toml",
+)
+# The feature selection of crates/workspace-hack, which every member depends on.
+FEATURE_CONFIG_FILE = ".config/hakari.toml"
+FILTER_PACKAGE = re.compile(r"package\(\s*=?\s*([A-Za-z0-9_.-]+)\s*\)")
+
+
+def filter_packages(expression: str) -> set[str] | None:
+    """The packages a nextest filter expression names, or None when it names none.
+
+    A filter that names no package (`all()`, a bare test or binary filter)
+    selects across every package, so a change to it is a repository-wide input.
+    """
+    names = set(FILTER_PACKAGE.findall(expression))
+    return names or None
 # Vendored crates that carry Tilo patches, with the paths their own tests read.
 # The workspace builds them only as path dependencies, so Cargo selection never
 # runs their tests; check.yml's `vendored` job does
@@ -750,12 +757,142 @@ def resolve_root_manifest(
                          "Cargo.toml changes " + " and ".join(details))
 
 
+def config_units(path: str, document: dict) -> dict[tuple, tuple[str, ...] | None] | None:
+    """Each value a test run reads, with the filter expressions it decides.
+
+    A unit's key carries both what it is and what it says, so two documents
+    that mean the same thing have equal units. Its value is the filters whose
+    tests it decides: an entry's own filter, the filters of the entries that
+    name a setup, a capability group's tests. An empty tuple decides no test
+    run (a setup nothing names), and None decides every test's (`[profile.ci]`
+    timeouts, `all()`, an unknown table). None is also the answer when the
+    document is not this file's shape.
+    """
+    units: dict[tuple, tuple[str, ...] | None] = {}
+    if path == ".config/nextest-filters.toml":
+        for key, value in document.items():
+            if not isinstance(value, str):
+                return None
+            units[("filters", key, value)] = (value,)
+        return units
+    if path == ".config/nextest-capabilities.toml":
+        capabilities = document.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return None
+        for group, table in capabilities.items():
+            if not isinstance(table, dict):
+                return None
+            tests = table.get("tests", [])
+            if not isinstance(tests, list) or not all(
+                    isinstance(entry, dict) and isinstance(entry.get("filter"), str) for entry in tests):
+                return None
+            # A group that maps no test decides every run that reads its variable.
+            filters = tuple(entry["filter"] for entry in tests) or None
+            for key, value in table.items():
+                if key != "tests":
+                    units[("capability", group, key, json.dumps(value, sort_keys=True))] = filters
+            for entry in tests:
+                units[("capability-test", group, json.dumps(entry, sort_keys=True))] = (entry["filter"],)
+        return units
+    # .config/nextest.toml: profiles, the setups they register and their overrides.
+    profile = document.get("profile")
+    scripts = document.get("scripts", {})
+    if not isinstance(profile, dict) or not isinstance(scripts, dict):
+        return None
+    setups = scripts.get("setup", {})
+    if not isinstance(setups, dict):
+        return None
+    for key, value in scripts.items():
+        if key != "setup":
+            units[("scripts", key, json.dumps(value, sort_keys=True))] = None
+    # A setup's own change reaches the entries that name it.
+    name_setups: dict[str, list[tuple[str, ...]]] = {}
+    for profile_name, table in profile.items():
+        if not isinstance(table, dict):
+            return None
+        for key, value in table.items():
+            if key not in ("scripts", "overrides"):
+                units[("profile", profile_name, key, json.dumps(value, sort_keys=True))] = None
+                continue
+            if not isinstance(value, list) or not all(
+                    isinstance(entry, dict) and isinstance(entry.get("filter"), str) for entry in value):
+                return None
+            for entry in value:
+                units[("entry", profile_name, key, json.dumps(entry, sort_keys=True))] = (entry["filter"],)
+                named = entry.get("setup")
+                for setup in named if isinstance(named, list) else [named]:
+                    if isinstance(setup, str):
+                        name_setups.setdefault(setup, []).append((entry["filter"],))
+    for name, value in setups.items():
+        units[("setup", name, json.dumps(value, sort_keys=True))] = tuple(
+            filters for entry in name_setups.get(name, ()) for filters in entry)
+    for key, value in document.items():
+        if key not in ("profile", "scripts"):
+            units[("document", key, json.dumps(value, sort_keys=True))] = None
+    return units
+
+
+def resolve_config_file(
+    path: str, before: bytes | None, after: bytes | None, metadata: dict
+) -> ResolvedInput | None:
+    """Attribute a test-run or feature configuration change to its packages.
+
+    The configuration changes no code: it changes which of a package's tests
+    run and in what environment. Those packages are checked and tested without
+    their dependants, as a changed dev-dependency reaches only its own test,
+    example and bench targets. A unit that decides every test's run (`all()`,
+    a profile's timeouts, a setup command, an unknown table) or a file that was
+    added or removed keeps the complete workspace.
+    """
+    if before is None or after is None:
+        return None
+    try:
+        old = tomllib.loads(before.decode("utf-8"))
+        new = tomllib.loads(after.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return None
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        return None
+    member_names = {package["name"] for package in metadata["packages"]}
+    if path == FEATURE_CONFIG_FILE:
+        if old == new:
+            return ResolvedInput(frozenset(), frozenset(), f"{path} says the same thing")
+        if HAKARI_PACKAGE not in member_names:
+            return None
+        return ResolvedInput(frozenset({HAKARI_PACKAGE}), frozenset(),
+                             f"{path} selects the features every member builds with")
+    old_units, new_units = config_units(path, old), config_units(path, new)
+    if old_units is None or new_units is None:
+        return None
+    absent = object()
+    changed = ([filters for key, filters in old_units.items() if new_units.get(key, absent) != filters]
+               + [filters for key, filters in new_units.items() if old_units.get(key, absent) != filters])
+    if not changed:
+        return ResolvedInput(frozenset(), frozenset(), f"{path} changes comments only")
+    names: set[str] = set()
+    for filters in changed:
+        if filters is None:
+            return None
+        for expression in filters:
+            found = filter_packages(expression)
+            if found is None:
+                return None
+            names |= found
+    if not names <= member_names:
+        return None
+    return ResolvedInput(frozenset(), frozenset(),
+                         f"{path} changes the test run of {len(names)} packages",
+                         frozenset(names))
+
+
 def resolve_manifest_inputs(
     root: Path, base: str | None, head: str, metadata: dict, changes: list[str]
 ) -> dict[str, ResolvedInput]:
-    """Return the root manifest/lockfile changes that can be attributed exactly."""
+    """Return the build inputs that can be attributed to specific packages."""
     resolvers = {"Cargo.lock": resolve_lockfile,
                  "Cargo.toml": lambda old, new, meta: resolve_root_manifest(old, new, meta, root)}
+    for path in (*FILTER_CONFIG_FILES, FEATURE_CONFIG_FILE):
+        resolvers[path] = lambda old, new, meta, path=path: resolve_config_file(path, old, new, meta)
     wanted = [path for path in resolvers if path in changes]
     if not wanted:
         return {}
@@ -1116,6 +1253,7 @@ def make_plan(
         (path in GLOBAL_FILES and path not in projected_quality_paths
          and path not in resolved_inputs)
         or path.startswith(GLOBAL_PREFIXES)
+        or (path.startswith(CONFIG_DIRECTORY) and path not in resolved_inputs)
         for path in changes
     )
     workspace_source_roots = ("apps/", "crates/")
