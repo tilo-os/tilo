@@ -568,12 +568,15 @@ impl Replica {
     /// [`Self::survey`] as the rows a catalogue lists it in, kept to answer
     /// its pages ([`Self::page_of`]): each operation in the row of the
     /// resource holding it, so a caller naming one resource of the record
-    /// reads the operations on its children and not the record's own.
+    /// reads the operations on its children and not the record's own. A
+    /// resource none of whose own operations are offered, but whose children
+    /// offer some, stands in a row of its own, so a caller reading a level at
+    /// a time reaches them (a chat's messages below its record).
     #[must_use]
     pub fn survey_rows(&self) -> Vec<tilo_actions::remote::CatalogueRow> {
         let resources = self.view.resources();
         let in_chains = chain_resources(&resources);
-        tilo_actions::door::survey_placed(&resources)
+        let mut rows: Vec<_> = tilo_actions::door::survey_placed(&resources)
             .into_iter()
             .filter_map(|placed| {
                 let tilo_actions::door::PlacedAction {
@@ -592,11 +595,19 @@ impl Replica {
                     },
                 ))
             })
-            .collect()
+            .collect();
+        let offering: std::collections::HashSet<String> =
+            rows.iter().map(|row| row.resource.id.clone()).collect();
+        let mut containers = Vec::new();
+        for resource in &resources {
+            containers_into(resource, "", &offering, self.app_id(), &mut containers);
+        }
+        rows.extend(containers);
+        rows
     }
 
     /// What `surveyed` ([`Self::survey_rows`]) lists as `query` asks, on a
-    /// host that `can_render` or not: how many operations it admits, and
+    /// host that `can_render` or not: how many rows it admits, and
     /// those from the `offset`th on, at most `take`. Only the page is
     /// handed back, each row where it stands.
     #[must_use]
@@ -608,10 +619,11 @@ impl Replica {
         let mut total = 0usize;
         let mut page = Vec::new();
         for row in surveyed {
-            let Some(descriptor) = &row.action else {
-                continue;
-            };
-            if (!can_render && crate::render::host_rendered(descriptor)) || !query.admits(row) {
+            let rendered = row
+                .action
+                .as_ref()
+                .is_some_and(|descriptor| !can_render && crate::render::host_rendered(descriptor));
+            if rendered || !query.admits(row) {
                 continue;
             }
             if total >= offset && page.len() < take {
@@ -1035,6 +1047,41 @@ fn chain_resources(resources: &[tilo_actions::ResourceSpec]) -> std::collections
         }
     }
     in_chains
+}
+
+/// The rows of the resources at and below `resource` (under `parent`) that
+/// offer nothing of their own but hold resources that do, into `out`; whether
+/// anything at or below it is offered.
+fn containers_into(
+    resource: &tilo_actions::ResourceSpec,
+    parent: &str,
+    offering: &std::collections::HashSet<String>,
+    app_id: &str,
+    out: &mut Vec<tilo_actions::remote::CatalogueRow>,
+) -> bool {
+    let id = resource.id.as_str();
+    let mut below = false;
+    for child in &resource.children {
+        below |= containers_into(child, id, offering, app_id, out);
+    }
+    let own = offering.contains(id);
+    if below && !own {
+        out.push(tilo_actions::remote::CatalogueRow {
+            provider: String::new(),
+            app_id: app_id.to_owned(),
+            parent_resource: parent.to_owned(),
+            resource: tilo_actions::remote::CatalogueResource {
+                id: id.to_owned(),
+                kind: resource.kind.clone(),
+                label: resource.label.clone(),
+                presentation: resource.presentation.clone(),
+            },
+            action: None,
+            has_children: true,
+            visibility: None,
+        });
+    }
+    own || below
 }
 
 /// The ids of `resource` and everything published under it.
