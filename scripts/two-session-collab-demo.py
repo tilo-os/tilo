@@ -44,7 +44,6 @@ session renders headless on lavapipe.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -57,20 +56,16 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 sys.path.insert(0, str(HERE / "headless-examples"))
-from real_apps import BUILD, Failed, Session, build, prepare, run, until  # noqa: E402
+from real_apps import BUILD, Failed, Session, run, until  # noqa: E402
+from two_people import DESK, device_identity, joined, members_of, owner_of, workspaces  # noqa: E402
 
 # The native app: a package the tree builds, launched by the session's launcher.
 NOTES = "so.tilo.notes"
 # The tilolang app: Tasks, installed from its own signed package.
 TASKS = "so.tilo.lang.tasks"
 TASKS_PACKAGE = REPO / "apps/tl/tasks"
-# The session's own provider, and the two resources it publishes the desk as: the
-# desk's windows (focus), and the workspace's own commands (its invitation).
-DESK = "so.tilo.session"
+# The resource the desk publishes its own windows as: what brings one to the front.
 WINDOWS = "desktop:desk"
-WORKSPACE_COMMANDS = "session:desk"
-# The variable a session joins the workspace of an invitation with, at startup.
-JOIN_INVITATION = "TILO_SHELL_JOIN_INVITATION_FILE"
 # How long a change may take to cross: two devices on one machine, so this is
 # the app's own wake, not a network's round trip.
 CROSSING_BOUND = 60.0
@@ -97,47 +92,6 @@ def note(text: str) -> None:
 
 
 # --- what a session holds ---------------------------------------------------------
-
-
-def workspaces(session: Session) -> dict[str, dict]:
-    """The workspaces this session's desk holds, each by its durable id."""
-    tree = (session.state_dump() or {}).get("workspace_tree") or {}
-    return {workspace["room"]: workspace
-            for workspace in tree.get("workspaces") or [] if workspace.get("room")}
-
-
-def front_workspace(session: Session) -> dict | None:
-    """The workspace in front on this session's desk."""
-    tree = (session.state_dump() or {}).get("workspace_tree") or {}
-    held = workspaces(session)
-    front = tree.get("active")
-    for workspace in held.values():
-        if workspace.get("id") == front or workspace.get("room") == front:
-            return workspace
-    return next(iter(held.values()), None)
-
-
-def owner_of(workspace: dict) -> str | None:
-    """The person who governs a workspace, as its policy names them."""
-    owner = (workspace.get("policy") or {}).get("owner")
-    return owner if isinstance(owner, str) and owner else None
-
-
-def members_of(workspace: dict) -> list[str]:
-    """Everyone the workspace's policy names besides its owner."""
-    members = (workspace.get("policy") or {}).get("members") or {}
-    return sorted(members) if isinstance(members, dict) else []
-
-
-def invitation(host: Session) -> str:
-    """The link the host makes into the workspace in front, through its own desk action."""
-    answer = host.invoke(DESK, f"{WORKSPACE_COMMANDS}\u001fissue-invitation",
-                         {"role": "editor", "expires_in_seconds": 3600})
-    issued = (answer.get("receipt") or {}).get("update", {}).get("output", {}).get("value") or {}
-    link = issued.get("link")
-    if not link:
-        raise Failed(f"the desk made no invitation: {json.dumps(answer)[:1500]}")
-    return link
 
 
 def listed_action(session: Session, application: str, title: str, deadline: float = 120.0):
@@ -207,17 +161,6 @@ def sandboxed(session: Session, app: str) -> bool:
     nowhere else: a process of the app running from that path is one the
     launcher made, inside the namespaces it gives it."""
     return bool(session.processes(app))
-
-
-def device_identity(session: Session) -> str:
-    """A digest of this session's device identity: a person's own computers share
-    a person, two people's never do."""
-    digest = hashlib.sha256()
-    for path in sorted((session.state / "identity").rglob("*")):
-        if path.is_file():
-            digest.update(str(path.relative_to(session.state)).encode())
-            digest.update(path.read_bytes())
-    return digest.hexdigest() if (session.state / "identity").is_dir() else ""
 
 
 def package_network(session: Session, app: str) -> tuple[bool, str]:
@@ -313,177 +256,127 @@ def main() -> int:
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
 
-    if args.build:
-        build(apps=APPS, remote=args.remote_exec)
-    if not (BUILD / "bin/tilo-session").is_file():
-        print(f"no session build in {BUILD}: pass --build, or set TILO_NESTED_SESSION_BUILD",
-              file=sys.stderr)
-        return 2
-
-    token = uuid.uuid4().hex[:8]
-    note_title = f"Release plan {token}"
-    note_body = f"Ship the {token} build on Friday."
-    task_title = f"Book the studio for {token}"
-
-    host = Session(out / "host")
-    peer = Session(out / "peer")
-    try:
-        step("1", "two states, each with its own apps and runtime")
-        for session, tag in ((host, "host"), (peer, "peer")):
-            prepare(session.state, apps=APPS)
-            note(f"{tag}: {session.state}")
-        # Tasks as a tilolang package of this session's runtime: built once,
-        # installed into both states as the signed package the launcher trusts.
-        tapp = build_tasks(out / "build", host.state)
-        note(f"Tasks package: {tapp.name}")
-
-        step("2", "the host's session starts and holds its own workspace")
-        host.start(apps=APPS, fresh=True, out=out, tag="host", tapps=[tapp])
-        host_workspace = front_workspace(host)
-        if host_workspace is None:
-            raise Failed("the host's desk holds no workspace to invite into")
-        note(f"host workspace {host_workspace['name']} ({host_workspace['room']})")
-        check("the host governs the workspace it made", bool(owner_of(host_workspace)),
-              json.dumps(host_workspace.get("policy"))[:600])
-
-        step("3", "the host invites the other person into that workspace")
-        link = invitation(host)
-        note(f"the link is {len(link)} characters")
-        link_path = out / "invitation.txt"
-        link_path.write_text(link)
-
-        step("4", "the peer starts with the link and comes into that workspace")
-        peer.start(apps=APPS, fresh=True, out=out, tag="peer", tapps=[tapp],
-                   env={JOIN_INVITATION: str(link_path)})
-        check("the two sessions are separate processes", host.proc.pid != peer.proc.pid,
-              f"{host.proc.pid} and {peer.proc.pid}")
-        check("they keep their state and their runtime apart",
-              host.state != peer.state and host.runtime_directory() != peer.runtime_directory(),
-              f"{host.runtime_directory()} and {peer.runtime_directory()}")
-        room = until("the peer to hold the host's workspace",
-                     lambda: (host_workspace["room"] if host_workspace["room"] in workspaces(peer)
-                              else None), 240, 0.5)
-        peer_workspace = workspaces(peer)[room]
-        check("the peer holds the workspace the link names",
-              peer_workspace["room"], host_workspace["room"])
-        check("the peer's copy names the host's person as its owner",
-              owner_of(peer_workspace), owner_of(host_workspace))
-        host_identity, peer_identity = device_identity(host), device_identity(peer)
-        check("the two sessions are different people's computers",
-              bool(host_identity) and host_identity != peer_identity,
-              f"{host_identity[:16]} and {peer_identity[:16]}")
-        check("the peer's copy carries what the workspace records",
-              bool(members_of(peer_workspace) or (peer_workspace.get("policy") or {}).get("grants")),
-              json.dumps(peer_workspace.get("policy"))[:600])
-        # A person works where the workspace is: both desks stand in it before
-        # either opens anything, so what the apps open is that workspace's record.
-        for session in (host, peer):
-            front = front_workspace(session)
-            if front is not None and front["room"] != room:
-                # The desk names a workspace by its own key, the slot it holds it in.
-                session.invoke(DESK, f"{WORKSPACE_COMMANDS}\u001fswitch-workspace",
-                               {"workspace": str(workspaces(session)[room]["id"])})
-        for session in (host, peer):
-            stood = until(f"the desk on {session.tag} to stand in the workspace",
-                          lambda: (front["room"] if (front := front_workspace(session))
-                                   and front["room"] == room else None), 60, 0.25)
-            check(f"{session.tag} stands in the one workspace", stood, room)
-        host.snapshot(out / "01-host-workspace.png")
-        peer.snapshot(out / "02-peer-workspace.png")
-
-        step("5", "both sessions open the native app, through their own desktops")
-        for session in (host, peer):
-            session.launch(NOTES)
-            session.answering(NOTES, deadline=240)
-            check(f"{session.tag} runs Notes as the launcher's sandboxed process",
-                  sandboxed(session, NOTES))
-        offline, how = package_network(host, NOTES)
-        check("the package Notes runs in gives it no network of its own", offline, how)
-
-        step("6", "a note page written on the host reaches the peer's Notes")
-        focus(host, NOTES)
-        peer_drawn = frames(peer, NOTES)
-        host.chord("Control", "n")
-        host.type(note_title)
-        host.key("Enter")
-        host.type(note_body)
-        host.key("Enter")
-        host.snapshot(out / "03-host-note.png")
-        find_note = listed_action(peer, NOTES, "Find note")
-        find_text = listed_action(peer, NOTES, "Find text")
-
-        def peer_finds() -> str | None:
-            pages = answers(peer, find_note, {"title": note_title})
-            return pages if note_title in pages else None
-
-        def peer_holds_text() -> str | None:
-            hits = answers(peer, find_text, {"text": note_body})
-            return hits if note_title in hits else None
-
-        found = until("the peer's Notes to find the page", peer_finds, CROSSING_BOUND, 0.5)
-        check("Notes on the peer finds the page the host wrote", bool(found), found[:500])
-        body = until("the peer's Notes to find the page's text", peer_holds_text,
-                     CROSSING_BOUND, 0.5)
-        check("and the text of the page is in the peer's own notebook", bool(body), body[:500])
-        drawn = redrawn(peer, NOTES, peer_drawn, "the page that arrived")
-        check("the peer's Notes window woke and drew it", drawn > peer_drawn,
-              f"{peer_drawn} then {drawn} frames")
-        peer.snapshot(out / "04-peer-note.png")
-
-        step("7", "both sessions open the tilolang app")
-        for session in (host, peer):
-            session.launch(TASKS)
-            session.answering(TASKS, deadline=300)
-            check(f"{session.tag} runs Tasks as the launcher's sandboxed process",
-                  sandboxed(session, TASKS))
-        offline, how = package_network(host, TASKS)
-        check("the package Tasks runs in gives it no network of its own", offline, how)
-
-        step("8", "a task typed on the host reaches the peer's Tasks")
-        # Only the peer's window is looked at while the task travels: an app that has
-        # not drawn it has nothing to answer, and asking would test the door instead.
-        focus(peer, TASKS)
-        peer_tasks_drawn = frames(peer, TASKS)
-        focus(host, TASKS)
-        host.type(task_title)
-        host.key("Enter")
-        host.snapshot(out / "05-host-task.png")
-        typed = until("the task the host typed to be in its own Tasks",
-                      lambda: (text if task_title in (text := tasks_content(host)) else None),
-                      CROSSING_BOUND, 0.5)
-        check("the task typed in the host's window is in the host's own Tasks", bool(typed),
-              (typed or tasks_content(host))[:400])
+    # Tasks as a tilolang package of the host's runtime: built once, installed into
+    # both states as the signed package the launcher trusts.
+    with joined(out, apps=APPS, tapps=lambda state: [build_tasks(out / "build", state)],
+                build_first=args.build, remote=args.remote_exec) as (
+            host, peer, host_workspace, link):
+        room = host_workspace["room"]
         try:
-            drawn = redrawn(peer, TASKS, peer_tasks_drawn, "the task that arrived")
-            check("the peer's Tasks window woke and drew the task", drawn > peer_tasks_drawn,
-                  f"{peer_tasks_drawn} then {drawn} frames")
-        except Failed:
-            check("the peer's Tasks window woke and drew the task", False,
-                  f"{peer_tasks_drawn} frames, then {frames(peer, TASKS)} after "
-                  f"{CROSSING_BOUND:.0f} s; the peer's session says {stumbles(peer)}")
-        peer.snapshot(out / "06-peer-task.png")
-        listed = tasks_content(peer, bound=30.0)
-        check("the peer's own Tasks lists the task the host typed", task_title in listed,
-              listed[:500])
+            step("1", "two sessions of different people, in one workspace")
+            note(f"workspace {host_workspace['name']} ({room}), the link is {len(link)} characters")
+            check("the host governs the workspace it made", bool(owner_of(host_workspace)),
+                  json.dumps(host_workspace.get("policy"))[:600])
+            check("the two sessions are separate processes", host.proc.pid != peer.proc.pid,
+                  f"{host.proc.pid} and {peer.proc.pid}")
+            check("they keep their state and their runtime apart",
+                  host.state != peer.state and host.runtime_directory() != peer.runtime_directory(),
+                  f"{host.runtime_directory()} and {peer.runtime_directory()}")
+            peer_workspace = workspaces(peer)[room]
+            check("the peer holds the workspace the link names", peer_workspace["room"], room)
+            check("the peer's copy names the host's person as its owner",
+                  owner_of(peer_workspace), owner_of(host_workspace))
+            host_identity, peer_identity = device_identity(host), device_identity(peer)
+            check("the two sessions are different people's computers",
+                  bool(host_identity) and host_identity != peer_identity,
+                  f"{host_identity[:16]} and {peer_identity[:16]}")
+            check("the peer's copy carries what the workspace records",
+                  bool(members_of(peer_workspace)
+                       or (peer_workspace.get("policy") or {}).get("grants")),
+                  json.dumps(peer_workspace.get("policy"))[:600])
+            host.snapshot(out / "01-host-workspace.png")
+            peer.snapshot(out / "02-peer-workspace.png")
 
-        step("9", "each side's app answers from the one record")
-        check("the host's own Tasks lists the task it typed", task_title in tasks_content(host))
-        check("the host's Notes still holds the page it wrote",
-              note_title in answers(host, listed_action(host, NOTES, "Find note"),
-                                    {"title": note_title}))
-        check("the peer's Notes holds its text, read back on its own",
-              note_title in answers(peer, find_text, {"text": note_body}))
-    except Failed as error:
-        check(f"the run finished: {error}", False)
-        for session, tag in ((host, "host"), (peer, "peer")):
-            log = session.state / "logs/session.log"
-            if log.is_file():
-                tail = [line[:300] for line in log.read_text(errors="replace").splitlines()
-                        if "ERROR" in line or "WARN" in line][-12:]
-                note(f"{tag} session log: {tail}")
-    finally:
-        for session in (host, peer):
-            session.stop()
+            step("2", "both sessions open the native app, through their own desktops")
+            for session in (host, peer):
+                session.launch(NOTES)
+                session.answering(NOTES, deadline=240)
+                check(f"{session.tag} runs Notes as the launcher's sandboxed process",
+                      sandboxed(session, NOTES))
+            offline, how = package_network(host, NOTES)
+            check("the package Notes runs in gives it no network of its own", offline, how)
+
+            step("3", "a note page written on the host reaches the peer's Notes")
+            focus(host, NOTES)
+            peer_drawn = frames(peer, NOTES)
+            host.chord("Control", "n")
+            host.type(note_title)
+            host.key("Enter")
+            host.type(note_body)
+            host.key("Enter")
+            host.snapshot(out / "03-host-note.png")
+            find_note = listed_action(peer, NOTES, "Find note")
+            find_text = listed_action(peer, NOTES, "Find text")
+
+            def peer_finds() -> str | None:
+                pages = answers(peer, find_note, {"title": note_title})
+                return pages if note_title in pages else None
+
+            def peer_holds_text() -> str | None:
+                hits = answers(peer, find_text, {"text": note_body})
+                return hits if note_title in hits else None
+
+            found = until("the peer's Notes to find the page", peer_finds, CROSSING_BOUND, 0.5)
+            check("Notes on the peer finds the page the host wrote", bool(found), found[:500])
+            body = until("the peer's Notes to find the page's text", peer_holds_text,
+                         CROSSING_BOUND, 0.5)
+            check("and the text of the page is in the peer's own notebook", bool(body), body[:500])
+            drawn = redrawn(peer, NOTES, peer_drawn, "the page that arrived")
+            check("the peer's Notes window woke and drew it", drawn > peer_drawn,
+                  f"{peer_drawn} then {drawn} frames")
+            peer.snapshot(out / "04-peer-note.png")
+
+            step("4", "both sessions open the tilolang app")
+            for session in (host, peer):
+                session.launch(TASKS)
+                session.answering(TASKS, deadline=300)
+                check(f"{session.tag} runs Tasks as the launcher's sandboxed process",
+                      sandboxed(session, TASKS))
+            offline, how = package_network(host, TASKS)
+            check("the package Tasks runs in gives it no network of its own", offline, how)
+
+            step("5", "a task typed on the host reaches the peer's Tasks")
+            # Only the peer's window is looked at while the task travels: an app that has
+            # not drawn it has nothing to answer, and asking would test the door instead.
+            focus(peer, TASKS)
+            peer_tasks_drawn = frames(peer, TASKS)
+            focus(host, TASKS)
+            host.type(task_title)
+            host.key("Enter")
+            host.snapshot(out / "05-host-task.png")
+            typed = until("the task the host typed to be in its own Tasks",
+                          lambda: (text if task_title in (text := tasks_content(host)) else None),
+                          CROSSING_BOUND, 0.5)
+            check("the task typed in the host's window is in the host's own Tasks", bool(typed),
+                  (typed or tasks_content(host))[:400])
+            try:
+                drawn = redrawn(peer, TASKS, peer_tasks_drawn, "the task that arrived")
+                check("the peer's Tasks window woke and drew the task", drawn > peer_tasks_drawn,
+                      f"{peer_tasks_drawn} then {drawn} frames")
+            except Failed:
+                check("the peer's Tasks window woke and drew the task", False,
+                      f"{peer_tasks_drawn} frames, then {frames(peer, TASKS)} after "
+                      f"{CROSSING_BOUND:.0f} s; the peer's session says {stumbles(peer)}")
+            peer.snapshot(out / "06-peer-task.png")
+            listed = tasks_content(peer, bound=30.0)
+            check("the peer's own Tasks lists the task the host typed", task_title in listed,
+                  listed[:500])
+
+            step("6", "each side's app answers from the one record")
+            check("the host's own Tasks lists the task it typed", task_title in tasks_content(host))
+            check("the host's Notes still holds the page it wrote",
+                  note_title in answers(host, listed_action(host, NOTES, "Find note"),
+                                        {"title": note_title}))
+            check("the peer's Notes holds its text, read back on its own",
+                  note_title in answers(peer, find_text, {"text": note_body}))
+        except Failed as error:
+            check(f"the run finished: {error}", False)
+            for session, tag in ((host, "host"), (peer, "peer")):
+                log = session.state / "logs/session.log"
+                if log.is_file():
+                    said = [line[:300] for line in log.read_text(errors="replace").splitlines()
+                            if "ERROR" in line or "WARN" in line][-12:]
+                    note(f"{tag} session log: {said}")
 
     print()
     if failures:
