@@ -218,7 +218,7 @@ fn detail_header(item: &SecretItem, requests: &Requests, actions_in_bar: bool) -
         )))
         .push(Box::new(button(
             "passwords.edit",
-            "Edit",
+            &CATALOG.t("passwords-edit"),
             ButtonRole::Secondary,
             requests,
             Request::Edit,
@@ -409,18 +409,18 @@ fn editor(core: &Core, shared: &Shared, requests: &Requests) -> Element {
         if field == DraftField::Password && kind != SecretItemKind::ApiKey {
             details = details.content(Box::new(button(
                 "passwords.generate",
-                "Generate strong password",
+                &CATALOG.t("passwords-generate"),
                 ButtonRole::Secondary,
                 requests,
                 Request::Generate,
             )));
         }
     }
-    let mut more = FormSection::new(if kind == SecretItemKind::SecureNote {
-        "Note"
+    let mut more = FormSection::new(&CATALOG.t(if kind == SecretItemKind::SecureNote {
+        "passwords-note"
     } else {
-        "Notes and tags"
-    });
+        "passwords-notes-and-tags"
+    }));
     for field in [
         DraftField::Notes,
         DraftField::Tags,
@@ -430,11 +430,11 @@ fn editor(core: &Core, shared: &Shared, requests: &Requests) -> Element {
     }
     let mut actions = Actions::new(button(
         "passwords.save",
-        if core.editing.is_some() {
-            "Save changes"
+        &CATALOG.t(if core.editing.is_some() {
+            "passwords-save-changes"
         } else {
-            "Save item"
-        },
+            "passwords-save-item"
+        }),
         ButtonRole::Primary,
         requests,
         Request::Save,
@@ -442,7 +442,7 @@ fn editor(core: &Core, shared: &Shared, requests: &Requests) -> Element {
     if core.editing.is_some() {
         actions = actions.secondary(button(
             "passwords.delete",
-            "Delete item",
+            &CATALOG.t("passwords-delete"),
             ButtonRole::Destructive,
             requests,
             Request::Delete,
@@ -450,7 +450,7 @@ fn editor(core: &Core, shared: &Shared, requests: &Requests) -> Element {
     }
     actions = actions.secondary(button(
         "passwords.cancel",
-        "Cancel",
+        &CATALOG.t("passwords-cancel"),
         ButtonRole::Secondary,
         requests,
         Request::CancelEdit,
@@ -460,12 +460,12 @@ fn editor(core: &Core, shared: &Shared, requests: &Requests) -> Element {
         .section(details)
         .section(more)
         .with_actions(actions);
-    let title = if core.editing.is_some() {
-        "Edit item"
+    let title = CATALOG.t(if core.editing.is_some() {
+        "passwords-edit-item"
     } else {
-        "New item"
-    };
-    titled_page(title, None, vec![Box::new(form)])
+        "passwords-new-item-title"
+    });
+    titled_page(&title, None, vec![Box::new(form)])
 }
 
 fn count_tone(count: usize) -> Tone {
@@ -552,7 +552,7 @@ fn review(core: &Core) -> Element {
         Section::new(vec![Box::new(PropertyList::new(facts))])
             .with_header(SectionHeader::group(CATALOG.t("passwords-review-about"))),
     ));
-    titled_page("Password review", None, groups)
+    titled_page(&CATALOG.t("passwords-review"), None, groups)
 }
 
 /// What the review compares against: only this vault, wherever it is kept (a
@@ -621,8 +621,8 @@ fn app_access(core: &Core, requests: &Requests) -> Element {
         ));
     }
     titled_page(
-        "App access",
-        Some("Each app below can fill the item beside it without asking you first."),
+        &CATALOG.t("passwords-app-access"),
+        Some(&CATALOG.t("passwords-app-access-lead")),
         sections,
     )
 }
@@ -712,11 +712,11 @@ fn transfer(requests: &Requests) -> Element {
         Box::new(Row::new().push(Box::new(first)).push(Box::new(second)))
     };
     titled_page(
-        "Import and export",
+        &CATALOG.t("passwords-import-export"),
         None,
         vec![
             Box::new(group(
-                "Encrypted backup",
+                &CATALOG.t("passwords-encrypted-backup"),
                 vec![
                     text(
                         "A backup keeps every item, note and custom field, encrypted with a password you choose.",
@@ -725,14 +725,14 @@ fn transfer(requests: &Requests) -> Element {
                     pair(
                         button(
                             "passwords.backup",
-                            "Back up vault…",
+                            &CATALOG.t("passwords-back-up"),
                             ButtonRole::Secondary,
                             requests,
                             Request::Backup,
                         ),
                         button(
                             "passwords.restore",
-                            "Restore from backup…",
+                            &CATALOG.t("passwords-restore"),
                             ButtonRole::Secondary,
                             requests,
                             Request::Restore,
@@ -741,7 +741,7 @@ fn transfer(requests: &Requests) -> Element {
                 ],
             )),
             Box::new(group(
-                "Browser passwords",
+                &CATALOG.t("passwords-browser-passwords"),
                 vec![
                     text(
                         "Move logins between Passwords and a web browser with a CSV file.",
@@ -750,14 +750,14 @@ fn transfer(requests: &Requests) -> Element {
                     pair(
                         button(
                             "passwords.import",
-                            "Import from CSV…",
+                            &CATALOG.t("passwords-import-csv"),
                             ButtonRole::Secondary,
                             requests,
                             Request::Import,
                         ),
                         button(
                             "passwords.export",
-                            "Export to CSV…",
+                            &CATALOG.t("passwords-export-csv"),
                             ButtonRole::Secondary,
                             requests,
                             Request::Export,
@@ -879,9 +879,12 @@ fn import_dialog(
         ));
     }
     let title = match new.len() {
-        0 => "Nothing new to import".to_owned(),
-        1 => "Import 1 login?".to_owned(),
-        n => format!("Import {n} logins?"),
+        0 => CATALOG.t("passwords-import-nothing"),
+        1 => CATALOG.t("passwords-import-one"),
+        n => CATALOG.t_args(
+            "passwords-import-count",
+            &[("count", ui::i18n::ArgValue::Number(n as f64))],
+        ),
     };
     ModalDialog::new(title, body(children))
         .primary_action("Import", ask(requests, Request::ConfirmImport))

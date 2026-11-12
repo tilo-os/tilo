@@ -9,6 +9,7 @@ use ui::icons::Icon;
 use ui::widget::{AppModel, EmptyState, ListRow, ModelPath, VecListModel, VirtualList, Widget};
 use vello::kurbo::Point;
 
+use crate::CATALOG;
 use crate::vault::{Core, Request, Requests, Screen, Shared, VaultFilter, is_favorite, summary};
 
 /// What a row shows of an item, keyed by the item's id.
@@ -81,9 +82,9 @@ impl ListPane {
             // what it publishes.
             if let Some(favorite) = crate::actions::item_binding(&row.published, "favorite") {
                 let label = if row.favorite {
-                    "Remove from favorites"
+                    &CATALOG.t("passwords-remove-favorite")
                 } else {
-                    "Add to favorites"
+                    &CATALOG.t("passwords-add-favorite")
                 };
                 list_row = list_row.action_binding(Icon::Star, label, favorite);
             }
@@ -111,11 +112,11 @@ impl ListPane {
         }
         let vault_empty = core.items.is_empty();
         let title = if vault_empty {
-            "Your vault is empty"
+            &CATALOG.t("passwords-vault-empty")
         } else if core.filter == VaultFilter::Favorites {
-            "No favorites yet"
+            &CATALOG.t("passwords-no-favorites")
         } else {
-            "Nothing of this kind yet"
+            &CATALOG.t("passwords-nothing-of-kind")
         };
         let empty = EmptyState::new(title).with_icon(if core.filter == VaultFilter::Favorites {
             Icon::Star

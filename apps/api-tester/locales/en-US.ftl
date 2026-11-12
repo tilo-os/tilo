@@ -89,3 +89,27 @@ api-tester-method = Method
 api-tester-response-headers = Response headers
 api-tester-requests = Requests
 api-tester-add-row = Add { $field }
+
+## What the window shows
+api-tester-name = Name
+api-tester-variable-key-field = Variable key
+api-tester-variable-value-field = Variable value
+api-tester-key = Key
+api-tester-value = Value
+api-tester-add-key = Add a key
+api-tester-add-value = Add a value
+api-tester-remove-row = Remove row
+api-tester-save-request-button = Save request
+api-tester-cancel-request = Cancel request
+api-tester-send = Send
+api-tester-query-parameters = Query parameters
+api-tester-headers = Headers
+api-tester-token = Token
+api-tester-username = Username
+api-tester-password = Password
+api-tester-header-name = Header name
+api-tester-copy-body = Copy body
+api-tester-copy-headers = Copy headers
+api-tester-copy-request = Copy request
+api-tester-new-collection-button = New collection
+api-tester-reset-area = Reset request area

@@ -121,21 +121,21 @@ pub(crate) fn response(
         sink,
         "api.copy.body",
         Icon::Copy,
-        "Copy body",
+        &crate::locales::CATALOG.t("api-tester-copy-body"),
         "body",
     ));
     let summary = summary.push(copy_control(
         sink,
         "api.copy.headers",
         Icon::List,
-        "Copy headers",
+        &crate::locales::CATALOG.t("api-tester-copy-headers"),
         "headers",
     ));
     let summary = summary.push(copy_control(
         sink,
         "api.copy.request",
         Icon::ClipboardPaste,
-        "Copy request",
+        &crate::locales::CATALOG.t("api-tester-copy-request"),
         "request",
     ));
     let summary = summary.push(Box::new(switch));
