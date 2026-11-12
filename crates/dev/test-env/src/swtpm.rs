@@ -31,49 +31,19 @@ fn missing_tools() -> Vec<&'static str> {
         .collect()
 }
 
-/// A free TCP port `n` for which `n + 1` is also free.
-///
-/// Binding then releasing is racy: two tests can grab the same pair, so the loser's `swtpm`
-/// fails with "address already in use" and its test talks to the wrong TPM. Retry with a
-/// fresh pair on failure.
-fn free_port_pair() -> (u16, u16) {
-    use std::sync::atomic::{AtomicU16, Ordering};
-    static SKEW: AtomicU16 = AtomicU16::new(0);
-    let skew = SKEW.fetch_add(2, Ordering::Relaxed);
-    for attempt in 0..64u16 {
-        let base = {
-            let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-            l.local_addr().unwrap().port()
-        };
-        // Walk away from the kernel's suggestion by a per-caller amount so two
-        // threads handed adjacent ephemeral ports do not converge on one pair.
-        let base = base
-            .checked_add(skew)
-            .and_then(|b| b.checked_add(attempt.saturating_mul(2)))
-            .unwrap_or(base);
-        if base >= u16::MAX - 1 {
-            continue;
-        }
-        let a = std::net::TcpListener::bind(("127.0.0.1", base));
-        let b = std::net::TcpListener::bind(("127.0.0.1", base.saturating_add(1)));
-        if a.is_ok() && b.is_ok() {
-            return (base, base.saturating_add(1));
-        }
-    }
-    panic!("could not find an adjacent free TCP port pair for swtpm");
-}
-
 /// A running `swtpm`, killed on drop.
 pub struct Swtpm {
     _state: tempfile::TempDir,
-    port: u16,
+    /// The data channel's socket under the state directory, its own and no
+    /// one else's: no port is picked, so none can be taken.
+    socket: PathBuf,
     child: Child,
     /// swtpm's log of every command and response, when it keeps one.
     wire: Option<PathBuf>,
 }
 
 impl Swtpm {
-    /// A fresh emulated TPM on its own port pair. `Err` names the tools this
+    /// A fresh emulated TPM on its own socket. `Err` names the tools this
     /// host lacks; a TPM that will not start once they are there panics.
     pub fn start() -> Result<Self, String> {
         Self::start_with(false)
@@ -92,22 +62,15 @@ impl Swtpm {
                 "{missing:?} not installed (install swtpm, tpm2-tools and cryptsetup)"
             ));
         }
-        // Retry on a fresh port pair: a lost race shows up as swtpm exiting immediately.
-        let mut last = String::new();
-        for _ in 0..8 {
-            match Self::try_start(record) {
-                Ok(tpm) => return Ok(tpm),
-                Err(why) => last = why,
-            }
-        }
-        panic!("could not start swtpm after 8 attempts; last failure: {last}");
+        Ok(Self::start_on(record).unwrap_or_else(|why| panic!("could not start swtpm: {why}")))
     }
 
-    fn try_start(record: bool) -> Result<Self, String> {
+    fn start_on(record: bool) -> Result<Self, String> {
         let state = tempfile::tempdir().expect("tempdir");
-        // tpm2-tools' `swtpm:` TCTI assumes the control channel is at `port + 1`; two unrelated
-        // free ports produce a data channel that answers and a control channel that looks broken.
-        let (port, ctrl) = free_port_pair();
+        // A data channel and the control channel tpm2-tools' `swtpm:` TCTI looks
+        // for beside it, both sockets under this TPM's own state directory.
+        let socket = state.path().join("tpm.sock");
+        let ctrl = state.path().join("tpm.sock.ctrl");
         // No `--create-ek-cert`: minting one needs swtpm_localca, which fails in a test sandbox
         // and is not needed here.
         let setup_log = state.path().join("setup.log");
@@ -135,8 +98,8 @@ impl Swtpm {
         let child = swtpm
             .arg("--tpm2")
             .arg(format!("--tpmstate=dir={}", state.path().display()))
-            .arg(format!("--server=type=tcp,port={port}"))
-            .arg(format!("--ctrl=type=tcp,port={ctrl}"))
+            .arg(format!("--server=type=unixio,path={}", socket.display()))
+            .arg(format!("--ctrl=type=unixio,path={}", ctrl.display()))
             .arg("--flags=not-need-init,startup-clear")
             .stdin(Stdio::null())
             .stdout(Stdio::from(std::fs::File::create(&log).expect("swtpm log")))
@@ -150,7 +113,7 @@ impl Swtpm {
             .expect("spawning swtpm");
         let mut tpm = Swtpm {
             _state: state,
-            port,
+            socket,
             child,
             wire,
         };
@@ -159,10 +122,10 @@ impl Swtpm {
         let deadline = crate::hang_deadline();
         while std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(100));
-            // Already-exited swtpm means the port pair was taken; retry with a new one.
             if let Ok(Some(status)) = tpm.child.try_wait() {
                 return Err(format!(
-                    "swtpm on port {port} exited ({status}): {}",
+                    "swtpm on {} exited ({status}): {}",
+                    tpm.socket.display(),
                     std::fs::read_to_string(&log).unwrap_or_default().trim()
                 ));
             }
@@ -177,8 +140,9 @@ impl Swtpm {
             }
         }
         Err(format!(
-            "swtpm on port {port} never answered.\n--- swtpm log ---\n{}\n\
+            "swtpm on {} never answered.\n--- swtpm log ---\n{}\n\
              --- swtpm_setup log ---\n{}\n--- last probe error ---\n{last}",
+            tpm.socket.display(),
             std::fs::read_to_string(&log).unwrap_or_default(),
             std::fs::read_to_string(&setup_log).unwrap_or_default(),
         ))
@@ -198,7 +162,7 @@ impl Swtpm {
     /// The `TPM2TOOLS_TCTI` value that reaches this TPM.
     #[must_use]
     pub fn tcti(&self) -> String {
-        format!("swtpm:host=127.0.0.1,port={}", self.port)
+        format!("swtpm:path={}", self.socket.display())
     }
 }
 
