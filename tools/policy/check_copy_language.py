@@ -515,6 +515,7 @@ TEXT_CONSTRUCTORS = (
     (".title(", 0),
     (".heading(", 0),
     (".caption(", 0),
+    (".secondary(", 0),
     (".message(", 0),
     (".text(", 0),
     (".draw_text(", 1),
