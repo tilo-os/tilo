@@ -910,7 +910,10 @@ fn the_outbox_shows_what_waits_and_why_and_takes_a_message_back() {
     // The page says the same: what waits, and the verb that takes it back.
     let tree = MailApp::overview_accessibility_node(&app.shared.borrow());
     let said = format!("{tree:?}");
-    assert!(said.contains("Ready to go to dest@there.example"), "{said}");
+    assert!(
+        said.contains("To dest@there.example: Ready to go"),
+        "{said}"
+    );
     assert!(said.contains("550 mailbox unavailable"), "{said}");
     app.perform_semantic_action(
         &format!("mail.outbox-cancel:{queued_id}"),
