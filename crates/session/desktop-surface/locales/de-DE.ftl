@@ -960,8 +960,7 @@ a11y-shell-join-description = Mit einer authentifizierten Einladung verbinden
 a11y-shell-workspace-activity-description = Gruppierte Ergebnisse prüfen und sehen, was in deiner Abwesenheit passiert ist
 
 # Empty-workspace launchpad
-launchpad-title = Gemeinsam etwas schaffen
-launchpad-title-private = Etwas anfangen
+launchpad-title = Etwas anfangen
 launchpad-description = Wähle eine Unterhaltung, Notizen, Aufgaben, einen Anruf, eine Einladung oder die Aktivität im Arbeitsbereich.
 launchpad-open-app = App öffnen
 launchpad-discuss = Besprechen
@@ -972,7 +971,7 @@ launchpad-invite = Personen einladen
 launchpad-activity = Auf dem Laufenden bleiben
 launchpad-discuss-detail = Die gemeinsame Unterhaltung öffnen
 launchpad-notes-detail = Gemeinsam Ideen aufschreiben
-launchpad-tasks-detail = Die Aufgabenliste im Kalender öffnen
+launchpad-tasks-detail = Aufschreiben, was zu tun ist
 launchpad-meet-detail = Mit diesem Arbeitsbereich im Chat sprechen
 launchpad-invite-detail = Jemanden in diesen Arbeitsbereich holen
 launchpad-activity-detail = Sehen, was sich geändert hat und warum
@@ -1031,9 +1030,9 @@ a11y-people-pin = Wer hier ist, auf dem Bildschirm halten
 a11y-people-overlay = Wer hier ist
 a11y-people-follow = { $name } folgen
 a11y-people-stop-following = { $name } nicht mehr folgen
-launchpad-subtitle = Wähle, wie du anfängst. Alle in diesem Arbeitsbereich sehen, was du hier machst.
-launchpad-subtitle-private = Wähle, wie du anfängst. Nur du siehst, was du hier machst, bis du jemanden einlädst.
-launchpad-subtitle-public = Wähle, wie du anfängst. Dieser Arbeitsbereich ist öffentlich: Alle, die beitreten, sehen, was du hier machst.
+launchpad-subtitle = Alle in diesem Arbeitsbereich sehen, was du hier machst.
+launchpad-subtitle-private = Nur du siehst, was du hier machst, bis du jemanden einlädst.
+launchpad-subtitle-public = Dieser Arbeitsbereich ist öffentlich: Alle, die beitreten, sehen, was du hier machst.
 
 # Der Fensterwechsler (Alt+Tab).
 window-switcher-title = Fenster wechseln

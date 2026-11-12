@@ -128,34 +128,30 @@ impl LaunchpadAction {
     }
 
     /// The app the verb happens in, with the name a person reads for it: the launchpad's Chat room,
-    /// its Notes and Calendar. Inviting and catching up happen on the desk itself.
+    /// its Notes and its tracker, Tasks. Inviting and catching up happen on the desk itself.
     pub const fn app_target(self) -> Option<(&'static str, &'static str)> {
         match self {
             Self::Chat | Self::Meet => Some(("so.tilo.chat", "Chat")),
             Self::Notes => Some(("so.tilo.notes", "Notes")),
-            Self::Tasks => Some(("so.tilo.calendar", "Calendar")),
+            Self::Tasks => Some(("so.tilo.tasks", "Tasks")),
             Self::Invite | Self::Activity => None,
         }
     }
 
     /// The typed action the verb invokes in its app: the app, the resource it publishes the action
     /// on, and the action. The host delivers it to the app in the workspace, launching the app
-    /// first when it is closed, so the verb does what it names in one step.
+    /// first when it is closed, so the verb does what it names in one step. Only a verb that lands
+    /// past its app's first screen declares one: Tasks, Notes and a conversation open where the
+    /// card says.
     pub fn app_action(self) -> Option<LaunchpadAppAction> {
         match self {
-            Self::Tasks => Some(LaunchpadAppAction {
-                app_id: "so.tilo.calendar".to_owned(),
-                display_name: "Calendar".to_owned(),
-                resource: "calendar.calendar".to_owned(),
-                action: "show-tasks".to_owned(),
-            }),
             Self::Meet => Some(LaunchpadAppAction {
                 app_id: "so.tilo.chat".to_owned(),
                 display_name: "Chat".to_owned(),
                 resource: "chat.workspace".to_owned(),
                 action: "start-call".to_owned(),
             }),
-            Self::Chat | Self::Notes | Self::Invite | Self::Activity => None,
+            Self::Chat | Self::Notes | Self::Tasks | Self::Invite | Self::Activity => None,
         }
     }
 
@@ -364,13 +360,14 @@ impl CollaborationLaunchpad {
         }
     }
 
+    /// The heading: what these cards are for. One line for every workspace, because starting is the
+    /// same act whether someone else is here yet or not; who sees the work is the subtitle's
+    /// business ([`Self::subtitle`]).
     fn title(&self) -> String {
-        self.copy.title.clone().unwrap_or_else(|| {
-            t(match self.scope {
-                WorkspaceScope::Private => "launchpad-title-private",
-                WorkspaceScope::Shared | WorkspaceScope::Public => "launchpad-title",
-            })
-        })
+        self.copy
+            .title
+            .clone()
+            .unwrap_or_else(|| t("launchpad-title"))
     }
 
     fn subtitle(&self) -> String {
@@ -1048,6 +1045,11 @@ mod tests {
             LaunchpadAction::Notes.detail(WorkspaceScope::Private),
             t("launchpad-notes-detail-private")
         );
+        assert_eq!(
+            pad.title(),
+            t("launchpad-title"),
+            "starting is the same act whether or not anyone else is here yet"
+        );
         pad.set_scope(WorkspaceScope::Shared);
         assert_eq!(pad.subtitle(), t("launchpad-subtitle"));
         assert_eq!(pad.title(), t("launchpad-title"));
@@ -1375,21 +1377,12 @@ mod tests {
             );
             assert_eq!(
                 LaunchpadAction::Tasks.app_target(),
-                Some(("so.tilo.calendar", "Calendar")),
-                "Calendar is the repo's existing task manager"
+                Some(("so.tilo.tasks", "Tasks")),
+                "Tasks is the workspace's own tracker, not Calendar's to-do list"
             );
         }
 
-        fn tasks_and_call_cards_name_the_action_they_perform() {
-            let tasks = LaunchpadAction::Tasks.app_action().expect("tasks action");
-            assert_eq!(
-                (
-                    tasks.app_id.as_str(),
-                    tasks.resource.as_str(),
-                    tasks.action.as_str()
-                ),
-                ("so.tilo.calendar", "calendar.calendar", "show-tasks")
-            );
+        fn the_call_card_names_the_action_it_performs() {
             let call = LaunchpadAction::Meet.app_action().expect("call action");
             assert_eq!(
                 (
@@ -1398,6 +1391,11 @@ mod tests {
                     call.action.as_str()
                 ),
                 ("so.tilo.chat", "chat.workspace", "start-call")
+            );
+            assert_eq!(
+                LaunchpadAction::Tasks.app_action(),
+                None,
+                "Tasks opens on the list its card names: no action has to steer it there"
             );
             for card in LaunchpadAction::ALL {
                 if let Some(action) = card.app_action() {
@@ -1430,7 +1428,7 @@ mod tests {
         desktop_launchpad_exposes_an_app_opener();
         every_card_has_a_unique_semantic_route();
         collaboration_cards_target_the_apps_that_own_those_features();
-        tasks_and_call_cards_name_the_action_they_perform();
+        the_call_card_names_the_action_it_performs();
         assistive_activation_takes_the_same_choice_as_a_card_click();
     }
 

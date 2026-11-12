@@ -550,6 +550,49 @@ fn a_welcome_card_does_what_its_published_action_does() {
     });
 }
 
+/// The apps whose windows the desk holds, by the app each window is of.
+fn desk_apps(session: &Session) -> Vec<String> {
+    session.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .filter_map(|tab| tilo_desktop_model::apps::canonical_app_id(&tab.tile))
+            .collect()
+    })
+}
+
+/// A card that opens an app opens the app whose name it carries: pressing Tasks puts Tasks on the
+/// desk, the app that holds the workspace's tasks, not another app's screen that happens to list
+/// to-dos. Each card gets a desk of its own, because the launchpad stands only while no window does.
+#[test]
+fn an_app_card_opens_the_app_it_names() {
+    for (verb, app) in [
+        ("chat", "so.tilo.chat"),
+        ("notes", "so.tilo.notes"),
+        ("tasks", "so.tilo.tasks"),
+    ] {
+        let _settled = ui::motion::testing::settled();
+        let mut session = session(Rc::new(Host::default()));
+        session.step(Duration::from_millis(1)).expect("step");
+        invoke(
+            &mut session,
+            &launchpad_card_id(verb),
+            "launchpad",
+            serde_json::json!({}),
+        );
+        until(&mut session, |session| {
+            desk_apps(session).iter().any(|shown| shown == app)
+        });
+        assert_eq!(
+            desk_apps(&session),
+            [app.to_owned()],
+            "the {verb} card opens {app} and nothing else"
+        );
+    }
+}
+
 #[test]
 fn search_opens_by_its_action_and_runs_an_app_and_a_setting_by_address() {
     let _settled = ui::motion::testing::settled();
