@@ -21,6 +21,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
 use tilo_clock::SystemTime;
 
 use tilo_action_policy::WorkspacePolicy;

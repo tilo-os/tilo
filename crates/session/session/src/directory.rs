@@ -243,7 +243,9 @@ pub(crate) fn joined_notice(notices: &dyn Notices, name: &str) {
 
 /// Say this device holds the workspace `name` but `host` , its host, has not taken it in yet: a
 /// machine copied from one of the person's devices is a device of its own, and its apps take part
-/// in nothing there until the host admits it, which it does once it can reach it.
+/// in nothing there until the host admits it, which it does once it can reach it. Only a device's
+/// session holds workspaces of its own to say this of.
+#[cfg(target_os = "linux")]
 pub(crate) fn awaiting_notice(notices: &dyn Notices, name: &str, host: &str) {
     notices.show(
         &Notice::new(
