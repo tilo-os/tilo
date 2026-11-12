@@ -2100,9 +2100,9 @@ impl ImportApp {
         changed
     }
 
-    fn button(&self, id: &str, label: &str, command: ImportCommand) -> Button {
+    fn button(&self, id: &str, key: &str, command: ImportCommand) -> Button {
         let sink = Rc::clone(&self.commands);
-        Button::new(id, label)
+        Button::new(id, &super::strings::t(key))
             .control_size(ui::widget::ControlSize::Regular)
             .on_effect(move || sink.borrow_mut().push(command))
     }
@@ -2154,32 +2154,36 @@ impl ImportApp {
         let mut actions = Row::new()
             .push(Box::new(self.button(
                 "import.pick-source",
-                "Choose folder…",
+                "imager-import-action-choose-source",
                 ImportCommand::PickSource,
             )))
             .push(Box::new(self.button(
                 "import.pick-destination",
-                "Choose destination…",
+                "imager-import-action-choose-destination",
                 ImportCommand::PickDestination,
             )));
         if self.source.is_some() || self.destination_parent.is_some() {
             actions = actions.push(Box::new(
                 self.button(
                     "import.clear-selection",
-                    "Clear",
+                    "imager-import-action-clear-selection",
                     ImportCommand::ClearSelection,
                 )
                 .role(ButtonRole::Plain),
             ));
         }
         actions = actions.push(Box::new(Spacer::new())).push(Box::new(
-            self.button("import.review", "Review copy", ImportCommand::PrepareReview)
-                .role(if self.continuation.is_some() {
-                    ButtonRole::Secondary
-                } else {
-                    ButtonRole::Primary
-                })
-                .with_enabled(self.can_prepare_review()),
+            self.button(
+                "import.review",
+                "imager-import-action-prepare-review",
+                ImportCommand::PrepareReview,
+            )
+            .role(if self.continuation.is_some() {
+                ButtonRole::Secondary
+            } else {
+                ButtonRole::Primary
+            })
+            .with_enabled(self.can_prepare_review()),
         ));
         let body = page::related()
             .push(Box::new(PropertyList::new(vec![
@@ -2233,28 +2237,32 @@ impl ImportApp {
     }
 
     fn issue_page_button(&self, index: usize) -> Button {
-        let (label, command, enabled) = if self.detail_request.is_some() {
-            ("Loading…", ImportCommand::NextIssues(index), false)
+        let (key, command, enabled) = if self.detail_request.is_some() {
+            (
+                "imager-import-loading",
+                ImportCommand::NextIssues(index),
+                false,
+            )
         } else if self
             .detail_pages
             .get(&index)
             .is_some_and(|page| page.offset > 0 && page.next.is_none())
         {
             (
-                "First issue page",
+                "imager-import-action-first-issues",
                 ImportCommand::FirstIssues(index),
                 self.can_load_first_issues(index),
             )
         } else {
             (
-                "Next issue page",
+                "imager-import-action-next-issues",
                 ImportCommand::NextIssues(index),
                 self.can_load_next_issues(index),
             )
         };
         self.button(
             &format!("import.operation.{index}.next-issues"),
-            label,
+            key,
             command,
         )
         .role(ButtonRole::Plain)
@@ -2353,7 +2361,11 @@ impl ImportApp {
             actions = actions.push(Box::new(
                 self.button(
                     &format!("import.operation.{index}.toggle-details"),
-                    if expanded { "Hide details" } else { "Details" },
+                    if expanded {
+                        "imager-import-hide-details"
+                    } else {
+                        "installer-details"
+                    },
                     ImportCommand::ToggleDetails(index),
                 )
                 .role(ButtonRole::Plain),
@@ -2367,7 +2379,7 @@ impl ImportApp {
             OperationState::AwaitingReview => Some(
                 self.button(
                     &format!("import.operation.{index}.start"),
-                    "Start copy",
+                    "imager-import-action-start",
                     ImportCommand::Start(index),
                 )
                 .with_enabled(self.can_start_copy(index)),
@@ -2380,7 +2392,7 @@ impl ImportApp {
             {
                 Some(self.button(
                     &format!("import.operation.{index}.cancel"),
-                    "Stop copy",
+                    "imager-import-action-cancel",
                     ImportCommand::Cancel,
                 ))
             }
@@ -2390,7 +2402,7 @@ impl ImportApp {
             | OperationState::Failed => Some(
                 self.button(
                     &format!("import.operation.{index}.retry"),
-                    "Continue copy",
+                    "imager-import-action-retry",
                     ImportCommand::Retry(index),
                 )
                 .with_enabled(self.worker.is_none() && operation.retry_job().is_ok()),
@@ -2446,7 +2458,7 @@ impl ImportApp {
             items.push(Box::new(
                 self.button(
                     "import.continued.check-identity",
-                    "Continue after identity setup",
+                    "imager-import-action-check-identity",
                     ImportCommand::CheckIdentity,
                 )
                 .with_enabled(self.gate_request.is_none()),
@@ -2517,7 +2529,7 @@ impl ImportApp {
                     .push(Box::new(
                         self.button(
                             &format!("import.continued.{index}.review"),
-                            "Review destination",
+                            "imager-import-action-review-destination",
                             ImportCommand::ResolveContinued(index),
                         )
                         .role(ButtonRole::Plain)
@@ -2527,7 +2539,7 @@ impl ImportApp {
                     .push(Box::new(
                         self.button(
                             &format!("import.continued.{index}.destination"),
-                            "Choose another…",
+                            "imager-import-action-choose-folder-destination",
                             ImportCommand::PickContinuedDestination(index),
                         )
                         .role(ButtonRole::Plain)
@@ -2604,7 +2616,7 @@ impl ImportApp {
                     .push(Box::new(
                         self.button(
                             "import.continued.later",
-                            "Decide later for all",
+                            "imager-import-action-later-all",
                             ImportCommand::LaterAll,
                         )
                         .with_enabled(self.continuation_idle()),
@@ -2613,7 +2625,7 @@ impl ImportApp {
                     .push(Box::new(
                         self.button(
                             "import.continued.start",
-                            "Copy folders",
+                            "imager-import-action-start-reviewed-folders",
                             ImportCommand::StartBatch,
                         )
                         .role(ButtonRole::Primary)
@@ -3257,6 +3269,7 @@ mod tests {
     use super::*;
 
     include!("journey_import_tests.rs");
+    include!("import_buttons_language_tests.rs");
 
     fn fixture() -> (tempfile::TempDir, ImportApp, PathBuf, PathBuf) {
         let temp = super::disposable_fixture_dir().unwrap();

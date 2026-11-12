@@ -84,7 +84,6 @@ impl Drop for SourceCheckActivity {
     }
 }
 
-const DROP_ACTION: &str = "Browse…";
 const EMPTY_DRIVES: &str = "Insert a USB drive or SD card";
 const NO_RELEASES: &str = "No Tilo releases are stored on this computer.";
 const PLAIN_BODY: &str =
@@ -117,15 +116,11 @@ pub(crate) enum Command {
 /// Where the controls of the composed page leave their requests.
 pub(crate) type Commands = Rc<RefCell<Vec<Command>>>;
 
-/// A button that records `command` when activated.
-pub(crate) fn command_button(
-    commands: &Commands,
-    id: &str,
-    label: &str,
-    command: Command,
-) -> Button {
+/// A button that records `command` when activated. `key` names its words in
+/// the crate's catalogue, never the words themselves.
+pub(crate) fn command_button(commands: &Commands, id: &str, key: &str, command: Command) -> Button {
     let sink = Rc::clone(commands);
-    Button::new(id, label).on_effect(move || sink.borrow_mut().push(command.clone()))
+    Button::new(id, &CATALOG.t(key)).on_effect(move || sink.borrow_mut().push(command.clone()))
 }
 
 /// A writer has finished reporting, possibly without a terminal progress packet.
@@ -765,8 +760,8 @@ impl ImagerApp {
         self.dirty = true;
     }
 
-    fn button(&self, id: &str, label: &str, command: Command) -> Button {
-        command_button(&self.commands, id, label, command)
+    fn button(&self, id: &str, key: &str, command: Command) -> Button {
+        command_button(&self.commands, id, key, command)
     }
 
     /// Everything the composed page shows that can change while the step
@@ -917,7 +912,7 @@ impl ImagerApp {
         let mut row = Row::new().no_wrap();
         if matches!(self.step, Step::Drive | Step::Customize | Step::Confirm) {
             row = row.push(Box::new(
-                self.button("imager.back", "Back", Command::Back)
+                self.button("imager.back", "installer-preview-back", Command::Back)
                     .with_icon(Icon::ChevronLeft)
                     .control_size(ControlSize::Large),
             ));
@@ -928,13 +923,13 @@ impl ImagerApp {
             return row.push(Box::new(
                 self.button(
                     "imager.prepare-original-files",
-                    &crate::setup::strings::t(if preparing {
+                    if preparing {
                         "installer-original-preparing"
                     } else if self.status_is_error && !self.status.is_empty() {
                         "installer-original-retry"
                     } else {
                         "installer-original-prepare-button"
-                    }),
+                    },
                     Command::PrepareOriginalFiles,
                 )
                 .role(ButtonRole::Primary)
@@ -944,11 +939,11 @@ impl ImagerApp {
         }
         let primary = match self.step {
             Step::Source | Step::Drive => self
-                .button("imager.next", "Continue", Command::Next)
+                .button("imager.next", "installer-preview-continue", Command::Next)
                 .role(ButtonRole::Primary)
                 .with_enabled(self.can_advance(self.step)),
             Step::Customize => self
-                .button("imager.next", "Continue", Command::Next)
+                .button("imager.next", "installer-preview-continue", Command::Next)
                 .role(ButtonRole::Primary),
             Step::Confirm => {
                 let write = Button::new("imager.write", &CATALOG.t("imager-write"))
@@ -980,9 +975,9 @@ impl ImagerApp {
                 self.button(
                     "imager.cancel-write",
                     if stopping {
-                        "Stopping…"
+                        "imager-write-cancelling"
                     } else {
-                        "Cancel write"
+                        "imager-write-cancel"
                     },
                     Command::CancelWrite,
                 )
@@ -992,15 +987,15 @@ impl ImagerApp {
                 // A written drive that is still held can be let go here,
                 // instead of the window only saying it may be pulled out.
                 if self.offers_eject() {
-                    let eject = self.button("imager.eject", "Eject", Command::Eject);
+                    let eject = self.button("imager.eject", "imager-eject", Command::Eject);
                     row = row.push(Box::new(eject));
                 }
                 self.button(
                     "imager.start-over",
                     if self.progress.phase == JobPhase::Failed {
-                        "Review and retry"
+                        "imager-review-and-retry"
                     } else {
-                        "Start over"
+                        "imager-start-over"
                     },
                     Command::WriteAnother,
                 )
@@ -1075,7 +1070,7 @@ impl ImagerApp {
             DropZone::new("imager.drop", DROP_TITLE)
                 .message(DROP_MESSAGE)
                 .icon(Icon::Download)
-                .with_action(self.button("imager.browse", DROP_ACTION, Command::PickFile))
+                .with_action(self.button("imager.browse", "imager-browse", Command::PickFile))
                 .on_files_view(move |files| {
                     if let Some(file) = files.into_iter().next() {
                         sink.borrow_mut().push(Command::Dropped(file));
@@ -1206,7 +1201,7 @@ impl ImagerApp {
                 .as_ref()
                 .and_then(|actions| actions.effect(&ImagerEffect::CancelDownload))
         {
-            row = row.action_binding(Icon::X, "Cancel download", cancel);
+            row = row.action_binding(Icon::X, CATALOG.t("imager-release-cancel"), cancel);
         }
         Some(Box::new(row))
     }
@@ -1573,7 +1568,7 @@ impl ImagerApp {
                     command_button(
                         &self.commands,
                         "imager.review-changed-files",
-                        &t(reason.button_key()),
+                        reason.button_key(),
                         Command::ReviewChangedPreparedFiles,
                     )
                     .role(ButtonRole::Primary),
@@ -1586,21 +1581,21 @@ impl ImagerApp {
             return body.push(Box::new(command_button(
                 &self.commands,
                 "imager.cancel-prepared-medium",
-                &t("installer-media-cancel"),
+                "installer-media-cancel",
                 Command::CancelPreparedMedium,
             )));
         }
         body = body.push(Box::new(command_button(
             &self.commands,
             "imager.retry-prepared-medium",
-            &t("installer-media-retry"),
+            "installer-media-retry",
             Command::RetryPreparedMedium,
         )));
         body.push(Box::new(
             command_button(
                 &self.commands,
                 "imager.prepared-medium",
-                &t("installer-media-choose-filesystem"),
+                "installer-media-choose-filesystem",
                 Command::PrepareMedium,
             )
             .with_enabled(!busy),
@@ -3895,6 +3890,38 @@ mod tests {
                 .count();
             assert_eq!(offered, 2, "each seeded release has a row to click");
         }
+    }
+
+    /// The wizard's buttons name their words in the crate's catalogue, so a
+    /// German window reads them in German.
+    #[test]
+    fn the_wizards_buttons_read_in_the_windows_language() {
+        let catalog = &crate::resource::CATALOG;
+        catalog.set_locale("de-DE");
+        let mut labels = Vec::new();
+        for step in [Step::Source, Step::Customize] {
+            let (mut app, doc) = seeded_app();
+            app.step = step;
+            let host = harness(app, doc, (960, 720));
+            labels.extend(
+                host.a11y_nodes()
+                    .into_iter()
+                    .filter_map(|(_, node)| node.label().map(str::to_owned)),
+            );
+        }
+        catalog.set_locale("en-US");
+        for german in ["Zurück", "Weiter", "Durchsuchen…"] {
+            assert!(
+                labels.iter().any(|label| label == german),
+                "{german} is missing from {labels:?}"
+            );
+        }
+        assert!(
+            labels
+                .iter()
+                .all(|label| !matches!(label.as_str(), "Back" | "Continue" | "Browse…")),
+            "the source language is left in the German window: {labels:?}"
+        );
     }
 
     /// Accessible semantics, selection labels, live regions and tab order.

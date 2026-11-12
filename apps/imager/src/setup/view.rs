@@ -782,7 +782,8 @@ impl SetupApp {
         changed
     }
 
-    fn button(&self, id: &str, label: &str, command: SetupCommand) -> Button {
+    fn button(&self, id: &str, key: &str, command: SetupCommand) -> Button {
+        let label = crate::setup::strings::t(key);
         let effect = match command {
             SetupCommand::InstallDesktop => Some(SetupEffect::InstallDesktop),
             SetupCommand::CancelDesktopDownload => Some(SetupEffect::CancelDesktopDownload),
@@ -794,12 +795,12 @@ impl SetupApp {
         };
         if let (Some(actions), Some(effect)) = (&self.actions, effect) {
             return actions.bind_effect_invocation(
-                Button::new(id, label).control_size(ControlSize::Regular),
+                Button::new(id, &label).control_size(ControlSize::Regular),
                 &effect,
             );
         }
         let sink = Rc::clone(&self.commands);
-        Button::new(id, label)
+        Button::new(id, &label)
             .control_size(ui::widget::ControlSize::Regular)
             .on_effect(move || sink.borrow_mut().push(command))
     }
@@ -952,46 +953,46 @@ impl SetupApp {
             ));
             let mut actions = Row::new();
             let mut any = false;
-            for (shown, id, label, command) in [
+            for (shown, id, key, command) in [
                 (
                     flow.can_start(),
                     "setup.internal.start",
-                    "Download Tilo",
+                    "imager-setup-action-start-download",
                     SetupCommand::StartInternalDownload,
                 ),
                 (
                     flow.can_pause(),
                     "setup.internal.pause",
-                    "Pause download",
+                    "imager-setup-action-pause-download",
                     SetupCommand::PauseInternalDownload,
                 ),
                 (
                     flow.can_cancel(),
                     "setup.internal.cancel",
-                    "Cancel download",
+                    "imager-setup-action-cancel-download",
                     SetupCommand::CancelInternalDownload,
                 ),
                 (
                     flow.can_resume(),
                     "setup.internal.resume",
-                    "Resume download",
+                    "imager-setup-action-resume-download",
                     SetupCommand::ResumeInternalDownload,
                 ),
                 (
                     flow.can_release(),
                     "setup.internal.release",
-                    "Keep for later",
+                    "imager-setup-action-release-download",
                     SetupCommand::ReleaseInternalDownload,
                 ),
                 (
                     flow.can_discard(),
                     "setup.internal.discard",
-                    "Discard unfinished download",
+                    "imager-setup-action-discard-download",
                     SetupCommand::DiscardInternalDownload,
                 ),
             ] {
                 if shown {
-                    actions = actions.push(Box::new(self.button(id, label, command)));
+                    actions = actions.push(Box::new(self.button(id, key, command)));
                     any = true;
                 }
             }
@@ -1040,7 +1041,7 @@ impl SetupApp {
                 .push(Box::new(
                     self.button(
                         "setup.check.continue",
-                        &super::strings::t("installer-preview-continue"),
+                        "installer-preview-continue",
                         SetupCommand::Next,
                     )
                     .with_enabled(self.check_ready()),
@@ -1109,7 +1110,7 @@ impl SetupApp {
             let primary = if experience == Experience::FullOs {
                 Some((
                     "setup.internal.install-unavailable",
-                    "Install Tilo",
+                    "imager-setup-internal-install",
                     SetupCommand::InternalInstallUnavailable,
                     false,
                 ))
@@ -1117,20 +1118,20 @@ impl SetupApp {
                 match self.desktop_flow.state() {
                     DesktopFlowState::Ready(_) => Some((
                         "setup.install",
-                        "Install Tilo Desktop",
+                        "imager-setup-desktop-install",
                         SetupCommand::InstallDesktop,
                         true,
                     )),
                     DesktopFlowState::Downloading(_) => Some((
                         "setup.cancel-download",
-                        "Cancel download",
+                        "imager-setup-desktop-cancel",
                         SetupCommand::CancelDesktopDownload,
                         true,
                     )),
                     DesktopFlowState::Failed { .. } | DesktopFlowState::Unavailable { .. } => {
                         Some((
                             "setup.retry-desktop",
-                            "Check again",
+                            "imager-setup-desktop-recheck",
                             SetupCommand::RetryDesktop,
                             true,
                         ))
@@ -1140,7 +1141,7 @@ impl SetupApp {
                     {
                         Some((
                             "setup.retry-desktop",
-                            "Try again",
+                            "installer-desktop-retry",
                             SetupCommand::RetryDesktop,
                             true,
                         ))
@@ -1148,15 +1149,15 @@ impl SetupApp {
                     DesktopFlowState::Installed { .. } => None,
                     _ => Some((
                         "setup.install",
-                        "Installing…",
+                        "imager-setup-internal-installing",
                         SetupCommand::InstallDesktop,
                         false,
                     )),
                 }
             };
-            if let Some((id, label, command, enabled)) = primary {
+            if let Some((id, key, command, enabled)) = primary {
                 nav = nav.push(Box::new(
-                    self.button(id, label, command)
+                    self.button(id, key, command)
                         .role(ButtonRole::Primary)
                         .with_enabled(enabled),
                 ));
@@ -1828,7 +1829,7 @@ impl SetupApp {
                 Some(HostCommand::FirmwareSettings { .. }) => Some(Box::new(
                     self.button(
                         "setup.internal.firmware-settings",
-                        &t("imager-setup-internal-remedy-firmware"),
+                        "imager-setup-internal-remedy-firmware",
                         SetupCommand::InternalFirmwareSettings,
                     )
                     .with_enabled(idle_host),
@@ -1836,7 +1837,7 @@ impl SetupApp {
                 Some(HostCommand::DisableFastStartup) => Some(Box::new(
                     self.button(
                         "setup.internal.disable-fast-startup",
-                        &t("imager-setup-internal-remedy-fast-startup"),
+                        "imager-setup-internal-remedy-fast-startup",
                         SetupCommand::InternalDisableFastStartup,
                     )
                     .with_enabled(idle_host),
@@ -1859,7 +1860,7 @@ impl SetupApp {
         content = content.push(Box::new(
             self.button(
                 "setup.internal.recheck",
-                &t("imager-setup-internal-recheck"),
+                "imager-setup-internal-recheck",
                 SetupCommand::RecheckInternal,
             )
             .with_enabled(!install.is_probing() && !install.is_running()),
@@ -1888,7 +1889,7 @@ impl SetupApp {
                             .push(Box::new(
                                 self.button(
                                     "setup.internal.retry",
-                                    &t("imager-setup-internal-resume-retry"),
+                                    "imager-setup-internal-resume-retry",
                                     SetupCommand::RetryInternal,
                                 )
                                 .with_enabled(enabled),
@@ -1896,7 +1897,7 @@ impl SetupApp {
                             .push(Box::new(
                                 self.button(
                                     "setup.internal.remove",
-                                    &t("imager-setup-internal-resume-remove"),
+                                    "imager-setup-internal-resume-remove",
                                     SetupCommand::RemoveInternal,
                                 )
                                 .with_enabled(enabled),
@@ -1981,49 +1982,44 @@ impl SetupApp {
     /// Review navigation for an offered Full Tilo: Install, or Restart now /
     /// Restart later once the installer is set to start.
     fn internal_nav(&self, mut nav: Row) -> Row {
-        let t = super::strings::t;
         let install = &self.internal_install;
         if install.can_restart() {
             if !install.restart_deferred() {
                 nav = nav.push(Box::new(self.button(
                     "setup.internal.restart-later",
-                    &t("imager-setup-internal-restart-later"),
+                    "imager-setup-internal-restart-later",
                     SetupCommand::RestartInternalLater,
                 )));
             }
             return nav.push(Box::new(
                 self.button(
                     "setup.internal.restart",
-                    &t("imager-setup-internal-restart-now"),
+                    "imager-setup-internal-restart-now",
                     SetupCommand::RestartInternal,
                 )
                 .role(ButtonRole::Primary)
                 .with_enabled(self.host_command_pending.is_none()),
             ));
         }
-        let label = if install.is_running() {
-            t("imager-setup-internal-installing")
+        let key = if install.is_running() {
+            "imager-setup-internal-installing"
         } else if install.pending().is_some() {
-            t("imager-setup-internal-continue")
+            "imager-setup-internal-continue"
         } else {
-            t("imager-setup-internal-install")
+            "imager-setup-internal-install"
         };
         nav.push(Box::new(
-            self.button(
-                "setup.internal.install",
-                &label,
-                SetupCommand::InstallInternal,
-            )
-            .role(ButtonRole::Primary)
-            .with_enabled(
-                install
-                    .install_blocker(self.internal_download_ready())
-                    .is_ok()
-                    && !self
-                        .support_report
-                        .as_ref()
-                        .is_some_and(SupportReport::blocks_install),
-            ),
+            self.button("setup.internal.install", key, SetupCommand::InstallInternal)
+                .role(ButtonRole::Primary)
+                .with_enabled(
+                    install
+                        .install_blocker(self.internal_download_ready())
+                        .is_ok()
+                        && !self
+                            .support_report
+                            .as_ref()
+                            .is_some_and(SupportReport::blocks_install),
+                ),
         ))
     }
 }
@@ -2264,6 +2260,7 @@ mod tests {
     use ui::time::Duration;
 
     include!("desktop_journey_tests.rs");
+    include!("setup_buttons_language_tests.rs");
 
     #[test]
     fn migration_intent_cannot_be_attached_outside_full_os_review() {
