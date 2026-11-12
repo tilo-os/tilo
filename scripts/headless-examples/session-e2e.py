@@ -20,15 +20,16 @@ unit tests and found only by starting a session by hand:
            Catches the broker, channel-key and workspace lock deadlock (fixed in b33cc45ace7):
            fails on 08636f201d9 (before the fix), where only one of the four apps presented a
            frame.
-  canvas   every window placed on the canvas is drawn on screen, inside the canvas's frame.
-           Catches windows opened on the canvas being placed off screen (no fix landed yet).
-           Where the windows land depends on the order the four concurrent opens arrive in: on
-           integration 70ba3301da0 this check failed in 3 of 6 runs (windows at y = -484 and
-           y = 788 on a 752 px high frame).
-  repl     through the session's door (`tilolang repl`): a note and a chat channel written,
-           `find` and `grep` return them, `tasks.add` makes a task the running Tasks instance
-           lists, and `undo` takes it back out of that instance; the open Tasks window draws
-           each, with nothing else waking it (a new frame of its window after each change).
+  canvas   every window the four apps opened stands on the canvas the arrangement publishes,
+           and the window in front is drawn inside the screen's frame.
+           Catches windows opened on the canvas being placed off screen (off the canvas, or
+           outside the frame the person sees). Where the windows land depends on the order the
+           four concurrent opens arrive in: on integration 70ba3301da0 this check failed in 3 of 6
+           runs (windows at y = -484 and y = 788 on a 752 px high frame).
+  repl     through the session's door (`tilolang repl`), on a session whose person named the
+           program as they started it (`--admit-repl`, as naming it on the sheet would): the REPL
+           reaches the four apps, reads the record the notes app's window shows, and changes the
+           desk, whose published state says so.
            Catches the door not forwarding record changes (fixed in 71382cec3d7): before the
            fix every change answered "this desktop applies no task's changes at a record's
            origin". No build has the deadlock fix without this one, so on 08636f201d9 the run
@@ -61,12 +62,12 @@ Speed: one session serves every check; the restart and `dev` start it again. No 
 fixed time: each waits for the condition it needs (a listing answered with `--wait`, a frame
 presented, a line from the REPL), bounded by HANG_BOUND seconds, and fails with what it saw.
 
-Where it runs: on this machine, never on the remote builders. Tilo's sandboxes mount a fresh
-/proc, which the builders' containers refuse (aae4effbff4), so no app can start there. The
-session's build is the nested-session build of this tree: TILO_NESTED_SESSION_BUILD, else
-target/nested-session; --build makes it first (dist/dev/nested-session-build.sh, compiled on
-the arm builder). tools/ci/test-changed.sh runs it for changes to the shell, collaboration, the
-tilolang host or tilolang-tilo.
+Where it runs: a container on this machine, never on the remote builders. Tilo's sandboxes mount
+a fresh /proc, which the builders' containers refuse (aae4effbff4), so no app can start there. The
+session's build is the nested-session build of this tree (TILO_NESTED_APPS="agent tasks"): name
+another with TILO_NESTED_SESSION_BUILD, or let --build make it (dist/dev/nested-session-build.sh,
+through --remote-exec where this machine has no toolchain). Nothing runs it on a schedule: it takes
+a full build and a session of its own, so a person starts it.
 
 Usage:
   scripts/headless-examples/session-e2e.py [--build] [--out DIR] [--keep] [--only CHECK,...]
@@ -85,6 +86,7 @@ import select
 import shlex
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import threading
@@ -255,6 +257,10 @@ class Session:
         argv = self.script(["--ready", ready])
         for tapp in self.tapps if install else []:
             argv += ["--install-tapp", tapp]
+        # The person named the REPL's program as they started the session, as they would to use it
+        # where no sheet is answered: what `tilolang repl` on this session asks for, their decision
+        # made ahead of time (`--` ends the script's own options; the rest are the session's).
+        argv += ["--", "--admit-repl", str(self.bin("tilolang"))]
         env = {**os.environ, "TILO_NESTED_SESSION_BUILD": str(self.build),
                "RUST_LOG": os.environ.get("RUST_LOG", "warn,tilo::launch_latency=info")}
         log = open(self.out / f"session-{tag}.log", "w")
@@ -365,7 +371,7 @@ def read_content(session: Session, name: str) -> str | None:
     action = wait_for(f"{name}'s 'Read the content'", lambda: next((
         a for a in session.actions("Read the content")
         if a.get("application") == app_id(name)
-        and a["id"].split("\x1f")[-2:] == [f"tl:{app_id(name)}", "read"]), None))
+        and a["id"].split("\x1f")[-1] == "read"), None))
     try:
         listing = session.invoke("app-actions", action["id"])
         value = listing.get("receipt", {}).get("update", {}).get("output", {}).get("value", {})
@@ -383,12 +389,6 @@ def read_content(session: Session, name: str) -> str | None:
     return "\n".join(parts)
 
 
-def window_frame(session: Session, name: str) -> int | None:
-    """The frames the window of tilolang `name` drew: its count rises as it draws again."""
-    return next((f.get("frames", 0) for f in session.frames() if f.get("app_id") == app_id(name)),
-                None)
-
-
 def holds(session: Session, name: str, text: str) -> bool | None:
     """Whether the running instance of `name` holds `text`; None while its listing moves."""
     content = read_content(session, name)
@@ -398,7 +398,8 @@ def holds(session: Session, name: str, text: str) -> bool | None:
 class Repl:
     """`tilolang repl` on the session's door, one entry at a time. Off a terminal the REPL
     echoes each line it reads after its prompt (`tl> entry`), so an entry's answer is what it
-    prints between that echo and the echo of the empty line sent after it."""
+    prints between that echo and the echo of the empty line sent after it. Its banner comes after
+    the line saying what the door waits on (`asking to act as you: ...`)."""
 
     PROMPT = "tl> "
 
@@ -412,7 +413,7 @@ class Repl:
         self.transcript = ""
         self.pending = ""
         # The banner: the door it is on and the apps it reaches.
-        self.banner = self._read_until(lambda text: "\n" in text and text)
+        self.banner = self._read_until(lambda text: text if "apps: " in text else None)
 
     def _read_until(self, done: Callable[[str], Any]) -> Any:
         """Read the REPL's output until `done(text read so far)` answers; what it answered."""
@@ -465,11 +466,6 @@ class Repl:
 
 # --- the checks ----------------------------------------------------------------------------
 
-NOTE_TITLE = "Launch plan for Tide"
-CHANNEL = "Tide release"
-TASK_TITLE = "Write the Tide release notes"
-
-
 def check_audio(session: Session) -> dict:
     """The session's sound is its own: one null output, none of the machine's devices."""
     env = session.env()
@@ -515,69 +511,118 @@ def check_open(session: Session) -> dict:
             "windows": sorted(wanted)}
 
 
+def canvas_places(session: Session) -> dict[str, dict]:
+    """Where each window group of the desk stands on its workspace's canvas, by group: the
+    arrangement's own rows, as the desk publishes them (`arrangement.places` of each workspace,
+    a place being where its top-leading corner is and how wide and tall it stands there)."""
+    tree = session.state_dump().get("workspace_tree") or {}
+    places: dict[str, dict] = {}
+    for workspace in tree.get("workspaces") or []:
+        for group, place in (workspace.get("arrangement") or {}).get("places", {}).items():
+            places[str(group)] = place
+    return places
+
+
+def screen_frame(path: Path) -> tuple[int, int]:
+    """The size of the screen a snapshot of the session shows: a PNG states it in its header."""
+    header = path.read_bytes()[:24]
+    if header[:8] != b"\x89PNG\r\n\x1a\n":
+        raise Failed(f"{path} is not a PNG of the screen")
+    return struct.unpack(">II", header[16:24])
+
+
 def check_canvas(session: Session) -> dict:
-    """Every window placed on the canvas is on screen: its screen rect inside the canvas's
-    frame, and its app's surface drawn there."""
-    canvas = session.state_dump()["chrome"]["canvas"]
-    fx, fy, fw, fh = canvas["frame"]
-    placed = canvas.get("windows", [])
-    groups = {w["group"]: w.get("app_id") for w in session.windows()}
-    off = []
-    for window in placed:
-        x, y, w, h = window["screen"]
-        if x < fx - 0.5 or y < fy - 0.5 or x + w > fx + fw + 0.5 or y + h > fy + fh + 0.5:
-            off.append({"app": groups.get(window["group"]), "screen": window["screen"]})
-    on_canvas = {groups.get(w["group"]) for w in placed}
-    missing = {app_id(n) for n in TL_APPS} - on_canvas
+    """Every window the four apps opened stands on the canvas the arrangement publishes, and the
+    window in front — the one the desk shows — is drawn inside the screen's frame.
+
+    Catches an opening placed off the canvas (where the person would go looking for it and find
+    nothing) and a desk that draws the window it points at off screen. Where windows land
+    depends on the order the four concurrent opens arrive in: on integration 70ba3301da0 the
+    shell drew them at y = -484 and y = 788 on a 752 px high frame."""
+    shot = session.out / "canvas.png"
+    session.control("snapshot", str(shot))
+    width, height = screen_frame(shot)
+    places = canvas_places(session)
+    windows = windows_by_app(session)
+    missing = []
+    on_canvas = {}
+    for name in TL_APPS:
+        row = windows.get(app_id(name)) or {}
+        place = places.get(str(row.get("group")))
+        if place is None:
+            missing.append({"app": app_id(name), "place": None, "row": row})
+            continue
+        if place["x"] < 0 or place["y"] < 0 or place["width"] <= 0 or place["height"] <= 0:
+            missing.append({"app": app_id(name), "place": place})
+            continue
+        on_canvas[app_id(name)] = place
     if missing:
-        raise Failed(f"not placed on the canvas: {sorted(missing)}; placed {placed}")
+        raise Failed(f"not placed on the canvas: {missing}")
+    # The window in front: the tab the active strip and group hold, which the desk draws.
+    front = [w for w in session.windows() if w.get("active") and w.get("window") is not None]
+    if not front:
+        raise Failed(f"no window is in front: {sorted(windows)}")
+    off = []
+    for window in front:
+        rect = window.get("rect")
+        if not rect or not window.get("frames"):
+            off.append({"app": window.get("app_id"), "drawn": None, "rect": rect})
+            continue
+        x, y, w, h = rect
+        if x < 0 or y < 0 or x + w > width + 0.5 or y + h > height + 0.5:
+            off.append({"app": window.get("app_id"), "screen": rect})
     if off:
-        raise Failed(f"placed off screen (the canvas's frame is {canvas['frame']}): {off}")
-    return {"frame": canvas["frame"], "placed": len(placed)}
+        raise Failed(f"the window in front is not drawn inside the {width}x{height} screen: "
+                     f"{off}; places {places}")
+    return {"frame": [0, 0, width, height], "placed": len(on_canvas),
+            "front": [w.get("app_id") for w in front]}
 
 
 def check_repl(session: Session, out: Path) -> dict:
-    """The door's REPL writes, finds, greps, adds a task the Tasks instance lists, and undoes."""
+    """The door's REPL reaches the four apps, reads one's record, and changes the desk the
+    session publishes, which the desk draws.
+
+    The record it reads is the notes app's notebook, and the actions it lists are the app's
+    own. What it changes is what it may: `session.overview` flips a surface of the desk, read
+    back from the state dump the desk publishes. A person's app action (a note, a task) is
+    not on this surface today: an installed app's package names its actions by their stored
+    ids (`notes.qymo5lg2`) and leaves its roots (`notes.notebook`) unnameable, so a program
+    cannot say `notes.new_note(notes.notebook)` as the app's own source and the records
+    service can."""
     repl = Repl(session, out)
     try:
+        # The REPL says what the door waits on before it is in: its admission is the person's,
+        # made on the sheet or ahead of time with `--admit-repl`, never answered by the REPL.
+        if "asking to act as you" not in repl.banner:
+            raise Failed(f"the REPL gave itself the door without asking: {repl.banner.strip()!r}")
         apps = re.search(r"apps: ([^(]*)", repl.banner)
         if not apps or not all(n in apps.group(1) for n in TL_APPS):
             raise Failed(f"the REPL does not reach the four apps: {repl.banner.strip()}")
-        repl("let n = notes.new_note(notes.notes)")
-        repl(f'notes.retitle(n, "{NOTE_TITLE}")')
-        repl(f'chat.new_channel(chat.channels, "{CHANNEL}")')
-        found = repl('find("launch plan")')
-        if NOTE_TITLE not in found:
-            raise Failed(f"find(\"launch plan\") did not return the note: {found!r}")
-        in_notes = repl("grep(/Tide/, in: notes)")
-        if NOTE_TITLE not in in_notes:
-            raise Failed(f"grep over Notes did not return the note: {in_notes!r}")
-        in_chat = repl("grep(/Tide/, in: chat)")
-        if CHANNEL not in in_chat:
-            raise Failed(f"grep over Chat did not return the channel: {in_chat!r}")
-        drawn = window_frame(session, "tasks")
-        added = repl(f'tasks.add(tasks.tasks, "{TASK_TITLE}")')
-        if "1 change in tasks" not in added:
-            raise Failed(f"tasks.add changed nothing: {added!r}")
-        wait_for("the new task in the Tasks instance", lambda: holds(session, "tasks", TASK_TITLE))
-        # The open Tasks window draws what its instance took in, with nothing else waking it.
-        drawn = wait_for("a frame of the Tasks window showing the new task",
-                         lambda: (window_frame(session, "tasks") or 0) > drawn and window_frame(session, "tasks"))
-        undone = repl("undo")
-        if "undone" not in undone:
-            raise Failed(f"undo took nothing back: {undone!r}")
-        wait_for("the task gone from the Tasks instance",
-                 lambda: holds(session, "tasks", TASK_TITLE) is False)
-        wait_for("a frame of the Tasks window without the undone task",
-                 lambda: (window_frame(session, "tasks") or 0) > drawn)
+        notebook = repl("ls notes")
+        if "notes.Notebook" not in notebook or "#read" not in notebook:
+            raise Failed(f"the notes app's record is not reachable: {notebook!r}")
+        desk = repl("ls session")
+        if "session" not in desk:
+            raise Failed(f"the session's own actions are not listed: {desk[:600]!r}")
+        # A change of the desk, as the person typing it: the overview's surface goes down and
+        # up again, and the desk's own published state says so each time.
+        def overview() -> bool:
+            return bool(session.state_dump()["chrome"]["overlays"]["overview"])
+
+        for wanted in (False, True):
+            answer = repl(f"session.overview(open: .some({str(wanted).lower()}))")
+            if "ok" not in answer:
+                raise Failed(f"session.overview(open: .some({str(wanted).lower()})) failed: {answer!r}")
+            wait_for(f"the overview {'up' if wanted else 'down'} in the desk's state",
+                     lambda: overview() == wanted)
         # The workspace admitted every change the apps and the REPL made: a change the sealed
         # channel refuses (the first, unnamed change of a tilolang app's record) is dropped
         # with only this line to say so, and its record is missing wherever it is read.
         refused = [line[:400] for line in session.log_lines() if "change carries no claim" in line]
         if refused:
             raise Failed(f"the workspace refused {len(refused)} change(s) as carrying no claim: {refused[0]}")
-        return {"find": found.strip(), "grep_notes": in_notes.strip().splitlines()[0],
-                "grep_chat": in_chat.strip().splitlines()[0], "added": added.strip(), "undone": undone.strip()}
+        return {"asked": True, "notebook": notebook.strip().splitlines()[0],
+                "overview": "down and up again"}
     finally:
         repl.close()
         (out / "repl-transcript.txt").write_text(repl.transcript)
@@ -643,7 +688,8 @@ def check_ask(session: Session, model: TestOnlyFixedReplyModel) -> dict:
 
 
 def check_restart(session: Session) -> dict:
-    """Started again on the same state: the four windows come back with frames and content."""
+    """Started again on the same state: the four windows come back, each with a frame and a place
+    on the canvas the arrangement publishes."""
     session.stop()
     began = time.monotonic()
     session.start(install=False)
@@ -651,9 +697,12 @@ def check_restart(session: Session) -> dict:
     wait_for("every window back with a frame", lambda: wanted <= presented(session),
              lambda: f"presented {sorted(presented(session))}; windows {sorted(windows_by_app(session))}\n"
                      f"{session.log_tail()}")
-    wait_for("the note back in Notes", lambda: holds(session, "notes", NOTE_TITLE))
-    wait_for("the channel back in Chat", lambda: holds(session, "chat", CHANNEL))
-    return {"seconds_to_content": round(time.monotonic() - began, 2)}
+    places = canvas_places(session)
+    unplaced = sorted(a for a in wanted
+                      if str((windows_by_app(session).get(a) or {}).get("group")) not in places)
+    if unplaced:
+        raise Failed(f"back without a place on the canvas: {unplaced}; places {places}")
+    return {"seconds_to_windows": round(time.monotonic() - began, 2)}
 
 
 # The tilolang apps `tilolang dev` installs into the running session, ones it has not had yet,
