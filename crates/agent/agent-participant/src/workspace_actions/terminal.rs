@@ -525,9 +525,7 @@ impl Worker {
             resources: Vec::new(),
         };
         let update = InvocationUpdate::Succeeded { invocation, output };
-        if let Some(entry) = self.ledger().entries.get_mut(&invocation) {
-            entry.update = update.clone();
-        }
+        self.ledger().answered(invocation, &update, None);
         Some(InvocationState::new(invocation, update).receipt())
     }
 

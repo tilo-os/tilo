@@ -87,6 +87,9 @@ pub struct Options {
     /// Whose session this is, as the system knows them: the user a password unlocks the lock screen
     /// for.
     pub user: String,
+    /// The ids the person went by before this device had an identity — the login account among
+    /// them — under which a desk they kept, and the workspaces it holds, are still theirs.
+    pub earlier: Vec<String>,
     /// Whether a password unlocks the session; without one nothing does.
     pub verifier: std::sync::Arc<dyn unlock::PasswordVerifier>,
     /// The login's lock record, when a session wrapper started this session: the lock a crashed
@@ -138,6 +141,10 @@ pub struct Options {
     /// presence a workspace would have carried ([`sync::Client::untethered`]), which says nothing
     /// on a network.
     pub sync: Option<Rc<sync::Client>>,
+    /// What this device's endpoint relays through. `None` : the person's setting
+    /// ([`tilo_endpoint_reachability::relays`]), which is what a session on their desk uses. `Some`
+    /// is a test's own: a relay on this machine's loopback, so nothing it does leaves the machine.
+    pub relays: Option<tilo_endpoint_reachability::EndpointRelays>,
     /// The person's device fabric, when this session runs on one: what was copied here is shared
     /// with their other devices through it, and what they copied there joins the clipboard here.
     pub fabric: Option<crate::platform::fabric::SharedLink>,
@@ -301,7 +308,10 @@ pub(crate) fn start_collaboration(
             continuity,
             wake: options.wake.handle(),
             fabric: tilo_paths::state_dir().map(|root| root.join("tilo/fabric")),
-            relays: tilo_endpoint_reachability::relays(),
+            relays: options
+                .relays
+                .clone()
+                .unwrap_or_else(tilo_endpoint_reachability::relays),
         },
         engine,
         options.questions.clone(),
@@ -365,6 +375,7 @@ impl Default for Options {
             presentation: ComponentRunnerInputs::from_native_process,
             shell: false,
             sync: None,
+            relays: None,
             controllers: None,
             config: SessionConfig::default(),
             accelerometer: Accelerometer::default(),
@@ -380,6 +391,7 @@ impl Default for Options {
             hosted_browser: None,
             session_actions: no_session_actions,
             user: String::new(),
+            earlier: Vec::new(),
             verifier: std::sync::Arc::new(unlock::Unavailable),
             recovery: None,
             wake: tilo_service::LoopWake::default(),

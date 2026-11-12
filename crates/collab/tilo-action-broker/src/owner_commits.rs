@@ -108,11 +108,9 @@ impl OwnerCommitService for NativeOwnerCommits {
                 .map_err(|error| format!("native durable owner unavailable: {error}"))?;
             let room = WorkspaceId::parse(&request.workspace).ok_or("invalid native room")?;
             // A receipt is this device's own, recorded in its person's slice
-            // of the workspace with its own key and published as its own
-            // change.
-            let key = custody.signing_key(&owner, room)?;
-            let receipt =
-                owner.commit_effect_receipt(&request, &key, std::time::SystemTime::now())?;
+            // of the workspace and published as its own change.
+            custody.check_custody(&owner, room)?;
+            let receipt = owner.commit_effect_receipt(&request, std::time::SystemTime::now())?;
             custody.schedule_publication(room);
             Ok(receipt)
         }))
@@ -136,11 +134,10 @@ impl OwnerCommitService for NativeOwnerCommits {
                 .resolve_owner()
                 .map_err(|error| format!("native durable owner unavailable: {error}"))?;
             let room = WorkspaceId::parse(&request.workspace).ok_or("invalid native room")?;
-            custody.check_custody(&owner, room)?;
-            let key = custody.signing_key(&owner, room)?;
+            let signer = custody.signer(&owner, room)?;
             let (committed, receipt) = futures::executor::block_on(owner.commit_local_document(
                 request,
-                &key,
+                signer.as_ref(),
                 std::time::SystemTime::now(),
             ))?;
             // What search holds of the record is read again from what it now

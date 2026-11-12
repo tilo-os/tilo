@@ -79,7 +79,7 @@ async fn extra_protocol_and_relay_share_one_endpoint() {
     .unwrap();
     assert_eq!(relay.node_addr().id, endpoint_addr.id);
 
-    let client = iroh::Endpoint::builder(presets::N0).bind().await.unwrap();
+    let client = test_relay::direct_endpoint().await;
     let connection = client.connect(relay.node_addr(), TEST_ALPN).await.unwrap();
     let (mut send, mut recv) = connection.open_bi().await.unwrap();
     tilo_relay::daemon::write_frame(&mut send, b"join")

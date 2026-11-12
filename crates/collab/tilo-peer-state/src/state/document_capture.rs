@@ -144,8 +144,60 @@ pub fn changes_since(
 /// A sealed record as one reader last opened it, kept for its next read: that read opens only the
 /// writes sealed since, onto what this holds, unless the record's history was compacted or
 /// replaced meanwhile. A reader that keeps none opens the whole history on every read.
+///
+/// What it holds is plaintext the reader's keys opened, so it lives with that reader, in its
+/// memory, and is never stored here. A read the workspace refuses (the reader was removed, may no
+/// longer read the record, or the history no longer covers every write) forgets it, as does a
+/// write that does not open with the keys the reader holds now: what is kept never answers a
+/// reader the workspace or the keys would not answer whole.
 #[derive(Default)]
 pub struct KeptRecord(Option<Opened>);
+
+impl KeptRecord {
+    /// Whether a record is kept opened.
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        self.0.is_some()
+    }
+
+    /// Let go of what is kept.
+    pub fn forget(&mut self) {
+        self.0 = None;
+    }
+
+    /// The kept record captured whole, at most `maximum` bytes: the bytes the last capture made
+    /// with the changes since appended, rather than every change encoded again. `None` when
+    /// nothing is kept.
+    pub(crate) fn capture(
+        &mut self,
+        maximum: usize,
+    ) -> Option<Result<Vec<u8>, PeerDocumentReadError>> {
+        let opened = self.0.as_mut()?;
+        let document = opened.document.committed_document();
+        let heads = document.get_heads();
+        let bytes = match opened.captured.take() {
+            Some((mut bytes, at)) if !bytes.is_empty() => {
+                if at != heads {
+                    for change in document.get_changes(&at) {
+                        bytes.extend_from_slice(change.raw_bytes());
+                    }
+                }
+                bytes
+            }
+            _ => match changes_since(document, &[], usize::MAX) {
+                Ok(bytes) => bytes,
+                Err(error) => return Some(Err(error)),
+            },
+        };
+        let captured = if bytes.len() > maximum {
+            Err(PeerDocumentReadError::Capacity)
+        } else {
+            Ok(bytes.clone())
+        };
+        opened.captured = Some((bytes, heads));
+        Some(captured)
+    }
+}
 
 struct Opened {
     /// The covered snapshot the writes were merged onto.
@@ -159,6 +211,8 @@ struct Opened {
     /// Segments of writes not yet complete.
     transfers: crate::document_frame::Transfers,
     document: AutoCommit,
+    /// The bytes the last whole capture of `document` handed out, and the heads they stand at.
+    captured: Option<(Vec<u8>, Vec<ChangeHash>)>,
 }
 
 impl Opened {
@@ -216,6 +270,35 @@ impl StatePeer {
         open: Option<OpenSealed<'_>>,
         kept: &'a mut KeptRecord,
     ) -> Result<&'a Automerge, PeerDocumentReadError> {
+        let document = match self.readable(reader, (app, record), now, open.is_some()) {
+            Ok(document) => document,
+            Err(error) => {
+                kept.forget();
+                return Err(error);
+            }
+        };
+        match (document.encryption_required, open) {
+            (true, Some(open)) => {
+                open_history(document, open, maximum.min(MAX_CAPTURE_BYTES), kept)
+            }
+            (true, None) => Err(PeerDocumentReadError::Encrypted),
+            (false, _) => {
+                kept.forget();
+                Ok(document.doc.committed_document())
+            }
+        }
+    }
+
+    /// `app`'s `record` when the device `reader` may read it now: a current member with Read
+    /// permission on it, and for a sealed one read through keys (`opening`), a history that
+    /// covers every admitted write.
+    fn readable(
+        &self,
+        reader: [u8; 32],
+        (app, record): (&str, &str),
+        now: SystemTime,
+        opening: bool,
+    ) -> Result<&PeerDocument, PeerDocumentReadError> {
         let member = self
             .permissions(reader, now)
             .map_err(PeerDocumentReadError::Membership)?;
@@ -238,12 +321,10 @@ impl StatePeer {
             .documents
             .get(&route)
             .ok_or(PeerDocumentReadError::Missing)?;
-        if !document.encryption_required {
-            return Ok(document.doc.committed_document());
+        if document.encryption_required && opening {
+            self.check_sealed_coverage(&route, document)?;
         }
-        let open = open.ok_or(PeerDocumentReadError::Encrypted)?;
-        self.check_sealed_coverage(&route, document)?;
-        open_history(document, open, maximum.min(MAX_CAPTURE_BYTES), kept)
+        Ok(document)
     }
 
     fn check_sealed_coverage(
@@ -318,6 +399,7 @@ fn open_history<'a>(
             last: None,
             size: base,
             transfers: crate::document_frame::Transfers::default(),
+            captured: None,
             document: match &document.covered_snapshot {
                 Some(base) => base
                     .decoded()

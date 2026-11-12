@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use ui::collaboration::{
-    CertifiedEndpointIdentity, CollabEvent, CollabRequest, CollaborationManager,
+    CatalogueChange, CertifiedEndpointIdentity, CollabEvent, CollabRequest, CollaborationManager,
     DocumentPublicationError, RouteSpec,
 };
 use ui::lock::MutexRecover as _;
@@ -411,6 +411,37 @@ impl Link {
         taken
     }
 
+    /// Wait, at most to `deadline`, for the broker's next catalogue republication: on
+    /// the transport's own wake, never on a timer. No other event ends the wait, and
+    /// each one keeps its place for the session loop. `None` when the deadline passes
+    /// first.
+    pub fn next_catalogue(&mut self, deadline: ui::time::Instant) -> Option<CatalogueChange> {
+        loop {
+            if let Some(change) = self.take_catalogue() {
+                return Some(change);
+            }
+            let now = ui::time::now();
+            if now >= deadline {
+                return None;
+            }
+            self.wait_for_wake(deadline - now);
+        }
+    }
+
+    /// The next catalogue republication already queued, without waiting, with every
+    /// other event left in order.
+    pub(crate) fn take_catalogue(&mut self) -> Option<CatalogueChange> {
+        let mut taken =
+            self.take_queued(|event| matches!(event, CollabEvent::ActionCatalogue { .. }));
+        if taken.len() > 1 {
+            self.defer(taken.split_off(1));
+        }
+        match taken.pop() {
+            Some(CollabEvent::ActionCatalogue { change }) => Some(change),
+            _ => None,
+        }
+    }
+
     /// Put events consumed while waiting for a correlated broker reply back
     /// in front of the normal session loop, preserving their order.
     pub fn defer(&mut self, events: Vec<CollabEvent>) {
@@ -420,9 +451,40 @@ impl Link {
     }
 }
 
+/// A test transport's wake: rung when the transport has more to deliver, so a link
+/// waiting on it sleeps between deliveries instead of asking on a timer.
 #[cfg(test)]
-pub(crate) fn test_link(transport: impl ui::collaboration::PeerTransport + 'static) -> Link {
-    Link::with_manager(CollaborationManager::with_peer_transport(transport), None)
+#[derive(Clone)]
+pub(crate) struct TestWake(mpsc::Sender<()>);
+
+#[cfg(test)]
+impl TestWake {
+    /// Tell the link something is waiting: its next receive polls the transport.
+    pub(crate) fn ring(&self) {
+        let _ = self.0.send(());
+    }
+}
+
+/// A test transport's wake and the receive end a test link waits on. Keep the
+/// wake for as long as the link: a dropped one leaves the link nothing to wait on.
+#[cfg(test)]
+pub(crate) fn test_wake() -> (TestWake, mpsc::Receiver<()>) {
+    let (tx, rx) = mpsc::channel();
+    (TestWake(tx), rx)
+}
+
+#[cfg(test)]
+pub(crate) fn test_link(
+    transport: impl ui::collaboration::PeerTransport + 'static,
+    wake: mpsc::Receiver<()>,
+) -> Link {
+    Link::with_manager(
+        CollaborationManager::with_peer_transport(transport),
+        Some(Wake {
+            _scope: ui::wake::WakeScope::new(),
+            rx: wake,
+        }),
+    )
 }
 
 #[cfg(test)]
@@ -547,7 +609,8 @@ mod tests {
     /// nobody detached (an in-line wait still sees it).
     #[test]
     fn detached_answers_leave_the_event_stream_without_reordering_it() {
-        let mut link = test_link(AnsweringHost { events: Vec::new() });
+        let (_wake, rx) = test_wake();
+        let mut link = test_link(AnsweringHost { events: Vec::new() }, rx);
         link.send_detached(&poll(1)).unwrap();
         link.send_detached(&poll(2)).unwrap();
         // Sent in line: its answer is the caller's to read.
@@ -584,9 +647,64 @@ mod tests {
         assert_eq!(link.take_detached(1), None, "an answer is taken once");
     }
 
+    /// Hands over `events` on its first poll, then nothing.
+    struct Courier {
+        events: Vec<CollabEvent>,
+    }
+
+    impl ui::collaboration::PeerTransport for Courier {
+        fn is_connected(&self) -> bool {
+            true
+        }
+        fn send(&mut self, _: CollabRequest) -> std::result::Result<(), String> {
+            Ok(())
+        }
+        fn poll(&mut self) -> Vec<CollabEvent> {
+            std::mem::take(&mut self.events)
+        }
+    }
+
+    /// A wait for the catalogue is ended by a republication, and only by one: a
+    /// republication behind another event still ends it, and that event keeps
+    /// its place for the session loop.
+    #[test]
+    fn a_catalogue_wait_takes_the_republication_and_keeps_every_other_event() {
+        let change = CatalogueChange::snapshot(&[]);
+        let (_wake, rx) = test_wake();
+        let mut link = test_link(
+            Courier {
+                events: vec![
+                    CollabEvent::RemoteCursorMoved {
+                        user_id: "one".into(),
+                        x: 1.0,
+                        y: 0.0,
+                    },
+                    CollabEvent::ActionCatalogue {
+                        change: change.clone(),
+                    },
+                ],
+            },
+            rx,
+        );
+        assert_eq!(
+            link.next_catalogue(ui::time::now()),
+            Some(change),
+            "the republication ends the wait"
+        );
+        assert!(
+            matches!(
+                link.recv(Duration::ZERO).unwrap(),
+                Some(CollabEvent::RemoteCursorMoved { user_id, .. }) if user_id == "one"
+            ),
+            "the other event keeps its place for the session loop"
+        );
+        assert!(link.recv(Duration::ZERO).unwrap().is_none());
+    }
+
     #[test]
     fn a_forgotten_poll_is_dropped_and_an_arrived_one_needs_no_wait() {
-        let mut link = test_link(AnsweringHost { events: Vec::new() });
+        let (_wake, rx) = test_wake();
+        let mut link = test_link(AnsweringHost { events: Vec::new() }, rx);
         link.send_detached(&poll(1)).unwrap();
         link.forget(1);
         link.send_detached(&poll(3)).unwrap();

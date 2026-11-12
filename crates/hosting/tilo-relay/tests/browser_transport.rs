@@ -45,11 +45,8 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
         revocations: RevocationList::new(),
     };
     let relay = Relay::start(config, identity).await.unwrap();
-    tilo_test_env::within(
-        "the host's own packet relay must become online",
-        relay.endpoint.online(),
-    )
-    .await;
+    // The host answers through its own packet relay from the start: what
+    // `Relay::start` waits for before it serves anything.
     let url = relay
         .node_addr()
         .relay_urls()

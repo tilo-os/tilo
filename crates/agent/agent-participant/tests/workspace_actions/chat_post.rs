@@ -127,19 +127,17 @@ async fn post(
     }
 }
 
-// A post still costs more once the chat holds a conversation: 294 ms into a
-// chat holding ten messages, 827 ms into one holding forty, 853 ms into one
-// holding two thousand. What is left is a record whose writes are sealed being
-// opened whole every time a device merges a change into it: the plaintext of
-// such a record is assembled from every write its channel's keys open, and a
-// page merging a post pays for the chat's history to be opened again — 285 ms
-// to 355 ms of each post here. Reading only the changes since the heads a
-// reader holds (which the host and its pages now do) takes that cost away for
-// a record held in the clear; a sealed one needs the opened history kept, so
-// that a write opens what it added and nothing else. Ignored until a post is
-// the same at both sizes.
+// A post still costs more the longer the chat has run, though no longer for
+// its sealed history: a device keeps the record it opened beside its keys, a
+// read opens only the writes sealed since, and the host merges only the
+// changes after the heads it holds. Measured: 162 ms to 195 ms into a chat
+// holding at most ten messages, 231 ms into one holding forty, 259 ms to
+// 283 ms into one holding two thousand. What is left grows in the host's app
+// worker: the chat's own post action, about 35 ms more at two thousand
+// messages, and the relayout of the chat view after each merged change, about
+// 12 ms more. Ignored until a post is the same at both sizes.
 
-#[ignore = "a post costs 2.9 times as much into a chat of 2,000 messages: 294 ms and 853 ms"]
+#[ignore = "a post costs about 1.5 times as much into a chat of 2,000 messages: 184 ms and 283 ms"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_post_costs_the_same_however_long_the_chat_has_run() {
     let (owner, _) = tilo_user_identity::UserIdentity::generate("Pace host", 1);

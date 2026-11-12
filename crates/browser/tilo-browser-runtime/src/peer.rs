@@ -940,14 +940,30 @@ pub async fn retire_stand_in(post: Function, root: JsValue) -> Result<(), JsValu
 /// root-signed revocation as JSON, which the page keeps beside the person. It
 /// is announced to every session of theirs at once, so their hosts refuse
 /// what the key signs from now on and keep valid what it signed before.
+/// `reason` is why: `retired`, `lost`, `stolen` or `compromised`.
 #[wasm_bindgen(js_name = revokeDevice)]
-pub async fn revoke_device(root: JsValue, key_hex: String) -> Result<String, JsError> {
+pub async fn revoke_device(
+    root: JsValue,
+    key_hex: String,
+    reason: String,
+) -> Result<String, JsError> {
     let root = PageSigner::from_js(&root)?;
+    let reason = match reason.as_str() {
+        "retired" => RevocationReason::Retired,
+        "lost" => RevocationReason::Lost,
+        "stolen" => RevocationReason::Stolen,
+        "compromised" => RevocationReason::Compromised,
+        _ => {
+            return Err(JsError::new(
+                "a device's access ends as retired, lost, stolen or compromised",
+            ));
+        }
+    };
     let entry = tilo_relay_client::revoke_device(
         &root,
         device_key(&key_hex)?,
         tilo_clock::unix_now_ns(),
-        RevocationReason::Retired,
+        reason,
     )
     .await
     .map_err(js_error)?;

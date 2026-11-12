@@ -384,6 +384,29 @@ fn the_keyboard_walks_the_headings_and_folds_their_groups() {
     assert_eq!(focused_heading(&list), Some("Done"));
 }
 
+/// A row whose item has not arrived names no group yet: it stands under the heading over the
+/// rows before it, and that heading counts it, so the count is the rows it stands over.
+#[test]
+fn a_heading_counts_the_row_on_its_way_that_stands_under_it() {
+    let mut list = grouped(vec![heading("Today"), None, heading("Tomorrow")]);
+    let _ = settle(&mut list);
+    let tree = Widget::accessibility(&list).expect("list semantics");
+    let headings: Vec<_> = tree
+        .children
+        .iter()
+        .filter(|child| child.role == crate::a11y::Role::Button)
+        .map(|child| (child.name.clone().unwrap_or_default(), child.value.clone()))
+        .collect();
+    assert_eq!(
+        headings,
+        [
+            ("Today".to_owned(), Some("2".to_owned())),
+            ("Tomorrow".to_owned(), Some("1".to_owned()))
+        ],
+        "each heading counts the rows standing under it"
+    );
+}
+
 #[test]
 fn a_heading_is_a_disclosure_in_the_lists_accessibility_children() {
     let mut list = week();
@@ -620,5 +643,117 @@ fn a_list_with_nothing_to_disclose_keeps_no_chevron_room() {
         (list.lead - list.bleed).abs() < 0.5,
         "no heading or parent to fold reserves no gutter: {}",
         list.lead
+    );
+}
+
+#[test]
+fn a_view_titled_like_its_one_group_heads_nothing_over_the_rows() {
+    // Two tasks due today, in a window whose title already says "Today 2": the heading over
+    // them would say it again.
+    let mut list = grouped(vec![heading("Today"), heading("Today")]).in_view("Today", Some(2));
+    let _ = settle(&mut list);
+    assert!(
+        bands(&list).is_empty(),
+        "the title says it: no heading stands over the rows ({:?})",
+        bands(&list)
+    );
+    let row = f64::from(ROW);
+    assert_eq!(mounted_indexes(&list), vec![0, 1], "both rows are built");
+    for index in 0..2 {
+        assert!(
+            (list.band_room(index) - 0.0).abs() < 0.5,
+            "the row {index} takes no band over it: {}",
+            list.band_room(index)
+        );
+    }
+    let first = list.row_box(0).expect("a mounted first row");
+    assert!(
+        (first.height() - row).abs() < 0.5,
+        "the first row takes its own height, with no band over it: {}",
+        first.height()
+    );
+}
+
+#[test]
+fn a_list_of_two_groups_keeps_their_headings_under_a_title() {
+    // One overdue task and one due today: the headings tell the two runs apart, and the title
+    // over them names only where the window is.
+    let mut list = grouped(vec![
+        heading("Overdue"),
+        heading("Overdue"),
+        heading("Today"),
+        heading("Today"),
+    ])
+    .in_view("Today", Some(4));
+    let _ = settle(&mut list);
+    assert_eq!(
+        bands(&list)
+            .iter()
+            .map(|(heading, _, _)| heading.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Overdue", "Today"],
+        "two runs keep the headings that tell them apart"
+    );
+}
+
+#[test]
+fn a_title_counting_other_rows_keeps_the_heading_that_counts_these() {
+    // The window counts three tasks, two of them here: the heading is the only thing that says
+    // how many rows stand under it.
+    let mut list = grouped(vec![heading("Today"), heading("Today")]).in_view("Today", Some(3));
+    let _ = settle(&mut list);
+    assert_eq!(
+        bands(&list)
+            .iter()
+            .map(|(heading, _, _)| heading.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Today"],
+        "the heading counts what the title does not"
+    );
+}
+
+#[test]
+fn a_list_whose_group_names_another_run_keeps_its_heading() {
+    // A day under a window titled for the place: "Tomorrow" says something "Upcoming" does not.
+    let mut list =
+        grouped(vec![heading("Tomorrow"), heading("Tomorrow")]).in_view("Upcoming", Some(2));
+    let _ = settle(&mut list);
+    assert_eq!(
+        bands(&list)
+            .iter()
+            .map(|(heading, _, _)| heading.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Tomorrow"]
+    );
+}
+
+#[test]
+fn the_title_a_list_stands_under_takes_its_heading_away_and_gives_it_back() {
+    let mut list = grouped(vec![heading("Today"), heading("Today")]);
+    let _ = settle(&mut list);
+    assert_eq!(
+        bands(&list)
+            .iter()
+            .map(|(heading, _, _)| heading.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Today"],
+        "no title over the list: its heading stands"
+    );
+    list.set_view_title(Some("Today".to_owned()), Some(2));
+    let _ = settle(&mut list);
+    assert!(
+        bands(&list).is_empty(),
+        "titled as the heading says: the heading goes ({:?})",
+        bands(&list)
+    );
+    list.set_view_title(Some("Upcoming".to_owned()), Some(2));
+    let _ = settle(&mut list);
+    assert_eq!(
+        bands(&list)
+            .iter()
+            .map(|(heading, _, _)| heading.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Today"],
+        "a title saying something else gives the heading back"
     );
 }

@@ -9,6 +9,7 @@
 //! names, and every receiver recomputes it from the rows it holds.
 
 use automerge::{AutoCommit, ChangeHash, ROOT, ReadDoc, ScalarValue, transaction::Transactable};
+use collab_types::signer::DeviceSigner;
 use tilo_action_policy::WorkspacePolicy;
 
 use super::op::{MembershipOpCommand, OpId, SignedMembershipOp};
@@ -43,7 +44,7 @@ pub fn needs_genesis(doc: &AutoCommit) -> bool {
 /// created with it).
 pub fn genesis_op(
     device: &tilo_user_identity::DeviceCert,
-    key: &ed25519_dalek::SigningKey,
+    key: &dyn DeviceSigner,
     legacy_heads: &[automerge::ChangeHash],
     membership: &WorkspacePolicy,
     now_ns: u64,

@@ -109,6 +109,57 @@ fn root_signed(
     Ok(user)
 }
 
+/// Make this host the stand-in approver of the person whose root `root` is:
+/// the key kept for them in `dir`, and the certificate their root signs for
+/// it.
+///
+/// A host its person's owner runs holds their root (a deployment's root
+/// file), and approves for them where nobody else can: a workspace's browser
+/// session joins as a device of theirs, which only a stand-in certifies. A
+/// stand-in already live in `dir` is left as it is.
+///
+/// What keeps one is a host that places browser sessions, which is the agents
+/// feature's; the test below keeps one without it.
+///
+/// # Errors
+///
+/// The directory cannot be read or written, or the root would not sign it.
+#[cfg(any(test, feature = "agents"))]
+pub(crate) fn keep(dir: &std::path::Path, root: &SigningKey) -> Result<(), String> {
+    let stands = StandIns::new(dir.to_path_buf());
+    let user = root.verifying_key().to_bytes();
+    let now = tilo_clock::unix_now_ns();
+    if stands.live(&user, &RevocationList::new(), now).is_some() {
+        return Ok(());
+    }
+    let key = stands
+        .key(&user)
+        .map_err(|refusal| refusal.message().to_owned())?;
+    let expires = now.saturating_add(
+        tilo_relay_protocol::login_code::STAND_IN_LIFETIME_MS
+            .saturating_sub(60_000)
+            .saturating_mul(1_000_000),
+    );
+    let mut cert = tilo_user_identity::prepare_stand_in_cert(
+        user,
+        key.to_bytes(),
+        "Browser sessions",
+        now,
+        expires,
+    );
+    tilo_user_identity::sign_device_cert(&mut cert, root).map_err(|error| error.to_string())?;
+    stands
+        .certify(cert, now)
+        .map(|_| ())
+        .map_err(|refusal| refusal.message().to_owned())
+}
+
+/// The stand-in certificate and key this host keeps for `user`, when it
+/// keeps a live one.
+pub(crate) fn kept(dir: &std::path::Path, user: &[u8; 32]) -> Option<(SigningKey, DeviceCert)> {
+    StandIns::new(dir.to_path_buf()).live(user, &RevocationList::new(), tilo_clock::unix_now_ns())
+}
+
 impl StandIns {
     pub(crate) fn new(dir: PathBuf) -> Self {
         Self {
@@ -289,4 +340,34 @@ impl StandIns {
 fn check_stand_in_cert(cert: &DeviceCert, now_ns: u64) -> Result<(), Refusal> {
     tilo_user_identity::verify_stand_in_cert_at(cert, now_ns)
         .map_err(|_| Refusal::Forbidden("not a live stand-in certificate of this person"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{keep, kept};
+
+    /// The root a host holds signs one stand-in for it, kept across starts.
+    #[test]
+    fn a_host_holding_the_root_makes_itself_the_persons_stand_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let user = root.verifying_key().to_bytes();
+        assert!(kept(dir.path(), &user).is_none(), "nothing kept yet");
+
+        keep(dir.path(), &root).unwrap();
+        let (key, cert) = kept(dir.path(), &user).expect("the stand-in is kept");
+        assert_eq!(cert.user_public_key, user);
+        assert_eq!(cert.device_public_key, key.verifying_key().to_bytes());
+        assert!(
+            cert.capabilities.stand_in,
+            "it is an approver, nothing else"
+        );
+        assert_eq!(cert.issuer, None, "the root signed it");
+        tilo_user_identity::verify_stand_in_cert_at(&cert, tilo_clock::unix_now_ns())
+            .expect("the certificate is live");
+
+        // A later start keeps the one it has, key and certificate.
+        keep(dir.path(), &root).unwrap();
+        assert_eq!(kept(dir.path(), &user).unwrap().1, cert);
+    }
 }

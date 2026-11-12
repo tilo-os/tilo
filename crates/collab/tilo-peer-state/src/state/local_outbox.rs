@@ -2,8 +2,8 @@
 //! owes the workspace, and when the workspace has retired them.
 //! Nothing here admits remote historical wire data or commits an owner's storage.
 use super::{
-    AdmissionError, DocumentAdmission, DocumentMutation, NeighbourMsg, Route, SignedOp, SigningKey,
-    StatePeer, SystemTime, err, peer_handle,
+    AdmissionError, DocumentAdmission, DocumentMutation, NeighbourMsg, Route, SignedOp, StatePeer,
+    SystemTime, err, peer_handle,
 };
 use crate::state::facades::{PeerOutbox, PeerOutboxMut};
 
@@ -200,65 +200,87 @@ impl PeerOutbox<'_> {
             .iter()
             .all(|head| accepted.get_change_meta_by_hash(head).is_some()))
     }
+
+    /// Draft the renewals of `originals`, sealed writes of `selected` still in
+    /// custody, for `selected` to sign and [`PeerOutboxMut::admit_sealed_renewal`]
+    /// to admit: each one due expired before the governor's watermark retired
+    /// it. `reseal` is the channel's key holder: it returns the payload to
+    /// carry under the channel's current epoch, or refuses. A renewal keeps
+    /// its original's artifact, attestation and class, and is drafted at
+    /// `now` under the author's next sequence, past the renewals drafted
+    /// before it. Answers one outcome per original, `None` when it is not due.
+    pub fn draft_sealed_renewals(
+        self,
+        originals: &[NeighbourMsg],
+        reseal: &mut Reseal<'_>,
+        selected: [u8; 32],
+        now: SystemTime,
+    ) -> Vec<Result<Option<SignedOp>, String>> {
+        let mut drafted = std::collections::BTreeMap::<Route, u64>::new();
+        originals
+            .iter()
+            .map(|original| {
+                let local = self.peer.retained_document(original, selected)?;
+                if local.mutation.is_some()
+                    || crate::outbox::fresh(original, now)
+                    || self.retained_local_document_retired(original, selected)?
+                {
+                    return Ok(None);
+                }
+                self.peer
+                    .permissions(selected, now)
+                    .map_err(|error| error.to_string())?;
+                let NeighbourMsg::AppDocument { envelope, .. } = original else {
+                    return Err("retained local publication requires AppDocument".into());
+                };
+                let (encryption, payload) = reseal(envelope)?;
+                if Some(encryption.channel) != envelope.encryption.map(|sealed| sealed.channel) {
+                    return Err("a renewal must stay on its write's channel".into());
+                }
+                let floor = drafted.get(&local.route).copied().unwrap_or_else(|| {
+                    self.peer
+                        .core
+                        .documents
+                        .get(&local.route)
+                        .and_then(|document| {
+                            document.channel.last_seq_per_author.get(&envelope.author)
+                        })
+                        .copied()
+                        .unwrap_or(0)
+                });
+                let seq = floor.checked_add(1).ok_or("sequence exhausted")?;
+                drafted.insert(local.route, seq);
+                Ok(Some(
+                    SignedOp::new_unsigned_with_encryption(
+                        payload,
+                        envelope.artifact,
+                        envelope.author,
+                        envelope.attestation_id,
+                        envelope.kind,
+                        now,
+                        seq,
+                        encryption,
+                    )
+                    .with_claims(envelope.claims.clone()),
+                ))
+            })
+            .collect()
+    }
 }
+
 impl PeerOutboxMut<'_> {
-    /// Renew `original`, a sealed write of the selected device still in
-    /// custody, once it expired before the governor's watermark retired it.
-    /// `reseal` is the channel's key holder: it returns the payload to carry
-    /// under the channel's current epoch, or refuses. The renewal keeps the
-    /// original's artifact, attestation and class, is signed at `now` under
-    /// the author's next sequence, and is admitted as a new local sealed
-    /// write. `None` when `original` is not due; on an error nothing changes.
-    pub fn renew_local_sealed(
+    /// Admit `renewal`, the renewal of `original` drafted by
+    /// [`PeerOutbox::draft_sealed_renewals`] and signed by its author, as a
+    /// new local sealed write, and answer it as the message to publish in
+    /// the original's place. On an error nothing changes.
+    pub fn admit_sealed_renewal(
         self,
         original: &NeighbourMsg,
-        reseal: &mut Reseal<'_>,
-        key: &SigningKey,
+        renewal: SignedOp,
         now: SystemTime,
-    ) -> Result<Option<NeighbourMsg>, String> {
-        let selected = key.verifying_key().to_bytes();
+    ) -> Result<NeighbourMsg, String> {
+        let selected = *renewal.author.as_bytes();
         let local = self.peer.retained_document(original, selected)?;
-        if local.mutation.is_some()
-            || crate::outbox::fresh(original, now)
-            || self
-                .peer
-                .outbox()
-                .retained_local_document_retired(original, selected)?
-        {
-            return Ok(None);
-        }
-        self.peer
-            .permissions(selected, now)
-            .map_err(|error| error.to_string())?;
-        let NeighbourMsg::AppDocument { envelope, .. } = original else {
-            return Err("retained local publication requires AppDocument".into());
-        };
-        let (encryption, payload) = reseal(envelope)?;
-        if Some(encryption.channel) != envelope.encryption.map(|sealed| sealed.channel) {
-            return Err("a renewal must stay on its write's channel".into());
-        }
-        let seq = self
-            .peer
-            .core
-            .documents
-            .get(&local.route)
-            .and_then(|document| document.channel.last_seq_per_author.get(&envelope.author))
-            .copied()
-            .unwrap_or(0)
-            .checked_add(1)
-            .ok_or("sequence exhausted")?;
-        let mut renewal = SignedOp::new_unsigned_with_encryption(
-            payload,
-            envelope.artifact,
-            envelope.author,
-            envelope.attestation_id,
-            envelope.kind,
-            now,
-            seq,
-            encryption,
-        )
-        .with_claims(envelope.claims.clone());
-        collab_types::sign_op(&mut renewal, key).map_err(err)?;
         let mut candidate = self.peer.clone();
         candidate.admit_new_local_document(
             &local.route.app,
@@ -275,7 +297,7 @@ impl PeerOutboxMut<'_> {
         };
         candidate.retained_document(&message, selected)?;
         *self.peer = candidate;
-        Ok(Some(message))
+        Ok(message)
     }
 }
 

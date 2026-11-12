@@ -107,6 +107,7 @@ fn main() {
             workspace: route.cluster_id.to_string(),
             instance: 1,
             person: "person".to_owned(),
+            installed: std::collections::BTreeMap::new(),
         },
         record,
         Arc::new(bundle),

@@ -251,6 +251,19 @@ enum Window {
 }
 
 impl Window {
+    /// The frame harness over `hosted`.
+    fn in_harness(hosted: HostedWindow) -> Self {
+        let harness = FrameHarness::new(ui::State::new(), Box::new(hosted), VIEWPORT);
+        Self::Harness(Box::new(harness))
+    }
+
+    /// The live `App` a window process runs over `hosted`.
+    fn live(hosted: HostedWindow) -> Self {
+        let mut app = ui::App::new(ui::State::new(), Box::new(hosted));
+        app.init_layout();
+        Self::Live(Box::new(app))
+    }
+
     /// The live window's frames, as its surface runs them, until it is at rest.
     fn live_frame(app: &mut ui::App) {
         // The wake's input is all handled, as the window's event loop says once it is.
@@ -437,20 +450,12 @@ impl Session {
 
     /// A person at a Tasks window the live `App` runs.
     fn live_tasks() -> Self {
-        Self::open(TASKS, "ada", |hosted| {
-            let mut app = ui::App::new(ui::State::new(), Box::new(hosted));
-            app.init_layout();
-            Window::Live(Box::new(app))
-        })
+        Self::open(TASKS, "ada", Window::live)
     }
 
     /// A person at a Notes window the live `App` runs.
     fn live_notes() -> Self {
-        Self::open(NOTES, "ada", |hosted| {
-            let mut app = ui::App::new(ui::State::new(), Box::new(hosted));
-            app.init_layout();
-            Window::Live(Box::new(app))
-        })
+        Self::open(NOTES, "ada", Window::live)
     }
 
     /// A person at a Notebook window whose notes' bodies are rich text (`tests/richbody`), the
@@ -462,11 +467,7 @@ impl Session {
     /// A person at a Notebook window whose notes' bodies are rich text (`tests/richbody`), the
     /// live `App` running it: the same bar, fields and list as Notes, with a rich body.
     fn live_rich() -> Self {
-        Self::open(RICHBODY, "ada", |hosted| {
-            let mut app = ui::App::new(ui::State::new(), Box::new(hosted));
-            app.init_layout();
-            Window::Live(Box::new(app))
-        })
+        Self::open(RICHBODY, "ada", Window::live)
     }
 
     /// A person at a Notes window the live `App` runs, whose connection's queue is full while
@@ -479,38 +480,58 @@ impl Session {
             changes: Arc::clone(changes),
             joined: None,
         }));
-        Self::over(
+        let chunks = tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new());
+        let wire = (Box::new(()) as Box<dyn std::any::Any>, Rc::default());
+        let mut session = Self::launch(
             manager,
             &route,
             NOTES,
             "ada",
-            tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new()),
+            chunks,
             None,
-            (Box::new(()), Rc::default()),
-            |hosted| {
-                let mut app = ui::App::new(ui::State::new(), Box::new(hosted));
-                app.init_layout();
-                Window::Live(Box::new(app))
-            },
-        )
+            wire,
+            Window::live,
+        );
+        session.settle();
+        session
     }
 
     /// `person` at a harness window of the app `app`, whose presence `present` sets up.
     fn new(app: &str, person: &str, present: impl FnOnce(&mut ui::presence::PresenceCtx)) -> Self {
         Self::open(app, person, |hosted| {
-            let mut window = FrameHarness::new(ui::State::new(), Box::new(hosted), VIEWPORT);
-            window.update_presence(|presence| {
+            let mut window = Window::in_harness(hosted);
+            window.harness().update_presence(|presence| {
                 present(presence);
                 true
             });
-            Window::Harness(Box::new(window))
+            window
         })
     }
 
     /// `person` at the window `window` makes of the hosted window of the app `app`, whose
     /// package [`package_of`] names.
     fn open(app: &str, person: &str, window: impl FnOnce(HostedWindow) -> Window) -> Self {
+        let mut session = Self::opened(app, person, window);
+        session.settle();
+        session
+    }
+
+    /// [`Self::open`], before the window had a frame.
+    fn opened(app: &str, person: &str, window: impl FnOnce(HostedWindow) -> Window) -> Self {
         let route = RouteSpec::app(app, uuid::Uuid::new_v4());
+        let chunks = tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new());
+        Self::brokered(&route, app, person, chunks, None, window)
+    }
+
+    /// [`Self::launch`] over a connection whose other end is the test's broker.
+    fn brokered(
+        route: &RouteSpec,
+        app: &str,
+        person: &str,
+        chunks: tilolang_tilo::chunk::Chunks,
+        storage: Option<std::path::PathBuf>,
+        window: impl FnOnce(HostedWindow) -> Window,
+    ) -> Self {
         let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
         let manager = CollaborationManager::with_peer_transport(Broker {
             route: route.clone(),
@@ -518,16 +539,8 @@ impl Session {
             inbox: Rc::clone(&inbox),
             joined: None,
         });
-        Self::over(
-            manager,
-            &route,
-            app,
-            person,
-            tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new()),
-            None,
-            (Box::new(inbox), sent),
-            window,
-        )
+        let wire = (Box::new(inbox) as Box<dyn std::any::Any>, sent);
+        Self::launch(manager, route, app, person, chunks, storage, wire, window)
     }
 
     /// A person at a Tasks window over the workspace record `chunks` (its own chunk and the
@@ -539,29 +552,9 @@ impl Session {
         chunks: tilolang_tilo::chunk::Chunks,
         storage: Option<std::path::PathBuf>,
     ) -> Self {
-        let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
-        let manager = CollaborationManager::with_peer_transport(Broker {
-            route: route.clone(),
-            sent: Rc::clone(&sent),
-            inbox: Rc::clone(&inbox),
-            joined: None,
-        });
-        Self::over(
-            manager,
-            route,
-            TASKS,
-            "ada",
-            chunks,
-            storage,
-            (Box::new(inbox), sent),
-            |hosted| {
-                Window::Harness(Box::new(FrameHarness::new(
-                    ui::State::new(),
-                    Box::new(hosted),
-                    VIEWPORT,
-                )))
-            },
-        )
+        let mut session = Self::tasks_over_launched(route, chunks, storage);
+        session.settle();
+        session
     }
 
     /// [`Self::tasks_over_in`], not settled: the window as it is when it opens, before its first
@@ -571,52 +564,14 @@ impl Session {
         chunks: tilolang_tilo::chunk::Chunks,
         storage: Option<std::path::PathBuf>,
     ) -> Self {
-        let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
-        let manager = CollaborationManager::with_peer_transport(Broker {
-            route: route.clone(),
-            sent: Rc::clone(&sent),
-            inbox: Rc::clone(&inbox),
-            joined: None,
-        });
-        Self::launch(
-            manager,
-            route,
-            TASKS,
-            "ada",
-            chunks,
-            storage,
-            (Box::new(inbox), sent),
-            |hosted| {
-                Window::Harness(Box::new(FrameHarness::new(
-                    ui::State::new(),
-                    Box::new(hosted),
-                    VIEWPORT,
-                )))
-            },
-        )
+        Self::brokered(route, TASKS, "ada", chunks, storage, Window::in_harness)
     }
 
     /// `person` at the window `window` makes of the hosted window of the app `app`, whose
     /// package [`package_of`] names, whose instance's connection is `manager`, on `route`;
     /// `wire` is what the broker's end holds and what the instance sends it, `chunks` the
     /// workspace record the instance runs over, and `storage` where the package keeps what it
-    /// keeps (nothing: in memory). The window settles before it is handed over.
-    fn over(
-        manager: CollaborationManager,
-        route: &RouteSpec,
-        app: &str,
-        person: &str,
-        chunks: tilolang_tilo::chunk::Chunks,
-        storage: Option<std::path::PathBuf>,
-        wire: (Box<dyn std::any::Any>, Sent),
-        window: impl FnOnce(HostedWindow) -> Window,
-    ) -> Self {
-        let mut session = Self::launch(manager, route, app, person, chunks, storage, wire, window);
-        session.settle();
-        session
-    }
-
-    /// [`Self::over`], before the window had a frame.
+    /// keeps (nothing: in memory), before the window had a frame.
     fn launch(
         mut manager: CollaborationManager,
         route: &RouteSpec,
@@ -2405,6 +2360,27 @@ fn the_windows_command_palette_offers_the_apps_actions_with_their_keys() {
     assert!(
         shown.iter().any(|label| label.contains("New task")),
         "{shown:?}"
+    );
+}
+
+#[test]
+fn a_window_given_the_keyboard_before_its_instance_answered_types_into_the_entry() {
+    use ui::winit::keyboard::NamedKey;
+    let _settled = ui::motion::testing::settled();
+    let mut session = Session::opened(TASKS, "ada", Window::live);
+    // The desk gives a window the keyboard as it maps it, before what its instance sends has
+    // arrived: the entry the window shows once it does takes what the person types.
+    if let Window::Live(app) = &mut session.window {
+        Window::live_input(app, ui::winit::event::WindowEvent::Focused(true));
+    }
+    session.settle();
+    session.window.type_text("Water the plants");
+    session.window.press_key(NamedKey::Enter);
+    session.settle();
+    let titles = session.titles();
+    assert!(
+        titles.iter().any(|title| title == "Water the plants"),
+        "{titles:?}"
     );
 }
 

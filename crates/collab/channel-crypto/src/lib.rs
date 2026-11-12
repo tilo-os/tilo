@@ -73,6 +73,7 @@ pub mod group;
 pub mod peer;
 pub mod persistence;
 pub mod signer;
+pub mod welcome;
 
 pub use content::{ContentKeyring, KeyHistory};
 pub use crypto::{CIPHERSUITE, MemberKey};
@@ -110,7 +111,7 @@ pub fn decode_key_package(bytes: &[u8]) -> Result<KeyPackage> {
     use openmls::prelude::OpenMlsProvider as _;
     use openmls::prelude::tls_codec::Deserialize as _;
 
-    let provider = openmls_rust_crypto::OpenMlsRustCrypto::default();
+    let provider = crate::welcome::Provider::default();
     openmls::prelude::KeyPackageIn::tls_deserialize_exact(bytes)
         .map_err(Error::tls_codec)
         .and_then(|package| {

@@ -4,7 +4,7 @@
 //! and the frame is drawn as an app's is.
 
 use tilo_session_core::surface::WindowPicture;
-use tilo_session_core::surface::{HostIme, HostLayer, HostTextInput, SurfaceHost};
+use tilo_session_core::surface::{HostIme, HostLayer, HostTextInput, LayerPose, SurfaceHost};
 
 use ui::headless::FrameHarness;
 use ui::retained_raster::{Repaint, RetainedFrames, TargetKey};
@@ -92,6 +92,85 @@ enum Owed {
     Material,
 }
 
+/// A part of the tree the compositor poses ([`ui::lift`]): drawn at rest into frames of its own,
+/// so while it only fades, grows or moves it is not drawn again. A part that went is kept, not
+/// shown: when it comes back (the overview opened again) it shows what it drew, drawing only what
+/// changed meanwhile.
+struct LiftedLayer {
+    key: ui::scene_parts::PartKey,
+    /// The last frame lifted the part.
+    shown: bool,
+    /// Where it stands at rest, in the tree's logical pixels: `(x, y)` and its size.
+    rect: ((i32, i32), (u32, u32)),
+    pose: LayerPose,
+    frames: Frames,
+    retained: RetainedFrames,
+    /// Its scene in the frames' pixels.
+    scene: vello::Scene,
+}
+
+impl LiftedLayer {
+    /// Bring the layer up to `lifted`, drawn at `scale`: its pose taken, and what of it changed
+    /// drawn again. Whether it shows anything other than it did.
+    fn update(&mut self, lifted: &ui::lift::Lifted, scale: f64, generation: u64) -> bool {
+        let ((x, y), (width, height)) = self.rect;
+        let (x, y) = (f64::from(x), f64::from(y));
+        let (width, height) = (f64::from(width), f64::from(height));
+        let pose = LayerPose {
+            scale: lifted.pose.scale,
+            opacity: lifted.pose.opacity,
+            anchor: (
+                (lifted.pose.pivot.x - x) / width,
+                (lifted.pose.pivot.y - y) / height,
+            ),
+            offset: (lifted.pose.offset.x, lifted.pose.offset.y),
+        };
+        let posed = pose != self.pose;
+        self.pose = pose;
+        let to_device = Affine::scale(scale).pre_translate((-x, -y).into());
+        self.scene.reset();
+        self.scene.append(&lifted.scene, Some(to_device));
+        let size = self.frames.size();
+        let key = TargetKey {
+            width: size.0,
+            height: size.1,
+            to_device,
+            base_color: TRANSPARENT,
+            generation,
+        };
+        let parts = lifted.parts.as_ref();
+        let damage = match self.retained.repaint(&self.scene, parts, key) {
+            Repaint::Regions(changed) if changed.is_empty() => return posed,
+            Repaint::Regions(changed) => Some(changed),
+            Repaint::Full(_) => None,
+        };
+        self.retained.presented(&self.scene, parts, key);
+        self.frames.present(&self.scene, damage.as_deref());
+        true
+    }
+}
+
+/// Where `bounds` (logical) stands in whole pixels inside a tree of `size`: `None` when nothing of
+/// it does.
+fn whole_pixels(bounds: vello::kurbo::Rect, size: (u32, u32)) -> Option<((i32, i32), (u32, u32))> {
+    let inside = bounds.expand().intersect(vello::kurbo::Rect::new(
+        0.0,
+        0.0,
+        f64::from(size.0),
+        f64::from(size.1),
+    ));
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "whole pixels inside a surface on a screen"
+    )]
+    let rect = (
+        (inside.x0 as i32, inside.y0 as i32),
+        (inside.width() as u32, inside.height() as u32),
+    );
+    (rect.1.0 > 0 && rect.1.1 > 0).then_some(rect)
+}
+
 /// One widget tree shown on a rectangle of the desktop.
 pub struct WidgetHost {
     host: FrameHarness,
@@ -99,6 +178,8 @@ pub struct WidgetHost {
     frames: Frames,
     /// The frame the layer shows, to know what of the next one changed.
     retained: RetainedFrames,
+    /// The parts the compositor poses, below the rest of the tree.
+    lifted: Vec<LiftedLayer>,
     /// Moves whenever the layer may show pixels of another frame entirely.
     generation: u64,
     scene: vello::Scene,
@@ -121,9 +202,9 @@ pub struct WidgetHost {
     provided: Vec<Option<ui::peniko::ImageData>>,
     /// What the next frame is for, if the tree owes one.
     owed: Owed,
-    /// Moves with every frame the tree drew: what it publishes changes only
-    /// with what it shows, so a reader of its resources reads them again
-    /// only when this moved.
+    /// Moves with every frame the tree drew and every action run on it: what
+    /// it publishes changes only with those, so a reader of its resources
+    /// reads them again only when this moved.
     revision: u64,
     /// The wells the tree's places report to as it lays them out: shared
     /// with the window policy placing the windows they stand for
@@ -176,6 +257,8 @@ impl WidgetHost {
         // Each frame is compared with the one the layer shows, so only what
         // changed is drawn again.
         host.track_scene_parts(true);
+        // What only fades, grows or moves is posed by the compositor rather than drawn again.
+        host.lift_parts(true);
         let _ = host.set_input_scale(placement.scale);
         let size = placement.physical_size();
         Self {
@@ -183,6 +266,7 @@ impl WidgetHost {
             placement,
             frames: Frames::new(size),
             retained: RetainedFrames::default(),
+            lifted: Vec::new(),
             generation: 0,
             scene: vello::Scene::new(),
             below,
@@ -479,6 +563,57 @@ impl WidgetHost {
         self.host.send(event);
         self.owe();
     }
+
+    /// Bring the lifted layers up to the parts the last frame lifted: a layer for each, posed as
+    /// the part says, drawn again only where what it shows changed. Whether any of them shows
+    /// anything other than it did.
+    fn update_lifted(&mut self) -> bool {
+        let scale = self.placement.scale;
+        let size = self.placement.size;
+        let mut kept = Vec::with_capacity(self.host.lifted().len());
+        let mut changed = false;
+        for lifted in self.host.lifted() {
+            let Some(rect) = whole_pixels(lifted.bounds, size) else {
+                continue;
+            };
+            let physical = Placement {
+                origin: rect.0,
+                size: rect.1,
+                scale,
+            }
+            .physical_size();
+            let found = self.lifted.iter().position(|layer| layer.key == lifted.key);
+            let mut layer = if let Some(found) = found {
+                self.lifted.swap_remove(found)
+            } else {
+                changed = true;
+                LiftedLayer {
+                    key: lifted.key,
+                    shown: true,
+                    rect,
+                    pose: LayerPose::SETTLED,
+                    frames: Frames::new(physical),
+                    retained: RetainedFrames::default(),
+                    scene: vello::Scene::new(),
+                }
+            };
+            if layer.frames.size() != physical {
+                layer.frames.resize(physical);
+                layer.retained.forget();
+            }
+            changed |= layer.rect != rect || !layer.shown;
+            layer.rect = rect;
+            layer.shown = true;
+            changed |= layer.update(lifted, scale, self.generation);
+            kept.push(layer);
+        }
+        for gone in &mut self.lifted {
+            changed |= std::mem::take(&mut gone.shown);
+        }
+        kept.append(&mut self.lifted);
+        self.lifted = kept;
+        changed
+    }
 }
 
 impl crate::Published for WidgetHost {
@@ -499,6 +634,7 @@ impl crate::Published for WidgetHost {
         let started = self
             .host
             .invoke_published(&address.resource, &address.action, arguments);
+        self.revision = self.revision.wrapping_add(1);
         self.owe();
         started
     }
@@ -513,6 +649,7 @@ impl crate::Published for WidgetHost {
 
     fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
         let acted = self.host.perform_a11y_action(target, action).is_ok();
+        self.revision = self.revision.wrapping_add(1);
         self.owe();
         acted
     }
@@ -604,15 +741,29 @@ impl crate::Published for WidgetHost {
 }
 
 impl SurfaceHost for WidgetHost {
+    /// The lifted parts, posed, then the rest of the tree over them.
     fn layers(&self) -> Vec<HostLayer> {
-        vec![HostLayer {
-            location: self.placement.origin,
-            size: (
-                i32::try_from(self.placement.size.0).unwrap_or(i32::MAX),
-                i32::try_from(self.placement.size.1).unwrap_or(i32::MAX),
-            ),
-            frame: self.frames.frame(),
-        }]
+        let (ox, oy) = self.placement.origin;
+        let side = |side: u32| i32::try_from(side).unwrap_or(i32::MAX);
+        self.lifted
+            .iter()
+            .filter(|layer| layer.shown)
+            .map(|layer| {
+                let ((x, y), (width, height)) = layer.rect;
+                HostLayer {
+                    location: (ox.saturating_add(x), oy.saturating_add(y)),
+                    size: (side(width), side(height)),
+                    frame: layer.frames.frame(),
+                    pose: layer.pose,
+                }
+            })
+            .chain(std::iter::once(HostLayer {
+                location: self.placement.origin,
+                size: (side(self.placement.size.0), side(self.placement.size.1)),
+                frame: self.frames.frame(),
+                pose: LayerPose::SETTLED,
+            }))
+            .collect()
     }
 
     fn withholds_captures(&self) -> bool {
@@ -682,7 +833,23 @@ impl SurfaceHost for WidgetHost {
             reason = "a non-negative point inside a surface on a screen"
         )]
         let (px, py) = (lx as u32, ly as u32);
+        let scale = self.placement.scale;
         self.frames.covers(px, py)
+            || self.lifted.iter().filter(|layer| layer.shown).any(|layer| {
+                let ((x, y), _) = layer.rect;
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "a point inside a surface on a screen"
+                )]
+                let at = |point: f64, from: i32| {
+                    let local = point - f64::from(from) * scale;
+                    (local >= 0.0).then_some(local as u32)
+                };
+                at(lx, x)
+                    .zip(at(ly, y))
+                    .is_some_and(|(px, py)| layer.frames.covers(px, py))
+            })
     }
 
     fn pointer_motion(&mut self, x: f64, y: f64) {
@@ -888,10 +1055,16 @@ impl SurfaceHost for WidgetHost {
             base_color: TRANSPARENT,
             generation: self.generation,
         };
+        let lifted = self.update_lifted();
         let parts = self.host.scene_parts();
         let damage = match self.retained.repaint(&self.scene, parts, key) {
             // Nothing of what it shows changed: there is nothing to draw.
-            Repaint::Regions(changed) if changed.is_empty() => return false,
+            Repaint::Regions(changed) if changed.is_empty() => {
+                if lifted {
+                    self.cadence.drawn(now);
+                }
+                return lifted;
+            }
             Repaint::Regions(changed) => Some(changed),
             Repaint::Full(_) => None,
         };

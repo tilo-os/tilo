@@ -255,6 +255,15 @@ impl Runtime {
     /// task's host, which holds no records and runs no app's code ([`crate::delegate`]).
     pub fn set_invoker(&self, invoker: impl crate::delegate::Invoker + 'static) {
         *self.core.invoker.borrow_mut() = Some(Box::new(invoker));
+        self.core.delegates_own.set(true);
+    }
+
+    /// Send what this runtime changes of other apps' resources to `invoker`, and run its own
+    /// packages' actions here: the runtime of an app over its own record that reads other apps'
+    /// from theirs (Today over Tasks' record).
+    pub fn set_foreign_invoker(&self, invoker: impl crate::delegate::Invoker + 'static) {
+        *self.core.invoker.borrow_mut() = Some(Box::new(invoker));
+        self.core.delegates_own.set(false);
     }
 
     /// Hand the runtime the verbs the host's resources publish that no loaded package declares

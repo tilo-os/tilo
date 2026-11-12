@@ -128,3 +128,32 @@ fn the_comment_summary_counts_in_the_window_language() {
     assert_eq!(super::comments_summary(3, 2), "3 comments, 2 open");
     assert_eq!(super::comments_summary(1, 0), "1 comment, resolved");
 }
+
+/// A phone is shown the way in it has, not a gesture it cannot make: the
+/// file-open surface leaves out the drop hint when the window reports a
+/// touch-only device, and the empty state's stack closes up by that line.
+#[test]
+fn a_touch_only_phone_is_not_told_to_drop_a_file() {
+    use ui::headless::Framed;
+    use ui::interaction::InteractionEnvironment;
+
+    let mut desk = framed(
+        staged_empty("empty"),
+        crate::scenarios::record_state(),
+        390.0,
+        844.0,
+        None,
+    );
+    let with_hint = desk.empty_open_button_rect().y0;
+
+    let harness = Framed::harness_mut(&mut desk);
+    harness.set_interaction_environment(InteractionEnvironment::TOUCH);
+    harness.relayout();
+    harness.poll_frame().expect("the phone's frame draws");
+    let without_hint = desk.empty_open_button_rect().y0;
+
+    assert!(
+        without_hint - with_hint > 8.0,
+        "the drop hint's line leaves the stack on a touch-only phone ({with_hint} -> {without_hint})"
+    );
+}

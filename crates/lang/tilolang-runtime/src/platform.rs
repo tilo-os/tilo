@@ -413,6 +413,18 @@ impl Core {
         let coll = self.ref_arg(a.h(0)?)?;
         let field = self.text(a.h(1)?)?;
         let item = self.text(a.h(2)?)?;
+        // What another app's person has not seen is read where that app runs, and comes here in
+        // its reading, which the view runs again on when it moves.
+        if crate::foreign::is_foreign(&coll.target) {
+            self.note_reading(crate::foreign::reading_key(&coll.target));
+            let unseen = self.foreign.borrow_mut().unseen(&coll.target)?;
+            let first = unseen
+                .as_ref()
+                .and_then(|unseen| unseen.get("first"))
+                .and_then(serde_json::Value::as_str)
+                .map(|id| Value::some(Value::resource(&coll.target.item(id, item.clone()))));
+            return self.ret_h(first.unwrap_or_else(Value::none));
+        }
         let person = self.looking()?;
         let found = self
             .first_unseen_of(&person, &coll.target, &field, &item)

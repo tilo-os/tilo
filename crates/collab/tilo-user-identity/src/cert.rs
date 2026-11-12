@@ -1535,6 +1535,16 @@ pub fn take_signature_checks() -> u64 {
     SIGNATURE_CHECKS.with(|checks| checks.replace(0))
 }
 
+/// Forget every signature [`verify_remembered`] remembers, as a process
+/// that just started holds none: what a test of a newcomer's own work starts
+/// from, where the device that wrote what it reads ran in the same process.
+#[doc(hidden)]
+pub fn forget_verified_signatures() {
+    if let Ok(mut seen) = verified_signatures().lock() {
+        seen.clear();
+    }
+}
+
 /// Room for every signature a workspace of thousands of members holds, so
 /// re-reading its governance finds each one remembered.
 const VERIFIED_SIGNATURE_LIMIT: usize = 65_536;

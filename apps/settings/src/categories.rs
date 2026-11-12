@@ -134,7 +134,8 @@ impl Category {
     ];
 
     /// The panes a build without the device's own (`tilo-os`) carries, as on
-    /// the web: the person's look, language and shortcuts, and their billing.
+    /// the web: the person's look, language and shortcuts, their devices and
+    /// the keys acting for them, and their billing.
     pub const WEB: &'static [Category] = &[
         // Personal
         Category::Appearance,
@@ -143,6 +144,7 @@ impl Category {
         // Devices
         Category::KeyboardShortcuts,
         // Hubs
+        Category::DevicesAccess,
         Category::Billing,
     ];
 

@@ -553,11 +553,11 @@ impl DesktopSearch {
             self.enter_waiting = None;
             return;
         }
-        // The rows that stand for the query are its answer, as the desk publishes it: an app's
-        // answer still coming on the host's clock may never come, and must not hold the key.
+        // The rows shown are the query's answer, as for an Enter on rows already shown: a source
+        // still answering, or an app's answer that may never come, must not hold the key or cost
+        // the open their frames. Only a query with no rows yet waits for its first.
         if self.shown_query.as_deref() != Some(query.as_str())
-            || self.answering()
-            || (self.rows.is_empty() && self.waiting())
+            || (self.rows.is_empty() && (self.waiting() || self.answering()))
             || !ui::search::engine_ready()
         {
             return;
@@ -570,6 +570,11 @@ impl DesktopSearch {
             .find_map(|entry| self.hit(&entry.id));
         if let Some(hit) = top {
             self.choose_hit(hit, None, self.palette.held_modifier());
+        }
+        // The choice ends search in this pass, as [`Self::observe`] does for an Enter on rows
+        // shown: an idle desk takes no later pass, and kept it up over the window it opened.
+        if !self.palette.is_open() {
+            self.finish();
         }
     }
 

@@ -113,9 +113,10 @@ done
 for tool in jq bwrap readelf python3 sha256sum; do
     command -v "$tool" >/dev/null || die "$tool is required on PATH"
 done
-host_runtime=${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR is unset}
+host_runtime=${XDG_RUNTIME_DIR:-}
 host_display=
 if ((!headless)); then
+    [[ -n $host_runtime ]] || die "XDG_RUNTIME_DIR is unset"
     [[ -n ${WAYLAND_DISPLAY:-} ]] || die "run this from a Wayland desktop session (WAYLAND_DISPLAY is unset), or pass --headless"
     case $WAYLAND_DISPLAY in
         /*) host_display=$WAYLAND_DISPLAY ;;
@@ -148,6 +149,15 @@ state=$(realpath -m "$state")
 [[ $state != "$HOME" && $state != / ]] || die "refusing state directory $state"
 mkdir -p "$state"
 chmod 700 "$state"
+# A headless session in a container has no login runtime directory of its
+# own: its sockets live in the session's state, with the same private mode a
+# login gives them.
+if [[ -z $host_runtime ]]; then
+    host_runtime=$state/run
+    mkdir -p "$host_runtime"
+    chmod 700 "$host_runtime"
+    say "no XDG_RUNTIME_DIR: the session's runtime directory is $host_runtime"
+fi
 # The compositor's own runtime directory: private sockets, services and the
 # control socket, under the host's runtime directory so it stays on tmpfs and
 # per-user.
@@ -695,9 +705,17 @@ wait_for_socket "$ush_socket" "$!" || die "the ush supervisor did not start (see
 # session, find them taken, and retry without pause: nearly half a core spent
 # for as long as the session runs. Its session manager still runs (default
 # nodes, volume, routing); it just has no hardware to enumerate.
-wireplumber_config=$XDG_CONFIG_HOME/wireplumber/wireplumber.conf.d
-mkdir -p "$wireplumber_config"
-cat > "$wireplumber_config/50-nested-session.conf" <<'WIREPLUMBER'
+# Sound is optional and comes and goes: a machine that has no audio server (a
+# check or an agent in a build container) starts the desktop all the same, its
+# sound controls saying there is no audio device, and the session's audio
+# service picks a server up when one appears.
+if ! command -v pipewire >/dev/null; then
+    say "no pipewire on PATH: this session runs without sound"
+else
+    if command -v wireplumber >/dev/null; then
+        wireplumber_config=$XDG_CONFIG_HOME/wireplumber/wireplumber.conf.d
+        mkdir -p "$wireplumber_config"
+        cat > "$wireplumber_config/50-nested-session.conf" <<'WIREPLUMBER'
 wireplumber.profiles = {
   main = {
     hardware.audio = disabled
@@ -705,28 +723,41 @@ wireplumber.profiles = {
   }
 }
 WIREPLUMBER
-for tool in pipewire pipewire-pulse wireplumber pw-cli; do
-    command -v "$tool" >/dev/null \
-        || die "$tool is required on PATH: the session would start with no sound"
-done
-setsid pipewire > "$logs/pipewire.log" 2>&1 &
-children+=("$!")
-wait_for_socket "$runtime/pipewire-0" "$!" \
-    || die "the session's pipewire did not start (see $logs/pipewire.log)"
-setsid pipewire-pulse > "$logs/pipewire-pulse.log" 2>&1 &
-children+=("$!")
-wait_for_socket "$runtime/pulse/native" "$!" \
-    || die "the session's pulse socket did not start (see $logs/pipewire-pulse.log)"
-setsid wireplumber > "$logs/wireplumber.log" 2>&1 &
-children+=("$!")
-for ((try = 0; try < 100; try++)); do
-    wpctl status >/dev/null 2>&1 && break
-    sleep 0.05
-done
-pw-cli create-node adapter '{ factory.name=support.null-audio-sink node.name=tilo-sink
+    fi
+    setsid pipewire > "$logs/pipewire.log" 2>&1 &
+    pipewire_pid=$!
+    children+=("$pipewire_pid")
+    if wait_for_socket "$runtime/pipewire-0" "$pipewire_pid"; then
+        if command -v pipewire-pulse >/dev/null; then
+            setsid pipewire-pulse > "$logs/pipewire-pulse.log" 2>&1 &
+            children+=("$!")
+            wait_for_socket "$runtime/pulse/native" "$!" \
+                || say "the session's pulse socket did not start: applications that speak PulseAudio have none (see $logs/pipewire-pulse.log)"
+        else
+            say "no pipewire-pulse on PATH: applications that speak PulseAudio have no socket"
+        fi
+        if command -v wireplumber >/dev/null; then
+            setsid wireplumber > "$logs/wireplumber.log" 2>&1 &
+            children+=("$!")
+            if command -v wpctl >/dev/null; then
+                for ((try = 0; try < 100; try++)); do
+                    wpctl status >/dev/null 2>&1 && break
+                    sleep 0.05
+                done
+            fi
+        fi
+        if command -v pw-cli >/dev/null; then
+            pw-cli create-node adapter '{ factory.name=support.null-audio-sink node.name=tilo-sink
     node.description="Session output" media.class=Audio/Sink object.linger=true
     audio.position=[ FL FR ] }' > "$logs/pipewire-null-sink.log" 2>&1 \
-    || say "the session's sound has no output to show (see $logs/pipewire-null-sink.log)"
+                || say "the session's sound has no output to show (see $logs/pipewire-null-sink.log)"
+        else
+            say "no pw-cli on PATH: the session's sound has no output of its own to show"
+        fi
+    else
+        say "the session's pipewire did not start: this session runs without sound (see $logs/pipewire.log)"
+    fi
+fi
 
 # The default window is 1600x900 physical pixels, which a 2x host shows as
 # 800x450: too small for the task centre, which drops a card that does not
@@ -802,7 +833,7 @@ missing_surfaces() {
     done
     while IFS= read -r line; do
         say "!! this session started without part of its desktop: $line"
-    done < <(grep -E 'no quick settings app is installed|no on-screen keyboard is installed|no lock screen|the audio service (is not installed|did not start)' \
+    done < <(grep -E 'no quick settings app is installed|no on-screen keyboard is installed|no lock screen' \
                  "$logs/session.log" 2>/dev/null || true)
 }
 missing_surfaces &

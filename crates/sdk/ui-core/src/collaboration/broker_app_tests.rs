@@ -440,6 +440,74 @@ fn committed_initial_route_uses_one_worker_and_blocks_default_publication() {
     });
 }
 
+/// A window that switches to the record its preparation is still joining
+/// joins that record's route once: the switch names the route the
+/// preparation already asked for, and a second join of it would withdraw
+/// the committed read the first one staged.
+#[test]
+#[cfg(unix)]
+fn switching_to_a_record_still_joining_joins_its_route_once() {
+    use automerge::transaction::Transactable;
+    let cluster = Uuid::new_v4();
+    let want = crate::record::RecordCheckout::new(
+        crate::record::RecordId::minted(),
+        crate::record::RecordKind::new("report"),
+    );
+    let mut source = crate::record::RecordSet::in_memory().with_home(cluster.to_string());
+    let mut original = crate::state::State::new();
+    assert!(source.checkout(&mut original, None, &want));
+    original
+        .doc
+        .put(automerge::ROOT, "body", "committed real history")
+        .unwrap();
+    original.doc.commit();
+    let heads = original.doc.get_heads();
+    let captures = Captures {
+        committed_history_fixture: Some(original.doc.save()),
+        ..Captures::default()
+    };
+    let broker = FakeBroker {
+        captures: Arc::new(std::sync::Mutex::new(captures)),
+        ..FakeBroker::default()
+    };
+    let (fd, captures, _thread) = stand_up_fake_broker(broker);
+    let mut manager = manager_on(fd, "so.tilo.test", cluster);
+    assert!(manager.has_native_committed_primary());
+    // The window prepared its record and switched before that route joined.
+    assert!(manager.prepare_native_record(&want).is_none());
+    manager.switch_native_record(&want).unwrap();
+    assert_eq!(
+        captures.lock().unwrap().joined.len(),
+        2,
+        "the prepared route joins once, whatever asks for it"
+    );
+    assert_eq!(
+        manager.primary_route().unwrap().route().record.as_deref(),
+        Some(want.id.as_str()),
+        "the record's route is the window's primary route"
+    );
+    let read = manager
+        .prepare_native_record(&want)
+        .expect("the read the preparation staged is still there");
+    let mut set = crate::record::RecordSet::in_memory().with_home(cluster.to_string());
+    let mut state = crate::state::State::new();
+    assert!(
+        read.with_mutation(|mutation| {
+            set.checkout_with_initial(&mut state, None, &want, mutation)
+        })
+        .unwrap()
+    );
+    assert_eq!(state.doc.get_heads(), heads);
+    read.applied();
+    tilo_test_env::wait_until("the record's route to become publishable", || {
+        document_reads_publishable(&manager, manager.primary_route().unwrap().route())
+    });
+    assert!(
+        captures.lock().unwrap().signed_ops.is_empty(),
+        "no default was signed or sent"
+    );
+}
+
 /// A native window that shows another record in its component's place
 /// moves its live broker connection to that record's route: one inherited
 /// transport, a second route joined with the record's kind, and the

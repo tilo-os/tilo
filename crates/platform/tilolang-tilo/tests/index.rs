@@ -16,7 +16,7 @@ use tilolang_runtime::value::{ResourceRef, Value};
 use tilolang_tilo::action::{Authorship, DynAction, DynEdit};
 use tilolang_tilo::chunk::{self, ChunkNo, Chunks};
 use tilolang_tilo::host::{Host, Opening};
-use tilolang_tilo::index::Contents;
+use tilolang_tilo::index::{Contents, Index, Opened};
 use tilolang_tilo::publish::PlanRequest;
 use tilolang_tilo::record::DynValue;
 
@@ -706,6 +706,45 @@ fn what_the_store_writes_reads_back_before_the_record_holds_it() {
     assert_eq!(listed(&ada).first(), Some(&moved));
     assert_eq!(listed(&ada), items(&ada, &root));
     assert_eq!(kept(&ada), anew(&ada, &lock));
+}
+
+/// An index file is open once in a process (redb holds it): a second store opening it shares the
+/// one open and reads what it reflects (nothing yet, while the first builds it) rather than
+/// emptying it, and an index of another schema does not empty it either. Closed by every store,
+/// the file opens again as it was kept.
+#[test]
+fn an_index_file_is_shared_by_the_stores_that_open_it() {
+    let dir = TempDir::new("shared");
+    let path = tilolang_tilo::index::file_of(dir.path(), APP);
+    let Opened::Empty(first) = Index::open(&path, APP, "schema").unwrap() else {
+        panic!("a file made anew is empty");
+    };
+    let heads: tilolang_tilo::chunk::Stamps = std::iter::once((0, Vec::new())).collect();
+    first.write(|writer| writer.set_heads(&heads)).unwrap();
+    let Opened::Ready(second, reflected) = Index::open(&path, APP, "schema").unwrap() else {
+        panic!("a second store does not read what the first built");
+    };
+    assert_eq!(
+        reflected, heads,
+        "the second store reads what the first committed"
+    );
+    assert!(first.shared() && second.shared(), "both hold the one index");
+    assert!(
+        Arc::ptr_eq(&*first, &*second),
+        "the second store opened the file again"
+    );
+    assert!(
+        Index::open(&path, APP, "another schema").is_err(),
+        "an index of another schema emptied the one stores read"
+    );
+    drop((first, second));
+    assert!(
+        matches!(
+            Index::open(&path, APP, "schema").unwrap(),
+            Opened::Ready(..)
+        ),
+        "closed, the file opens as it was kept"
+    );
 }
 
 /// A directory of the test's own, removed when dropped.

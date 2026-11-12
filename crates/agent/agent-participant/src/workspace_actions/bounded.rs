@@ -519,7 +519,7 @@ impl Worker {
                 };
                 self.bounded.remove(&oldest);
             }
-            let (bytes, revision) = state
+            let (bytes, heads) = state
                 .document(&holder)
                 .map_err(|_| ActionHostError::UnknownAction)?;
             let app = ConfinedReplica::open(
@@ -540,7 +540,7 @@ impl Worker {
                 BoundedReplica {
                     held: Mounted {
                         app,
-                        merged: Some(revision),
+                        merged: Some(heads),
                         parts: HashMap::new(),
                         used: clock,
                     },
@@ -556,7 +556,7 @@ impl Worker {
             .ok_or_else(|| unavailable("the record did not mount".into()))?;
         held.held.used = clock;
         if holder != *route && !held.held.parts.contains_key(route) {
-            let (part, revision) = state
+            let (part, heads) = state
                 .document(route)
                 .map_err(|_| ActionHostError::UnknownAction)?;
             held.held
@@ -566,7 +566,7 @@ impl Worker {
                     &DocumentMutation::Snapshot(part),
                 )
                 .map_err(|error| unavailable(error.to_string()))?;
-            held.held.parts.insert(route.clone(), Some(revision));
+            held.held.parts.insert(route.clone(), Some(heads));
         }
         Ok(key)
     }
@@ -586,6 +586,41 @@ impl Worker {
             .get(&key)
             .map(|held| held.held.app.survey())
             .unwrap_or_default())
+    }
+
+    /// One page of what `who` is offered on the record at `route`, as
+    /// `query` lists it: [`Self::bounded_actions`] paged in their replica.
+    pub(super) fn bounded_page(
+        &mut self,
+        workspace_id: u64,
+        who: &Bounded,
+        (route, state): (&DocumentRoute, &WorkspaceState),
+        query: &tilo_actions::remote::CatalogueQuery,
+        window: (usize, usize),
+    ) -> Result<(usize, Vec<tilo_actions::ActionDescriptor>), ActionHostError> {
+        let key = self.bounded_replica(workspace_id, who, route, state)?;
+        Ok(self
+            .bounded
+            .get(&key)
+            .map(|held| held.held.app.survey_page(query, window))
+            .unwrap_or_default())
+    }
+
+    /// The action at `address` as `who` is offered it on the record at
+    /// `route`, resolved by its address in their replica: what one action
+    /// costs, not a survey of everything the record publishes.
+    pub(super) fn bounded_descriptor(
+        &mut self,
+        workspace_id: u64,
+        who: &Bounded,
+        (route, state): (&DocumentRoute, &WorkspaceState),
+        address: &ActionAddress,
+    ) -> Result<Option<tilo_actions::ActionDescriptor>, ActionHostError> {
+        let key = self.bounded_replica(workspace_id, who, route, state)?;
+        Ok(self
+            .bounded
+            .get(&key)
+            .and_then(|held| held.held.app.descriptor(address)))
     }
 
     /// Put `request`, which `caller` (served within bounds) asked for and

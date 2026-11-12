@@ -1,24 +1,25 @@
 //! The session's agent door as the REPL speaks to it: newline-delimited MCP JSON-RPC on the
-//! door's socket (`docs/runtime-mcp.md`, "Inside a Tilo session"), and, for a nested session,
-//! its control socket, where the person's remote answer admits the REPL.
+//! door's socket (`docs/runtime-mcp.md`, "Inside a Tilo session").
 //!
 //! The REPL acts as the person, once they admit it: every call passes the broker's gate as them,
 //! within their own authority, and its changes are theirs, attributed to them, in history and
-//! undo.
+//! undo. The person admits it on the sheet the door puts up, or ahead of time by naming the
+//! program when they start the session (`tilo-session --admit-repl PATH`); the REPL never
+//! answers that question for them.
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::path::Path;
+use std::time::Duration;
 
 use serde_json::{Value as Json, json};
 
 /// The MCP version the REPL asks for.
 const PROTOCOL: &str = "2025-06-18";
 
-/// The client name the person is asked to admit, and the agent the REPL is admitted as.
+/// The client name the person is asked to admit: what the sheet names, and what
+/// `--admit-repl` names the program for.
 pub const CLIENT: &str = "tilolang repl";
-pub const AGENT: &str = "tilolang-repl";
 
 /// How long a door call may take.
 const CALL_TIMEOUT: Duration = Duration::from_secs(120);
@@ -68,63 +69,6 @@ impl Lines {
     }
 }
 
-/// A nested session's control socket: what the person at it answers remotely.
-pub struct Control {
-    path: PathBuf,
-}
-
-impl Control {
-    #[must_use]
-    pub fn new(path: PathBuf) -> Self {
-        Self { path }
-    }
-
-    /// One request, its answer.
-    pub fn request(&self, payload: &Json) -> Result<Json, String> {
-        let mut lines = Lines::connect(&self.path)?;
-        lines.send(payload)?;
-        let reply = lines.receive(CALL_TIMEOUT)?;
-        if let Some(error) = reply.get("err") {
-            return Err(format!(
-                "{}: {}",
-                error["code"].as_str().unwrap_or("refused"),
-                error["message"].as_str().unwrap_or_default()
-            ));
-        }
-        Ok(reply
-            .get("answer")
-            .or_else(|| reply.get("ok"))
-            .cloned()
-            .unwrap_or(reply))
-    }
-
-    /// The agent admission waiting for the person, by the id its decision rows carry.
-    fn waiting_prompt(&self, deadline: Instant) -> Result<String, String> {
-        loop {
-            let listed = self.request(&json!({
-                "op": "actions_enumerate", "query": "permission-prompts", "limit": 2000
-            }))?;
-            let found = listed
-                .get("actions")
-                .and_then(Json::as_array)
-                .and_then(|rows| {
-                    rows.iter().find_map(|row| {
-                        (row["provider"] == "permission-prompts")
-                            .then(|| row["id"].as_str()?.strip_prefix("deny@").map(str::to_owned))
-                            .flatten()
-                    })
-                });
-            if let Some(prompt) = found {
-                return Ok(prompt);
-            }
-            if Instant::now() >= deadline {
-                return Err("the session never asked to admit the REPL".to_owned());
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-    }
-}
-
 /// What a tool answered: its text, and whether it is an error.
 #[derive(Debug, Clone)]
 pub struct Answer {
@@ -142,13 +86,10 @@ pub struct Door {
 
 impl Door {
     /// Connect to the door at `socket` and be admitted: by the person in the session's own
-    /// prompt, or, for a nested session (`control`), by the person's remote answer. Admitted, it
+    /// prompt, or, when they named this program as they started the session
+    /// (`tilo-session --admit-repl PATH`), by their decision made ahead of time. Admitted, it
     /// works in the task run the session makes for the connection.
-    pub fn open(
-        socket: &Path,
-        control: Option<&Control>,
-        say: &dyn Fn(&str),
-    ) -> Result<Self, String> {
+    pub fn open(socket: &Path, say: &dyn Fn(&str)) -> Result<Self, String> {
         let mut lines = Lines::connect(socket)
             .map_err(|error| format!("the session's agent door isn't available: {error}"))?;
         // The REPL asks to act as the person: its lines are theirs, typed by them. The person
@@ -162,23 +103,10 @@ impl Door {
                 "clientInfo": {"name": CLIENT, "version": env!("CARGO_PKG_VERSION")}
             }
         }))?;
-        let now = Instant::now();
-        let deadline = now.checked_add(ADMIT_TIMEOUT).unwrap_or(now);
-        match control {
-            Some(control) => {
-                let prompt = control.waiting_prompt(deadline)?;
-                control.request(&json!({
-                    "op": "actions_invoke", "provider": "permission-prompts",
-                    "id": format!("allow-once@{prompt}"),
-                    "args": {"confirm": true, "agent": AGENT},
-                    "wait_ms": 5000
-                }))?;
-            }
-            None => say(
-                "asking to act as you: allow “tilolang repl” in the desktop, unless you named it \
-                 when you started the session (--admit-repl)…",
-            ),
-        }
+        say(
+            "asking to act as you: allow “tilolang repl” in the desktop, unless you named it \
+             when you started the session (--admit-repl)…",
+        );
         let initialized = lines.receive(ADMIT_TIMEOUT)?;
         if let Some(error) = initialized.get("error") {
             return Err(format!(

@@ -843,6 +843,52 @@ fn a_click_that_edits_nothing_never_says_anything() {
     assert!(capture_reports(&sent).is_empty());
 }
 
+/// An input that comes before the frame showing what the input before it
+/// changed (a key's release after its press, the next key typed in the same
+/// wake) builds no surface: its edit is reported against the surface on the
+/// route, the one the window shows, and the frame publishes once.
+#[test]
+fn an_input_before_the_frame_owing_a_publication_reports_against_the_published_surface() {
+    let mut fixture = ActionFixture::broker();
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    fixture.app.collaboration.manager =
+        CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
+    fixture.app.collaboration.local_author = fixture.bindings[0].author.clone();
+    fixture.app.publish_action_surface();
+    let published = fixture.app.action_directory_revision();
+    // A handled input changed what the surface is built from and left its
+    // publication to the frame.
+    fixture.app.invalidate_widget_resource_cache();
+    fixture.app.actions.action_surface_owed = true;
+    let attempts = fixture.app.actions.action_surface_publication_attempts;
+    let scope = fixture.app.begin_local_input_capture();
+    let target = fixture.target(0, "apply");
+    let actor = fixture.bindings[0].author.0.clone();
+    fixture
+        .app
+        .invoke_bound_target(
+            &target,
+            &ResourceInvocation::new(&target.address.address, &actor),
+        )
+        .unwrap();
+    drop(scope);
+    fixture.app.drain_local_input_capture();
+    assert_eq!(
+        fixture.app.actions.action_surface_publication_attempts, attempts,
+        "the input built no surface of its own"
+    );
+    let reports = capture_reports(&sent);
+    assert_eq!(reports.len(), 1, "the edit is reported at once");
+    assert_eq!(reports[0].1.revision, published);
+    assert!(fixture.app.actions.action_surface_owed);
+    fixture.app.publish_owed_action_surface();
+    assert_eq!(
+        fixture.app.actions.action_surface_publication_attempts,
+        attempts + 1,
+        "the frame published once"
+    );
+}
+
 /// An edit made while the published surface had moved under its input is
 /// applied at once, said nothing about while it waits, and recorded with
 /// the broker once a surface it can be reported against is published.

@@ -273,6 +273,11 @@ export async function mountDesktop(target,options={}) {
   const writeClipboard=text=>globalThis.navigator?.clipboard?.writeText
     ?globalThis.navigator.clipboard.writeText(text)
     :Promise.reject(new Error('this page cannot reach the clipboard'));
+  // Why this page has no app files, once it is known it has none: the
+  // browser keeps none for it (a private window, or site data turned off).
+  // Every status says so, so a page reading the last one knows (the bar's
+  // line is `connection-status.mjs`'s).
+  let noFiles;
   const report=data=>{
     // A finished copy is the app's to show, in its own window; the page only speaks it.
     if(data.clipboard==='copied')status.show('Copied to system clipboard',{spoken:true,again:true});
@@ -280,7 +285,7 @@ export async function mountDesktop(target,options={}) {
     if(data.clipboard==='failed')status.show(data.clipboardError||'Could not copy. Try the keyboard Copy shortcut.',{again:true});
     if(data.desktopCommand){const row=data.desktopCommand;status.show(row.state==='succeeded'?'Desktop change saved':row.state==='submitting'||row.state==='accepted'?'Saving desktop change…':row.state==='failed'||row.state==='rejected'?`Desktop change refused: ${row.error??'unavailable'}`:`Desktop change awaiting confirmation: ${row.error??row.state}`);}
     if(data.desktopErrors?.length)status.show(`Desktop request unavailable: ${data.desktopErrors.at(-1)}`);
-    options.onStatus?.(data);
+    options.onStatus?.(noFiles?{files:'unavailable',filesError:noFiles,...data}:data);
   };
   const navigationFocus={errors(){},update(){},close(){}};
   const presentationWaiters=new Set();
@@ -402,7 +407,7 @@ export async function mountDesktop(target,options={}) {
       delete state.semanticsPatch;
     }
     nativeCatalogue.pump();
-    for(const request of state.hostRequests??[]){if(typeof request?.copy==='string')void writeClipboard(request.copy).then(()=>report({clipboard:'copied'}),error=>report({clipboard:'failed',clipboardError:String(error?.message??error)}));else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(Array.isArray(request?.linked))options.onHostAction?.('set-linked',{accounts:request.linked,keep:true});else if(typeof request?.revoke==='string')/* The person takes an agent's grant back: the root this tab holds revokes its device. */options.onHostAction?.('revoke-device',request.revoke);else if(request?.joined)/* The person chose a workspace in the directory: the page enters it through its door, or with a pasted link's invitation. */options.onJoinGranted?.(request.joined);else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}}
+    for(const request of state.hostRequests??[]){if(typeof request?.copy==='string')void writeClipboard(request.copy).then(()=>report({clipboard:'copied'}),error=>report({clipboard:'failed',clipboardError:String(error?.message??error)}));else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(Array.isArray(request?.linked))options.onHostAction?.('set-linked',{accounts:request.linked,keep:true});else if(typeof request?.revoke?.key==='string')/* The person takes a device or an agent's grant back: the root this tab holds revokes it, for the reason they chose. */options.onHostAction?.('revoke-device',request.revoke);else if(request?.joined)/* The person chose a workspace in the directory: the page enters it through its door, or with a pasted link's invitation. */options.onJoinGranted?.(request.joined);else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}}
     if('focusPresence' in state)liveLayer()?.publishPresence({selection:state.focusPresence});
     if('livePlace' in state){livePlace=state.livePlace;liveLayer()?.publishPresence({focus:livePlace?.focus??null,place:livePlace?.place??null,layout:livePlace?.layout??null});}
     // This person's latest wave, which the one it is for shows once.
@@ -550,6 +555,9 @@ export async function mountDesktop(target,options={}) {
   }
   let closeWrites=[];
   let forgetCrashed;
+  // Whether the module is in: its exports are filled by init, so a mount that
+  // stopped before that has nothing to flush and nothing to ask.
+  let moduleLoaded=false;
   const cleanup=recoverableClose({
     begin(){
       capture.close();semanticPresentation.close();
@@ -563,7 +571,11 @@ export async function mountDesktop(target,options={}) {
       // An explicit close waits for every persist outstanding, then saves
       // whatever the mount's own close wrote.
       while(persisting)await persisting.catch(()=>{});
-      await runtime.flush_files();
+      // A mount that stopped before the module arrived (no WebGPU, a disposed
+      // mount) says why through its own error: asking the unloaded module to
+      // flush would replace that message with a TypeError about a missing
+      // export, which tells the person nothing about the browser they are in.
+      if(moduleLoaded)await runtime.flush_files();
       if(storage&&closeWrites.length){await storage.commit(closeWrites);closeWrites=[];}
       if(storage){await storage.release();storage=undefined;}
       recoveryJobs.delete(cleanup);closures.delete(cleanup);
@@ -588,13 +600,19 @@ export async function mountDesktop(target,options={}) {
     }
     const startupFonts=fonts();void startupFonts.catch(()=>{});
     await ready();if(!registry.current(token))throw Error('mount disposed');
+    moduleLoaded=true;
     mark('wasm-ready');
     const acquired=await durableHost.open(config.profile,config.device,{settings:options.settings??browserSettings()});
     mark('storage');
     if(closed||!registry.current(token)){await acquired.release();throw Error("mount disposed");}
     storage=acquired;
-    // Apps' own files (OPFS) are mirrored before any app reads them.
-    const [assets,entries]=await Promise.all([startupFonts,storage.hydrate(),runtime.mirror_files(config.profile)]);
+    // Apps' own files (OPFS) are mirrored before any app reads them. A
+    // browser that keeps none for this page (a private window, or site data
+    // turned off) refuses the whole tree rather than one file: the page goes
+    // on, its records are elsewhere, and it tells the person that files of
+    // their own cannot be kept here instead of failing to start.
+    const [assets,entries,files]=await Promise.all([startupFonts,storage.hydrate(),runtime.mirror_files(config.profile)]);
+    if(files){noFiles=files;console.warn('no app files on this page:',files);}
     mark('assets');
     if(!registry.current(token))throw Error('mount disposed');
     // WebKit's GPU process holds the page's load-time surfaces for a moment;

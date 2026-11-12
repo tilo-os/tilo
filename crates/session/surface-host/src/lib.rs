@@ -361,6 +361,7 @@ impl SurfaceHost for AppHost {
             location: self.placement.origin,
             size,
             frame: self.frames.frame(),
+            pose: tilo_session_core::surface::LayerPose::SETTLED,
         }]
     }
 

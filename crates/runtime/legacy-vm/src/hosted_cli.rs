@@ -20,7 +20,8 @@ usage: tilo-legacy hosted <command>
 
   serve --state DIR --run DIR --kernel VMLINUX [--initramfs FILE] [--cmdline TEXT]
         [--disk-image RAW] [--firecracker PATH] [--plans FILE] [--idle-suspend SECONDS]
-        [--evict-notice FILE] [--memory-mib MIB] [--status-listen ADDR]
+        [--evict-notice FILE] [--memory-mib MIB] [--memory-reserve-mib MIB]
+        [--memory-headroom-mib MIB] [--status-listen ADDR]
         [--relay-endpoint ADDR:PORT]
         (--jail-helper PATH [--jail-config FILE] | --unjailed)
                          own this host's workspace VMs; listens on RUN/hosted.sock.
@@ -35,8 +36,17 @@ usage: tilo-legacy hosted <command>
                          When FILE appears (written by whatever watches the
                          cloud's notice that it takes this host back), every
                          VM is suspended onto STATE and no more are woken.
-                         --memory-mib bounds what the VMs awake at once take
-                         together, by their sizes; a wake past it waits.
+                         --memory-mib is the node's memory its VMs are packed
+                         into (the whole node by default): admission counts
+                         what each VM really takes, as the kernel measures its
+                         processes, not the size it was configured at.
+                         --memory-reserve-mib (2048 by default) is what
+                         stays free for the host itself, and
+                         --memory-headroom-mib (128) is added to what a VM is
+                         counted at until it has been measured. A wake past
+                         that waits; when the node's free memory falls under
+                         the reserve, the VMs' balloons are asked for memory
+                         back before any wake is refused.
                          --status-listen answers Status alone over TCP, for a
                          placer.
                          --relay-endpoint serves the workspaces' Browser in
@@ -283,12 +293,20 @@ fn serve(flags: &Flags) -> Result<ExitCode, String> {
         libc::signal(libc::SIGINT, handler);
     }
     let mut service = Service::open(config, system_clock()).map_err(|e| e.to_string())?;
-    if let Some(mib) = flags.get("--memory-mib") {
-        let mib = mib
-            .parse::<u64>()
-            .map_err(|_| "--memory-mib takes mebibytes".to_string())?;
-        service = service.with_memory_budget(mib);
-    }
+    let budget = memory_budget(flags)?;
+    service = service.with_memory(budget);
+    eprintln!(
+        "tilo-legacy hosted: admitting VMs by what they take: {} for them of the node's {}, \
+         {} kept for this host, and a new VM counted at {} MiB until it is measured",
+        budget
+            .for_vms_mib()
+            .map_or_else(|| "no limit".to_owned(), |mib| format!("{mib} MiB")),
+        budget
+            .node_mib
+            .map_or_else(|| "unknown".to_owned(), |mib| format!("{mib} MiB")),
+        budget.reserve_mib,
+        budget.expected_mib(),
+    );
     let service = Arc::new(service);
     if let Some(address) = flags.get("--status-listen") {
         let listener = std::net::TcpListener::bind(address)
@@ -304,6 +322,35 @@ fn serve(flags: &Flags) -> Result<ExitCode, String> {
         .serve(&STOP, evict_notice.as_deref())
         .map_err(|e| e.to_string())?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// What this host admits its VMs by, from the flags it was started with: the
+/// node's memory, what it keeps free, and what a VM is counted at until it is
+/// measured.
+fn memory_budget(flags: &Flags) -> Result<legacy_vm::hosted::memory::Budget, String> {
+    let mib = |name: &str, default: u64| -> Result<u64, String> {
+        flags.get(name).map_or(Ok(default), |mib| {
+            mib.parse::<u64>()
+                .map_err(|_| format!("{name} takes mebibytes"))
+        })
+    };
+    Ok(legacy_vm::hosted::memory::Budget {
+        node_mib: flags
+            .get("--memory-mib")
+            .map(|mib| {
+                mib.parse::<u64>()
+                    .map_err(|_| "--memory-mib takes mebibytes".to_string())
+            })
+            .transpose()?,
+        reserve_mib: mib(
+            "--memory-reserve-mib",
+            legacy_vm::hosted::memory::Budget::DEFAULT_RESERVE_MIB,
+        )?,
+        headroom_mib: mib(
+            "--memory-headroom-mib",
+            legacy_vm::hosted::memory::Budget::DEFAULT_HEADROOM_MIB,
+        )?,
+    })
 }
 
 /// The size `--size` names; small when it names none.
@@ -576,7 +623,7 @@ fn ask(flags: &Flags, request: &Request) -> Result<ExitCode, String> {
     match reply {
         Reply::Status { vms, load } => {
             println!(
-                "memory: {} MiB awake of {}, {} MiB waiting",
+                "memory: {} MiB in use of {}, {} MiB waiting",
                 load.awake_mib,
                 load.budget_mib
                     .map_or_else(|| "no budget".to_owned(), |mib| format!("{mib} MiB")),
@@ -584,11 +631,22 @@ fn ask(flags: &Flags, request: &Request) -> Result<ExitCode, String> {
             );
             for vm in vms {
                 println!(
-                    "{:<40} {:<8} {:<10} {:<10} wake {} snapshot {}",
+                    "{:<40} {:<8} {:<10} {:<10} {:<9} wake {} snapshot {}",
                     vm.vm,
                     vm.size,
                     vm.phase,
                     vm.account,
+                    vm.resident_mib.map_or_else(
+                        || "-".to_string(),
+                        |mib| format!(
+                            "{mib} MiB{}",
+                            if vm.balloon_mib == 0 {
+                                String::new()
+                            } else {
+                                format!(" -{} balloon", vm.balloon_mib)
+                            }
+                        )
+                    ),
                     vm.last_wake_ms.map_or_else(
                         || "-".to_string(),
                         |ms| format!(

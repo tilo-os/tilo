@@ -137,15 +137,15 @@ rpms_read=1
 rpms_snapshot() {
   local built=/target/publish/rpms/$arch status=0 id
   RPMS_CREATED=
-  bash os/dev/resolve-rpm-snapshot.sh --exists || status=$?
+  bash os/dev/resolve-rpm-snapshot.sh --exists --arch "$arch" || status=$?
   case $status in
-    0) RPMS_REF=$(bash os/dev/resolve-rpm-snapshot.sh) ;;
+    0) RPMS_REF=$(bash os/dev/resolve-rpm-snapshot.sh --arch "$arch") ;;
     1)
       [[ -f $built/image.oci.tar ]] || die "no published RPM snapshot for this package set and no image-rpms-$arch in this run"
       [[ $(archive_digest "$built/image.oci.tar") == "$(cat "$built/digest")" ]] || die "$built/image.oci.tar is not the build"
       RPMS_CREATED=$(cat "$built/epoch")
       [[ $RPMS_CREATED =~ ^[1-9][0-9]*$ ]] || die "image-rpms-$arch left no clock in $built/epoch"
-      RPMS_REF=localhost/tilo-rpms:$(bash os/dev/resolve-rpm-snapshot.sh --tag)-$arch
+      RPMS_REF=localhost/tilo-rpms:$(bash os/dev/resolve-rpm-snapshot.sh --tag --arch "$arch")-$arch
       if [[ $rpms_read == 1 ]]; then
         id=$(podman pull -q "oci-archive:$built/image.oci.tar")
         podman tag "$id" "$RPMS_REF"

@@ -13,7 +13,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use tilo_actions::remote::identity_admin::FleetDevice;
-use tilo_user_identity::{IdentityPaths, RevocationReason};
+use tilo_user_identity::{IdentityPaths, RevocationEntry, RevocationReason};
 
 use crate::device_fleet::DeviceFleetStore;
 
@@ -341,8 +341,52 @@ pub fn trusted_devices(
             current: current == Some(cert.device_public_key),
             revoked: fleet.refuses(cert),
             can_host: cert.capabilities.can_act_as_host,
+            kind: tilo_actions::remote::identity_admin::KeyKind::of(
+                cert.capabilities.agent.is_some(),
+                cert.capabilities.server_key,
+            ),
         })
         .collect())
+}
+
+/// The devices `listed`, this device's fleet, and the keys `record` adds: one
+/// list of the person's devices, each key once.
+///
+/// A person's devices are listed by every one of their devices from the same
+/// record, the one their hosts keep beside their workspace list, because a
+/// key their root certifies need not be certified here: a browser approves
+/// one in its own tab, and another of their computers pairs one. `record` is
+/// that record's devices, each with whether the host that keeps it refuses
+/// the key. A key this device's fleet knows is listed as the fleet says it —
+/// it is the one that signed a revocation here — and the record can only add
+/// that the key is refused, never that it is not.
+#[must_use]
+pub fn with_record(
+    listed: Vec<FleetDevice>,
+    record: impl IntoIterator<Item = (tilo_user_identity::DeviceCert, bool)>,
+) -> Vec<FleetDevice> {
+    let mut devices = listed;
+    for (cert, refused) in record {
+        match devices
+            .iter_mut()
+            .find(|known| known.key_hex == hex::encode(cert.device_public_key))
+        {
+            Some(known) => known.revoked |= refused,
+            None => devices.push(FleetDevice {
+                label: cert.device_label.clone(),
+                key_hex: hex::encode(cert.device_public_key),
+                fingerprint: fingerprint(&cert.device_public_key),
+                current: false,
+                revoked: refused,
+                can_host: cert.capabilities.can_act_as_host,
+                kind: tilo_actions::remote::identity_admin::KeyKind::of(
+                    cert.capabilities.agent.is_some(),
+                    cert.capabilities.server_key,
+                ),
+            }),
+        }
+    }
+    devices
 }
 
 /// A key's short form people compare between screens: its first six bytes.
@@ -366,21 +410,22 @@ pub fn revocation_reason(text: &str) -> Result<RevocationReason, String> {
 }
 
 /// Root-sign the permanent revocation of `device` (64 hex characters) under
-/// the identity `identity_id`, for `reason`.
+/// the identity `identity_id`, for `reason`, and answer the entry the root
+/// signed: what a device of the person's announces to their hosts, which
+/// refuse the key from then on.
 pub fn revoke(
     fleets: &DeviceFleetStore,
     identity_id: &str,
     device: &str,
     reason: &str,
-) -> Result<String, String> {
+) -> Result<RevocationEntry, String> {
     let device = node_id(device, "device")?;
     let mut key = [0; 32];
     hex::decode_to_slice(&device, &mut key).map_err(|error| error.to_string())?;
     let reason = revocation_reason(reason)?;
     fleets
         .revoke(identity_id, key, reason, tilo_clock::unix_now_ns())
-        .map_err(|error| error.to_string())?;
-    Ok(device)
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -389,6 +434,78 @@ mod tests {
 
     const DEVICE: &str = "aa00000000000000000000000000000000000000000000000000000000000001";
     const SERVICE: &str = "bb00000000000000000000000000000000000000000000000000000000000002";
+
+    /// One of the person's devices, as the record on a host keeps it.
+    fn certified(label: &str, key: u8) -> tilo_user_identity::DeviceCert {
+        tilo_user_identity::DeviceCert {
+            user_public_key: [1; 32],
+            device_public_key: [key; 32],
+            device_label: label.into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::primary(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        }
+    }
+
+    fn listed(label: &str, key: u8, current: bool, revoked: bool) -> FleetDevice {
+        FleetDevice {
+            label: label.into(),
+            key_hex: hex::encode([key; 32]),
+            fingerprint: fingerprint(&[key; 32]),
+            current,
+            revoked,
+            can_host: false,
+            kind: tilo_actions::remote::identity_admin::KeyKind::Device,
+        }
+    }
+
+    /// A device another of the person's devices paired, or a browser
+    /// certified in its own tab, is in the record and not in this device's
+    /// fleet: the list Settings shows is both, each key once.
+    #[test]
+    fn the_devices_of_the_record_join_the_fleets_own() {
+        let devices = with_record(
+            vec![listed("This desktop", 2, true, false)],
+            [
+                (certified("This desktop", 2), false),
+                (certified("Browser", 3), false),
+            ],
+        );
+        assert_eq!(
+            devices
+                .iter()
+                .map(|device| (device.label.as_str(), device.current, device.revoked))
+                .collect::<Vec<_>>(),
+            [("This desktop", true, false), ("Browser", false, false)]
+        );
+        assert_eq!(devices[1].key_hex, hex::encode([3; 32]));
+    }
+
+    /// A revocation reaches this device's list from either side: one its own
+    /// fleet signed, and one the host keeping the record keeps. The record
+    /// never says a key the fleet refused is fine again.
+    #[test]
+    fn a_revocation_marks_a_device_from_either_list() {
+        let devices = with_record(
+            vec![
+                listed("Lost laptop", 4, false, true),
+                listed("Phone", 5, false, false),
+            ],
+            [
+                (certified("Lost laptop", 4), false),
+                (certified("Phone", 5), true),
+            ],
+        );
+        assert_eq!(
+            devices
+                .iter()
+                .map(|device| (device.label.as_str(), device.revoked))
+                .collect::<Vec<_>>(),
+            [("Lost laptop", true), ("Phone", true)]
+        );
+    }
 
     #[test]
     fn keys_roles_and_discoveries_are_checked_before_anything_runs() {

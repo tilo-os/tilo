@@ -10,6 +10,7 @@
 //! device to the workspace as one of the owner's, which is how the workspace's
 //! governance tells every member it may hold the workspace.
 
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use iroh_base::EndpointAddr;
@@ -98,6 +99,53 @@ impl Workspaces {
             self.settle(governed).await?;
         }
         Ok(())
+    }
+
+    /// Name this host's own signed address in every workspace it governs,
+    /// after where it answers changed: what their governance names is where
+    /// members and invitees dial this host.
+    pub(super) async fn name_own_hosts(&self) {
+        let workspaces = self
+            .inner
+            .workspaces
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for workspace in workspaces {
+            let mut workspace = workspace.lock().await;
+            if let Err(error) = self.name_own_host(&mut workspace).await {
+                tracing::error!(
+                    workspace = %workspace.workspace(),
+                    %error,
+                    "the host's address is not named in the workspace's governance"
+                );
+            }
+        }
+    }
+
+    /// Follow the relays this host answers through: each change of home relay
+    /// is named in the workspaces it governs, so an invitation always carries
+    /// an address a stranger can dial. A host that has lost its relays names
+    /// nothing: the address it named stays what a workspace says, and a member
+    /// reaches it again through the relay once it comes back.
+    pub(super) fn follow_own_address(&self) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let workspaces = Arc::downgrade(&self.inner);
+        let following =
+            tilo_endpoint_reachability::follow(&self.inner.host.endpoint, &runtime, move |_| {
+                let workspaces = workspaces.clone();
+                async move {
+                    let Some(inner) = workspaces.upgrade() else {
+                        return;
+                    };
+                    Self { inner }.name_own_hosts().await;
+                }
+            });
+        let _ = self.inner.own_address.set(following);
     }
 
     /// Change which hosts `workspace`'s governance names with `change`, as its

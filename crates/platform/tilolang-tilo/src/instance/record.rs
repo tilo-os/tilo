@@ -94,6 +94,9 @@ pub struct InstanceRecord {
     /// refused them for good (a change above its size limit). They are kept in the record and
     /// its on-disk copy, never dropped.
     unshared: Option<String>,
+    /// Why the workspace's copy of the record could not be read here, waiting for the window to
+    /// say it: the route went on with the record this device holds, and nothing says it twice.
+    unreadable: Option<String>,
     /// The words its history verbs speak in.
     words: HostWords,
     /// The on-disk copies of the chunks this replica holds, each a document of its own written
@@ -219,6 +222,7 @@ impl InstanceRecord {
             sent,
             joined: BTreeSet::new(),
             unshared: None,
+            unreadable: None,
             words: HostWords::new("en-US"),
             writers,
             governs: true,
@@ -1101,14 +1105,7 @@ impl InstanceRecord {
     /// chunk's record's above it ([`chunk::record_id`]).
     #[must_use]
     pub fn chunk_route(&self, chunk: ChunkNo) -> RouteSpec {
-        if chunk == FIRST {
-            return self.route.clone();
-        }
-        RouteSpec::record(
-            self.route.app_id.clone(),
-            self.route.cluster_id,
-            chunk::record_id(self.route.record.as_deref().unwrap_or(""), chunk),
-        )
+        chunk_route(&self.route, chunk)
     }
 
     /// Join the route of every chunk the record's manifest names: a chunk's changes reach only
@@ -1133,14 +1130,9 @@ impl InstanceRecord {
             return;
         };
         let request = CollabRequest::document_snapshot(doc.committed_document().save());
-        let sent = match self.send_on(chunk, request) {
-            Ok(()) => true,
-            Err(error) => {
-                tracing::warn!(chunk, %error, "workspace: a snapshot for a late joiner was not sent");
-                false
-            }
-        };
-        let _ = sent;
+        if let Err(error) = self.send_on(chunk, request) {
+            tracing::warn!(chunk, %error, "workspace: a snapshot for a late joiner was not sent");
+        }
     }
 
     /// Commit every change `instance` queued for the workspace, in order, as a step each, and send
@@ -1453,6 +1445,9 @@ impl InstanceRecord {
     /// presence, the route's state) to `other`, in the order they came.
     pub fn receive_and(&mut self, instance: &mut Instance, other: impl FnMut(CollabEvent)) -> bool {
         let changed = self.take_in(other);
+        if let Some(why) = self.unreadable.take() {
+            instance.unshared(why);
+        }
         if changed {
             instance.sync_chunks(&self.chunks);
         }
@@ -1482,9 +1477,11 @@ impl InstanceRecord {
 
     /// Take in what the record's route brought, with no instance to bring up to date: a record
     /// held only to apply changes at its origin. Events that are no change of the record are
-    /// dropped. Whether the record changed.
+    /// dropped, and so is what a window would have said about them. Whether the record changed.
     pub fn take_in_record(&mut self) -> bool {
-        self.take_in(|_| {})
+        let changed = self.take_in(|_| {});
+        self.unreadable = None;
+        changed
     }
 
     /// Apply `action`, which the door built for `invoker` (an agent task the broker admitted),
@@ -1508,12 +1505,54 @@ impl InstanceRecord {
         let mut record_changed = false;
         let mut routes = self.taken_routes();
         for event in self.manager.poll() {
-            let (envelope, decrypted_payload) = match event {
+            let (chunk, before, applied) = match event {
                 CollabEvent::Document {
-                    envelope,
-                    decrypted_payload,
+                    ref envelope,
+                    ref decrypted_payload,
                     ..
-                } => (envelope, decrypted_payload),
+                } => match self.take_document(&routes, envelope, decrypted_payload.as_deref()) {
+                    Taken::Change(taken) => taken,
+                    Taken::Nothing => continue,
+                    // Another record this connection joined (another app's, which the
+                    // instance reads): its reader takes it.
+                    Taken::OtherRoute => {
+                        other(event);
+                        continue;
+                    }
+                },
+                CollabEvent::CommittedDocument { route, read } => {
+                    // What the workspace committed of a route this replica holds, read for it
+                    // by the broker: another replica's changes, or the whole record once this one
+                    // was handed nothing of it. It is merged with what this replica made
+                    // meanwhile, as a change arriving on the route is, and acknowledged then.
+                    let Some(&(_, chunk)) = routes.iter().find(|(held, _)| *held == route) else {
+                        // Another record this connection joined: its reader takes it.
+                        other(CollabEvent::CommittedDocument { route, read });
+                        continue;
+                    };
+                    let before = self
+                        .chunks
+                        .mirror(chunk)
+                        .map(Doc::committed_heads)
+                        .unwrap_or_default();
+                    let Some(applied) = read.take_into(self.open_chunk(chunk), load_mutation)
+                    else {
+                        if read.was_refused() && read.is_whole() {
+                            // The workspace's copy of the record cannot be read
+                            // here. The reader goes on from the revision it read
+                            // and the record keeps what this device holds; the
+                            // window says once that it is the copy on this
+                            // device the person is looking at.
+                            self.unreadable = Some(
+                                "The shared copy of this record couldn't be read here. \
+                                 Your changes stay on this device."
+                                    .to_owned(),
+                            );
+                        }
+                        continue;
+                    };
+                    (chunk, before, applied)
+                }
                 CollabEvent::DocumentSnapshotRequested { route } => {
                     // The broker chose this connection as the one that answers a late joiner of
                     // the record or of one of its chunks: nobody else does, so it is answered
@@ -1527,51 +1566,6 @@ impl InstanceRecord {
                     other(event);
                     continue;
                 }
-            };
-            // The envelope names the route it was sealed for: the record's, or the route of the
-            // chunk its content belongs to.
-            let mut taken = None;
-            for (route, chunk) in routes.clone() {
-                let Some(payload) =
-                    validated_route_payload_with(&route, &envelope, decrypted_payload.as_deref())
-                else {
-                    continue;
-                };
-                let mutation =
-                    match decode_routed_mutation(&route, payload, decrypted_payload.as_deref()) {
-                        Ok(mutation) => mutation,
-                        Err(error) => {
-                            tracing::warn!(
-                                ?error,
-                                "workspace: a change that does not decode was not taken in"
-                            );
-                            break;
-                        }
-                    };
-                let before = self
-                    .chunks
-                    .mirror(chunk)
-                    .map(Doc::committed_heads)
-                    .unwrap_or_default();
-                let loaded = match &mutation {
-                    DocumentMutation::Incremental(bytes) => {
-                        self.open_chunk(chunk).load_incoming(bytes)
-                    }
-                    DocumentMutation::Snapshot(bytes) => {
-                        self.open_chunk(chunk).load_incoming_whole(bytes)
-                    }
-                };
-                match loaded {
-                    Ok(applied) => taken = Some((chunk, before, applied)),
-                    Err(error) => {
-                        tracing::warn!(%error, chunk, "workspace: a change was not taken in");
-                    }
-                }
-                break;
-            }
-            let Some((chunk, before, applied)) = taken else {
-                tracing::warn!("workspace: a change for another route was not taken in");
-                continue;
             };
             // What is taken in counts as a change only when the chunk gained one: a change this
             // replica made comes back on its own route (the broker hands every holder what a
@@ -1591,6 +1585,184 @@ impl InstanceRecord {
             self.join_chunks();
         }
         changed
+    }
+
+    /// Take in a change that arrived on one of `routes` as the signed `envelope` the broker
+    /// relays: the chunk it was of, its heads before, and how many changes it gained.
+    fn take_document(
+        &mut self,
+        routes: &[(RouteSpec, ChunkNo)],
+        envelope: &collab_types::SignedOp,
+        decrypted_payload: Option<&[u8]>,
+    ) -> Taken {
+        // The envelope names the route it was sealed for: the record's, or the route of the
+        // chunk its content belongs to.
+        for (route, chunk) in routes {
+            let Some(payload) = validated_route_payload_with(route, envelope, decrypted_payload)
+            else {
+                continue;
+            };
+            let mutation = match decode_routed_mutation(route, payload, decrypted_payload) {
+                Ok(mutation) => mutation,
+                Err(error) => {
+                    tracing::warn!(
+                        ?error,
+                        "workspace: a change that does not decode was not taken in"
+                    );
+                    return Taken::Nothing;
+                }
+            };
+            let before = self
+                .chunks
+                .mirror(*chunk)
+                .map(Doc::committed_heads)
+                .unwrap_or_default();
+            return match load_mutation(self.open_chunk(*chunk), &mutation) {
+                Ok(applied) => Taken::Change((*chunk, before, applied)),
+                Err(error) => {
+                    tracing::warn!(%error, chunk, "workspace: a change was not taken in");
+                    Taken::Nothing
+                }
+            };
+        }
+        Taken::OtherRoute
+    }
+}
+
+/// The route chunk `chunk` of the record on `route` travels on: `route` itself for [`FIRST`], the
+/// chunk's record's above it ([`chunk::record_id`]).
+fn chunk_route(route: &RouteSpec, chunk: ChunkNo) -> RouteSpec {
+    if chunk == FIRST {
+        return route.clone();
+    }
+    RouteSpec::record(
+        route.app_id.clone(),
+        route.cluster_id,
+        chunk::record_id(route.record.as_deref().unwrap_or(""), chunk),
+    )
+}
+
+/// Another app's record an instance reads and never writes: the record of a package its app uses
+/// that is installed as an app of its own (Today reading Tasks'). It is joined on the instance's
+/// connection, read-only as the broker admits an app's declared read, with every chunk its
+/// manifest names, and what the workspace committed of it is taken in as it arrives.
+pub struct ReadRecord {
+    route: RouteSpec,
+    chunks: Chunks,
+    joined: BTreeSet<ChunkNo>,
+}
+
+impl ReadRecord {
+    /// The record on `route`, joined through `manager`: held empty until the workspace sends it.
+    pub fn join(route: RouteSpec, manager: &mut CollaborationManager) -> Self {
+        manager.join_route(
+            route.clone(),
+            collaboration::record::RecordKind::new(crate::RECORD_KIND),
+        );
+        Self {
+            route,
+            chunks: Chunks::of(Doc::new()),
+            joined: BTreeSet::from([FIRST]),
+        }
+    }
+
+    /// The route the record travels on.
+    #[must_use]
+    pub fn route(&self) -> &RouteSpec {
+        &self.route
+    }
+
+    /// The record and the chunks above it held here.
+    #[must_use]
+    pub fn chunks(&self) -> &Chunks {
+        &self.chunks
+    }
+
+    /// Take in `event` when it is a change of this record or one of its chunks, joining the
+    /// chunks its manifest names from then on. `None` for an event of anything else; else
+    /// whether the record gained a change.
+    pub fn take(
+        &mut self,
+        event: &CollabEvent,
+        manager: &mut CollaborationManager,
+    ) -> Option<bool> {
+        let routes: Vec<(RouteSpec, ChunkNo)> = self
+            .joined
+            .iter()
+            .copied()
+            .map(|chunk| (chunk_route(&self.route, chunk), chunk))
+            .collect();
+        let (chunk, applied) = match event {
+            CollabEvent::Document {
+                envelope,
+                decrypted_payload,
+                ..
+            } => routes.iter().find_map(|(route, chunk)| {
+                let payload = validated_route_payload_with(
+                    route,
+                    envelope,
+                    decrypted_payload.as_deref(),
+                )?;
+                let applied = decode_routed_mutation(route, payload, decrypted_payload.as_deref())
+                    .map_err(|error| format!("{error:?}"))
+                    .and_then(|mutation| {
+                        load_mutation(self.chunks.open(*chunk), &mutation)
+                            .map_err(|error| error.to_string())
+                    })
+                    .unwrap_or_else(|error| {
+                        tracing::warn!(%error, app = route.app_id, "a read record's change was not taken in");
+                        0
+                    });
+                Some((*chunk, applied))
+            })?,
+            CollabEvent::CommittedDocument { route, read } => {
+                let &(_, chunk) = routes.iter().find(|(held, _)| held == route)?;
+                let applied = read
+                    .take_into(self.chunks.open(chunk), load_mutation)
+                    .unwrap_or(0);
+                (chunk, applied)
+            }
+            _ => return None,
+        };
+        if chunk == FIRST && applied > 0 {
+            self.chunks.reread_placement();
+            self.join_chunks(manager);
+        }
+        Some(applied > 0)
+    }
+
+    /// Join the route of every chunk the record's manifest names that is not joined yet.
+    fn join_chunks(&mut self, manager: &mut CollaborationManager) {
+        for chunk in self.chunks.placement().chunks() {
+            if !self.joined.insert(chunk) {
+                continue;
+            }
+            manager.join_route(
+                chunk_route(&self.route, chunk),
+                collaboration::record::RecordKind::new(crate::RECORD_KIND),
+            );
+        }
+    }
+}
+
+/// What became of a change that arrived on the connection.
+enum Taken {
+    /// It was of the chunk named, whose heads were these before, and it gained so many changes.
+    Change((ChunkNo, Vec<ChangeHash>, usize)),
+    /// It was of this record, and could not be taken in.
+    Nothing,
+    /// It was of no route of this record.
+    OtherRoute,
+}
+
+/// Take `mutation` into `doc`, merged with what `doc` holds: the number of changes it gained.
+fn load_mutation(
+    doc: &mut Doc,
+    mutation: &DocumentMutation,
+) -> Result<usize, automerge::AutomergeError> {
+    match mutation {
+        DocumentMutation::Incremental(bytes) => doc.load_incoming(bytes),
+        DocumentMutation::Snapshot(bytes) => doc.load_incoming_whole(bytes),
     }
 }
 

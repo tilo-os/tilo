@@ -45,7 +45,7 @@ Everything listens on `127.0.0.1`. Ports start at `TILO_SH_PORT_BASE`
 | --- | --- | --- |
 | Lounge relay (room host and relay) | `eu1.tilo.sh` and `live-eu1.tilo.sh`, image `lounge` | `tilo-relay` through the image's entrypoint (`os/containers/tilo-lounge/entrypoint.sh`), laid out by the image's own context script, behind production's Caddy and Caddyfile at `https://127.0.0.1:24100` and `https://127.0.0.1:24106` |
 | Front door (MCP, `/v1`, keys, OAuth) | `mcp.tilo.sh`, image `front-door` | `tilo-front-door` at `http://localhost:24110` |
-| Web entry (site, `/sign-in`, `/install.sh`, `/releases`) | `tilo.sh`, image `web-entry` | the image's entrypoint and Caddyfile serving this checkout's desktop bundle, laid out and precompressed as the image does it, on `127.0.0.1:24121` behind the same Caddy, which serves it as Cloudflare serves tilo.sh (HTTPS and HTTP/2) at `https://127.0.0.1:24120`; `/releases/latest` serves this checkout's `tilo` command |
+| Web entry (site, `/sign-in`, `/install.sh`, `/releases`) | `tilo.sh`, image `web-entry` | the image's entrypoint and Caddyfile serving this checkout's desktop bundle, laid out and precompressed as the image does it, on `127.0.0.1:24121` behind the same Caddy, which serves it as Cloudflare serves tilo.sh (HTTPS and HTTP/2) at `https://tilo.localhost:24120`; `/releases/latest` serves this checkout's `tilo` command |
 | Linux VM host (Firecracker) | `tilo-sh-vm-host`, image `vm-host` | with `--images`, the image as root (through `sudo`) where the machine has `/dev/kvm`; otherwise, and always natively, skipped with the reason |
 | Hosted browser | in the workspace's own VM, on the VM host | with the VM host: the relay places it there (docs/hosted-browser.md), and `t test tilo-sh-local-vm` holds it to what it must be |
 | Discord | discord.com | `stack.sh up --discord` starts `crates/dev/fake-discord` and points the Lounge's Discord sign-in and bridge at it |
@@ -69,14 +69,18 @@ does not know how to move stops the start.
   the relay get that CA in the trust bundle at the fixed path Tilo's binaries
   read. The door is plain HTTP on `http://localhost`, a development origin
   the door, the sign-in page and the `tilo` command already accept.
-- **The site is HTTPS on an address.** Caddy plays Cloudflare's edge in
-  front of the web entry, so the page arrives over HTTP/2, as it does from
-  tilo.sh; over plain HTTP a browser falls back to HTTP/1.1's six
-  connections and the page's modules take a second longer at a 70 ms round
-  trip, which skews any entry-speed measurement. It is `127.0.0.1`, not
-  `localhost`, because a browser keeps the site's HSTS header per host name:
-  on `localhost` it would then refuse the door's plain HTTP. On an address a
-  browser cannot register a passkey, so passkeys are not tried here.
+- **The site is HTTPS on its own name under localhost.** Caddy plays
+  Cloudflare's edge in front of the web entry, so the page arrives over
+  HTTP/2, as it does from tilo.sh; over plain HTTP a browser falls back to
+  HTTP/1.1's six connections and the page's modules take a second longer at
+  a 70 ms round trip, which skews any entry-speed measurement. The name is
+  `tilo.localhost`, which browsers, curl and glibc resolve to loopback
+  without any hosts entry, and which a browser treats as a secure context.
+  It is not `localhost` itself, because a browser keeps the site's HSTS
+  header per host name: on `localhost` it would then refuse the door's plain
+  HTTP. It is not an address either, because a passkey's relying party is
+  the page's host name and a browser refuses one on an address. So passkeys
+  register and sign in here as on tilo.sh, for `tilo.localhost`.
 - **Trusting the local CA.** `stack.sh browser` and the headless checks run
   Chromium with `--ignore-certificate-errors`, which also keeps the browser
   from recording HSTS. To use another browser profile, import
@@ -194,10 +198,18 @@ The check brings the stack up and uses it as people and backends do:
    (`integration/reviewer.py`), joins by the invitation, sees the filled
    form and who filled it, and undoes the agent's run.
 6. Revoking the keys refuses them afterwards.
-7. Three fresh visitors enter the Lounge, timed.
+7. Three fresh visitors enter the Lounge, timed. One more keeps themselves
+   with a passkey (a virtual authenticator) for `tilo.localhost`, the browser
+   forgets the site, and the passkey signs the same person in again.
 
 The report (`report.json` in the work directory) holds the bring-up time,
-the visa run's duration and each visitor's entry time.
+the visa run's duration and each visitor's entry time, and each step prints
+its own seconds as the next one begins, so a run says where its time went.
+
+To chase one step, name it: `TILO_SH_ONLY=7 stack.sh check --images` brings
+the stack up and times the visitors, `TILO_SH_ONLY=2-6` runs only the visa
+run (with the startup's key, which it needs), and `TILO_SH_ONLY=10` only a
+key opening Browser in a workspace's VM. Naming none runs every step.
 
 ### The Browser of a hosted workspace
 
@@ -259,11 +271,12 @@ What it needs before it can hold:
   says exactly that.
 - **Room for the stack.** Step 8 onwards run a workspace's VM beside the
   door, relay, web entry and VM host in the guest the check itself runs in.
-  A workspace's VM at `default` is 8 GiB, all the room t gives a micro-VM
-  step, so the check places it at `small` (`TILO_SH_HOSTED_VM_SIZE`): 4 GiB
-  for the workspace's VM and the stack's own services beside it. A bigger
-  workspace VM needs the step's guest booked bigger, which `t` does from what
-  the step's runs measured.
+  A workspace's VM runs at `default`, the size production places (4 vCPU,
+  8 GiB, 50 GiB disk), and the VM host's budget is that size beside the
+  host's own (10 GiB), so the placement is the one a customer's workspace
+  gets. A machine with less room places smaller (`TILO_SH_HOSTED_VM_SIZE`),
+  and `t` books the step's guest from what the step's runs measured, so a
+  guest short of room says so and is given more next time.
 
 ## Entry-speed work
 

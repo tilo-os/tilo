@@ -116,7 +116,7 @@ impl Site {
         let host_key = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
             .expect("the site's device key");
         let (relay, workspaces, workspace) = runtime.block_on(async {
-            let relay = tilo_relay::daemon::Relay::start(
+            let relay = tilo_relay::daemon::Relay::start_with_relay_mode(
                 tilo_relay::RelayConfig {
                     state_root: state.path().join("host"),
                     // Devices of this machine find the site on loopback, as they do on a person's
@@ -130,6 +130,9 @@ impl Site {
                     device_cert: host.clone(),
                     revocations: tilo_user_identity::RevocationList::new(),
                 },
+                // The site relays through this machine's loopback relay, as its people's devices
+                // do: neither side reaches number 0.
+                test_relay::relay_mode(),
             )
             .await
             .expect("the site's host");
@@ -934,6 +937,9 @@ impl Person {
             &self.identity.path().join("config/tilo/identity"),
             &root.join("config/tilo/identity"),
         );
+        // This device relays through this machine's loopback relay, as the site does: no session
+        // of a test reaches the person's relays or their directory out on the internet.
+        test_relay::relay_through_loopback_in(&root.join("config"));
         let paths = IdentityPaths::under(root.join("identity"));
         let cert = self.certify(&paths, label);
         Device {
@@ -1454,6 +1460,69 @@ impl Device {
             .iter()
             .find(|workspace| workspace["id"].as_u64() == Some(active))
             .and_then(|workspace| workspace["room"].as_str().map(str::to_owned))
+    }
+
+    /// The publisher this device's session goes by at its own seat: what every other device in a
+    /// workspace it is in knows it as.
+    pub fn publisher(&self) -> Option<String> {
+        let own = &self.state()["state"]["peers"]["own"];
+        own["publisher"].as_str().map(str::to_owned)
+    }
+
+    /// Who this device's session says is present in `workspace` now: each member's publisher, which
+    /// is the device, and the name their own word gives them — the rows every surface here draws
+    /// its roster from.
+    pub fn present(&self, workspace: &str) -> Vec<(String, String)> {
+        let peers = &self.state()["state"]["peers"];
+        let Some(members) = peers["workspaces"]
+            .as_array()
+            .and_then(|held| held.iter().find(|held| held["room"] == json!(workspace)))
+            .and_then(|held| held["members"].as_array())
+        else {
+            return Vec::new();
+        };
+        members
+            .iter()
+            .filter_map(|member| {
+                Some((
+                    member["publisher"].as_str()?.to_owned(),
+                    member["label"].as_str()?.to_owned(),
+                ))
+            })
+            .collect()
+    }
+
+    /// Wait until this device says the device `publisher` is present in `workspace` , failing with
+    /// who it does say is there if it never does: presence reaches a device by itself, on the
+    /// workspace's own plane.
+    pub fn wait_present(&self, workspace: &str, publisher: &str) {
+        struct Present<'a> {
+            device: &'a Device,
+            workspace: &'a str,
+            publisher: &'a str,
+        }
+        impl std::fmt::Display for Present<'_> {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(
+                    formatter,
+                    "{} says {} is in {}; it says {:?}",
+                    self.device.label,
+                    self.publisher,
+                    self.workspace,
+                    self.device.present(self.workspace)
+                )
+            }
+        }
+        let watched = Present {
+            device: self,
+            workspace,
+            publisher,
+        };
+        tilo_test_env::wait_until(watched, || {
+            self.present(workspace)
+                .iter()
+                .any(|(present, _)| present == publisher)
+        });
     }
 
     /// Wait until the desk shows the workspace `workspace` in front: a person who joins a workspace

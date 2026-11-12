@@ -217,11 +217,6 @@ class KernelBuildrootSnapshotPullRequestTests(unittest.TestCase):
         with self.subTest(phase="promotion_writes_the_canonical_pin_file"):
             self.assertEqual(print_pins("kernel-buildroot", self.x86_ref, self.arm_ref),
                              MODULE.kernel_buildroot_contents(self.x86_ref, self.arm_ref))
-            # t's pin-kernel-buildroot writes the pin file with exactly these contents.
-            script = (REPO / "tools/ci/publish/kernel-buildroot.sh").read_text()
-            self.assertIn('python3 os/dev/open-snapshot-pr.py pins kernel-buildroot '
-                          '--x86-ref "$x86" --arm-ref "$arm" > "$pins"', script)
-            self.assertIn("pins=os/kernel-buildroot-snapshot.env", script)
         restart_fixture(self)
         with self.subTest(phase="committed_pins_use_the_canonical_names"):
             committed = (REPO / "os/kernel-buildroot-snapshot.env").read_text()

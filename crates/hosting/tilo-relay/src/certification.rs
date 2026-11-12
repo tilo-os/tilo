@@ -122,6 +122,9 @@ pub struct CertificationProtocol {
     workspaces: Option<crate::peer::WorkspaceRegistry>,
     /// Approves the requests a person's stand-in on this host expects.
     stand_in: Arc<std::sync::OnceLock<Arc<dyn StandInApprover>>>,
+    /// The workspaces this host governs, whose records keep each person's
+    /// devices: a certificate a root issues here joins its person's record.
+    records: Arc<std::sync::OnceLock<tilo_room_host::workspaces::Workspaces>>,
 }
 
 impl std::fmt::Debug for CertificationProtocol {
@@ -151,6 +154,7 @@ impl CertificationProtocol {
             answered_invites: Arc::new(Mutex::new(std::collections::HashSet::new())),
             workspaces,
             stand_in: Arc::default(),
+            records: Arc::default(),
         }
     }
 
@@ -159,6 +163,20 @@ impl CertificationProtocol {
     #[cfg(feature = "web")]
     pub(crate) fn set_stand_in(&self, approver: Arc<dyn StandInApprover>) {
         let _ = self.stand_in.set(approver);
+    }
+
+    /// Add the certificate `reply` issues, when it issues one, to its
+    /// person's record.
+    fn record_issued(&self, reply: &CertifyReply) {
+        if let (CertifyReply::Issued { cert, .. }, Some(records)) = (reply, self.records.get()) {
+            records.keep_issued_device(cert);
+        }
+    }
+
+    /// Add every certificate a person's root issues here to that person's
+    /// record in `workspaces`. Named once; a later call keeps the first.
+    pub(crate) fn keep_issued_in(&self, workspaces: tilo_room_host::workspaces::Workspaces) {
+        let _ = self.records.set(workspaces);
     }
 
     /// The devices this host knows are revoked.
@@ -692,6 +710,7 @@ impl CertificationProtocol {
                         }
                     }
                 };
+                self.record_issued(&reply);
                 entry.answer.send_replace(Some(reply));
                 let invite = entry.entry.request.invite;
                 drop(pending);

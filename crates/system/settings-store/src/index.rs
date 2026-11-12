@@ -19,13 +19,15 @@ pub struct Page {
 }
 
 /// The pages Settings has on the web, by slug: those that read and change
-/// what the person keeps, not the hardware of a Tilo device, which a page in
-/// a browser has none of.
+/// what the person keeps (their devices among it, as their record on their
+/// host lists them), not the hardware of a Tilo device, which a page in a
+/// browser has none of.
 pub const WEB_PAGES: &[&str] = &[
     "appearance",
     "accessibility",
     "region_formats",
     "keyboard_shortcuts",
+    "devices_access",
     "billing",
 ];
 

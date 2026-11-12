@@ -21,7 +21,7 @@ pub enum Error {
     #[error("openmls error: {0}")]
     OpenMls(String),
 
-    /// `OpenMlsRustCrypto::storage()` rejected a write of secret material.
+    /// The MLS provider's storage rejected a write of secret material.
     /// Separate variant because storage failure has a different operational
     /// signal than a protocol error — almost always OOM or a test-fixture
     /// issue, not a malformed peer message.

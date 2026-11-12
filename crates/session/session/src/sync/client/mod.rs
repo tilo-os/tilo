@@ -74,6 +74,11 @@ use plane::{Serving, Wire, run};
 #[cfg(target_os = "linux")]
 const BIND_WITHIN: Duration = Duration::from_secs(30);
 
+/// How long making an invitation waits for the relay this device is reached through, once the
+/// relays are woken for it: about one net report, and short, because the person waits for the link.
+#[cfg(target_os = "linux")]
+const INVITE_RELAY_WAIT: Duration = Duration::from_secs(2);
+
 /// The endpoint the thread bound, within [`BIND_WITHIN`]: what publishes on it, the endpoint
 /// itself, and whether this device can be reached.
 #[cfg(target_os = "linux")]
@@ -92,6 +97,47 @@ fn wait_for_bound(
             )
         })?
         .map_err(std::io::Error::other)
+}
+
+/// Hand what the endpoint that bound carries to what speaks on it: the live plane takes it, the
+/// channels' link says through it, and this device's presence is the live plane's own.
+#[cfg(target_os = "linux")]
+fn attach_bound(
+    live: &mut Option<crate::live::Live>,
+    link: Option<&Arc<ChannelLink>>,
+    outbox: HostOutbox,
+    endpoint: Option<&iroh::Endpoint>,
+) -> Option<Arc<dyn SayPresence>> {
+    let endpoint = endpoint?;
+    if let Some(live) = live {
+        live.attach(endpoint.clone());
+    }
+    link.inspect(|link| link.attach(Arc::new(outbox)));
+    live.as_ref()
+        .map(|live| Arc::new(live.saying()) as Arc<dyn SayPresence>)
+}
+
+/// Name each change of the relays this device answers through in the records of the workspaces it
+/// hosts ([`tilo_endpoint_reachability::follow`]): what a workspace says of its own host, and the
+/// address a link made later carries, is where the device answers now.
+#[cfg(target_os = "linux")]
+fn follow_own_address(
+    endpoint: Option<&iroh::Endpoint>,
+    engine: Option<Arc<Engine>>,
+) -> Option<tokio::task::AbortHandle> {
+    let endpoint = endpoint?;
+    Some(tilo_endpoint_reachability::follow(
+        endpoint,
+        tilo_rt::app().handle(),
+        move |addr| {
+            let naming = engine.clone();
+            async move {
+                if let Some(engine) = naming {
+                    engine.name_own_hosts(&addr);
+                }
+            }
+        },
+    ))
 }
 
 /// One window stream's message as it reached this device: another member's shared window, or a
@@ -708,22 +754,28 @@ impl Seat {
     }
 
     /// Why what this session takes part in needs this device reachable, if it does: a workspace it
-    /// shows has someone else here. A host is dialled at start and on every reconnect, and the peer
-    /// actor holds the relays up for every remote party it is connected to or keeps dialling
+    /// shows has someone else here, or it holds a link into one that still admits someone. A host
+    /// is dialled at start and on every reconnect, and the peer actor holds the relays up for every
+    /// remote party it is connected to or keeps dialling
     /// ([`tilo_endpoint_reachability::Need::Transport`]).
-    fn reachability_need(client: &SessionClient) -> Option<&'static str> {
+    fn reachability_need(&self, client: &SessionClient) -> Option<&'static str> {
         let own = client.publisher();
-        client
-            .anyone_else_here(own)
-            .then_some("a workspace is shown with someone else")
+        if client.anyone_else_here(own) {
+            return Some("a workspace is shown with someone else");
+        }
+        self.engine
+            .as_ref()
+            .is_some_and(|engine| engine.invitations_open(std::time::SystemTime::now()))
+            .then_some("a link into a workspace is out")
     }
 
     /// Tell the relays what this session has recorded: they stay up while a workspace it shows has
-    /// someone else here, and may rest once none does ([`tilo_endpoint_reachability::REST_AFTER`]).
+    /// someone else here or a link it handed out waits to be redeemed, and may rest once none does
+    /// ([`tilo_endpoint_reachability::REST_AFTER`]).
     fn note_reachability(&self, client: &SessionClient) {
         self.reachability
             .borrow()
-            .need(Need::Session, Self::reachability_need(client));
+            .need(Need::Session, self.reachability_need(client));
     }
 
     /// Take every object the workspaces' live planes heard since the last call: a member's presence
@@ -1031,6 +1083,11 @@ pub struct Client {
     /// The thread running the peer actor, stopped when this drops.
     #[cfg(target_os = "linux")]
     thread: Option<std::thread::JoinHandle<()>>,
+    /// What follows the relays this device answers through
+    /// ([`tilo_endpoint_reachability::follow`]), aborted with it: it holds the endpoint's address
+    /// watcher, which keeps the endpoint's socket open until it goes.
+    #[cfg(target_os = "linux")]
+    own_address: Option<tokio::task::AbortHandle>,
 }
 
 impl std::fmt::Debug for Client {
@@ -1053,6 +1110,9 @@ impl Drop for Client {
         {
             // The live planes dial through this endpoint: they end before it does,
             // and before the thread that holds it joins.
+            if let Some(following) = self.own_address.take() {
+                following.abort();
+            }
             self.hosting.seat.live.borrow_mut().take();
             let _ = self.outgoing.send(Cmd::Stop);
             if let Some(thread) = self.thread.take() {
@@ -1158,15 +1218,8 @@ impl Client {
                 );
             })?;
         let (publisher, endpoint, reachability) = wait_for_bound(&bound)?;
-        if let (Some(live), Some(bound)) = (&mut live, endpoint_handle.get()) {
-            live.attach(bound.clone());
-        }
-        if let Some(link) = &link {
-            link.attach(std::sync::Arc::new(link_outbox));
-        }
-        let saying = live
-            .as_ref()
-            .map(|live| Arc::new(live.saying()) as Arc<dyn SayPresence>);
+        let own_address = follow_own_address(endpoint_handle.get(), engine.clone());
+        let saying = attach_bound(&mut live, link.as_ref(), link_outbox, endpoint_handle.get());
         let inner = SessionClient::over(
             Transport {
                 outgoing: Arc::clone(&outgoing),
@@ -1201,6 +1254,7 @@ impl Client {
             hosting,
             outgoing,
             thread: Some(thread),
+            own_address,
         };
         // The person's other devices are heard from the start, so a list one of them published is
         // taken even when this session shows none of their workspaces yet.
@@ -1240,6 +1294,8 @@ impl Client {
             outgoing,
             #[cfg(target_os = "linux")]
             thread: None,
+            #[cfg(target_os = "linux")]
+            own_address: None,
         }
     }
 
@@ -1301,6 +1357,7 @@ impl Client {
             hosting,
             outgoing: outbox,
             thread: None,
+            own_address: None,
         };
         for host in hosts {
             let _ = client.outgoing.send(Cmd::Connect(host));
@@ -1450,6 +1507,20 @@ impl Client {
     #[must_use]
     pub fn endpoint(&self) -> Option<iroh::Endpoint> {
         self.inner.endpoint()
+    }
+
+    /// Where a link this device hands out names it, as whoever redeems it dials: its address once
+    /// it is reached through a relay. An invitation goes to someone who may be behind any network,
+    /// so the relays wake for it and the home relay is waited for
+    /// ([`tilo_endpoint_reachability::Reachability::relay_addr_within`]): an address signed before
+    /// one arrived names only this device's own network, and reaches nobody there.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn invitation_addr(&self) -> EndpointAddr {
+        let reachability = self.hosting.seat.reachability.borrow().clone();
+        reachability.wake("an invitation is this device's to hand out");
+        reachability
+            .relay_addr_within(INVITE_RELAY_WAIT)
+            .unwrap_or_else(|| self.endpoint_addr())
     }
 
     /// Hand the workspace gate the desk this session shows: whose workspaces' policies hold every

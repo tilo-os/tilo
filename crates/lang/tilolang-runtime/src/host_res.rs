@@ -1083,7 +1083,16 @@ impl Core {
                 } else {
                     r.target.ty.clone()
                 };
-                ret_i32(i32::from(stored == ty))
+                // A resource of another app names its type `app#Type`: it is the type whose id
+                // that app's package declares it under.
+                let is = stored == ty
+                    || crate::foreign::foreign_type(&stored).is_some_and(|key| {
+                        self.registry
+                            .borrow()
+                            .type_for(&key)
+                            .is_some_and(|id| id == ty)
+                    });
+                ret_i32(i32::from(is))
             }
             Imp::RefId => {
                 let r = self.ref_arg(a.h(0)?)?;

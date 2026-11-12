@@ -48,7 +48,9 @@ fn finished_notice(
     )
     .with_from(agent.label.clone(), agent.publisher.clone())
     .with_app_id(CONSOLE_APP)
-    .with_app_name("Console");
+    // It is the agent's news, said in its name wherever notices are grouped by who sent them; the
+    // banner, which leads with the agent's face, shows no source line repeating it.
+    .with_app_name(agent.label.clone());
     notice.actions = vec![(
         format!("{AGENT_CARD_ACTION}{client}"),
         t("workspace-notice-agent-card"),

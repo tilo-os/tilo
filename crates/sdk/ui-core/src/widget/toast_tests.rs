@@ -571,3 +571,61 @@ fn a_reply_is_a_field_under_the_text() {
         "the typed reply paints over the placeholder"
     );
 }
+
+/// On a phone a notice's title is the whole news ("Claude Code finished: 8 changes in Workspace")
+/// and wraps to a second line rather than eliding: every letter of it is painted at a phone's
+/// banner width, and the card grows by the line it took.
+#[test]
+fn a_title_too_long_for_a_phone_wraps_to_a_second_line() {
+    let mut tr = TextRenderer::new();
+    let theme = Theme::light();
+    let title = "Claude Code finished: 8 changes in Workspace";
+    let card = ToastCard::new(title, ToastKind::Info)
+        .body("Working in Notes")
+        .time("just now")
+        .actionable(true);
+    let card = ToastCard {
+        primary_action: "Open card",
+        ..card
+    };
+    let wide = card_height(&mut tr, &theme, &card, 1200.0);
+    let width = 358.0;
+    let narrow = card_height(&mut tr, &theme, &card, width);
+    assert!(
+        narrow > wide,
+        "the phone's card is a line taller: {narrow} over {wide}"
+    );
+    let mut scene = Scene::new();
+    paint_card(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        Rect::new(0.0, 0.0, width, narrow),
+        &card,
+    );
+    let painted: String = scene
+        .encoding()
+        .resources
+        .glyph_runs
+        .iter()
+        .map(|run| run.glyphs.len().to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let glyphs: usize = scene
+        .encoding()
+        .resources
+        .glyph_runs
+        .iter()
+        .map(|run| run.glyphs.len())
+        .sum();
+    let must_paint = [title, "Working in Notes", "just now", "Open card"]
+        .concat()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .count();
+    assert!(
+        glyphs >= must_paint,
+        "{glyphs} glyphs for {must_paint} letters ({painted}): the title was elided"
+    );
+}

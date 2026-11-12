@@ -1,6 +1,11 @@
 //! A member's write of the workspace's shared desktop is decided by what it does
 //! to what someone else made: closing, moving or renaming a window another
-//! person opened needs the workspace's moderation grant.
+//! person opened needs the workspace's moderation grant. The same write is what
+//! the workspace's other devices then draw: a page one device opens arrives over
+//! the peer replication and stands on another device's desk, with what the first
+//! device changed about it afterwards.
+use std::collections::HashMap;
+
 use automerge::AutoCommit;
 use ed25519_dalek::SigningKey;
 use tilo_desktop_model::layout::{Strip, Tab, TileContent, WindowGroup};
@@ -8,6 +13,7 @@ use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_KIND, DESKTOP_RECORD, S
 use tilo_desktop_model::{
     DesktopTree, StripId, WindowWidth, Workspace, WorkspaceSlot, shared_record,
 };
+use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 use crate::join::{InviteGrant, JoinChallenge, MemberRole, issue_invitation, sign_join_proof};
@@ -223,4 +229,143 @@ fn a_moderator_closes_someone_elses_window() {
     let closes_owners = write(&peer, &key, 1, &desktop(&[]));
     receive(&mut peer, &guest, closes_owners).expect("a moderator closes any window");
     assert!(windows(&peer).is_empty());
+}
+
+/// A desktop holding the owner's window 1, and one window that is `person`'s
+/// page: the workspace's record `record`, shown under the name `title`.
+fn desktop_with_page(owner: &str, person: &str, title: &str, record: &str) -> SharedDesktop {
+    let mut desktop = desktop(&[(1, owner), (2, person)]);
+    let page = &mut desktop.tree.workspaces[0].strips[0].window_groups[1].tabs[0];
+    page.title = title.to_owned();
+    desktop.records.push((page.id, record.to_owned()));
+    desktop
+}
+
+/// A desk that presents nothing: no window here is laid out or shown, so this
+/// source is never asked for a tile, and it answers the tab's own name when it
+/// is, as a host with no app to open would.
+struct Notices;
+
+impl TileSource for Notices {
+    fn tile(&mut self, _: &Workspace, tab: &Tab) -> ui::widget::TileHost {
+        ui::widget::TileHost::new(ui::widget::TileContent::Notice {
+            title: tab.title.clone(),
+            detail: String::new(),
+        })
+    }
+}
+
+/// One window as a desk draws it: the strip it stands in, its tab, the name on
+/// it, the app it runs, and the record it is a page of when it is one.
+#[derive(Debug, PartialEq, Eq)]
+struct Drawn {
+    strip: u64,
+    tab: u64,
+    title: String,
+    app: String,
+    record: Option<String>,
+}
+
+/// The windows `desk` draws once it is given the desktop `peer` replicated, the
+/// way a mount gives its desk one that arrived — through the surface's own
+/// reconcile of the tree, with the record each window is a page of beside it.
+fn drawn(desk: &DesktopHandle, peer: &StatePeer) -> Vec<Drawn> {
+    let doc = AutoCommit::load(&peer.document(DESKTOP_APP, DESKTOP_RECORD).unwrap()).unwrap();
+    let Some(shared) = shared_record::read(&doc, None) else {
+        return Vec::new();
+    };
+    let records: HashMap<u64, String> = shared.records.into_iter().collect();
+    desk.replace_shared_tree(shared.tree, &[]);
+    desk.read(|tree| {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| {
+                strip
+                    .window_groups
+                    .iter()
+                    .flat_map(|group| &group.tabs)
+                    .map(|tab| Drawn {
+                        strip: strip.id.0,
+                        tab: tab.id,
+                        title: tab.title.clone(),
+                        app: match &tab.tile {
+                            TileContent::LocalApp { app_id, .. } => app_id.clone(),
+                            other => format!("{other:?}"),
+                        },
+                        record: records.get(&tab.id).cloned(),
+                    })
+            })
+            .collect()
+    })
+}
+
+/// A second device of the workspace draws the page the first one opened: the
+/// workspace's desktop record the first device publishes reaches it through the
+/// replication, and its desk shows that window. When the first device renames
+/// the page, the window on the desk carries the new name.
+///
+/// The desk is the one that stands for the whole time, as a session's does: it
+/// is the arriving desktop that gives it the page, and the next arrival that
+/// changes it.
+#[test]
+fn another_devices_page_reaches_the_desk_and_its_rename_follows() {
+    let (mut peer, owner, key, guest) = workspace_with(MemberRole::Editor);
+    let person = hex::encode(guest.user_public_key);
+    let (_surface, desk) = DesktopSurface::new(DesktopTree::default(), 7, Box::new(Notices));
+
+    let opened = write(
+        &peer,
+        &key,
+        1,
+        &desktop_with_page(&owner, &person, "Draft", "draft"),
+    );
+    receive(&mut peer, &guest, opened).expect("an editor opens a page");
+    assert_eq!(
+        drawn(&desk, &peer),
+        [
+            Drawn {
+                strip: 10,
+                tab: 1,
+                title: "tab 1".into(),
+                app: "so.tilo.notes".into(),
+                record: None,
+            },
+            Drawn {
+                strip: 10,
+                tab: 2,
+                title: "Draft".into(),
+                app: "so.tilo.notes".into(),
+                record: Some("draft".into()),
+            },
+        ]
+    );
+
+    let renamed = write(
+        &peer,
+        &key,
+        2,
+        &desktop_with_page(&owner, &person, "Draft, for review", "draft"),
+    );
+    receive(&mut peer, &guest, renamed).expect("an editor renames their own page");
+    assert_eq!(
+        drawn(&desk, &peer),
+        [
+            Drawn {
+                strip: 10,
+                tab: 1,
+                title: "tab 1".into(),
+                app: "so.tilo.notes".into(),
+                record: None,
+            },
+            Drawn {
+                strip: 10,
+                tab: 2,
+                title: "Draft, for review".into(),
+                app: "so.tilo.notes".into(),
+                record: Some("draft".into()),
+            },
+        ],
+        "the desk shows the page under its new name, on the record it was opened on"
+    );
 }

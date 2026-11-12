@@ -2505,3 +2505,84 @@ fn a_presence_tag_covers_no_word_and_one_actor_wears_one() {
     ];
     assert_eq!(kinds(&window), 1, "a second tag of one actor is a fault");
 }
+
+/// A list drawing one group heading over rows, under the title its window reads.
+fn grouped_list(title: &str, count: u32, heading: &str, rows: u32) -> InspectionNode {
+    let mut shell = node("NavShell", "shell", [0.0, 0.0, 400.0, 700.0], None);
+    let mut list = node(
+        "VirtualList",
+        "list",
+        [0.0, 40.0, 400.0, 690.0],
+        Some(Role::List),
+    );
+    let mut head = AccessNode::new(Role::Button);
+    head.name = Some(heading.to_owned());
+    head.value = Some(rows.to_string());
+    head.action_target = Some(format!("group:{heading}"));
+    head.bounds = Some(ui::a11y::AccessBounds {
+        x0: 0.0,
+        y0: 48.0,
+        x1: 400.0,
+        y1: 68.0,
+    });
+    let mut children = vec![head];
+    for row in 0..rows {
+        let mut item = AccessNode::new(Role::ListItem);
+        let top = 68.0 + f64::from(row) * 40.0;
+        item.bounds = Some(ui::a11y::AccessBounds {
+            x0: 0.0,
+            y0: top,
+            x1: 400.0,
+            y1: top + 40.0,
+        });
+        children.push(item);
+    }
+    list.semantics
+        .as_mut()
+        .expect("the list's semantics")
+        .children = children;
+    shell.children = vec![
+        list,
+        counted(
+            "NavShellTitle",
+            "title",
+            [8.0, 8.0, 200.0, 32.0],
+            Role::Heading { level: 2 },
+            title,
+            &count.to_string(),
+        ),
+    ];
+    stack_node("window", [0.0, 0.0, 400.0, 700.0], vec![shell])
+}
+
+/// A list whose one group heading says what the title over it already says is caught; a heading
+/// saying something else, or counting other rows, is not.
+#[test]
+fn a_lone_group_heading_repeating_the_titles_words_is_caught() {
+    let repeated = |root: &InspectionNode| {
+        inspect(root, (400, 700), None, 1.0)
+            .into_iter()
+            .filter(|problem| problem.kind == Kind::RepeatedGroupTitle)
+            .count()
+    };
+    assert_eq!(
+        repeated(&grouped_list("Today", 2, "Today", 2)),
+        1,
+        "the title says Today 2, and the heading over the rows says it again"
+    );
+    assert_eq!(
+        repeated(&grouped_list("Upcoming", 2, "Tomorrow", 2)),
+        0,
+        "a heading naming another day says something the title does not"
+    );
+    assert_eq!(
+        repeated(&grouped_list("Today", 3, "Today", 2)),
+        0,
+        "a title counting other rows than the heading does is no repeat"
+    );
+    assert_eq!(
+        repeated(&grouped_list("Today", 2, "Today", 1)),
+        0,
+        "a heading counting rows the list does not show heads part of it"
+    );
+}

@@ -26,7 +26,7 @@ use crate::host::{Feed, PanelHost, Showing};
 use crate::media::Media;
 use crate::readings::{Readings, land};
 use crate::session::{BLUETOOTH, MEDIA, NETWORK, Watch};
-use crate::{HiddenNetworkPrompt, QsSection, WifiPasswordPrompt};
+use crate::{HiddenNetworkPrompt, QsSection, QuickSettingsState, WifiPasswordPrompt};
 
 /// How often the playhead of what plays moves on while it plays.
 const PLAYHEAD: Duration = Duration::from_secs(1);
@@ -53,35 +53,67 @@ enum Job {
 /// that keeps them current.
 pub(crate) struct Live {
     wake: WakeHandle,
-    readings: OnceLock<Readings>,
+    /// What the panel shows, one set for the process: a rebuild shows the
+    /// same readings, never a fresh stand-in.
+    readings: Readings,
     media: Arc<Mutex<Media>>,
     jobs: OnceLock<Sender<Job>>,
+    /// Whether the worker following the session was started.
+    watching: OnceLock<()>,
+}
+
+thread_local! {
+    /// The panel's host of this process: the surface app shows one panel for
+    /// the session's life, so every build reads the same device.
+    static LIVE: OnceLock<Rc<Live>> = const { OnceLock::new() };
 }
 
 impl Live {
     /// The panel of this process, woken through `wake` when a reading moved.
+    /// Nothing of the device is read yet: the view says so until the
+    /// session's services publish.
     pub(crate) fn new(wake: WakeHandle) -> Self {
         Self {
             wake,
-            readings: OnceLock::new(),
+            readings: Readings::new(QuickSettingsState::unread()),
             media: Arc::new(Mutex::new(Media::default())),
             jobs: OnceLock::new(),
+            watching: OnceLock::new(),
         }
     }
 
-    /// The panel of this process, when the session started it, or `None`
-    /// when it runs on its own: a screenshot and a test lend a fixture
-    /// instead, and an app run by hand has no session to read.
-    pub(crate) fn of(wake: WakeHandle) -> Option<Rc<Self>> {
-        std::env::var_os("TILO_SURFACE_LAYER")?;
-        Some(Rc::new(Self::new(wake)))
+    /// The panel of this process, woken through `wake` when a reading moved:
+    /// one for the session's life, so a page built again reads the same
+    /// device. A panel run on its own reads nothing until a session serves
+    /// the resources, and says so rather than showing a stand-in.
+    pub(crate) fn of(wake: WakeHandle) -> Rc<Self> {
+        LIVE.with(|live| Rc::clone(live.get_or_init(|| Rc::new(Self::new(wake)))))
     }
 
-    /// The readings the view shows, once the panel attached them.
-    fn readings(&self) -> Result<&Readings, String> {
-        self.readings
-            .get()
-            .ok_or_else(|| "the panel's readings are not attached".to_owned())
+    /// The readings the view shows.
+    fn kept(&self) -> &Readings {
+        &self.readings
+    }
+
+    /// Start the worker following the session, once: a panel rebuilt shows
+    /// the readings it has followed since it started.
+    fn follow_session(&self) {
+        if self.watching.set(()).is_err() {
+            return;
+        }
+        let (jobs, queue) = channel();
+        if self.jobs.set(jobs.clone()).is_err() {
+            return;
+        }
+        let readings = self.readings.clone();
+        let media = Arc::clone(&self.media);
+        let wake = self.wake.clone();
+        let spawned = std::thread::Builder::new()
+            .name("qs-session".into())
+            .spawn(move || watch(readings, media, queue, jobs, wake));
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "quick settings: the session is not followed");
+        }
     }
 
     fn media(&self) -> MutexGuard<'_, Media> {
@@ -94,7 +126,7 @@ impl Live {
     /// the arrangement it keeps, the player it steers. `false` for an effect
     /// that changes the device, which goes to the session.
     fn local(&self, effect: &QsEffect) -> Result<bool, String> {
-        let readings = self.readings()?;
+        let readings = self.kept();
         match effect {
             QsEffect::AskWifiPassword { network } => readings.update(|state| {
                 state.wifi_password = Some(WifiPasswordPrompt::new(network.clone()));
@@ -164,9 +196,7 @@ impl Live {
 
     /// What plays, moved on to this moment.
     fn advance(&self) {
-        let Ok(readings) = self.readings() else {
-            return;
-        };
+        let readings = self.kept();
         let now = Instant::now();
         readings.update(|state| {
             let playing = self.media().now_playing(now, state.offer.as_ref());
@@ -176,23 +206,9 @@ impl Live {
 }
 
 impl PanelHost for Live {
-    fn attach(&self, feed: Feed) {
-        if self.readings.set(feed.readings()).is_err() {
-            return;
-        }
-        let readings = feed.readings();
-        let (jobs, queue) = channel();
-        if self.jobs.set(jobs.clone()).is_err() {
-            return;
-        }
-        let media = Arc::clone(&self.media);
-        let wake = self.wake.clone();
-        let spawned = std::thread::Builder::new()
-            .name("qs-session".into())
-            .spawn(move || watch(readings, media, queue, jobs, wake));
-        if let Err(error) = spawned {
-            tracing::warn!(%error, "quick settings: the session is not followed");
-        }
+    fn readings(&self) -> Feed {
+        self.follow_session();
+        self.kept().feed()
     }
 
     fn showing(&self, showing: &Showing) {
@@ -205,7 +221,7 @@ impl PanelHost for Live {
         // The panel's own part happens here, at once; whatever reaches the
         // device is the worker's to send, so a slow service never holds the
         // frame. A press puts away why the one before did not land.
-        let readings = self.readings()?;
+        let readings = self.kept();
         readings.update(|state| state.refusal = None);
         let local = self.local(&effect)?;
         if readings
@@ -291,6 +307,7 @@ fn watch(
         let deadline = [
             playing.then(|| now.checked_add(PLAYHEAD).unwrap_or(now)),
             scan_at,
+            watch.retry_at(),
         ]
         .into_iter()
         .flatten()

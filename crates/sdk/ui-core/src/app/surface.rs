@@ -189,6 +189,7 @@ impl App {
             WindowEvent::Focused(false) => {
                 self.input.keyboard_layout = None;
                 self.input.window_focused = false;
+                self.input.keyboard_entry_owed = false;
                 // The field the person left keeps its text and selection, and gives up the caret
                 // with the keyboard: the frame is drawn again where the caret stood.
                 if self.input.keyboard_held {
@@ -696,7 +697,8 @@ impl App {
         app.broadcast_location_presence();
         app.broadcast_composing_presence();
         app.broadcast_view_presence();
-        if sync_follows {
+        // A publication an earlier input owes is the frame's already.
+        if sync_follows || app.actions.action_surface_owed {
             app.actions.action_surface_owed = true;
         } else {
             app.publish_action_surface();

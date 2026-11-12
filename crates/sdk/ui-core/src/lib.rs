@@ -235,6 +235,7 @@ pub mod keycaps;
 pub mod keys;
 pub mod latin_chord;
 pub mod launch;
+pub mod lift;
 pub mod live_activity;
 pub mod live_collaboration;
 pub mod local_identity;

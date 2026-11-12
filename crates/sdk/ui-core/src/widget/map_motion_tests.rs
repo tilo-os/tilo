@@ -147,3 +147,92 @@ fn a_pin_shown_by_a_still_theme_lands_at_once() {
     assert_eq!(placed.progress(now), 1.0, "shown on the frame it happens");
     assert!(!placed.is_moving(now), "and it asks for nothing");
 }
+
+#[test]
+fn a_map_built_again_keeps_the_camera_and_the_places_where_they_were_drawn() {
+    let _frame = crate::motion::pin_frame();
+    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let mut old = map_of(&[("one", 100.0)], viewport);
+    draw(&mut old);
+    // The person pans the canvas and leaves it there; the places on it change and the map is built
+    // again around them, as a window opening on the canvas does.
+    old.set_camera(MapCamera {
+        origin: Point::new(40.0, 20.0),
+        zoom: 1.0,
+    });
+    lay_out_again(&mut old, viewport);
+    draw(&mut old);
+    let mut map = map_of(&[("one", 100.0)], viewport);
+    map.carry_from(&old);
+    assert!(
+        map.camera().same(old.camera()),
+        "the lens the person left the canvas at"
+    );
+    lay_out_again(&mut map, viewport);
+    draw(&mut map);
+    let now = crate::motion::frame_now();
+    assert!(
+        map.placed.get("one").is_some_and(|p| !p.is_moving(now)),
+        "a place the map already held does not arrive again"
+    );
+    assert!(
+        map.reveal.is_none(),
+        "nothing arrived: the camera shows nothing new"
+    );
+}
+
+#[test]
+fn a_place_arriving_past_the_edge_pans_the_map_to_show_it() {
+    let _frame = crate::motion::pin_frame();
+    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let mut old = map_of(&[("one", 0.0)], viewport);
+    draw(&mut old);
+    // A second place arrives on the person's canvas past the viewport's trailing edge: 700 along,
+    // 200 across, so its trailing edge stands 100 past the viewport's.
+    let mut map = map_of(&[("one", 0.0), ("two", 700.0)], viewport);
+    draw(&mut map);
+    map.carry_from(&old);
+    // The camera pans once the layout says where the place stands, and the place stands at it on
+    // the layout after.
+    lay_out_again(&mut map, viewport);
+    lay_out_again(&mut map, viewport);
+    let camera = map.camera();
+    assert!(
+        (camera.origin.x - (100.0 + ARRIVAL_MARGIN)).abs() < 0.5,
+        "the least pan that shows the whole place, {ARRIVAL_MARGIN} from the edge: {}",
+        camera.origin.x
+    );
+    let laid = map.laid.borrow().clone();
+    let arrived = laid.get("two").copied().expect("the place that arrived");
+    assert!(
+        arrived.x0 >= viewport.x0 && arrived.x1 <= viewport.x1 - ARRIVAL_MARGIN + 0.5,
+        "it stands whole inside the viewport: {arrived:?}"
+    );
+    let places = map.canvas_places();
+    assert_eq!(
+        (
+            places.get("one").map(|p| p.x),
+            places.get("two").map(|p| p.x)
+        ),
+        (Some(0.0), Some(700.0)),
+        "no place on the canvas moved: only the lens did"
+    );
+}
+
+#[test]
+fn a_place_arriving_in_view_leaves_the_camera_where_the_person_left_it() {
+    let _frame = crate::motion::pin_frame();
+    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let mut old = map_of(&[("one", 0.0)], viewport);
+    draw(&mut old);
+    let mut map = map_of(&[("one", 0.0), ("two", 300.0)], viewport);
+    draw(&mut map);
+    map.carry_from(&old);
+    lay_out_again(&mut map, viewport);
+    lay_out_again(&mut map, viewport);
+    assert!(
+        map.camera().same(MapCamera::default()),
+        "a place already in view moves nothing: {:?}",
+        map.camera().origin
+    );
+}

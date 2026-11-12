@@ -47,6 +47,13 @@ pub trait PersonRecordKinds: collab_types::signer::MaybeSendSync + 'static {
     fn earlier_ids(&self, _app_id: &str) -> Vec<String> {
         Vec::new()
     }
+
+    /// Whether `reader` declares that it reads `owner`'s records (its surface's `reads` against
+    /// the owner's resource kinds), as the broker admits its read-only join: it is handed the
+    /// keys that open them, and signs nothing there. None by default.
+    fn reads_records_of(&self, _reader: &str, _owner: &str) -> bool {
+        false
+    }
 }
 
 /// A host that knows no app's person records: nothing is signed in the

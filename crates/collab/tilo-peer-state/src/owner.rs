@@ -48,7 +48,9 @@ pub use checkpoint::{
     CheckpointAcknowledgement, CheckpointCapture, CheckpointCompleteness, CheckpointEntry,
     CheckpointRoute, CheckpointSchema, MaterializedCheckpoint, NameBinding, NativeCheckpoint,
 };
-pub use document_read::{CommittedDocument, DocumentChanges, DocumentRead, History, Holding};
+pub use document_read::{
+    CommittedDocument, DocumentChanges, DocumentRead, History, Holding, revision_of_heads,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub use file_store::{FileHost, open_file, open_file_with, owner_file_of, read_file};
 #[cfg(not(target_arch = "wasm32"))]
@@ -68,7 +70,6 @@ pub use write::{Committed, Write};
 
 use crate::replica::Replica;
 use crate::{AdmissionReport, StatePeer, TransportOrigin};
-use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 use std::{
@@ -396,6 +397,12 @@ impl NativeCommittedView {
             .or(self.record.host_hint.as_ref())
             .ok_or_else(|| "the workspace's record holds no host hint".to_owned())
     }
+    /// Whether a publication of `peer` and `record` leaves everything
+    /// authorization reads from this view as it is: the replica's governance
+    /// ([`StatePeer::same_policy`]) and the record's standing in the workspace.
+    fn same_policy(&self, peer: &StatePeer, record: &record::StoredWorkspace) -> bool {
+        self.peer.same_policy(peer) && self.record.same_standing(record)
+    }
     fn security_digest(&self) -> Result<[u8; 32], String> {
         if let Some(digest) = self.security.get() {
             return Ok(*digest);
@@ -491,19 +498,26 @@ impl SharedOwner {
         current.fenced || current.denied.contains(&workspace) || !self.store.healthy()
     }
     /// Publish through the store; an uncertain failure fences every workspace.
+    ///
+    /// `policy` says whether the publication changes what authorization
+    /// decides on: the workspaces held, their governance, certificates and
+    /// revocations, or this device's standing in them. Its watchers re-check
+    /// on that, not on a write to an app record, which wakes the reads of
+    /// that record itself.
     fn publish(
         &self,
         next: &NativeAuthorityStorage,
         change: Change<'_>,
+        policy: bool,
         install: &mut dyn FnMut(),
     ) -> Result<(), String> {
         let result = self.store.publish(next, change, install);
         if result.is_err() && !self.store.healthy() {
             self.fence_all();
         }
-        // A new publication can change a workspace's tasks, which the broker
-        // offers as actions: it re-checks on this rather than on a clock.
-        policy_changed();
+        if policy && result.is_ok() {
+            policy_changed();
+        }
         result
     }
 }
@@ -602,7 +616,7 @@ impl NativeWorkspaceOwner {
             .ok_or("native storage generation exhausted")?;
         let mut continuity = 0;
         self.0
-            .publish(&next, Change::Released { workspace }, &mut || {
+            .publish(&next, Change::Released { workspace }, true, &mut || {
                 {
                     let mut current = self.0.current.write();
                     continuity = current
@@ -640,19 +654,19 @@ impl NativeWorkspaceOwner {
         self.0.current.read().required.contains(&workspace) || self.0.store.uncertain(workspace)
     }
 
-    /// The workspaces this device hosts whose record does not say where their
-    /// host is reached, in one read of the record: the ones founded here
-    /// before the record kept its own host's hint, which no device reaches a
-    /// host for until it does.
+    /// The workspaces this device hosts itself, in one read of the record: its
+    /// own host orders their records, whether or not the record says where
+    /// that host is reached. What names its own address in them reads this
+    /// ([`NativeWorkspaceOwner::name_host`]): most workspaces a device holds
+    /// are another device's to host, and their records are not copied to find
+    /// that out.
     #[must_use]
-    pub fn hosts_unnamed(&self) -> Vec<WorkspaceId> {
+    pub fn hosted(&self) -> Vec<WorkspaceId> {
         let current = self.0.current.read();
         current
             .workspaces
             .iter()
-            .filter(|(_, view)| {
-                view.record.device == view.record.workspace_host && !view.record.names_host()
-            })
+            .filter(|(_, view)| view.record.hosted_here())
             .map(|(workspace, _)| *workspace)
             .collect()
     }
@@ -800,10 +814,9 @@ impl NativeWorkspaceOwner {
         workspace: WorkspaceId,
         origin: TransportOrigin,
         message: NeighbourMsg,
-        key: Option<&SigningKey>,
         now: SystemTime,
     ) -> Result<AdmissionReport, String> {
-        self.receive_batch(workspace, vec![(origin, message)], key, now)?
+        self.receive_batch(workspace, vec![(origin, message)], now)?
             .pop()
             .ok_or_else(|| "native owner admitted no input".to_owned())?
     }
@@ -823,57 +836,30 @@ impl NativeWorkspaceOwner {
         &self,
         workspace: WorkspaceId,
         inputs: Vec<(TransportOrigin, NeighbourMsg)>,
-        key: Option<&SigningKey>,
         now: SystemTime,
     ) -> Result<Vec<Result<AdmissionReport, String>>, String> {
         let _turn = self.0.mutation.lock();
         let candidate = self.view(workspace)?;
         let replica = candidate.replica.clone();
         let previous_publication = candidate.record.publication.clone();
-        let device = candidate.device().clone();
         let mut reports = Vec::with_capacity(inputs.len());
         // The workspace changes admitted from its other devices, as they came:
         // their hashes are read only to retire changes of this device's own
         // ([`publication::retire_member_changes`]), which a device that
         // published none (a page entering a workspace) never has.
         let mut governed: Vec<Vec<Vec<u8>>> = Vec::new();
-        let mut verdicts = false;
         for (origin, message) in inputs {
             let received = Self::received_changes(origin, &message).cloned();
-            let report = Self::admit_input(&candidate, origin, message.clone(), now);
+            let report = Self::admit_input(&candidate, origin, message, now);
             if report.is_ok()
                 && let Some(changes) = received
             {
                 governed.push(changes);
             }
-            // A refused write reaches its author: this device's verdict on it
-            // is kept in its own slice of the workspace, which the next sync
-            // carries back, and an admitted write clears the verdict it lands
-            // on. One carrier, the workspace document itself.
-            if let Some(key) = key
-                && matches!(message, NeighbourMsg::AppDocument { .. })
-            {
-                let mut live = replica.lock();
-                let verdict = match &report {
-                    Ok(_) => live
-                        .workspace_mut()
-                        .clear_landed_write(&device, &message, key, now),
-                    Err(reason) => live
-                        .workspace_mut()
-                        .refuse_write(&device, &message, reason, key, now),
-                };
-                match verdict {
-                    Ok(filed) => verdicts |= filed,
-                    Err(error) => {
-                        tracing::warn!(%error, "a document write's verdict was not kept");
-                    }
-                }
-            }
             reports.push(report);
         }
-        if reports.iter().all(Result::is_err) && !verdicts {
-            // Every input was refused and every verdict was already kept:
-            // nothing changed to commit.
+        if reports.iter().all(Result::is_err) {
+            // Every input was refused: nothing changed to commit.
             return Ok(reports);
         }
         let mut record = candidate.record.clone();
@@ -1065,22 +1051,25 @@ impl NativeWorkspaceOwner {
         // every member, and a replica taking in its workspace's governance
         // for the first time changes it whatever the governance says.
         let security = Arc::new(std::sync::OnceLock::new());
-        let changed = {
+        // And whether it changes what authorization decides on: most
+        // publications carry an app record's write and nothing else.
+        let (changed, policy) = {
             let current = self.0.current.read();
             if self.0.fenced(&current, workspace) {
                 return Err("native owner continuity is fenced".into());
             }
             match current.workspaces.get(&workspace) {
-                None => true,
+                None => (true, true),
                 Some(old)
                     if old.peer.admitted_workspace().is_some()
                         != published.admitted_workspace().is_some() =>
                 {
-                    true
+                    (true, true)
                 }
                 Some(old) => {
                     let digest = security_digest(&published, &record.device)?;
-                    old.security_digest()? != *security.get_or_init(|| digest)
+                    let changed = old.security_digest()? != *security.get_or_init(|| digest);
+                    (changed, changed || !old.same_policy(&published, &record))
                 }
             }
         };
@@ -1121,6 +1110,7 @@ impl NativeWorkspaceOwner {
                 workspace,
                 into: enrollment.and_then(|pending| pending.target.as_ref()),
             },
+            policy,
             &mut || {
                 let mut current = self.0.current.write();
                 if changed {

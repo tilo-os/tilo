@@ -66,6 +66,10 @@ arrival-retry = Noch einmal versuchen
 arrival-failed-offline = Du bist offline. Änderungen bleiben auf diesem Gerät und gehen raus, sobald die Verbindung wieder da ist.
 arrival-failed-admission = Der Arbeitsbereich kann die Änderungen dieses Browsers gerade nicht annehmen. Die Änderungen bleiben auf diesem Gerät.
 arrival-failed-saving = Deine Änderungen sind noch nicht auf diesem Gerät gespeichert. Lass diesen Tab offen und versuch es noch einmal.
+# Ein privates Fenster oder eines, in dem Website-Daten aus sind: der Browser
+# gibt der Seite keinen Dateispeicher, also zeichnet der Desktop hier, aber
+# seine Apps behalten keine eigenen Dateien.
+arrival-failed-files = Dieses Fenster behält keine Dateien, deshalb können Apps hier keine eigenen Dateien speichern. Öffne Tilo in einem normalen Fenster, um mit ihnen zu arbeiten.
 arrival-failed-renderer = Der Desktop zeichnet nicht mehr. Versuch es noch einmal, um ihn neu zu starten, oder lade die Seite neu.
 arrival-failed-stopped-drawing = Der Desktop funktioniert nicht mehr. Versuch es noch einmal, um ihn neu zu starten.
 arrival-failed-unreachable = { $workspace } ist gerade nicht erreichbar. Prüf deine Verbindung und versuch es dann noch einmal.

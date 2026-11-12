@@ -46,7 +46,7 @@ mod gesture_input;
 mod state;
 
 use gesture_input::asked_of_gestures;
-use state::{shown, state_dump, window_rows, within};
+use state::{presence_stamp, shown, state_dump, window_rows, within};
 
 /// The variable `tilo-control` reads the test-control socket's path from: what a development
 /// session binds the socket at when its command line names none and the default is not wanted,
@@ -201,6 +201,9 @@ pub(crate) struct Desk<'a> {
     pub(crate) engine: Option<&'a Engine>,
     /// The agents the person admitted at its door, as the desk's bar shows them.
     pub(crate) seats: &'a std::sync::Arc<agent_door::Seats>,
+    /// Who is here, as the collaboration plane says it: this session's membership of each
+    /// workspace, when it takes part in one.
+    pub(crate) sync: Option<&'a crate::sync::Client>,
     pub(crate) locked: bool,
     pub(crate) lock_screen_drawn: bool,
     /// The lock's own state: what unlocking it is, the same one an accepted password sets, so a
@@ -547,7 +550,7 @@ impl Control {
         let actions = Arc::new(Actions {
             host,
             caller: Caller::local_person(options.person.clone()).in_new_execution(),
-            workspace: Mutex::new(String::new()),
+            front: Front::default(),
             ledger: Mutex::new(BTreeMap::new()),
             next: AtomicU64::new(1),
             locked: AtomicBool::new(false),
@@ -684,6 +687,7 @@ impl Control {
             desk.overlays.is_open(slot).hash(&mut hasher);
         }
         desk.overview.get().hash(&mut hasher);
+        presence_stamp(desk, &mut hasher);
         let stamp = hasher.finish();
         let moved = self.published.get() != Some(stamp);
         if moved {
@@ -992,10 +996,15 @@ fn record_read(request: &Json, actions: &Actions, ctx: &Context) -> Json {
             joined: false,
         })
         .collect();
-    let workspace = request
-        .get("workspace")
-        .and_then(Json::as_str)
-        .map_or_else(|| actions.workspace.lock_recover().clone(), str::to_owned);
+    let workspace = request.get("workspace").and_then(Json::as_str).map_or_else(
+        || {
+            ctx.scope.as_ref().map_or_else(
+                || actions.front.known(HOST_WAIT).unwrap_or_default(),
+                |scope| scope.workspace.clone(),
+            )
+        },
+        str::to_owned,
+    );
     let after = request.get("after").and_then(Json::as_str);
     let deadline = wait_deadline(request.get("wait_ms").and_then(Json::as_u64));
     let Some(reads) = actions.host.record_reads() else {
@@ -1406,8 +1415,8 @@ struct Actions {
     /// The person's own caller, made once and cloned: the broker remembers an invocation under the
     /// caller that admitted it, so a status or a cancel reads it back as the same caller.
     caller: Caller,
-    /// The workspace in front, as the loop last read it: what an invocation opens into.
-    workspace: Mutex<String>,
+    /// The workspace in front, as the loop last served it: what an invocation opens into.
+    front: Front,
     /// The number a tool was answered with, and the invocation it names.
     ledger: Mutex<BTreeMap<u64, InvocationId>>,
     next: AtomicU64,
@@ -1425,6 +1434,56 @@ const MAX_WAIT: Duration = Duration::from_secs(30);
 /// How long a settled wait stands by the host's own answer once it gave one.
 const SETTLE_WAIT: Duration = Duration::from_secs(35);
 
+/// The workspace in front, as the loop last served the desk, and the wait for a request that
+/// arrives before the desk holds one.
+///
+/// A session adopts the person's workspaces in its first passes, so a desk holds none for the
+/// moment between its first frame and them: what a request asks in that moment is where the person
+/// is, which is not yet known, and waiting for it is the answer — the person's own authority over
+/// their own desk is not in question, so a refusal would be a lie.
+#[derive(Default)]
+struct Front {
+    workspace: Mutex<String>,
+    /// The loop served a workspace: a request waiting for one looks again.
+    arrived: Condvar,
+}
+
+impl Front {
+    /// The loop served the desk: `workspace` is the one in front now.
+    fn served(&self, workspace: String) {
+        let mut held = self.workspace.lock_recover();
+        if *held != workspace {
+            *held = workspace;
+            drop(held);
+            self.arrived.notify_all();
+        }
+    }
+
+    /// The workspace in front, once the desk holds one, waiting up to `wait` for a desk that
+    /// started before it had any: `None` when there is none to name yet.
+    fn known(&self, wait: Duration) -> Option<String> {
+        let until = Instant::now().checked_add(wait)?;
+        let mut held = self.workspace.lock_recover();
+        loop {
+            if !held.is_empty() {
+                return Some(held.clone());
+            }
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return None;
+            }
+            let (next, timeout) = self
+                .arrived
+                .wait_timeout(held, left)
+                .unwrap_or_else(PoisonError::into_inner);
+            if timeout.timed_out() && next.is_empty() {
+                return None;
+            }
+            held = next;
+        }
+    }
+}
+
 impl Actions {
     /// Who a request here is made as: the person at this desktop, in the workspace in front,
     /// or the app a program inside it runs as, in the workspace the session started it into.
@@ -1432,23 +1491,17 @@ impl Actions {
         if let Some(scope) = &ctx.scope {
             return Caller::local_app(scope.app.clone()).in_workspace(scope.workspace.clone());
         }
-        let workspace = self.workspace.lock_recover().clone();
         let caller = self.caller.clone();
-        if workspace.is_empty() {
-            caller
-        } else {
-            caller.in_workspace(workspace)
+        match self.front.known(HOST_WAIT) {
+            Some(workspace) => caller.in_workspace(workspace),
+            None => caller,
         }
     }
 
-    /// Whose workspace is in front, as the loop read it: without one, a request names none.
+    /// Whose workspace is in front, as the loop read it: a desk that holds none names none.
     fn set_workspace(&self, workspace: Option<String>) {
-        let Some(workspace) = workspace else {
-            return;
-        };
-        let mut held = self.workspace.lock_recover();
-        if *held != workspace {
-            *held = workspace;
+        if let Some(workspace) = workspace {
+            self.front.served(workspace);
         }
     }
 
@@ -1810,7 +1863,21 @@ fn actions_invoke(request: &Json, actions: &Actions, ctx: &Context) -> Json {
              this door",
         );
     }
-    let workspace = actions.workspace.lock_recover().clone();
+    // Which workspace the action is asked in is the desk's answer, not a copy of it: a request
+    // that lands while the session is still adopting the person's workspaces waits for the desk
+    // rather than naming none and being refused as if the person's own desk were not theirs.
+    let workspace = match &ctx.scope {
+        Some(scope) => scope.workspace.clone(),
+        None => match actions.front.known(HOST_WAIT) {
+            Some(workspace) => workspace,
+            None => {
+                return refusal(
+                    "unavailable",
+                    "this desk holds no workspace yet; there is nothing in front to act in",
+                );
+            }
+        },
+    };
     let target = match legacy_target(provider, id, &workspace) {
         Ok(target) => target,
         Err(answer) => return answer,
@@ -2402,6 +2469,32 @@ impl Changes {
 mod tests {
     use super::state::owner_shown;
     use super::*;
+
+    #[test]
+    fn a_request_before_the_desk_holds_a_workspace_waits_for_the_one_in_front() {
+        let front = Arc::new(Front::default());
+        let waiting = {
+            let front = Arc::clone(&front);
+            std::thread::spawn(move || front.known(Duration::from_secs(5)))
+        };
+        // The loop's pass serves the desk while the request waits: it is answered for the
+        // workspace in front, not for none.
+        front.served("workspace-1".to_owned());
+        assert_eq!(
+            waiting.join().expect("the waiting request answers"),
+            Some("workspace-1".to_owned())
+        );
+        assert_eq!(
+            front.known(Duration::from_millis(1)),
+            Some("workspace-1".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_desk_that_never_holds_a_workspace_names_none() {
+        let front = Front::default();
+        assert_eq!(front.known(Duration::from_millis(10)), None);
+    }
 
     #[test]
     fn only_a_development_build_opens_the_socket_it_is_named() {

@@ -5,7 +5,17 @@ import {createDomInput} from './dom-input.mjs';
 // Just what the router touches: listeners in the capture phase, containment
 // and dispatch.
 class Target {
-  constructor(parent) { this.parent = parent; this.listeners = new Map(); this.sent = []; this.style = {}; }
+  constructor(parent, box = [0, 0, 1000, 1000]) {
+    this.parent = parent;
+    this.listeners = new Map();
+    this.sent = [];
+    this.style = {};
+    this.box = box;
+  }
+  getBoundingClientRect() {
+    const [left, top, width, height] = this.box;
+    return {left, top, width, height, right: left + width, bottom: top + height};
+  }
   addEventListener(type, listener, options = {}) {
     this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
     options.signal?.addEventListener?.('abort', () => this.listeners.delete(type));
@@ -47,8 +57,24 @@ test('moving between the layer\'s own elements neither enters nor leaves the sur
   layer.fire('pointerout', {pointerType: 'mouse', relatedTarget: text});
   layer.fire('pointerover', {pointerType: 'mouse', relatedTarget: text});
   assert.equal(canvas.sent.length, 0);
-  layer.fire('pointerout', {pointerType: 'mouse', relatedTarget: null});
+  // The pointer left the surface: past the layer's edge, so the runtime hears
+  // it leave.
+  layer.fire('pointerout', {pointerType: 'mouse', relatedTarget: null, clientX: 1200, clientY: 20});
   assert.deepEqual(canvas.sent.map(event => event.type), ['pointerout']);
+});
+
+// A frame replaces the element under a still pointer: the browser fires a
+// pointerout for the removed node, with no related target and the pointer
+// nowhere near the edge. Forwarded, the runtime would take it as the pointer
+// leaving the surface and end the press in hand, so a control that acts when
+// a press ends — a slot in the window's bar, a button that raises a dialog —
+// would never act.
+test('a frame that replaces the element under a still pointer is no leave', () => {
+  const {layer, canvas} = setup();
+  layer.fire('pointerout', {pointerType: 'mouse', relatedTarget: null, clientX: 140, clientY: 20});
+  assert.equal(canvas.sent.length, 0, 'the pointer is still over the surface');
+  layer.fire('pointerover', {pointerType: 'mouse', relatedTarget: null, clientX: 140, clientY: 20});
+  assert.deepEqual(canvas.sent.map(event => event.type), ['pointerover']);
 });
 
 test('a touch on a scroll container is the browser\'s pan: the runtime hears it begin and end', () => {

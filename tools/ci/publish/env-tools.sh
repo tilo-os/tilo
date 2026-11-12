@@ -4,7 +4,7 @@
 # runtime is not published yet, an unpublished preview of it), and sealed into a `tool` tapp.
 # The build runs arbitrary code (dnf and package scriptlets), so it never holds the publisher
 # identity: it seals every tool for the runtime's publisher without the key, with a placeholder
-# signature (`tilo-env-tools build --publisher`), which seal-env-tools signs on stable
+# signature (`tilo-env-tools build --publisher`), which seal-env-tools signs on a release tag
 # (env-tools-release.sh, beside this script, which also publishes the catalog). The heavy checks
 # read only this script, so a change to the publishing steps rebuilds no tools.
 #
@@ -13,7 +13,7 @@
 #                                        build sandbox makes a user namespace and mounts overlays
 #                                        (a micro-VM step)
 #
-# PLAN is env-tools-plan's directory on stable: the runtime to build on, or that the catalog is
+# PLAN is env-tools-plan's directory: the runtime to build on, or that the catalog is
 # published already and nothing is built. A working tree has none and resolves the runtime itself.
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"

@@ -2607,6 +2607,7 @@ impl App {
             }
             // The tree this rebuild made is the one a control asked focus in.
             requested = self.apply_focus_request();
+            crate::host_core::KeyHost::hand_owed_keyboard(self);
         }
         self.invalidate_widget_resource_cache();
         // What the window's layout needs follows the tree and the theme it
@@ -3003,6 +3004,9 @@ mod manual_composition_tests;
 mod number_input_layout_tests;
 
 #[cfg(test)]
+#[path = "app/committed_document_tests.rs"]
+mod committed_document_tests;
+#[cfg(test)]
 #[path = "app/context_menu_input_tests.rs"]
 mod context_menu_input_tests;
 #[cfg(test)]
@@ -3023,10 +3027,6 @@ mod committed_document;
 
 #[path = "app/document_routes.rs"]
 mod document_routes;
-
-#[cfg(feature = "broker-transport")]
-#[path = "app/record_routes.rs"]
-pub mod record_routes;
 
 #[cfg(test)]
 #[path = "app/focus_selection_tests.rs"]

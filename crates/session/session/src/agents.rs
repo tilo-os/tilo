@@ -274,6 +274,7 @@ impl crate::Shared {
         self.agents
             .charge(&workspaces, &self.person, &self.conversations.take_spent());
         let kept = self.agents.feed(&self.person, &workspaces);
+        self.search.set_kept_agents(&kept);
         if let Some(apps) = &self.launch {
             for agent in &kept {
                 apps.start_agent(agent);
@@ -289,5 +290,16 @@ impl crate::Shared {
                 })
                 .collect(),
         );
+    }
+}
+
+/// Who a request typed in a workspace goes to: the agent the person keeps there, and a new one —
+/// named as the workspace names its agent — where they keep none. Text typed on the canvas that
+/// asks and search's row that hands an agent a request both send to it (shell.md §8.1).
+pub(crate) fn agent_recipient(kept: Option<(String, String)>) -> ui::floating_surface::Recipient {
+    use ui::floating_surface::{Recipient, RecipientKind};
+    match kept {
+        Some((id, name)) => Recipient::found(RecipientKind::Agent, id, name),
+        None => Recipient::new_agent(crate::i18n::t("session-agent-name")),
     }
 }

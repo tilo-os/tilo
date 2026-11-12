@@ -16,8 +16,9 @@ mkdir -p "$work"
 . "$here/direct-lounge.sh"
 trap stop_lounge EXIT
 start_lounge "$bundle" "$work"
-# With TILO_CLI_BIN the newcomer sets Tilo up through an agent running it.
-node "$here/integration/tour.mjs" "$site_origin" "$relay_origin" "$work/tour" \
+# With TILO_CLI_BIN the newcomer sets Tilo up through an agent running it. The bundle's own app
+# list tells the tour which apps this page can open.
+TILO_BUNDLE=$bundle node "$here/integration/tour.mjs" "$site_origin" "$relay_origin" "$work/tour" \
   ${TILO_CLI_BIN:+"$TILO_CLI_BIN" "$work/site.ca.crt"} \
   || lounge_fail 'the tour stopped'
 # The pictures, in the log as well: a reviewer reads them from `t log page-tour`

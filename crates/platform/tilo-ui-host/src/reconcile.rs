@@ -282,7 +282,7 @@ fn lead(node: &UiNode) -> i16 {
 pub fn normalize(node: &UiNode) -> UiNode {
     let mut out = page_once(node);
     crate::attach::hoist_in(&mut out);
-    out
+    crate::shell::titled_lists(out)
 }
 
 /// The tree with a page inside another page, or inside a block's view, a plain stack.
@@ -766,10 +766,10 @@ impl Reconciler {
             };
             match taken {
                 Ok(true) => {}
-                Ok(false) => return Some(self.build(new_node)),
+                Ok(false) => return Some(self.rebuild_carrying(widget, new_node)),
                 Err(error) => {
                     self.note_broken(new_node, &error);
-                    return Some(self.build(new_node));
+                    return Some(self.rebuild_carrying(widget, new_node));
                 }
             }
         }
@@ -835,6 +835,24 @@ impl Reconciler {
             }
         }
         None
+    }
+
+    /// Build `new_node`'s widget again in place of `widget`, carrying over what the person keeps
+    /// across the rebuild: a canvas keeps the camera they left it at, and the places standing on it
+    /// keep where they were drawn, so a place arriving neither resets their lens nor makes every
+    /// window arrive again — the place that arrived is the one the camera pans to.
+    fn rebuild_carrying(&mut self, widget: &mut Element, new_node: &UiNode) -> Element {
+        let mut built = self.build(new_node);
+        let old = widget
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<ui::widget::Map>());
+        let new = built
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<ui::widget::Map>());
+        if let (Some(old), Some(new)) = (old, new) {
+            new.carry_from(old);
+        }
+        built
     }
 
     /// Bring the views of one slot, built for `old`, to `new` by key: those gone removed, those
@@ -2089,6 +2107,59 @@ mod tests {
             updated.children().first().and_then(|new| new.test_id()),
             Some("n"),
             "the new child is built for its node"
+        );
+    }
+
+    /// A map of the places `pins` names, each a pin standing at its own canvas point.
+    fn map_node(pins: &[(&str, i64)]) -> UiNode {
+        let pins: Vec<UiNode> = pins
+            .iter()
+            .map(|(key, x)| {
+                let mut pin = node("ui.MapPin", key);
+                pin.props.insert("x".to_owned(), Value::Int(*x));
+                pin.props.insert("width".to_owned(), Value::Int(720));
+                pin
+            })
+            .collect();
+        UiNode {
+            children: pins,
+            ..node("ui.Map", "canvas")
+        }
+    }
+
+    /// The camera a map is looking with.
+    fn camera_of(widget: &mut Element) -> ui::widget::MapCamera {
+        widget
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<ui::widget::Map>())
+            .expect("a map")
+            .camera()
+    }
+
+    /// A place arriving on a canvas is a second map built around the places it now shows: it keeps
+    /// the camera the person left, so opening a window does not throw their lens back to the
+    /// canvas' origin (and the place that arrived is the one it pans to).
+    #[test]
+    fn a_map_built_again_keeps_the_camera_the_person_left_it_at() {
+        let mut reconciler = reconciler();
+        let old = map_node(&[("a", 0)]);
+        let mut built = reconciler.build(&old);
+        let panned = ui::widget::MapCamera {
+            origin: ui::kurbo::Point::new(40.0, 20.0),
+            zoom: 1.0,
+        };
+        {
+            let map = built
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<ui::widget::Map>())
+                .expect("a map");
+            map.set_camera(panned);
+        }
+        let new = map_node(&[("a", 0), ("b", 744)]);
+        let mut updated = reconciler.update(built, &old, &new);
+        assert!(
+            camera_of(&mut updated).same(panned),
+            "the lens the person left the canvas at"
         );
     }
 

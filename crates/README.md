@@ -32,7 +32,7 @@ service.
   private session bus of a nested session on hosts without one.
 - `dev/click-test-client`: the minimal Wayland client the shell's sandbox and desktop tests drive.
 - `dev/collab-probe`: sandboxed collaboration test app, driven by
-  `scripts/sandboxed-app-collab.py`.
+  `scripts/headless-examples/tilolang-e2e.py`.
 - `dev/tilo-app-template-smoke`: compiles generated app code to validate the SDK templates.
 - `dev/copy-lint`: the source scan that keeps English copy literals out of UI builders,
   run from the shell's and desktop's tests with their own allow-lists.

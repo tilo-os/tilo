@@ -24,7 +24,9 @@ app gets on a real system:
   snapshot   a PNG of the nested session per app, in OUT
   windows    a second window of Tasks, opened as a person opens one from search (its row
              with Ctrl+Enter), is a second window of the same process and its instance runs
-             in the same host; a task typed into one window shows in the other at once
+             in the same host; a task typed into either window shows in the other at once
+  today      Today's Tasks card reads Tasks' own record: the tasks typed into Tasks' Today
+             show in Today's window, which holds none of them itself (today-*.png)
   native     native Notes (so.tilo.notes), installed beside them, launches and
              presents a frame (native-notes.png)
   activation "Show this window" answers for tilolang Notes as for native Notes
@@ -386,8 +388,49 @@ def check_windows(session: Session, processes: dict, session_pid: int, out: Path
     session.control({"op": "key", "key": "Enter"})
     after = until("the task in both of Tasks' windows", lambda: (lambda now: now if all(
         a != b for a, b in zip(now, before)) else None)(shot("after")), 30, 1.0)
+    # Then into the second: the workspace's committed read of the first task reached both
+    # instances, and each still sends what its person does next.
+    focus(session, windows[1])
+    time.sleep(0.5)
+    session.control({"op": "type", "text": "Call the plumber"})
+    session.control({"op": "key", "key": "Enter"})
+    until("the second task in both of Tasks' windows", lambda: (lambda now: now if all(
+        a != b for a, b in zip(now, after)) else None)(shot("next")), 30, 1.0)
     return {"windows": [{"group": w["group"], "tab": w["tab"]} for w in windows],
             "process": procs[0], "host": hosts[0], "changed": len(after)}
+
+
+def today_shown(session: Session, out: Path, name: str) -> bytes:
+    """Today's window in front, as it shows now, captured as today-`name`.png: its pixels."""
+    today = app_id("today")
+    window = next(w for w in session.windows() if w.get("app_id") == today)
+    focus(session, window)
+    time.sleep(1.0)
+    rect = next(w["rect"] for w in session.windows() if w.get("tab") == window["tab"])
+    path = out / f"today-{name}.png"
+    session.control_cmd("snapshot", str(path))
+    return window_pixels(png_rgb(path), rect)
+
+
+def hold_today(session: Session, out: Path, held: list[bytes]) -> dict:
+    """Capture Today's window before Tasks holds a task, into `held`."""
+    held.append(today_shown(session, out, "before"))
+    return {"before": str(out / "today-before.png")}
+
+
+def check_today(session: Session, out: Path, before: bytes) -> dict:
+    """Today's Tasks card, which held nothing before Tasks held a task, shows the tasks typed
+    into Tasks' Today since: Today reads them from Tasks' own record, live. The card's rows move
+    a good part of the window; a focus ring or a caret moves next to none of it."""
+    def moved(now: bytes) -> float:
+        width = 4  # a snapshot holds RGBA pixels
+        changed = sum(1 for i in range(0, min(len(now), len(before)), width)
+                      if now[i:i + width] != before[i:i + width])
+        return changed / max(1, len(before) // width)
+    share = until("Tasks' tasks in Today's card", lambda: (lambda part: part if part > 0.05 else None)(
+        moved(today_shown(session, out, "after"))), 30, 1.0)
+    return {"before": str(out / "today-before.png"), "after": str(out / "today-after.png"),
+            "moved": round(share, 3)}
 
 
 def invoke_found(session: Session, found: dict, args: dict | None = None) -> dict:
@@ -667,6 +710,8 @@ def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
     proc, session = start_session(state, out, [out / "build" / f"{n}.tapp" for n in APPS], "apps", apps="notes")
     running["proc"] = proc
     pid = proc.pid
+    # Today's window before Tasks holds a task, which its card is held to after.
+    today_before: list[bytes] = []
     ok = run_checks(summary, [
         ("registry", lambda: check_registry(session)),
         ("launch", lambda: launch_all(session)),
@@ -683,7 +728,9 @@ def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
         # Before the checks that type into the desk: every app's threads are held to sleeping
         # on a desk no other check has just touched.
         ("idle", lambda: check_idle(session, summary["checks"]["processes"], pid)),
+        ("today-before", lambda: hold_today(session, out, today_before)),
         ("windows", lambda: check_windows(session, summary["checks"]["processes"], pid, out)),
+        ("today", lambda: check_today(session, out, today_before[0])),
     ])
     stop_session(proc)
     running["proc"] = None

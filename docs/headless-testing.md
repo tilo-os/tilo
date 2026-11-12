@@ -124,7 +124,7 @@ like a bug in whatever you were testing, which is the expensive part.
 Point it at real disk before a run that spawns sessions:
 
 ```bash
-TMPDIR=$HOME/tmp ./scripts/headless-examples/peers-cross-both-ways.py
+TMPDIR=$HOME/tmp ./scripts/two-session-collab-demo.py --build
 ```
 
 Keep session roots short (`/tmp/qs-xxxx`-shaped): a unix socket path has
@@ -249,7 +249,9 @@ echo '{"op":"snapshot","path":"/tmp/state.png"}' | nc -U $TILO_TEST_CONTROL
 
 # Get the live workspace tree + chrome state as JSON. A workspace's
 # append-only history (effect receipts, task audit trails) is left out; add
-# "include_history":true to get it:
+# "include_history":true to get it. `peers` is who is here: this session's own
+# row, and one row per workspace it takes part in with everyone present there,
+# as the roster every surface draws is read.
 echo '{"op":"state_dump"}' | nc -U $TILO_TEST_CONTROL
 
 # Just the open windows, one row per tab:
@@ -468,12 +470,24 @@ For exploratory / partial flows, see `scripts/headless-examples/` (full walkthro
 - `full-loop.py` — the end-to-end above
 - `spawn-headless.sh` — shell helper to start the compositor + wait for socket
 
-Alongside those, the `*-proof.py` scripts in the same directory stand up
-**two or three real compositors** with separate identities and homes, put
-them in one workspace, and assert across them. Reach for one of those when the
-question is about collaboration rather than about one session's chrome —
-`peers-cross-both-ways.py` is the presence regression net (each session
-must paint the other's cursor, under the name the workspace gave it).
+`scripts/two-session-collab-demo.py` stands up **two sessions of two
+different people** with separate states, identities, runtimes and launched
+apps, puts them in one workspace (one person invites the other with the desk's
+own invitation, and the other starts with it), and follows an edit from one
+side's app to the other's. Reach for it when the question is about
+collaboration rather than about one session's chrome. It needs the session
+built (`dist/dev/nested-session-build.sh`, or its own `--build`), and it runs
+where two sessions fit — a container, never the seat's own host.
+
+Who is here is read from a session's own state: its dump's `peers` carries the
+row of the seat it is at, and one workspace row per workspace it takes part in
+with everyone present there, as the roster every surface draws is read.
+Presence itself travels on the workspace's live plane, which a member that may act
+as a host relays, or else the device hosting the workspace
+(`crates/session/session/src/live.rs`): two people's own desktops in a workspace
+one of them hosts see each other without a site
+(`two_peoples_own_desktops_see_each_other_come_and_go_without_a_site` in
+`crates/session/session/tests/people.rs`).
 
 If you want to do it by hand without Python, use `socat` (Ncat doesn't have `-q`):
 

@@ -849,6 +849,173 @@ fn the_person_who_made_a_workspace_may_add_a_note_in_it() {
     capture_to(&mut session, "fresh-workspace-new-note");
 }
 
+/// A workspace this desk joined, as a join leaves it: the id it is shared under, the slot derived
+/// from that id, and no strip of this desk's own — its strips are the workspace's, which come from
+/// the workspace's record. A person standing in it who opens an app gets that app's window there,
+/// never in the workspace of their own they came from: once for the first workspace they join, and
+/// again for a second one.
+#[test]
+fn an_app_opened_in_a_joined_workspace_opens_there() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let (_identity, _person) = this_computer(&mut home);
+    let started = home.home().join("started");
+    let arguments = home.home().join("arguments");
+    installed_probe_package(&mut home);
+    let launcher = recording_launcher(&home, &started, &arguments);
+    let (mut session, _apps, _started) = session_through(&home, &launcher, None);
+    session.step(Duration::from_millis(1)).unwrap();
+    let (their_own, _) = front_workspace(&session);
+    assert!(!their_own.is_empty(), "this desk starts in a workspace");
+    assert!(!apps_in(&session, &their_own).contains(&PROBE.to_owned()));
+
+    // Where the person starts: the app they open in their own workspace runs there, so what a join
+    // changes is read against a desk the same press already worked on.
+    open_from_the_desk(&session, PROBE);
+    until(&mut session, "the app is started", |_| {
+        starts(&arguments) > 0
+    });
+    assert_eq!(handed(&arguments, "--workspace-id"), their_own);
+    assert!(
+        apps_in(&session, &their_own).contains(&PROBE.to_owned()),
+        "the app's tab stands in the workspace the person opened it in"
+    );
+
+    // What a join hands the desk, through the desk's own verb: the workspace's id, and nothing
+    // else of this desk's.
+    for (joined, name) in [
+        ("0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c", "Studio"),
+        ("7d3b6c1e-2f4a-4c8e-9d1b-5a6e7f8c9d0e", "Garden"),
+    ] {
+        invoke(
+            &mut session,
+            CHROME_RESOURCE,
+            "new-workspace",
+            serde_json::json!({"workspace": joined, "name": name}),
+        );
+        until(
+            &mut session,
+            "the desk stands in the workspace",
+            |session| front_workspace(session).0 == joined,
+        );
+        assert_ne!(joined, their_own, "the person left their own workspace");
+
+        // The person opens the app from the desk's own launchpad, which holds the tab its window
+        // takes from the frame they pressed it in.
+        let before = starts(&arguments);
+        open_from_the_desk(&session, PROBE);
+        until(&mut session, "the app is started", |_| {
+            starts(&arguments) > before
+        });
+        assert_eq!(
+            handed(&arguments, "--workspace-id"),
+            joined,
+            "the app runs in the workspace the person stands in"
+        );
+        until(&mut session, "the window's tab stands there", |session| {
+            apps_in(session, joined).contains(&PROBE.to_owned())
+        });
+        assert_eq!(
+            front_workspace(&session).0,
+            joined,
+            "the desk stays where the person stood"
+        );
+    }
+}
+
+/// How many starts the launcher at `records` has made: one line per start.
+fn starts(records: &Path) -> usize {
+    fs::read_to_string(records).map_or(0, |lines| lines.lines().count())
+}
+
+/// Open `app` from the desk, as a press on its tile there does: the desk makes the tab the app's
+/// window takes, in the workspace the person is in, and queues the launch the session starts.
+fn open_from_the_desk(session: &Session, app: &str) {
+    session
+        .handle()
+        .dispatch(tilo_desktop_surface::navigation::ChromeEffect::OpenApp {
+            app: app.to_owned(),
+            beside: None,
+            background: None,
+            float: None,
+        })
+        .expect("the desk takes the open");
+}
+
+/// The tab the desk made for an app's window decides where the app runs: a person who opens an app
+/// and whose desk moves on before the pass that starts it — a switch of theirs, a workspace that
+/// arrived — gets the app in the workspace they opened it in, with that workspace's records and
+/// grants, never in the one the desk stands in by then.
+#[test]
+fn an_app_runs_in_the_workspace_the_desk_made_its_tab_in() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let (_identity, _person) = this_computer(&mut home);
+    let started = home.home().join("started");
+    let arguments = home.home().join("arguments");
+    installed_probe_package(&mut home);
+    let launcher = recording_launcher(&home, &started, &arguments);
+    let (mut session, _apps, _started) = session_through(&home, &launcher, None);
+    session.step(Duration::from_millis(1)).unwrap();
+    let (their_own, _) = front_workspace(&session);
+
+    // Another workspace of theirs, made through the desk's own verb and left for last.
+    invoke(
+        &mut session,
+        CHROME_RESOURCE,
+        "new-workspace",
+        serde_json::json!({"name": "Elsewhere"}),
+    );
+    until(
+        &mut session,
+        "the desk stands in the workspace made",
+        |session| front_workspace(session).0 != their_own,
+    );
+    let (elsewhere, _) = front_workspace(&session);
+    stand_in(&session, &their_own);
+    until(&mut session, "the desk stands there again", |session| {
+        front_workspace(session).0 == their_own
+    });
+
+    // The person opens the app where they stand, and their desk moves on to the other workspace
+    // before the desk's next pass — the pass that starts the app.
+    open_from_the_desk(&session, PROBE);
+    stand_in(&session, &elsewhere);
+    until(&mut session, "the app is started", |_| {
+        starts(&arguments) > 0
+    });
+    assert_eq!(
+        front_workspace(&session).0,
+        elsewhere,
+        "the desk stands where the person switched to"
+    );
+    assert_eq!(
+        handed(&arguments, "--workspace-id"),
+        their_own,
+        "the app runs in the workspace whose tab the desk made for its window"
+    );
+}
+
+/// Go to the workspace `workspace` , by its id, as a person switching to it does.
+fn stand_in(session: &Session, workspace: &str) {
+    let slot = session.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .find(|held| held.id().to_string() == workspace)
+            .map(|held| held.slot.0.to_string())
+    });
+    let slot = slot.unwrap_or_else(|| panic!("the desk holds the workspace {workspace}"));
+    session
+        .handle()
+        .dispatch(
+            tilo_desktop_surface::navigation::ChromeEffect::SwitchWorkspace {
+                workspace: Some(slot),
+                delta: None,
+            },
+        )
+        .expect("the desk takes the switch");
+}
+
 /// What the projection says about the app's own new-note action: the question a window bar asks to
 /// offer New note.
 fn may_make_a_note(
@@ -876,6 +1043,19 @@ fn groups(session: &Session) -> Vec<Vec<String>> {
                 .map(|group| group.tabs.iter().map(|tab| tab.title.clone()).collect())
                 .collect()
         })
+    })
+}
+
+/// The apps whose windows the workspace `workspace` holds on this desk, by app id, wherever the
+/// desk stands: the tabs it keeps, each named by the app its window belongs to.
+fn apps_in(session: &Session, workspace: &str) -> Vec<String> {
+    session.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .filter(|held| held.id().to_string() == workspace)
+            .flat_map(tilo_desktop_model::Workspace::tabs)
+            .filter_map(|tab| tilo_desktop_model::apps::canonical_app_id(&tab.tile))
+            .collect()
     })
 }
 

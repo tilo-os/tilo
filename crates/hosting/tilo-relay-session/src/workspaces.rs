@@ -187,6 +187,8 @@ pub const DETACH_HOST: &str = "room.detach-host";
 /// wherever it is hosted (one of their desktops, a paired device, a relay),
 /// with that host's signed address. Only a device of the person's own keeps
 /// it, never an agent's grant or a stand-in; each keep replaces the last.
+/// The devices the list carries are added to the person's devices kept
+/// here, never taken away: a device leaves only by its root's revocation.
 /// Answers `{"kept": count}`.
 pub const KEEP_PERSONAL: &str = "room.personal.keep";
 /// The caller's person's workspace list ([`PersonalList`]): the one their
@@ -196,12 +198,33 @@ pub const KEEP_PERSONAL: &str = "room.personal.keep";
 pub const LIST_PERSONAL: &str = "room.personal";
 /// The most workspaces a kept list names.
 pub const MAX_PERSONAL_WORKSPACES: usize = 4096;
+/// The most devices a person's record keeps.
+pub const MAX_PERSONAL_DEVICES: usize = 1024;
 
 /// A person's workspaces, each with where it is hosted: what
 /// [`LIST_PERSONAL`] answers and [`KEEP_PERSONAL`] keeps.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersonalList {
     pub workspaces: Vec<PersonalWorkspace>,
+    /// The person's devices and the other keys their root certified (an
+    /// agent's grant, a script's key): each as its certificate says, one per
+    /// key. A device that signs a certificate adds it here (a desktop holding
+    /// the root with its list, the host that carried a pairing the page's
+    /// root answered), so every device of theirs reads one list. What a
+    /// host answers marks the ones a revocation it keeps refuses.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub devices: Vec<PersonalDevice>,
+}
+
+/// One key of the person's, as their record keeps it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersonalDevice {
+    /// Its certificate, signed by the person's root.
+    pub cert: tilo_user_identity::DeviceCert,
+    /// A revocation the answering host keeps refuses it. What a device keeps
+    /// says nothing here: the host answers it from its own revocations.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub revoked: bool,
 }
 
 /// One workspace of a person's list.
@@ -288,6 +311,11 @@ impl PersonalList {
         if self.workspaces.len() > MAX_PERSONAL_WORKSPACES {
             return Err(format!(
                 "a list names at most {MAX_PERSONAL_WORKSPACES} workspaces"
+            ));
+        }
+        if self.devices.len() > MAX_PERSONAL_DEVICES {
+            return Err(format!(
+                "a list names at most {MAX_PERSONAL_DEVICES} devices"
             ));
         }
         for entry in &self.workspaces {

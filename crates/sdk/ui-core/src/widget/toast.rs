@@ -843,6 +843,11 @@ pub fn minimum_card_height(
 /// enough to choose, and a title that ran on would bury its actions.
 const BODY_LINES: usize = 2;
 
+/// A card's title wraps to at most this many lines: on a phone a title such
+/// as "Claude Code finished: 8 changes in Workspace" is the whole news and
+/// must read whole, yet a title that ran on would bury the card's actions.
+const TITLE_LINES: usize = 2;
+
 /// A card's text, normalised to the single lines (or wrapped body lines)
 /// it paints. The attribution line is the app's name and how long ago it
 /// arrived, sharing one line.
@@ -919,7 +924,11 @@ pub fn card_height(
     let title_h = if text.title.is_empty() {
         0.0
     } else {
-        line_height(text_renderer, &title_style)
+        let lines = text_renderer
+            .clamp_to_lines(&text.title, &title_style, text_width, TITLE_LINES)
+            .len()
+            .max(1);
+        lines as f64 * line_height(text_renderer, &title_style)
     };
     let body_h = if text.body.is_empty() {
         0.0
@@ -1631,21 +1640,38 @@ fn paint_card_text(
     let body_style = theme.text(TextRole::Caption);
     let text = CardText::of(card);
 
-    // The block is the attribution line (app and time), the title on one
-    // semibold line, then the body clamped to two lines. A card laid out
-    // shorter than that (a compact in-app card, the lock screen's alert)
-    // keeps the body on one line.
+    // The block is the attribution line (app and time), the title in
+    // semibold wrapped to two lines, then the body clamped to two lines. A
+    // card laid out shorter than that (a compact in-app card, the lock
+    // screen's alert) keeps the title and the body on one line each.
     let body_line_h = line_height(ctx.text, &body_style);
+    let title_line_h = line_height(ctx.text, &title_style);
     let header_h = if text.has_header() {
         line_height(ctx.text, &caption_style)
     } else {
         0.0
     };
-    let title_h = if text.title.is_empty() {
+    // The title takes a second line only where the body keeps its first.
+    let body_first = if text.body.is_empty() {
         0.0
     } else {
-        line_height(ctx.text, &title_style)
+        body_line_h
     };
+    let title_room = column.height() - 2.0 * pad_y - header_h - body_first;
+    let title_cap = if title_line_h > 0.0 {
+        (title_room / title_line_h)
+            .floor()
+            .clamp(1.0, TITLE_LINES as f64) as usize
+    } else {
+        1
+    };
+    let title_lines = if text.title.is_empty() {
+        Vec::new()
+    } else {
+        ctx.text
+            .clamp_to_lines(&text.title, &title_style, width, title_cap)
+    };
+    let title_h = title_lines.len() as f64 * title_line_h;
     let room = column.height() - 2.0 * pad_y - header_h - title_h;
     let body_cap = if body_line_h > 0.0 {
         (room / body_line_h).floor().clamp(1.0, BODY_LINES as f64) as usize
@@ -1696,20 +1722,18 @@ fn paint_card_text(
         }
         ty += header_h;
     }
-    if !text.title.is_empty() {
-        let title = ctx
-            .text
-            .elide_to_width_style(&text.title, width, &title_style);
+    // The leading mark stands on the title's first line, where reading starts.
+    let title_centre = ty + title_line_h / 2.0;
+    for line in &title_lines {
         ctx.text(
-            &title,
+            line,
             &title_style,
             primary,
             Point::new(text_x, ty),
             Some(width),
         );
+        ty += title_line_h;
     }
-    let title_centre = ty + title_h / 2.0;
-    ty += title_h;
     for line in &body_lines {
         ctx.text(line, &body_style, dim, Point::new(text_x, ty), Some(width));
         ty += body_line_h;

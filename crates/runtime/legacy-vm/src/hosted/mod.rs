@@ -25,6 +25,10 @@
 //! - [`meter`] records each run and each held snapshot, per second, in the
 //!   account's ledger, and [`plan`] refuses what the account's plan does not
 //!   cover, in words an agent can act on;
+//! - [`memory`] is what a wake is admitted by: what the kernel measures each
+//!   VM's process at, not the size it was configured at, with the host's own
+//!   reserve kept free and the guests' balloons asked for memory back under
+//!   pressure;
 //! - one service per host ([`service`]) owns every VM and answers ush over a
 //!   Unix socket ([`control`]).
 //!
@@ -69,6 +73,7 @@ pub mod files;
 pub mod firecracker;
 pub mod guest;
 pub mod jail;
+pub mod memory;
 pub mod meter;
 pub mod network;
 pub mod placement;

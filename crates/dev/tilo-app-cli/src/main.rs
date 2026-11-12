@@ -3153,7 +3153,6 @@ mod tests {
     fn workspace_certification_skips_only_windowless_services() {
         let apps = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
         assert!(is_windowless_service(&apps.join("thumbnails")));
-        assert!(is_windowless_service(&apps.join("web-search")));
         assert!(is_windowless_service(&apps.join("agent")));
         // A window is always certified, a service's (the keyboard) too.
         assert!(!is_windowless_service(&apps.join("osk")));

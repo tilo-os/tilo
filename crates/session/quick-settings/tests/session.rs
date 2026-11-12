@@ -126,6 +126,44 @@ fn the_panel_opened_from_the_bar_shows_what_the_services_publish() {
     session.stop_surface("quick-settings");
 }
 
+/// A session that dims nothing publishes no brightness: the panel offers
+/// none, rather than a slider standing at a level nothing measured.
+#[test]
+fn the_panel_offers_no_brightness_the_session_did_not_publish() {
+    let mut laptop = session_of_device(&[panel()], Machine::Owned);
+    let session = &mut laptop.session;
+    open_the_panel(session);
+    // The panel has followed the session's readings once its network tile
+    // is one the network makes: its displays came with them.
+    until_ready(session, "toggle-wifi");
+    if let Some(brightness) = offered(session, "set-brightness") {
+        assert!(
+            !brightness.contract.availability.is_available(),
+            "the panel offers brightness this machine has not read: {:?}",
+            brightness.contract.availability
+        );
+    }
+    session.stop_surface("quick-settings");
+}
+
+/// A sound card with no output publishes nothing to set: the panel offers no
+/// volume, rather than one standing at a level no output holds.
+#[test]
+fn the_panel_offers_no_volume_the_sound_card_did_not_publish() {
+    let mut laptop = session_of_silent_device(&[panel()]);
+    let session = &mut laptop.session;
+    open_the_panel(session);
+    until_ready(session, "toggle-wifi");
+    if let Some(volume) = offered(session, "set-volume") {
+        assert!(
+            !volume.contract.availability.is_available(),
+            "the panel offers volume this sound card has not read: {:?}",
+            volume.contract.availability
+        );
+    }
+    session.stop_surface("quick-settings");
+}
+
 /// Escape is the panel's own while a page of it is open: the panel goes back
 /// a page and answers that it did, and only its main page has nowhere left to
 /// go, which is where the session closes it.
@@ -996,15 +1034,12 @@ fn session_of_device_prepared_with(
     scale: f64,
     prepare: impl FnOnce(&mut Options, &std::path::Path),
 ) -> Laptop {
-    let radios = Arc::new(Radios::default());
-    {
-        let mut readings = radios.readings.lock().expect("the radios");
-        readings.network.wifi.available = true;
-        readings.bluetooth.available = true;
-    }
-    let mut connectivity = Connectivity::new(radios, None).expect("a connectivity service");
-    connectivity.settle();
-    let card: Arc<dyn Graph> = Arc::new(Card {
+    session_of_device_with_card(surfaces, machine, output, scale, speakers(), prepare)
+}
+
+/// A sound card with one pair of speakers, in use.
+fn speakers() -> Arc<dyn Graph> {
+    Arc::new(Card {
         graph: Mutex::new(AudioGraph {
             sinks: vec![AudioDevice {
                 id: 40,
@@ -1019,7 +1054,39 @@ fn session_of_device_prepared_with(
             }],
             ..AudioGraph::default()
         }),
-    });
+    })
+}
+
+/// A session on a device whose sound card has no output at all.
+fn session_of_silent_device(surfaces: &[Surface]) -> Laptop {
+    session_of_device_with_card(
+        surfaces,
+        Machine::Owned,
+        (WIDTH, HEIGHT),
+        1.0,
+        Arc::new(Card {
+            graph: Mutex::new(AudioGraph::default()),
+        }),
+        |_options, _root| {},
+    )
+}
+
+fn session_of_device_with_card(
+    surfaces: &[Surface],
+    machine: Machine,
+    output: (i32, i32),
+    scale: f64,
+    card: Arc<dyn Graph>,
+    prepare: impl FnOnce(&mut Options, &std::path::Path),
+) -> Laptop {
+    let radios = Arc::new(Radios::default());
+    {
+        let mut readings = radios.readings.lock().expect("the radios");
+        readings.network.wifi.available = true;
+        readings.bluetooth.available = true;
+    }
+    let mut connectivity = Connectivity::new(radios, None).expect("a connectivity service");
+    connectivity.settle();
     let mut sound = SoundService::new(card, None).expect("a sound service");
     sound.settle();
     let pack = Pack::default();

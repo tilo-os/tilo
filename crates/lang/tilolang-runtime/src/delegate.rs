@@ -102,6 +102,10 @@ pub enum Invoked {
     Refused(String),
     /// Policy asks the person first: the program stops here and its step waits on the answer.
     Asks(String),
+    /// It went to the app that holds the resource, which runs it and answers there: what it
+    /// changes comes back as that app's readings. The code goes on without its result, as the
+    /// result type's empty value.
+    Sent,
 }
 
 /// Where a runtime sends the changes a program makes.

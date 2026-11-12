@@ -177,6 +177,14 @@ pub fn push_gpu_devices(argv: &mut Vec<String>) {
     }
 }
 
+/// No device node of a GPU in the sandbox: an empty `/dev/dri` over the ones
+/// [`push_gpu_devices`] bound, for an app that renders in software on a machine
+/// whose render nodes drive no GPU.
+pub fn hide_gpu_devices(argv: &mut Vec<String>) {
+    argv.push("--tmpfs".to_owned());
+    argv.push("/dev/dri".to_owned());
+}
+
 /// The profile as Landlock read-only rules.
 ///
 /// A bind the ruleset does not name is visible and unreadable — every

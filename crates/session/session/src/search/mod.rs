@@ -199,6 +199,11 @@ pub struct SessionSearch {
     here: RefCell<Vec<WorkspaceHere>>,
     /// The downloaded programs, as of the last reading of the registry.
     downloaded: RefCell<DownloadedRows>,
+    /// The agent each workspace keeps for the person here, as the pass read them: whom the row
+    /// that hands an agent what was typed sends to. `None` where this host sends nothing at all
+    /// (the page), which offers no such row.
+    #[cfg(target_os = "linux")]
+    agents: RefCell<Option<Vec<crate::agents::Kept>>>,
     /// The question search answered, and the answer as it is being written: kept across the builds
     /// of the rows so what arrives stays where the person asked it.
     ask: crate::search_ask::Shared,
@@ -277,6 +282,8 @@ impl SessionSearch {
             workspaces: RefCell::default(),
             here: RefCell::default(),
             downloaded: RefCell::default(),
+            #[cfg(target_os = "linux")]
+            agents: RefCell::default(),
             ask: crate::search_ask::Shared::default(),
             wake,
         }
@@ -338,6 +345,13 @@ impl SessionSearch {
     /// it: the empty palette's first group.
     pub fn set_here(&self, workspaces: Vec<WorkspaceHere>) {
         *self.here.borrow_mut() = workspaces;
+    }
+
+    /// The agent each workspace keeps for the person here, as the pass read them: whom the row
+    /// that hands an agent what was typed sends to, and a new one where a workspace keeps none.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn set_kept_agents(&self, agents: &[crate::agents::Kept]) {
+        *self.agents.borrow_mut() = Some(agents.to_vec());
     }
 
     /// The workspaces this device shows, by id and the name the desk gives it: what a row says of a
@@ -854,6 +868,21 @@ impl SearchHost for SessionSearch {
                 workspace,
                 self.wake.clone(),
                 self.models.clone(),
+            )));
+        }
+        // What the person types, handed to their agent: the one send a window's box and the canvas
+        // run. A host that sends nothing (the page) offers no such row.
+        #[cfg(target_os = "linux")]
+        if !matches!(scope, Scope::InApp(_))
+            && let Some(agents) = self.agents.borrow().as_ref()
+        {
+            let kept = agents
+                .iter()
+                .find(|agent| agent.workspace == workspace)
+                .map(|agent| (agent.id.clone(), agent.name.clone()));
+            sources.push(Held::new(crate::search_agent::AskAgent::new(
+                workspace,
+                crate::agents::agent_recipient(kept),
             )));
         }
         SearchHostFeed {

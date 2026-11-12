@@ -52,11 +52,6 @@ struct Cli {
     /// `--provider` by the desktop, defaults to 30000 ms, the whole budget of
     /// a multi-turn action decision.
     model_timeout_ms: Option<u64>,
-    /// An application the desktop started beside this agent for its tasks
-    /// (web search). Repeatable. The agent plans its first run only once
-    /// each has published its actions, waiting a bounded while, so that run
-    /// is not planned without them.
-    companions: Vec<String>,
     /// The model to plan with, as the desktop's nonsecret
     /// `{"profile_id","model_id","protocol"}` selection. The model gateway
     /// holds the endpoint and the credential; a launched agent cannot read
@@ -80,7 +75,6 @@ Options:
       --endpoint <PATH>           Broker socket for headless diagnostics
       --no-model                  Decide by keyword only, without asking a model
       --model-timeout-ms <MS>     How long a model may take to choose
-      --companion <APP>           An application started beside this agent (repeatable)
       --provider <JSON>           The model selection the desktop hands over
   -h, --help                      Print this help
 ";
@@ -108,7 +102,6 @@ impl Cli {
             endpoint: None,
             no_model: false,
             model_timeout_ms: None,
-            companions: Vec::new(),
             provider: None,
         };
         let mut args = args.into_iter();
@@ -130,7 +123,7 @@ impl Cli {
                 "-h" | "--help" => return Err(CliExit::Help),
                 "--no-model" => flag(&mut cli.no_model)?,
                 "--workspace" | "--record" | "--app" | "--name" | "--agent-id" | "--endpoint"
-                | "--model-timeout-ms" | "--companion" | "--provider" => {
+                | "--model-timeout-ms" | "--provider" => {
                     let value = match inline {
                         Some(value) => value,
                         None => args
@@ -153,7 +146,6 @@ impl Cli {
                                 CliExit::Usage(format!("--model-timeout-ms {value}: {error}"))
                             })?);
                         }
-                        "--companion" => cli.companions.push(value),
                         _ => cli.provider = Some(value),
                     }
                 }
@@ -267,7 +259,6 @@ fn main() -> anyhow::Result<()> {
         model_timeout: Duration::from_millis(model_timeout_ms),
         permissions,
         content: device_content(),
-        companions: cli.companions,
         // A launched agent inherits the launcher's admission
         // (`TILO_SVC_COLLAB_FD`); an explicit endpoint is a harness's, which
         // presents the certificate it names.
@@ -320,7 +311,7 @@ mod tests {
         assert_eq!(defaults.name, "Claude");
     }
 
-    /// Values after `=`, repeated companions and every option the flags took.
+    /// Values after `=` and every option the flags take.
     #[test]
     fn every_option_reads_in_both_spellings() {
         let cli = parse(&[
@@ -332,9 +323,6 @@ mod tests {
             "/run/broker.sock",
             "--no-model",
             "--model-timeout-ms=1500",
-            "--companion",
-            "so.tilo.web-search",
-            "--companion=so.tilo.notes",
             "--provider",
             r#"{"profile_id":"p"}"#,
         ])
@@ -347,7 +335,6 @@ mod tests {
         assert_eq!(cli.endpoint, Some(PathBuf::from("/run/broker.sock")));
         assert!(cli.no_model);
         assert_eq!(cli.model_timeout_ms, Some(1500));
-        assert_eq!(cli.companions, ["so.tilo.web-search", "so.tilo.notes"]);
         assert_eq!(cli.provider.as_deref(), Some(r#"{"profile_id":"p"}"#));
     }
 

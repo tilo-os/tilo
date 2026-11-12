@@ -469,6 +469,55 @@ fn the_policy_places_windows_and_a_click_moves_focus() {
     assert_eq!(compositor.windows()[0].1, (0, 0, 250, 200));
 }
 
+/// An open launcher holds the keyboard; a press into a window that is not the focused one closes
+/// it, and that window takes the keyboard and the next key, as a person clicking into a text field
+/// expects.
+#[test]
+fn a_click_into_a_window_takes_the_keyboard_from_an_open_launcher() {
+    let mut compositor = headless(Box::<Columns>::default());
+    let log = Rc::new(RefCell::new(HostLog {
+        wants_keyboard: true,
+        closes_on_press_elsewhere: true,
+        ..HostLog::default()
+    }));
+    compositor.add_host(Rc::new(RefCell::new(Square::new(
+        (500, 400, 40, 40),
+        [0, 255, 0, 255],
+        Rc::clone(&log),
+    ))));
+    let mut left = mapped_client(&mut compositor, "left", (250, 200), [255, 0, 0, 255]);
+    let mut right = mapped_client(&mut compositor, "right", (250, 200), [0, 0, 255, 255]);
+    pump(
+        &mut compositor,
+        &mut [&mut left, &mut right],
+        |_, clients| !clients[0].seen.keyboard_focused && !clients[1].seen.keyboard_focused,
+    );
+
+    click(&mut compositor, 100.0, 100.0);
+    assert!(!log.borrow().wants_keyboard, "the launcher closed");
+    press_keys(&mut compositor, &[KEY_A]);
+    pump(
+        &mut compositor,
+        &mut [&mut left, &mut right],
+        |_, clients| clients[0].seen.keys.len() == 2,
+    );
+    assert!(left.seen.keyboard_focused);
+    assert!(!right.seen.keyboard_focused);
+    assert_eq!(left.seen.keys, vec![(KEY_A, true), (KEY_A, false)]);
+    assert!(right.seen.keys.is_empty());
+    assert!(
+        log.borrow().keys.is_empty(),
+        "the closed launcher heard no key"
+    );
+    assert_eq!(
+        compositor
+            .focused_window()
+            .and_then(|info| info.app_id)
+            .as_deref(),
+        Some("left")
+    );
+}
+
 #[derive(Default)]
 struct HostLog {
     motions: Vec<(f64, f64)>,
@@ -484,6 +533,8 @@ struct HostLog {
     field: Option<HostTextInput>,
     /// What the input method did with the field, in order.
     ime: Vec<HostIme>,
+    /// Whether a press anywhere else closes the surface, as an open launcher closes.
+    closes_on_press_elsewhere: bool,
 }
 
 /// A hosted surface: one square of one colour.
@@ -516,6 +567,7 @@ impl Square {
 impl SurfaceHost for Square {
     fn layers(&self) -> Vec<HostLayer> {
         vec![HostLayer {
+            pose: tilo_session_core::surface::LayerPose::SETTLED,
             location: (self.rect.0, self.rect.1),
             size: (self.rect.2, self.rect.3),
             frame: HostFrame::from_pixels(
@@ -547,6 +599,13 @@ impl SurfaceHost for Square {
 
     fn pointer_button(&mut self, button: u32, pressed: bool) {
         self.log.borrow_mut().buttons.push((button, pressed));
+    }
+
+    fn pressed_elsewhere(&mut self, _x: f64, _y: f64) {
+        let mut log = self.log.borrow_mut();
+        if log.closes_on_press_elsewhere {
+            log.wants_keyboard = false;
+        }
     }
 
     fn wants_keyboard(&self) -> bool {

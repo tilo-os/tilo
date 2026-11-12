@@ -586,6 +586,9 @@ pub struct HostLayer {
     pub size: (i32, i32),
     /// The pixels.
     pub frame: HostFrame,
+    /// How the host draws the frame this time instead of as it stands: faded, scaled or moved
+    /// while the surface shows the same pixels, so an animation of it is not drawn again.
+    pub pose: super::LayerPose,
 }
 
 /// A drag a hosted surface starts: bytes per format (files as `text/uri-list` ) and, optionally, an

@@ -297,7 +297,7 @@ impl ActorState {
         {
             members.carry(link.scope.workspace(), heard.author, heard.message.clone());
         }
-        self.deliver(ws, heard).await;
+        self.deliver(ws, Arc::clone(&link.scope), heard).await;
     }
 
     /// Hand `heard`, a frame of the workspace on topic `ws` about a record's
@@ -313,12 +313,9 @@ impl ActorState {
     }
 
     /// Hand `heard`, a frame of the workspace on topic `ws` that this
-    /// device's owner took in, to this device's apps.
-    async fn deliver(&self, ws: u64, heard: tilo_peer_state::direct::Heard) {
-        let Some(link) = self.native_links.get(&ws) else {
-            return;
-        };
-        let input = Input::heard(Arc::clone(&link.scope), heard);
+    /// device's owner took in under `scope`, to this device's apps.
+    async fn deliver(&self, ws: u64, scope: Arc<Scope>, heard: tilo_peer_state::direct::Heard) {
+        let input = Input::heard(scope, heard);
         self.tally.note(super::heard_kind(&input));
         self.publish_to_subscriber(ws, super::NetEvent::NativeInput(Box::new(input)))
             .await;
@@ -337,7 +334,11 @@ impl ActorState {
             while let Some((workspace, heard)) = told.recv().await {
                 let ws = crate::workspace_topic_id(workspace);
                 if tx
-                    .send(InternalEvent::MemberHeard { ws, heard })
+                    .send(InternalEvent::MemberHeard {
+                        ws,
+                        workspace,
+                        heard,
+                    })
                     .await
                     .is_err()
                 {
@@ -348,38 +349,73 @@ impl ActorState {
         self.members = Some(members);
     }
 
-    /// A frame a device that takes part in the workspace on topic `ws`
+    /// A frame a device that takes part in `workspace` (on topic `ws`)
     /// through this one wrote, which this device's owner took in: it reaches
     /// this device's apps, and the workspace's own host over this device's
-    /// link, so the devices that take part there read it too. Its link
-    /// already sent it to this device's other members. The channels'
-    /// governance takes its own path, through the channel service.
-    pub(super) async fn member_heard(&self, ws: u64, heard: tilo_peer_state::direct::Heard) {
+    /// link when one is up, so the devices that take part there read it too.
+    /// A workspace this device hosts itself has no link: its apps take the
+    /// frame all the same. Its link already sent it to this device's other
+    /// members. The channels' governance takes its own path, through the
+    /// channel service.
+    pub(super) async fn member_heard(
+        &mut self,
+        ws: u64,
+        workspace: tilo_desktop_model::WorkspaceId,
+        heard: tilo_peer_state::direct::Heard,
+    ) {
         if (heard.report.is_err() && !is_record_content(&heard.message))
             || is_channel_governance(&heard.message)
         {
             return;
         }
-        let Some(link) = self.native_links.get(&ws) else {
+        // A record's content is live traffic, never the workspace's state: a
+        // device with no link has no host to hand it to, and its apps read it
+        // as the frame sent on the workspace's topic.
+        let content = is_record_content(&heard.message);
+        let scope = if let Some(link) = self.native_links.get(&ws) {
+            // A record's content a member asks for or answers reaches the workspace's
+            // host over this device's link as its writes do.
+            if (content || matches!(heard.message, NeighbourMsg::AppDocument { .. }))
+                && let Err(error) = link.link.send(heard.message.clone())
+            {
+                tracing::debug!(ws, %error, "a member's write waits for the workspace's next link");
+            }
+            Some(Arc::clone(&link.scope))
+        } else {
+            self.member_scope(ws, workspace)
+        };
+        if content {
+            self.deliver_content(ws, &heard).await;
+            return;
+        }
+        let Some(scope) = scope else {
             tracing::debug!(
                 ws,
-                "a member's frame reaches no host and no app: this device holds no link of the workspace"
+                "a member's frame reaches no app: this device holds no custody of the workspace"
             );
             return;
         };
-        // A record's content a member asks for or answers reaches the workspace's
-        // host over this device's link as its writes do.
-        let content = is_record_content(&heard.message);
-        if (content || matches!(heard.message, NeighbourMsg::AppDocument { .. }))
-            && let Err(error) = link.link.send(heard.message.clone())
-        {
-            tracing::debug!(ws, %error, "a member's write waits for the workspace's next link");
+        self.deliver(ws, scope, heard).await;
+    }
+
+    /// What this device's apps take the members' frames of `workspace` (on
+    /// topic `ws`) under while no link of it is up: this device's own custody
+    /// of the workspace, as a link to it would hold it. `None` when this
+    /// device holds none.
+    fn member_scope(
+        &mut self,
+        ws: u64,
+        workspace: tilo_desktop_model::WorkspaceId,
+    ) -> Option<Arc<Scope>> {
+        if let Some(scope) = self.member_scopes.get(&ws) {
+            return Some(Arc::clone(scope));
         }
-        if content {
-            self.deliver_content(ws, &heard).await;
-        } else {
-            self.deliver(ws, heard).await;
-        }
+        let (members, identity) = (self.members.as_ref()?, self.host_identity.as_ref()?);
+        let connect = Connect::new(members.owner().clone(), workspace).ok()?;
+        let (hint, cert, continuity) = connect.material(identity).ok()?;
+        let scope = Arc::new(Scope::via(connect, hint.clone(), hint, cert, continuity));
+        self.member_scopes.insert(ws, Arc::clone(&scope));
+        Some(scope)
     }
 
     /// Send `msg`, a write this device publishes, to the devices that take
@@ -488,6 +524,8 @@ impl ActorState {
     }
     pub(super) fn native_connect(&mut self, connect: Connect) {
         let ws = crate::workspace_topic_id(connect.workspace());
+        // The custody the members' frames were taken under is read again.
+        self.member_scopes.remove(&ws);
         if !self.native_routes.contains(ws) && self.native_routes.entries.len() >= 64 {
             return;
         }

@@ -44,7 +44,7 @@ async fn start_relay(user: &TestUser, revocations: RevocationList) -> (Relay, te
         state_root: tmp.path().to_path_buf(),
         ..Default::default()
     };
-    let relay = Relay::start(
+    let relay = crate::common::start_relay(
         cfg,
         RelayIdentity {
             user_public_key: user.user_pk,

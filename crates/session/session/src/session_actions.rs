@@ -32,11 +32,6 @@ use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
 use crate::platform::steps::SessionSteps;
 
-/// Where every surface of the session's door stands ([`Doors::revision`]).
-///
-/// [`Doors::revision`]: tilo_session_core::door::Doors::revision
-type DoorRevision = Option<Vec<(usize, (u64, u64))>>;
-
 /// The session's own actions, as the broker's catalogue names them.
 pub(crate) struct SessionActions {
     doors: Arc<dyn SessionSteps>,
@@ -44,8 +39,9 @@ pub(crate) struct SessionActions {
     /// Read on the loop and written here, so a catalogue built on the broker's own thread
     /// never waits on the session, and never reads the arrangement from off its thread.
     rows: std::sync::RwLock<Vec<tilo_actions::door::PlacedAction>>,
-    /// Where the door stood when the rows were last read.
-    read_at: std::sync::Mutex<DoorRevision>,
+    /// Where the door stood when the rows were last read
+    /// ([`tilo_session_core::door::Doors::revision`]).
+    read_at: std::sync::Mutex<Vec<(usize, u64)>>,
 }
 
 impl SessionActions {
@@ -59,10 +55,10 @@ impl SessionActions {
     }
 
     /// Whether the door moved since its rows were last read: equal revisions offer the same rows,
-    /// so a pass reads them again only once a surface's revision moved, or one cannot tell.
-    pub(crate) fn door_moved(&self, revision: DoorRevision) -> bool {
+    /// so a pass reads them again only once what a surface offers moved.
+    pub(crate) fn door_moved(&self, revision: Vec<(usize, u64)>) -> bool {
         let mut read_at = self.read_at.lock_recover();
-        let moved = revision.is_none() || *read_at != revision;
+        let moved = *read_at != revision;
         *read_at = revision;
         moved
     }

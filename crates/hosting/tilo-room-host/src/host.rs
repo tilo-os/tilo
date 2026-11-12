@@ -679,13 +679,6 @@ impl WorkspaceHost {
         &self.sessions.identity.cert
     }
 
-    /// Replace the revocations the host checks every handshake against.
-    /// Narrowing them ends the sessions of the devices revoked.
-    pub fn set_revocations(&self, revocations: RevocationList) {
-        *self.sessions.identity.revocations.write_recover() = revocations;
-        crate::authority_epoch::bump();
-    }
-
     /// Whether this host counts `device` as subscribed to `workspace_id`.
     pub async fn is_subscribed(&self, workspace_id: u64, device: &[u8; 32]) -> bool {
         self.sessions.is_subscribed(workspace_id, device).await

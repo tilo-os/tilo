@@ -3,10 +3,11 @@
 use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{
     BTreeMap, BTreeSet, DeviceCert, GovernedAccess, GovernedIdentity, GovernedMember, Grant,
-    GrantId, MembershipError, ROOT, ReadDoc, RecordReaders, RevocationList, Role, SigningKey,
-    Subject, SystemTime, Transactable, administrator_grant_id, err, governed_map,
-    member_role_from_role, now_ns, workspace,
+    GrantId, MembershipError, ROOT, ReadDoc, RecordReaders, RevocationList, Role, Subject,
+    SystemTime, Transactable, administrator_grant_id, err, governed_map, member_role_from_role,
+    now_ns, workspace,
 };
+use collab_types::signer::DeviceSigner;
 
 impl PeerGovernance<'_> {
     /// The sandbox capabilities the workspace's governance grants its apps.
@@ -141,13 +142,13 @@ impl PeerGovernance<'_> {
     /// `now`: a current member whose part there grants inviting. What the
     /// surfaces that offer inviting show; an invitation's write path asks it
     /// again, with the part its link hands out.
-    pub fn may_invite(self, key: &SigningKey, now: SystemTime) -> bool {
+    pub fn may_invite(self, key: &dyn DeviceSigner, now: SystemTime) -> bool {
         self.peer.require_inviter(key, now).is_ok()
     }
 
     /// Whether `key`'s device may hand out `role` in an invitation into the
     /// workspace at `now`: what the surfaces offering a part to grant list.
-    pub fn may_invite_role(self, key: &SigningKey, role: Role, now: SystemTime) -> bool {
+    pub fn may_invite_role(self, key: &dyn DeviceSigner, role: Role, now: SystemTime) -> bool {
         self.peer
             .require_invitation_authority(key, role, now)
             .is_ok()
@@ -593,7 +594,7 @@ impl PeerGovernanceMut<'_> {
     pub fn publish_governed_revocations(
         self,
         entries: &[tilo_user_identity::RevocationEntry],
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let owner = self.peer.core.owner;
@@ -662,7 +663,7 @@ impl PeerGovernanceMut<'_> {
     pub fn admit_invited_member(
         self,
         redemption: &crate::join::VerifiedRedemption,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.admit_named_member(redemption, None, key, now)
@@ -680,7 +681,7 @@ impl PeerGovernanceMut<'_> {
         self,
         redemption: &crate::join::VerifiedRedemption,
         name: Option<&str>,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let name = name
@@ -733,7 +734,7 @@ impl PeerGovernanceMut<'_> {
     pub fn admit_member_device(
         self,
         device: &DeviceCert,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.peer.require_member_writer(key, now)?;
@@ -800,7 +801,11 @@ impl PeerGovernanceMut<'_> {
     ///
     /// Returns an error if the change is not `key`'s device's to make, a row does not
     /// read back, or governance cannot be updated.
-    pub fn forget_expired_devices(self, key: &SigningKey, now: SystemTime) -> Result<bool, String> {
+    pub fn forget_expired_devices(
+        self,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
         let Some(doc) = self.peer.core.workspace_doc.as_ref() else {
             return Ok(false);
         };
@@ -835,7 +840,7 @@ impl PeerGovernanceMut<'_> {
     fn forget_identity_rows(
         self,
         devices: &[[u8; 32]],
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let mut doc = self
@@ -868,7 +873,7 @@ impl PeerGovernanceMut<'_> {
         self,
         user_public_key: [u8; 32],
         role: crate::join::MemberRole,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.peer
@@ -884,7 +889,7 @@ impl PeerGovernanceMut<'_> {
     pub fn set_member_administrator(
         self,
         user_public_key: [u8; 32],
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.peer
@@ -905,7 +910,7 @@ impl PeerGovernanceMut<'_> {
         self,
         user_public_key: [u8; 32],
         name: &str,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let name = tilo_user_identity::display_name(name)
@@ -957,7 +962,7 @@ impl PeerGovernanceMut<'_> {
     /// change it, or governance cannot be updated.
     pub fn reconcile_administrator_grants(
         self,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let Some(doc) = self.peer.core.workspace_doc.as_ref() else {
@@ -1014,7 +1019,7 @@ impl PeerGovernanceMut<'_> {
     pub fn remove_governed_grants(
         self,
         ids: &[GrantId],
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.peer.require_member_writer(key, now)?;
@@ -1045,7 +1050,7 @@ impl PeerGovernanceMut<'_> {
     pub fn put_governed_grants(
         self,
         grants: &[Grant],
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.peer.require_member_writer(key, now)?;
@@ -1087,7 +1092,7 @@ impl PeerGovernanceMut<'_> {
     pub fn remove_member(
         self,
         user_public_key: [u8; 32],
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.peer.require_member_writer(key, now)?;
@@ -1129,7 +1134,7 @@ impl PeerGovernanceMut<'_> {
         // them takes them.
         if self
             .peer
-            .certificate(&key.verifying_key().to_bytes(), now)
+            .certificate(&key.device_public_key(), now)
             .is_ok_and(|cert| cert.user_public_key == user_public_key)
         {
             let identities = governed_map(&doc, "peer_identities_v1")?;
@@ -1155,15 +1160,19 @@ impl PeerGovernanceMut<'_> {
 impl super::StatePeer {
     /// The current member writing with `key`, as its own device's authority
     /// holds it: what inviting is decided by.
-    fn inviter(&self, key: &SigningKey, now: SystemTime) -> Result<super::MemberAuthority, String> {
-        let device = key.verifying_key().to_bytes();
+    fn inviter(
+        &self,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<super::MemberAuthority, String> {
+        let device = key.device_public_key();
         self.require_member_writer(key, now)?;
         self.membership(device, now)
     }
 
     /// A current member's device whose person may invite: what an
     /// admission through an invitation is written by.
-    fn require_inviter(&self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
+    fn require_inviter(&self, key: &dyn DeviceSigner, now: SystemTime) -> Result<(), String> {
         let member = self.inviter(key, now)?;
         let bound = tilo_action_policy::roles::foreign_device_bound();
         member
@@ -1182,7 +1191,7 @@ impl super::StatePeer {
     /// no surface issues a link its person could not redeem itself.
     pub(crate) fn require_invitation_authority(
         &self,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         role: Role,
         now: SystemTime,
     ) -> Result<(), String> {

@@ -34,6 +34,7 @@ pub const NAMES: &[&str] = &[
     "edit",
     "short",
     "now-playing",
+    "silent",
 ];
 
 /// The actions that bring the panel to `name`.
@@ -148,6 +149,12 @@ pub fn readings(name: Option<&str>) -> QuickSettingsState {
     ];
     state.awake_holders = vec!["Video Player".into()];
     state.personal_devices = Some(2);
+    // A session with no audio server, as a build container runs one: the
+    // sound service reads no graph, and lands nothing in the panel.
+    if name == Some("silent") {
+        crate::sound::land(&mut state, &audio::sound::Sound::default());
+        return state;
+    }
     state.sound_outputs = vec![
         SoundOutput {
             node: 41,

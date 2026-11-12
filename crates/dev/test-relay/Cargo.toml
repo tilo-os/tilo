@@ -18,7 +18,6 @@ settings-store = { path = "../../system/settings-store" }
 tilo-workspace-join = { path = "../../collab/workspace-join" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-clock = { path = "../../platform/tilo-clock" }
-tilo-test-env = { path = "../test-env" }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 tempfile.workspace = true
 blake3.workspace = true

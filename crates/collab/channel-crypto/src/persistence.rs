@@ -12,7 +12,6 @@ use std::path::Path;
 
 use openmls::prelude::{GroupId, MlsGroup, SignatureScheme};
 use openmls_basic_credential::SignatureKeyPair;
-use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_traits::OpenMlsProvider as _;
 use serde::{Deserialize, Serialize};
 use tilo_seal::{Context, Label, SymmetricKey};
@@ -233,7 +232,7 @@ impl MemberKey {
     }
 
     fn restore(name: &[u8], signer: &[u8], storage: &[(Vec<u8>, Vec<u8>)]) -> Result<Self> {
-        let provider = OpenMlsRustCrypto::default();
+        let provider = crate::welcome::Provider::default();
         {
             let mut values = provider
                 .storage()

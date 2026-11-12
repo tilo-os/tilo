@@ -85,7 +85,11 @@ NATIVE_TEST_FEATURES = {
 # backend, tilo-net's development proxy, tilo-crypto's test SRP server) ship
 # to clients without them; every other build has them
 # (workspace-unify), so code that compiles only with them would pass unseen.
+# A package can also get a feature from a dependent alone: `collaboration`'s
+# built-in transport is what the toolkit and every app enable, so its own tests
+# in a unified run never compile the build an app without one uses.
 DEFAULT_BUILDS_ALSO_CHECKED = (
+    "collaboration",
     "imager",
     "imager-backend",
     "tilo-crypto",

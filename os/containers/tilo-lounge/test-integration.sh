@@ -61,10 +61,23 @@ fail() {
   exit 1
 }
 
+# How long each part of the gate took, said as the next one begins: a slow run
+# names the part that was slow without anyone timing it by hand, and two runs
+# are compared by these lines. `cleanup` says the last one, after the trap that
+# stops what this run started has run.
+gate_started=$SECONDS
+phase_started=$SECONDS
+phase_name=start
+phase() {
+  printf 'TIMING phase=%s seconds=%s total=%s\n' "$phase_name" "$((SECONDS - phase_started))" "$((SECONDS - gate_started))"
+  phase_name=$1 phase_started=$SECONDS
+}
+
 # An archive path, or a reference as it is.
 reference() { if [[ -f $1 ]]; then printf 'oci-archive:%s' "$1"; else printf '%s' "$1"; fi; }
 image=$(b pull --quiet "$(reference "${1:?$usage}")")
 revision=$(b inspect --type image --format '{{index .OCIv1.Config.Labels "org.opencontainers.image.revision"}}' "$image")
+phase 'the image unpacked'
 
 # This test's own addresses, beside whatever already listens on this machine.
 # The HTTPS listener is the image's own fixed 9781 (`--web`); the plain
@@ -97,6 +110,7 @@ if [[ -z $crypto ]]; then
 fi
 "$crypto" generate-tls-fixture 127.0.0.1 "$work/site.ca.crt" "$work/site.key" "$work/site.crt" \
   || fail 'no certificate for the site'
+phase 'the bundle laid out and the site certified'
 
 # The image's own files, mounted once.
 containers=() image_pid= site_pid=
@@ -112,6 +126,7 @@ cleanup() {
     b rm "$c" >/dev/null 2>&1 || true
   done
   rm -rf "$work/jail"
+  phase end
 }
 trap cleanup EXIT
 # descendants PID: the processes PID started, and theirs, from each process's
@@ -322,6 +337,7 @@ verify_directory "$minted"
 [[ $(page_field room <<< "$page") == "\"$minted\"" ]] \
   || fail "the directory lists the workspace $(page_field room <<< "$page"), not the $minted this start minted"
 echo 'ok: the directory lists the Lounge, joined at its door as an editor'
+phase 'a fresh volume reached Ready and listed itself'
 
 # The same volume again: what it kept is the workspace it serves, so a restart
 # is the same workspace and not a second one beside it.
@@ -336,10 +352,12 @@ verify_directory "$minted"
 [[ $(page_field room <<< "$page") == "\"$minted\"" ]] \
   || fail 'a restart listed a different workspace'
 echo "ok: a restart on the volume serves the same workspace ($minted)"
+phase 'the image restarted on its own volume'
 
 # The web entry the deployment serves beside the relay: its home is the
 # Lounge, joined through the door of the workspace this volume holds.
 start_site "$minted"
+phase 'the web entry served'
 
 # A person sets Tilo up through their agent: a fresh browser's first screen
 # copies the prompt, what it tells an agent to run runs here as the agent
@@ -358,6 +376,7 @@ node "$here/integration/agent-setup.mjs" "$site_url" "$relay_origin" "$tilo_bin"
   || fail 'a person did not get set up through their agent'
 echo 'ok: a person set up through their agent landed in their own workspace with the agent there'
 echo 'ok: the person signed in again on a fresh browser through the agent'
+phase "a person set up through their agent"
 
 # Two people: real browsers on the web entry, each its own person, both
 # joining the Lounge through its door, chatting, sharing a desk and seeing
@@ -371,6 +390,7 @@ node "$here/integration/people.mjs" "$site_url" "$relay_origin" "$relay_origin" 
   || fail 'two people did not meet in the Lounge'
 echo 'ok: two people joined, chatted, shared a desk and saw each other present'
 echo 'ok: a person invited from the page arrived from the link as the role it named'
+phase 'two people met in the Lounge'
 
 # A shared link: one person opens a document full tab and copies its link
 # from the bar's Share; another opens it on a phone-sized page and gets that
@@ -379,6 +399,7 @@ echo 'ok: a person invited from the page arrived from the link as the role it na
 node "$here/integration/share-link.mjs" "$site_url" "$relay_origin" "$minted" "$work/share-link" \
   || fail 'a shared link did not open the same document live for the second person'
 echo 'ok: a shared link opened the one document full tab, live, for the second person'
+phase 'a shared link opened for a second person'
 
 # The pages that wrote the chat are gone: the image starts again on the same
 # volume, and a person who was not here reads what they wrote and writes in it.
@@ -397,6 +418,7 @@ node "$here/integration/people.mjs" "$site_url" "$relay_origin" "$relay_origin" 
   "$state_root/roles.json" "$earlier" \
   || fail 'a person joining after the restart did not find the chat the workspace kept'
 echo 'ok: a person joining after a restart reads the chat earlier pages wrote and writes in it'
+phase 'a person read the chat after a restart'
 
 complaints
 echo "ok: the Lounge image runs, opens a fresh volume, and hosts people ($revision)"

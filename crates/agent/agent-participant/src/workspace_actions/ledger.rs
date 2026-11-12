@@ -87,6 +87,20 @@ impl Ledger {
         self.order.retain(|candidate| candidate != id);
     }
 
+    /// `invocation` ends with `update`, the record it acted on showing where
+    /// it left its actor.
+    pub(super) fn answered(
+        &mut self,
+        invocation: InvocationId,
+        update: &InvocationUpdate,
+        left_at: Option<ActorPlace>,
+    ) {
+        if let Some(entry) = self.entries.get_mut(&invocation) {
+            entry.update = update.clone();
+            entry.left_at = left_at;
+        }
+    }
+
     pub(super) fn owned(&self, caller: &Caller, id: &InvocationId) -> Option<&Entry> {
         self.entries.get(id).filter(|entry| entry.caller == *caller)
     }

@@ -17,6 +17,7 @@ tilo_automerge_isolate::test_worker!();
 
 mod common;
 
+use common::people::{Person, shared_invitation};
 use serde_json::json;
 
 /// The invitation the desk hands out admits the person it was made for: their device joins the
@@ -58,5 +59,54 @@ fn a_member_whose_part_does_not_let_them_invite_is_refused() {
     assert!(
         answer.to_string().contains("may not invite"),
         "the refusal says which part is missing: {answer}"
+    );
+}
+
+/// The link a device hands out right after its session starts names the relay it is reached
+/// through: an address signed before its endpoint reached one names only the network the device
+/// stands in, and reaches nobody the link is given to. Nothing else is in the workspace, so making
+/// the link is what makes the device reachable at all.
+#[test]
+fn a_link_made_right_after_start_names_the_relay_the_device_is_reached_through() {
+    let ada = Person::new("Ada");
+    let mut laptop = ada.device("Ada's laptop");
+    laptop.start();
+    // Made on this desk, so its record names this device as its own host and its person may
+    // invite into it.
+    let made = laptop.act_wait("actions", "workspace.create", &json!({}));
+    assert_eq!(
+        made["answer"]["receipt"]["update"]["state"],
+        json!("succeeded"),
+        "{} makes a workspace: {made}\n{}",
+        laptop.label,
+        laptop.diagnostic()
+    );
+    let link = shared_invitation(&laptop, "editor", ada.public);
+    let join = tilo_workspace_join::decode_and_verify_invitation_text(
+        &link,
+        None,
+        &tilo_user_identity::RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .unwrap_or_else(|error| {
+        panic!(
+            "{}'s link is an invitation: {error}\n{}",
+            laptop.label,
+            laptop.diagnostic()
+        )
+    });
+    let hint =
+        tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::from_transport_hint(
+            &join.grant().transport[0],
+        )
+        .expect("the invitation names its host's address");
+    let relay = test_relay::loopback_url();
+    assert!(
+        hint.endpoint_addr
+            .relay_urls()
+            .any(|url| url.as_str() == relay),
+        "the link names the relay this device is reached through ({relay}): {:?}\n{}",
+        hint.endpoint_addr,
+        laptop.diagnostic()
     );
 }

@@ -53,7 +53,7 @@ impl OverviewPanel {
     }
 
     /// The panel of workspaces, at `(alpha, dy, scale)` of its arrival: recorded once and replayed
-    /// while it shows the same thing.
+    /// while it shows the same thing, and posed by the host as it arrives.
     pub(super) fn paint_panel_at(
         &mut self,
         scene: &mut Scene,
@@ -62,9 +62,6 @@ impl OverviewPanel {
         theme: &Theme,
         (alpha, dy, scale): (f32, f64, f64),
     ) {
-        if alpha <= 0.0 {
-            return;
-        }
         if self
             .cache
             .as_ref()
@@ -79,31 +76,23 @@ impl OverviewPanel {
             return;
         };
         // The scale's pivot is the panel's centre, so it settles in place wherever the layout put
-        // it.
-        let pivot = self.panel_rect().center();
-        let placed = if (scale - 1.0).abs() > f64::EPSILON || dy.abs() > f64::EPSILON {
-            let scaled = Affine::translate((pivot.x, pivot.y + dy))
-                .pre_scale(scale)
-                .pre_translate((-pivot.x, -pivot.y).into());
-            #[allow(
-                clippy::arithmetic_side_effects,
-                reason = "Affine * Affine is a panic-free float matrix multiply"
-            )]
-            {
-                transform * scaled
-            }
-        } else {
-            transform
+        // it; one clip covers every frame of its arrival.
+        let pose = ui::lift::Pose {
+            opacity: alpha,
+            scale,
+            pivot: self.panel_rect().center(),
+            offset: vello::kurbo::Vec2::new(0.0, dy),
         };
-        if alpha >= 0.999 {
-            scene.append(recorded, Some(placed));
-            return;
-        }
-        // The blend is the panel's own rectangle, never the whole display.
-        let clip = self.stable_clip(theme);
-        scene.push_layer(Fill::NonZero, BlendMode::default(), alpha, transform, &clip);
-        scene.append(recorded, Some(placed));
-        scene.pop_layer();
+        ui::lift::lifted(
+            scene,
+            transform,
+            (
+                ui::scene_parts::PartKey::new("overview.panel", 0),
+                self.stable_clip(theme),
+            ),
+            pose,
+            |scene, transform| scene.append(recorded, Some(transform)),
+        );
     }
 
     /// The panel of workspaces: where you are, what is shared out of it,

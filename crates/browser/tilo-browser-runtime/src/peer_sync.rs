@@ -193,6 +193,8 @@ struct Page {
     handle: Link,
     /// The person this page belongs to, their root key as hex.
     user: String,
+    /// This page's own device key.
+    device: [u8; 32],
     /// The session's sync, saying this page's word on each workspace's presence track.
     client: Rc<Client>,
     /// The workspaces the page shows, by topic.
@@ -271,6 +273,7 @@ pub(crate) fn register(id: u32, handle: &Link, cert: &DeviceCert, host: &DeviceC
                 host: host.device_public_key,
                 handle: handle.clone(),
                 user: hex::encode(cert.user_public_key),
+                device: cert.device_public_key,
                 client,
                 workspaces: HashMap::new(),
                 waved: None,
@@ -291,6 +294,11 @@ pub(crate) fn handles_of(user: &str) -> Vec<Link> {
             .map(|page| page.handle.clone())
             .collect()
     })
+}
+
+/// The device key of the started page `id`.
+pub(crate) fn device_of(id: u32) -> Option<[u8; 32]> {
+    PAGES.with_borrow(|pages| pages.get(&id).map(|page| page.device))
 }
 
 /// The host handle of the started page `id`: what this page asks its session for over the peer it

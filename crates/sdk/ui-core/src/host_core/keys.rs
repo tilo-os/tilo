@@ -96,6 +96,10 @@ pub(crate) trait KeyHost: HostCore {
     /// The controls that may take the keyboard when the window takes it.
     fn keyboard_entry_order(&self) -> Vec<NodeId>;
 
+    /// Whether the window took the keyboard before its tree showed the app's entry, which takes
+    /// it once a tree shows one ([`Self::hand_owed_keyboard`]).
+    fn keyboard_entry_owed(&mut self) -> &mut bool;
+
     /// Keys the host answers itself, after Enter and Space and before the
     /// desktop's tab chords. Whether it took `event`.
     fn handle_unconsumed_host_key(&mut self, _event: &WindowEvent) -> bool {
@@ -339,12 +343,24 @@ pub(crate) trait KeyHost: HostCore {
     /// holds the keyboard, the app's keyboard entry takes it, so what is
     /// typed next reaches the app. Never a button merely for being first.
     fn hand_keyboard_to_app(&mut self) {
+        *self.keyboard_entry_owed() = false;
         if self.tree().focused.is_some() {
             return;
         }
         let order = self.keyboard_entry_order();
-        if let Some(target) = self.keyboard_entry(&order) {
-            self.move_focus(Some(target));
+        match self.keyboard_entry(&order) {
+            Some(target) => self.move_focus(Some(target)),
+            // Content that arrives after the keyboard did (a tilolang window's) shows its entry
+            // later: it takes the keyboard then.
+            None => *self.keyboard_entry_owed() = true,
+        }
+    }
+
+    /// A tree was built while the window owes its entry the keyboard: the entry takes it, if
+    /// nothing in the window took it meanwhile.
+    fn hand_owed_keyboard(&mut self) {
+        if std::mem::take(self.keyboard_entry_owed()) {
+            self.hand_keyboard_to_app();
         }
     }
 }

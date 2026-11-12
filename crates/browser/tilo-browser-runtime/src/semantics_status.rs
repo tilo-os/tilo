@@ -56,6 +56,35 @@ pub(crate) enum SemanticsDecision {
     Deferred(ui::time::Instant),
 }
 
+/// What the page's loop does about a tree waiting for its deadline.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TreeWait {
+    /// Deliver it now, in a status of its own.
+    Publish,
+    /// Come back at the instant, when it falls due later.
+    Wake(ui::time::Instant),
+}
+
+/// A tree past its deadline goes out with a status of its own, whatever the
+/// frame before it did. Asking for one more frame instead loses the tree
+/// whenever that frame does not come or does not draw — the GPU still holds
+/// the last one, the window presents itself as HTML, the page goes idle
+/// first — and the host then reads a screen whose content it cannot describe
+/// until some unrelated change delivers a tree. A status settles the windows
+/// a replayed frame replayed before it reads the tree, so a frame that
+/// replayed its windows needs no frame drawn first.
+pub(crate) fn tree_wait(
+    due: Option<ui::time::Instant>,
+    now: ui::time::Instant,
+) -> Option<TreeWait> {
+    let due = due?;
+    Some(if due <= now {
+        TreeWait::Publish
+    } else {
+        TreeWait::Wake(due)
+    })
+}
+
 pub(crate) struct SemanticsGate {
     schedule: PublicationSchedule,
     /// The status members of the last delivery: the whole tree, or a patch.
@@ -793,6 +822,36 @@ mod tests {
         assert_eq!(
             gate.decide(tree(&["abc", ""], 0), None, ms(50)),
             SemanticsDecision::Deliver { forced: true }
+        );
+        assert_eq!(gate.due(), None);
+    }
+
+    #[test]
+    fn a_tree_past_its_deadline_is_published_whatever_the_frame_before_it_did() {
+        let t0 = ui::time::Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        // A frame holds its tree for after it, then the deadline carries the
+        // tree out: the loop never waits for one more frame to draw it. A
+        // frame that replayed its windows instead of drawing them is the same
+        // case — its tree is settled before it is read — and so is a frame that
+        // never came.
+        assert_eq!(tree_wait(Some(ms(10)), ms(10)), Some(TreeWait::Publish));
+        assert_eq!(tree_wait(Some(ms(10)), ms(11)), Some(TreeWait::Publish));
+        // Before its instant the loop comes back for it.
+        assert_eq!(tree_wait(Some(ms(10)), ms(9)), Some(TreeWait::Wake(ms(10))));
+        // With nothing waiting, nothing is delivered or woken for.
+        assert_eq!(tree_wait(None, ms(10)), None);
+        // The gate leaves a presented frame's tree for its deadline, and the
+        // deadline alone carries it: the status is read from the screen the
+        // frame drew, not from a frame that would have to come first.
+        let mut gate = window();
+        gate.decide(tree(&["a", ""], 0), None, ms(0));
+        assert!(gate.after_frame(None, ms(20)));
+        let due = gate.due().expect("the tree waits for the window's end");
+        assert_eq!(tree_wait(Some(due), due), Some(TreeWait::Publish));
+        assert_eq!(
+            gate.decide(tree(&["ab", ""], 0), None, due),
+            SemanticsDecision::Deliver { forced: false }
         );
         assert_eq!(gate.due(), None);
     }

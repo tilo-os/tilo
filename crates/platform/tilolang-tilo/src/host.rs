@@ -1203,8 +1203,23 @@ impl Host {
     /// their actions run on the resources of theirs it holds (a board's todo rows), each
     /// package under its own authority, as if it ran on its own.
     pub fn load_bundle(&self, bundle: &crate::bundle::Bundle) -> Result<Package, HostError> {
+        self.load_bundle_using(bundle, |_| false)
+    }
+
+    /// [`Self::load_bundle`], with each package it uses for which `other` holds loaded as
+    /// another app's ([`Self::load_foreign_package`]): an app of its own, whose records stay in
+    /// its own record and are read from there, and whose actions run at its own door.
+    pub fn load_bundle_using(
+        &self,
+        bundle: &crate::bundle::Bundle,
+        other: impl Fn(&str) -> bool,
+    ) -> Result<Package, HostError> {
         for import in &bundle.imports {
-            self.load_module(&import.wasm, import.meta.clone(), String::new())?;
+            if other(&import.meta.app) {
+                self.load_foreign_package(&import.wasm, &import.meta)?;
+            } else {
+                self.load_module(&import.wasm, import.meta.clone(), String::new())?;
+            }
         }
         self.load_module(&bundle.wasm, bundle.meta.clone(), bundle.ids.clone())
     }

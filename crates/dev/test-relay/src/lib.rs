@@ -185,11 +185,6 @@ impl Running {
                         )
                         .await
                         .expect("the host starts");
-                        tilo_test_env::within(
-                            "the host's packet relay is up",
-                            relay.endpoint.online(),
-                        )
-                        .await;
                         let url = relay
                             .node_addr()
                             .relay_urls()
@@ -275,6 +270,67 @@ pub fn loopback() -> EndpointRelays {
     LOOPBACK.get_or_init(Loopback::start).relays()
 }
 
+/// [`loopback`] as the mode a host binds its endpoint with: a relay under test relays through the
+/// same loopback packet relay its devices do, so neither side asks the internet for anything.
+#[must_use]
+pub fn relay_mode() -> iroh::RelayMode {
+    iroh::RelayMode::Custom(loopback().relays)
+}
+
+/// Where this machine's loopback relay is reached, as a relay setting names it.
+#[must_use]
+pub fn loopback_url() -> String {
+    loopback()
+        .relays
+        .urls::<Vec<_>>()
+        .into_iter()
+        .next()
+        .expect("the loopback host serves its packet relay")
+        .to_string()
+}
+
+/// Make the profile at `config_home` relay through this machine's loopback relay: what a session
+/// started on that profile reads as its device's relays, instead of the person's own out on the
+/// internet.
+pub fn relay_through_loopback_in(config_home: &std::path::Path) {
+    use settings_store::SettingsSource as _;
+
+    let profile = config_home.join("tilo");
+    std::fs::create_dir_all(&profile).expect("the profile's directory");
+    let store = settings_store::Store::open(&profile).expect("the profile's settings");
+    settings_store::relay::RELAY
+        .set_in(
+            store.as_ref(),
+            settings_store::relay::Relays::Own(loopback_url()),
+        )
+        .expect("the device's relay setting");
+    // Writes are saved by a writer of its own, and a store dropped before it runs loses them:
+    // the session that starts on this profile reads the setting, so it is on disk before this
+    // returns.
+    store.flush_pending();
+    drop(store);
+}
+
+/// An endpoint of `key`'s relaying through this machine's loopback relay: a device that dials, or
+/// is dialled, as a device outside a test dials through its person's relays.
+pub async fn endpoint(key: iroh::SecretKey) -> iroh::Endpoint {
+    iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .relay_mode(relay_mode())
+        .secret_key(key)
+        .bind()
+        .await
+        .expect("an endpoint on this machine's loopback")
+}
+
+/// An endpoint with no relay and no directory at all, on a key of its own: a test that dials an
+/// address this machine holds relayed and published nothing.
+pub async fn direct_endpoint() -> iroh::Endpoint {
+    iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .bind()
+        .await
+        .expect("an endpoint on this machine")
+}
+
 /// A person's host on this machine's loopback, governing one workspace: what its devices relay
 /// through, and where they are told it is.
 pub struct Host(Running);
@@ -336,5 +392,24 @@ impl Host {
             .into_iter()
             .next()
             .expect("the host serves its workspace")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{loopback_url, relay_through_loopback_in};
+
+    /// A profile seeded with this machine's relay reads it back as its device's relays: what a
+    /// session started on that profile binds with.
+    #[test]
+    fn a_seeded_profile_relays_through_this_machines_loopback() {
+        let config = tempfile::tempdir().expect("a configuration directory");
+        relay_through_loopback_in(config.path());
+        let store = settings_store::Store::follow(&config.path().join("tilo"))
+            .expect("the profile's settings");
+        assert_eq!(
+            settings_store::relay::RELAY.get_in(store.as_ref()),
+            settings_store::relay::Relays::Own(loopback_url())
+        );
     }
 }

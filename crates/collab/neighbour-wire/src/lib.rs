@@ -301,16 +301,17 @@ impl WriteRefusal {
         postcard::to_allocvec(&unsigned).map_err(|error| error.to_string())
     }
 
-    /// Sign this fact with the refusing device's key, as the device that made
-    /// the verdict does.
+    /// Sign this fact with the refusing device's `signer`, which answers at
+    /// once ([`collab_types::signer::sign_now`]), as the device that made the
+    /// verdict does.
     ///
     /// # Errors
-    /// The fact does not encode.
-    pub fn sign(&mut self, key: &ed25519_dalek::SigningKey) -> Result<(), String> {
-        use ed25519_dalek::Signer as _;
-        self.by = key.verifying_key().to_bytes();
-        let signature = key.sign(&self.signed_bytes()?);
-        self.signature = signature.to_bytes().to_vec();
+    /// The fact does not encode, or the signer did not sign.
+    pub fn sign(&mut self, signer: &dyn collab_types::signer::DeviceSigner) -> Result<(), String> {
+        self.by = signer.device_public_key();
+        let signature = collab_types::signer::sign_now(signer, self.signed_bytes()?)
+            .map_err(|error| error.to_string())?;
+        self.signature = signature.to_vec();
         Ok(())
     }
 

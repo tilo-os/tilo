@@ -33,6 +33,7 @@
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {request} from 'node:https';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
+import {clock} from './timing.mjs';
 import * as waits from './waits.mjs';
 
 const [site, relay, origin, out, rolesFile, earlier] = process.argv.slice(2);
@@ -163,43 +164,70 @@ const dump = async (tab, name) => {
 // Wait until `condition` (evaluated in the page) holds, or say what the page
 // showed instead. A page that never shows something is the failure, not a
 // timeout to stretch.
+//
+// The page does the waiting, not the driver: one round trip that resolves when
+// the condition holds, instead of a round trip every 250 ms. Each of those
+// costs the page's main thread — the same thread that is drawing its frames —
+// a turn between frames, so a wait of forty polls was adding forty turns of
+// work to the very page it waited for.
 const until = async (tab, expression, what, timeout = 90_000) => {
-  const deadline = Date.now() + timeout;
-  for (;;) {
-    const value = await tab.evaluate(expression).catch(() => false);
-    if (value) return value;
-    if (Date.now() > deadline) {
-      // Where the page stopped, in the failure line itself: the step it was
-      // in says more than the wait that ran out.
-      const shown = await tab.evaluate(`JSON.stringify({
-        arrival: document.documentElement.dataset.arrival ?? null,
-        door: document.documentElement.dataset.door ?? null,
-        phase: document.documentElement.dataset.phase ?? null,
-        progress: document.documentElement.dataset.arrivalProgress ?? null,
-        status: document.getElementById('status')?.textContent ?? null,
-      })`).catch(() => 'unreadable');
-      await dump(tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
-      await failed(`${what} never appeared: ${shown}`, tab);
-    }
-    await sleep(250);
-  }
+  const value = await tab.evaluate(`globalThis.__tiloWait?.(() => (${expression}), ${timeout}) ?? false`)
+    .catch(() => false);
+  if (value) return value;
+  // Where the page stopped, in the failure line itself: the step it was in
+  // says more than the wait that ran out.
+  const shown = await tab.evaluate(`JSON.stringify({
+    arrival: document.documentElement.dataset.arrival ?? null,
+    door: document.documentElement.dataset.door ?? null,
+    phase: document.documentElement.dataset.phase ?? null,
+    progress: document.documentElement.dataset.arrivalProgress ?? null,
+    status: document.getElementById('status')?.textContent ?? null,
+    waited: ${JSON.stringify(what)},
+  })`).catch(() => 'unreadable');
+  await dump(tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+  await failed(`${what} never appeared: ${shown}`, tab);
 };
+// The page's own wait, in every page this file opens: `ask` until it answers
+// something true, or `ms` has passed, resolved as it answers.
+const waitSource = `(() => {
+  if (globalThis.__tiloWait) return;
+  globalThis.__tiloWait = (ask, ms) => new Promise(resolve => {
+    const deadline = performance.now() + ms;
+    const turn = () => {
+      let value = false;
+      try { value = ask(); } catch (error) { value = false; }
+      if (value) return resolve(value);
+      if (performance.now() > deadline) return resolve(false);
+      setTimeout(turn, 50);
+    };
+    turn();
+  });
+})();`;
 
 // Keys as the desktop's search reads them (its own scripts drive it this
 // way): the chord, the query, Enter.
+//
+// The events of one gesture go out together, not one acknowledged frame at a
+// time. Chromium answers a dispatched key or press when the page has taken it,
+// and this page's main thread is inside a frame for seconds under the gate: a
+// driver that waited for each key in turn typed a five-letter query in eight
+// frames, where a person types it in a tenth of a second and the desk reads
+// the whole query on the frame it draws next.
+const event = (tab, params) => tab.send('Input.dispatchKeyEvent', params);
 const key = async (tab, name, modifiers = 0) => {
   const named = {Enter: 13, Escape: 27, ArrowDown: 40, ArrowUp: 38};
   const code = name.length === 1 ? `Key${name.toUpperCase()}` : name;
-  const event = {key: name, code, windowsVirtualKeyCode: named[name] ?? name.toUpperCase().charCodeAt(0), modifiers};
-  await tab.send('Input.dispatchKeyEvent', {type: 'rawKeyDown', ...event, ...(name === 'Enter' ? {text: '\r'} : {})});
-  await tab.send('Input.dispatchKeyEvent', {type: 'keyUp', ...event});
-  await sleep(300);
+  const pressed = {key: name, code, windowsVirtualKeyCode: named[name] ?? name.toUpperCase().charCodeAt(0), modifiers};
+  await Promise.all([
+    event(tab, {type: 'rawKeyDown', ...pressed, ...(name === 'Enter' ? {text: '\r'} : {})}),
+    event(tab, {type: 'keyUp', ...pressed}),
+  ]);
 };
 const type = async (tab, text) => {
-  for (const ch of text) {
-    await tab.send('Input.dispatchKeyEvent', {type: 'keyDown', key: ch, text: ch});
-    await tab.send('Input.dispatchKeyEvent', {type: 'keyUp', key: ch});
-  }
+  await Promise.all([...text].flatMap(ch => [
+    event(tab, {type: 'keyDown', key: ch, text: ch}),
+    event(tab, {type: 'keyUp', key: ch}),
+  ]));
   await sleep(600);
 };
 // The names the command palette shows, in order, as the desktop publishes
@@ -239,55 +267,78 @@ const settle = (tab, by = 2, owed = () => true) => waits.settle({
   onTimeout: ({from, by}) => until(tab, `(globalThis.tiloMount?.state()?.frames ?? 0) >= ${from + by}`,
     `the desk stepping ${by} more frame(s)`, 1),
 });
-// Whether the open search still owes rows: the desk's own answer, which a
-// settled frame would not carry, as a settled desk presents none.
-const searching = tab => waits.searching(tab);
+// Seconds from `from` to now, and the frames the desk has presented: what the
+// timing lines below print.
+const took = from => ((Date.now() - from) / 1000).toFixed(1);
+const presented = tab => tab.evaluate('globalThis.tiloMount?.state()?.frames ?? 0').catch(() => 0);
 // A person's search: the chord, the query, and Enter on the row the palette
-// offers for it. The host answers a query a moment after the last key, and the
-// rows it shows before that answer are the previous query's: they are read
-// until two reads agree and the row asked for is the one Enter acts on — the
-// first result under the palette's heading, which is what the highlight sits
-// on. Reading only for the row's presence raced that answer and sent Enter to
-// a row left over from the query before.
+// offers for it.
+//
+// Every wait here is on what the desk says, never on how many frames it drew.
+// A frame of this page costs seconds under the gate — a megapixel through a
+// software rasteriser, with the app opened last still compiling its module on
+// the same thread — so a wait that counted frames paid seconds for an answer
+// the desk had already given.
+//
+// The palette's card is that answer (`searchCard`): the query the desk's field
+// holds and the rows it will act on, in the order Enter walks them. The desk
+// says it still owes rows (`searchSearching`) while a source has yet to answer
+// or the rows are not cut to the card's room, and the rows it shows before that
+// answer are the previous query's. So Enter waits for the desk to have answered
+// *this* query, and for the row asked for to be the first one under the
+// palette's heading, which is where the highlight sits.
 const search = async (tab, command, query, row, opens = null) => {
+  const began = Date.now();
+  const framesFrom = await presented(tab);
   // The desk keeps the search up until what it opened has arrived, and the
   // chord toggles it: it is opened only when it is down.
   if (!await tab.evaluate('!!globalThis.tiloMount?.state()?.searchOpen')) {
     await click(tab, 640, 700);
     await key(tab, 'k', command);
   }
-  // A desk presenting a megapixel through software draws a few frames a
-  // second: waits here are counted in frames, so they are sized for a page
-  // that is slow rather than quiet.
+  const chorded = Date.now();
   await until(tab, '!!globalThis.tiloMount?.state()?.searchOpen', `search for "${query}"`, 120_000);
   await type(tab, query);
-  const first = rows => (rows ? rows[rows.indexOf('Results') + 1] ?? null : null);
-  let chosen = null;
+  const typed = Date.now();
+  const asked = JSON.stringify(query);
+  // The card as the desk answers it for this query, once it owes no row:
+  // nothing before that is its answer to the text in its field.
+  const answered = `(() => {
+    const s = globalThis.tiloMount?.state?.() ?? null;
+    const card = s?.searchCard ?? null;
+    return card && s.searchSearching === false && card.query === ${asked} ? JSON.stringify(card) : '';
+  })()`;
+  let card = null;
+  let last = null;
   const deadline = Date.now() + 120_000;
-  // The text is in before its answer is: two reads a frame apart, agreeing,
-  // are the palette's answer to this query and not a frame of the one before.
-  // A settled desk presents no frame, so the wait between the two reads is
-  // the desk's search saying it owes no more rows as much as a frame.
-  await settle(tab, 2, () => searching(tab));
   for (;;) {
-    const rows = await paletteRows(tab);
-    await settle(tab, 1, () => searching(tab));
-    const again = await paletteRows(tab);
-    if (first(rows) === row && JSON.stringify(rows) === JSON.stringify(again)) {
-      // Enter is what opens the app: the watch is in the page before the press,
-      // so the frame it closes search and the frame the app's window arrives on
-      // are told apart on the page's own clock.
-      if (opens) await armOpen(tab, opens);
-      await key(tab, 'Enter');
-      chosen = rows;
-      break;
-    }
-    if (Date.now() > deadline) {
+    const read = await until(tab, answered, `the desk answering "${query}"`, 120_000);
+    card = JSON.parse(read);
+    if (card.rows[0]?.title === row) break;
+    // The same settled answer twice is the desk's answer, not a frame of one
+    // still coming: a palette that offers something else first is the failure.
+    if (read === last || Date.now() > deadline) {
+      const rows = await paletteRows(tab);
       await dump(tab, `timeout-rows-for-${query}`);
-      failed(`the palette offers no ${row} first for "${query}": ${JSON.stringify(again)}`);
+      failed(`the palette offers no ${row} first for "${query}": ${JSON.stringify(card.rows?.map(entry => entry.title) ?? rows)}`);
     }
+    last = read;
   }
+  const chosen = card.rows;
+  // Enter is what opens the app: the watch is in the page before the press, so
+  // the frame it closes search and the frame the app's window arrives on are
+  // told apart on the page's own clock.
+  if (opens) await armOpen(tab, opens);
+  await key(tab, 'Enter');
+  const pressed = Date.now();
   await until(tab, '!globalThis.tiloMount?.state()?.searchOpen', `the search closing after ${row}`, 180_000);
+  // Where a search's time went, in the parts a person's search has: the chord,
+  // the text typed, the desk answering the query, the rows it offers, Enter,
+  // and what the search waited for after it (the app's window, arriving), with
+  // the frames the desk presented meanwhile.
+  console.log(`TIMING search=${asked} chord=${took(began)} type=${took(chorded)}` +
+    ` answer=${took(typed)} rows=${card.rows.length} open=${took(pressed)}` +
+    ` frames=${await presented(tab) - framesFrom}`);
   return chosen;
 };
 // A page-side clock around the person's Enter. What a person waits for is the
@@ -381,10 +432,14 @@ const canvasTopLeft = tab => tab.evaluate(`(() => {
   return JSON.stringify(rect ? {x: rect.left, y: rect.top, width: rect.width, height: rect.height} : null);
 })()`);
 const click = async (tab, x, y) => {
-  await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y});
-  for (const type of ['mousePressed', 'mouseReleased']) {
-    await tab.send('Input.dispatchMouseEvent', {type, x, y, button: 'left', clickCount: 1});
-  }
+  // One gesture's three events, sent together: a press acknowledged one frame
+  // at a time is three of this page's frames for a click a person makes in
+  // milliseconds.
+  await Promise.all([
+    tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y}),
+    ...['mousePressed', 'mouseReleased'].map(type =>
+      tab.send('Input.dispatchMouseEvent', {type, x, y, button: 'left', clickCount: 1})),
+  ]);
   await sleep(600);
 };
 // The centre of the first semantic node named `name`, in page pixels.
@@ -515,6 +570,7 @@ const anotherBrowser = async () => {
   await tab.send('Emulation.setDeviceMetricsOverride',
     {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false}).catch(() => {});
   await returning(tab);
+  await tab.send('Page.addScriptToEvaluateOnNewDocument', {source: waitSource});
   await recordLoading(launched, tab);
   return tab;
 };
@@ -641,6 +697,7 @@ const browserArgs = [
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
 ];
 const browsers = [];
+const mark = clock();
 try {
   if (earlier) {
     // A person arriving now: the chat window and the composer are the app's,
@@ -656,6 +713,7 @@ try {
       'the chat message the workspace kept from before this start', 180_000);
     report.earlier = earlier;
     console.log(`ok: the chat the workspace kept shows "${earlier}" to a person who was not here`);
+    mark('the chat the workspace kept after a restart');
     const reply = `here now ${Date.now()}`;
     if (!await press(visitor.tab, 'Message composer')) failed("V's chat has no message composer", visitor.tab);
     await type(visitor.tab, reply);
@@ -664,6 +722,7 @@ try {
     report.reply = reply;
     await dump(visitor.tab, 'earlier-chat');
     console.log('ok: the person joining after the restart wrote in the same chat');
+    mark('the person who was not here wrote in it');
     writeFileSync(`${out}/report.json`, JSON.stringify(report, null, 2));
     console.log(JSON.stringify(report, null, 2));
     await browser.close().catch(error => console.error('close:', error.message));
@@ -689,6 +748,7 @@ try {
   if (keptA.room !== keptB.room) failed('the two joined different workspaces');
   report.distinct = true;
   console.log(`ok: two browsers joined the Lounge as ${keptA.userPublicKey.slice(0, 8)} and ${keptB.userPublicKey.slice(0, 8)}`);
+  mark('two browsers joined the Lounge');
 
   // The relay describes both as here: both pages opened their HTTPS sessions.
   // That is the host's own count, not the live plane's — the plane is read
@@ -729,6 +789,7 @@ try {
     'the chat message in B', 180_000);
   report.chat = message;
   console.log('ok: the chat message from A is in B');
+  mark('A\'s chat message in B');
   await dump(a.tab, '3-a-chat');
   await dump(b.tab, '3-b-chat');
 
@@ -741,6 +802,7 @@ try {
     "A's Notes window in B", 180_000);
   report.shared = {bBefore: beforeB.windows, bAfter: (await snapshot(b.tab)).windows};
   console.log('ok: the window A opened is in B\'s strip');
+  mark('A\'s window in B\'s strip');
   await dump(a.tab, '5-a-open');
   await dump(b.tab, '5-b-open');
 
@@ -766,6 +828,7 @@ try {
   };
   report.planes = {a: await joinedPlane(a, 'A'), b: await joinedPlane(b, 'B')};
   console.log('ok: both pages joined the live plane');
+  mark('both pages on the live plane');
 
   // Each desk shows the other as here and never itself, with a window of
   // theirs focused: the desktop's People list is what presence is on the
@@ -789,6 +852,7 @@ try {
     failed(`each desk shows the same person: ${JSON.stringify(report.presence)}`);
   }
   console.log('ok: each desk shows the other person here');
+  mark('each desk shows the other here');
 
   // A call on the page both people share. A starts it from Chat's own call
   // control — the workspace's voice channel, joined muted, as every Tilo call
@@ -912,6 +976,7 @@ try {
   await search(a.tab, a.command, 'start a call', 'Start a call');
   const startedA = await untilCard(a, 'Just you', "A's call card, alone in the call");
   console.log('ok: A started a call from Chat');
+  mark('a call started from Chat');
 
   // B is rung: the workspace's voice channel, in B's own channel list, now
   // names A in it.
@@ -931,6 +996,7 @@ try {
   };
   const ring = await untilChannelPeople(b, 'voice', nameA, "the call's channel in B");
   console.log(`ok: B is rung: voice lists ${ring.join(', ')}`);
+  mark('B rung and the call listed');
   // Nobody is left in the channel: what each desk sees once the call ended.
   const untilChannelEmpty = async (person, channel, what, timeout = 120_000) => {
     const deadline = Date.now() + timeout;
@@ -953,6 +1019,7 @@ try {
   const liveA = await untilLive(a, "A's call going live");
   const liveB = await untilLive(b, "B's call going live");
   console.log('ok: both pages are in the call');
+  mark('both pages in the call');
   // Unmuted, both: each page's microphone is the browser's synthetic device,
   // so unmuting is what puts audio on the plane.
   await pressWhen(a.tab, 'Unmute', "A's microphone control");
@@ -960,6 +1027,7 @@ try {
   await untilCapture(a, "A's microphone running");
   await untilCapture(b, "B's microphone running");
   console.log('ok: both microphones are running');
+  mark('both microphones running');
 
   // The call's card names the other person, counts, and offers the way out:
   // on each page the same reading of the same call.
@@ -979,25 +1047,44 @@ try {
   report.call.audio = {fromA, fromB};
   report.call.live = {a: liveA, b: liveB};
   console.log(`ok: each page sent audio the other heard (${JSON.stringify(report.call.audio)})`);
+  mark('the pages heard each other');
   await dump(a.tab, '6-a-call');
   await dump(b.tab, '6-b-call');
 
-  // A hangs up: A's card goes, and B's call has A no longer in it.
-  await pressWhen(a.tab, 'Leave call', "A's hang-up control");
-  await noCard(a, "A's call card after hanging up");
-  await untilNotLive(a, 'A hanging up');
+  // A hangs up: A's card goes, and B's call has A no longer in it. Each wait
+  // says what it took, so a hang-up that costs minutes names the part that
+  // did: the press, the card leaving the desk's own tree, and the call the
+  // page says is over, with the frames spent waiting.
+  const hangup = async (person, who) => {
+    const began = Date.now();
+    const framesFrom = await presented(person.tab);
+    await pressWhen(person.tab, 'Leave call', `${who}'s hang-up control`);
+    const pressed = Date.now();
+    await noCard(person, `${who}'s call card after hanging up`);
+    const gone = Date.now();
+    await untilNotLive(person, `${who} hanging up`);
+    const over = Date.now();
+    console.log(`TIMING hangup who=${who} press=${took(began)} card=${took(pressed)} live=${took(gone)}` +
+      ` done=${took(over)} frames=${await presented(person.tab) - framesFrom}`);
+  };
+  await hangup(a, 'A');
+  // What the other page showed of it: A's card gone is A's own desk, and B
+  // naming itself alone again is the call ending reaching it, which is the
+  // other half and is timed on its own.
+  const peerFrom = Date.now();
   await untilCard(b, 'Just you', "B's call card after A hung up");
+  console.log(`TIMING hangup who=A peer=${took(peerFrom)}`);
   console.log('ok: A hung up, and B is alone in the call');
+  mark('A hung up, B alone in the call');
   await dump(a.tab, '7-a-hung-up');
 
   // B hangs up too: the call is over on both desks, and no one is in the
   // channel's call any more.
-  await pressWhen(b.tab, 'Leave call', "B's hang-up control");
-  await noCard(b, "B's call card after hanging up");
-  await untilNotLive(b, 'B hanging up');
+  await hangup(b, 'B');
   await untilChannelEmpty(a, 'voice', "A's voice channel after the call");
   await untilChannelEmpty(b, 'voice', "B's voice channel after the call");
   console.log('ok: hanging up ended the call for both');
+  mark('hanging up ended the call');
   await dump(b.tab, '7-b-hung-up');
   // The desk as a laptop drives it: the launcher's search opens every app the
   // Lounge offers, two fingers sideways pan the strip over an app that does
@@ -1064,7 +1151,11 @@ try {
     const corner = JSON.parse(await canvasTopLeft(tab));
     return {x: corner.x + Math.round(corner.width / 2), y: corner.y + Math.round(corner.height / 2), corner};
   };
-  const history = await a.tab.evaluate('history.length');
+  // Where the browser's own history stood, in this very document: the desk
+  // adds entries of its own as the person opens and moves between windows
+  // (Back goes through Tilo), and the browser navigating on its own would
+  // leave this document or step back from the newest entry.
+  const arrivedAt = await a.tab.evaluate(`(() => { globalThis.__gateArrived = true; return navigation.currentEntry.index; })()`);
 
   // The window menu, from a secondary click in the window's own bar: what the
   // desktop can do to that window, and choosing a row does it. Asked before
@@ -1124,6 +1215,7 @@ try {
   if (given === filled) failed(`the window menu's "${filled}" changed nothing: the menu offered it again ${JSON.stringify({bar, openAfterClick: first.open})}`);
   report.windowMenu = {filled, given};
   console.log(`ok: the window menu opens from the window bar, and its rows fill the strip and give it back (${filled}, then ${given})`);
+  mark('the window menu filled and gave back the strip');
 
   // Every app the Lounge offers opens from the launcher's search.
   const offered = (await nav(a.tab))?.applications ?? [];
@@ -1142,22 +1234,21 @@ try {
   const timings = [];
   const started = Date.now();
   for (const application of applications) {
+    const appBegan = Date.now();
     await search(a.tab, a.command, application.label.toLowerCase(), application.label, application.id);
+    const searched = Date.now();
     await until(a.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === ${JSON.stringify(application.id)})`,
       `the window of ${application.label}`, 180_000);
+    const arrived = Date.now();
     // The entry is published in the pass that draws the window, and that
     // frame reaches the page when the GPU has room for it, which on a busy
     // software rasteriser is seconds later: the open is measured on that
     // frame, so it is waited for, and one that never comes is said below.
-    for (const deadline = Date.now() + 60_000; Date.now() < deadline;) {
-      const drawn = await a.tab.evaluate(`(() => {
-        const watch = globalThis.__tiloOpen;
-        watch?.read?.();
-        return !watch || watch.shownAt !== null;
-      })()`).catch(() => false);
-      if (drawn) break;
-      await sleep(250);
-    }
+    await a.tab.evaluate(`globalThis.__tiloWait?.(() => {
+      const watch = globalThis.__tiloOpen;
+      watch?.read?.();
+      return !watch || watch.shownAt !== null;
+    }, 60_000) ?? false`).catch(() => false);
     const marks = await openMarks(a.tab);
     // An open the page's own clock never saw begun or never saw end is not a
     // fast one: it is no reading, and the gate says so instead of counting a
@@ -1169,11 +1260,16 @@ try {
     const shot = await a.tab.screenshot();
     if (shot) writeFileSync(`${out}/app-${application.id.replace(/[^a-z0-9]+/gi, '-')}.png`, shot);
     opened.push(application.id);
+    // Where one app's open went: the search for it, its window arriving, the
+    // frame that showed it, and the picture kept of it.
+    const at = Date.now();
+    console.log(`TIMING app=${application.id} search=${((searched - appBegan) / 1000).toFixed(1)} window=${((arrived - searched) / 1000).toFixed(1)} drawn=${((at - arrived) / 1000).toFixed(1)} shot=${((Date.now() - at) / 1000).toFixed(1)}`);
   }
   const spent = Math.round((Date.now() - started) / 1000);
   report.applications = {offered: applications.map(application => application.id), opened, seconds: spent, presented: timings};
   const slow = timings.filter(timing => timing.frames > OPEN_FRAMES);
   console.log(`ok: each of the ${applications.length} apps the Lounge offers opened from the search (${spent}s)`);
+  mark('every app opened from the search');
   for (const timing of timings) {
     console.log(`  ${timing.app}: ${timing.presentMs === null ? 'on the frame that took its key' : `${timing.presentMs} ms from Enter to its window`}`);
   }
@@ -1219,6 +1315,7 @@ try {
   if ((await snapshot(a.tab)).windows.join() !== windowsBefore.join()) failed('a sideways pan changed the windows');
   if (await picture(a.tab) === frameBefore) failed('the strip did not repaint as it panned');
   console.log(`ok: two fingers sideways pan the strip over Notes (${panBefore.offset} to ${panAfter.offset})`);
+  mark('a sideways pan over Notes');
 
   // The same gesture over Sheets, whose grid scrolls sideways itself: the app
   // takes it and the strip stays where it was.
@@ -1245,6 +1342,55 @@ try {
   }
   if (await picture(a.tab) === sheetBefore) failed('Sheets did not scroll sideways with the fingers', a.tab);
   console.log('ok: the same gesture scrolls Sheets and leaves the strip');
+  mark('a sideways swipe over Sheets');
+
+  // Report a problem: the bar's own avatar, then the card's row. After a
+  // while here the bar asks about the person beside their avatar, and while
+  // that question waits the avatar opens it rather than their card: a person
+  // puts it off, as the question offers, and opens their card then. A failed
+  // check keeps no outputs, so what was pressed and what the card offered are
+  // said in the log.
+  const reportProblem = async () => {
+    // The bar's own avatar, by the whole name the bar gives it ("<name> (you):
+    // your profile"): a chat author's card or anything else named after the
+    // person is not it.
+    const avatar = async () => {
+      const before = await namesOf(a.tab);
+      const own = before.find(name => / \(you\): your profile$/.test(name));
+      if (!own) await failed(`the bar shows no avatar of the person's own: shown ${JSON.stringify(before)}`, a.tab);
+      if (!await press(a.tab, own)) await failed(`the bar's avatar "${own}" has no bounds to press`, a.tab);
+      await settle(a.tab, 2);
+      const after = await namesOf(a.tab);
+      const seen = new Set(before);
+      console.log(`report a problem: pressed "${own}"; it brought ${JSON.stringify(after.filter(name => !seen.has(name)))}`);
+      return after;
+    };
+    let shown = await avatar();
+    if (shown.includes('Not now')) {
+      await press(a.tab, 'Not now');
+      await settle(a.tab, 2);
+      shown = await avatar();
+    }
+    const reportRow = await choose(a.tab, /^Report a problem/);
+    if (!reportRow) {
+      // The row is there once the page holds the Lounge's feedback channel:
+      // why it does not is in what the page said about feedback.
+      const said = (a.tab.log ?? []).filter(line => /feedback/i.test(line)).slice(-10);
+      await failed(`the profile card offers no Report a problem: shown ${JSON.stringify(await namesOf(a.tab))}; the page said of feedback: ${JSON.stringify(said)}`, a.tab);
+    }
+    // Picking what to report takes every event: nothing under the pointer
+    // reacts to it, and the strip the desk shows stays where it was.
+    await settle(a.tab, 2);
+    const pickingPan = await panOf(a.tab);
+    await sidewaysSwipe(a.tab, centre.x, centre.y, true);
+    if ((await panOf(a.tab))?.offset !== pickingPan?.offset) {
+      failed('a sideways wheel panned the strip under the report picker');
+    }
+    report.reportProblem = reportRow;
+    console.log(`ok: Report a problem opens its picker (${reportRow})`);
+    mark('Report a problem');
+    await key(a.tab, 'Escape');
+  };
 
   let invited = null;
   if (!brief) {
@@ -1261,6 +1407,7 @@ try {
       failed(`a pinch moved the strip: ${JSON.stringify(report.pinch)}`);
     }
     console.log('ok: a pinch zooms and never pans the strip');
+    mark('a pinch zoom');
 
     // A right-click in the chat's composer is the text's menu.
     await search(a.tab, a.command, 'chat', 'Chat');
@@ -1286,62 +1433,46 @@ try {
     if (!textRow) failed('a right-click in a text field offers no text menu');
     report.contextMenu = textRow;
     console.log(`ok: a right-click in a text field offers the text menu (${textRow})`);
+    mark('the text menu');
     await key(a.tab, 'Escape');
 
-    // Report a problem: the bar's own avatar, then the card's row. After a
-    // while here the bar asks about the person beside their avatar, and while
-    // that question waits the avatar opens it rather than their card: a
-    // person puts it off, as the question offers, and opens their card then.
-    const avatar = async () => {
-      await press(a.tab, (await namesOf(a.tab)).find(name => /\(you\)/.test(name)) ?? 'Profile');
-      await settle(a.tab, 2);
-    };
-    await avatar();
-    if ((await namesOf(a.tab)).includes('Not now')) {
-      await press(a.tab, 'Not now');
-      await settle(a.tab, 2);
-      await avatar();
-    }
-    const reportRow = await choose(a.tab, /^Report a problem/);
-    if (!reportRow) {
-      // The row is there once the page holds the Lounge's feedback channel:
-      // why it does not is in what the page said about feedback.
-      const said = (a.tab.log ?? []).filter(line => /feedback/i.test(line)).slice(-10);
-      failed(`the profile card offers no Report a problem: shown ${JSON.stringify((await namesOf(a.tab)).slice(0, 40))}; the page said of feedback: ${JSON.stringify(said)}`);
-    }
-    // Picking what to report takes every event: nothing under the pointer
-    // reacts to it, and the strip the desk shows stays where it was.
-    await settle(a.tab, 2);
-    const pickingPan = await panOf(a.tab);
-    await sidewaysSwipe(a.tab, centre.x, centre.y, true);
-    if ((await panOf(a.tab))?.offset !== pickingPan?.offset) {
-      failed('a sideways wheel panned the strip under the report picker');
-    }
-    report.reportProblem = reportRow;
-    console.log(`ok: Report a problem opens its picker (${reportRow})`);
-    await key(a.tab, 'Escape');
+    await reportProblem();
 
     // The launcher's chord opens the search, and Escape closes it opening
-    // nothing: the keys a browser leaves to the page.
+    // nothing: the keys a browser leaves to the page. The desk has every app
+    // the Lounge offers open by now and presents a frame every several
+    // seconds through the software rasteriser, and each answer is a presented
+    // frame: the waits are the ones a search gets everywhere in this gate.
     await click(a.tab, 640, 700);
     await key(a.tab, 'k', a.command);
-    await until(a.tab, '!!globalThis.tiloMount?.state()?.searchOpen', 'the search chord', 30_000);
+    await until(a.tab, '!!globalThis.tiloMount?.state()?.searchOpen', 'the search chord', 120_000);
     await key(a.tab, 'Escape');
-    await until(a.tab, '!globalThis.tiloMount?.state()?.searchOpen', 'the search closing', 30_000);
+    await until(a.tab, '!globalThis.tiloMount?.state()?.searchOpen', 'the search closing', 180_000);
     console.log('ok: the search chord opens the search and Escape closes it');
+    mark('the search chord and Escape');
 
-    // None of it reached the browser.
-    const browser = {
-      scrollY: await a.tab.evaluate('window.scrollY'),
-      scrollX: await a.tab.evaluate('window.scrollX'),
-      scale: await a.tab.evaluate('globalThis.visualViewport?.scale ?? 1'),
-      history: await a.tab.evaluate('history.length'),
-    };
-    report.browser = {...browser, historyAtArrival: history};
-    if (browser.scrollY !== 0 || browser.scrollX !== 0) failed(`the page scrolled: ${JSON.stringify(browser)}`);
-    if (Math.abs(browser.scale - 1) > 0.001) failed(`the page zoomed: ${JSON.stringify(browser)}`);
-    if (browser.history !== history) failed(`the page navigated: ${JSON.stringify(browser)}`);
+    // None of it reached the browser: the page neither scrolled nor zoomed,
+    // and the browser did not navigate. The entries the desk added for the
+    // windows opened are its own and all in this document; the browser
+    // taking a key or click as Back, or following a link, would have left it
+    // or stepped back from the newest.
+    const browser = JSON.parse(await a.tab.evaluate(`JSON.stringify({
+      scrollY: window.scrollY,
+      scrollX: window.scrollX,
+      scale: globalThis.visualViewport?.scale ?? 1,
+      sameDocument: globalThis.__gateArrived === true,
+      entry: navigation.currentEntry.index,
+      newest: navigation.entries().length - 1,
+      otherDocuments: navigation.entries().slice(${arrivedAt}).filter(entry => !entry.sameDocument).length,
+    })`));
+    report.browser = {...browser, arrivedAt};
+    if (browser.scrollY !== 0 || browser.scrollX !== 0) await failed(`the page scrolled: ${JSON.stringify(browser)}`);
+    if (Math.abs(browser.scale - 1) > 0.001) await failed(`the page zoomed: ${JSON.stringify(browser)}`);
+    if (!browser.sameDocument || browser.entry !== browser.newest || browser.otherDocuments) {
+      await failed(`the browser navigated: ${JSON.stringify(report.browser)}`);
+    }
     console.log('ok: no wheel, key or click reached the browser');
+    mark('no wheel, key or click reached the browser');
 
     // A person the workspace lets invite, from the page itself: the workspace
     // declares them one while their page stands open (the roles file the
@@ -1356,11 +1487,14 @@ try {
     await waitFor(a.tab, 'Invite', "the bar's invite button");
     report.inviteAfterMs = Date.now() - allowedAt;
     console.log(`ok: the page offers inviting ${report.inviteAfterMs} ms after the workspace allowed it, with no reload`);
+    mark('the invite offered without a reload');
 
     // The page's own sheet, the same one a desk shows: the role a link brings
     // someone in at, chosen before the link is made.
+    // The sheet is up once its choices stand where a person presses them:
+    // its title names the sheet without standing anywhere of its own.
     if (!await press(a.tab, 'Invite')) await failed("the bar's invite button could not be pressed", a.tab);
-    await waitFor(a.tab, 'Invite people', 'the invite sheet');
+    await waitFor(a.tab, 'Commenter', "the invite sheet's Commenter part");
     if (!await press(a.tab, 'Commenter')) await failed('the invite sheet offers no Commenter part', a.tab);
     await until(a.tab, `JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? {}).includes('add comments, but cannot edit it')`,
       "the sheet's chosen role under the choice", 60_000);
@@ -1382,6 +1516,7 @@ try {
     const long = (await nodeValues(a.tab)).find(value => typeof value === 'string' && value.includes('invite='));
     if (long) await failed(`the sheet shows the invitation's own text beside the link: ${long.slice(0, 120)}`, a.tab);
     console.log(`ok: the sheet made a link a site keeps: handle in the path, key in the fragment (${made})`);
+    mark('the invitation link');
     await dump(a.tab, '8-a-invite-sheet');
 
     // The workspace as the invitation describes it, before this person joins:
@@ -1411,6 +1546,7 @@ try {
     }
     report.card = c.card;
     console.log(`ok: the link says who invited them, where and as what: ${c.card}`);
+    mark('the link names who invited them');
     await dump(c.tab, '9-c-invitation-card');
 
     // Joining is the whole of it: the invitation is its inviter's approval, so
@@ -1445,6 +1581,7 @@ try {
       await failed("the invitation's person is someone who was already here", c.tab);
     }
     console.log(`ok: ${keptC.userPublicKey.slice(0, 8)} arrived from the link in A's workspace, with no one letting them in`);
+    mark('the invitee arrived from the link');
     await dump(c.tab, '10-c-arrived');
 
     // The desk each person is in is the desk the new person is on too: A's
@@ -1468,12 +1605,15 @@ try {
       await failed(`A's desk shows the invitation's arrival as ${invitedRow.user}`, a.tab);
     }
     console.log(`ok: A's desk shows ${invitedRow.label} beside B`);
+    mark('A\'s desk shows the invitee');
     await dump(a.tab, '11-a-people-invited');
   }
+  // The short check opens the card too: it is the step that tells a bar whose
+  // own avatar went missing or opens nothing.
+  if (brief) await reportProblem();
 
   // Nothing failed in either page.
-  const both = [...a.tab.log, ...b.tab.log, ...(invited?.tab.log ?? [])];
-  const errors = both.filter(line => /^EXC/.test(line) || /panic/i.test(line));
+  const both = [...a.tab.log, ...b.tab.log, ...(invited?.tab.log ?? [])];  const errors = both.filter(line => /^EXC/.test(line) || /panic/i.test(line));
   report.logs = {a: a.tab.log.slice(-10), b: b.tab.log.slice(-10), c: invited?.tab.log.slice(-10) ?? null};
   if (errors.length) failed(`pages reported errors: ${errors.slice(0, 5).join('; ')}`);
 

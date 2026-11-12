@@ -981,7 +981,6 @@ def sync_excerpt(vm: TiloVm) -> str:
                         "SYSLOG_IDENTIFIER=tilo-session-me 2>&1 "
                         "| grep -av 'FRAME-LIFECYCLE\\|paint-stats\\|HEAP-MILESTONE\\|MESA\\|app_output\\|frames=' "
                         "| grep -a 'sync\\|shared_desktop\\|workspaces\\|peer_state\\|join_flow\\|network_actor\\|WARN\\|ERROR' "
-                        "| grep -av 'has no live plane' "
                         "| tail -n 400 | cut -c1-500", timeout=120, check=False)
     return text or "(nothing)"
 
@@ -991,7 +990,7 @@ def invoke_excerpt(vm: TiloVm) -> str:
     text = vm.root_exec("journalctl -m --since '-3min' --no-pager -o short-iso "
                         "SYSLOG_IDENTIFIER=tilo-session-me 2>&1 "
                         "| grep -av 'FRAME-LIFECYCLE\\|paint-stats\\|HEAP-MILESTONE\\|MESA\\|app_output\\|frames=' "
-                        "| grep -av 'has no live plane\\|GPU budget' "
+                        "| grep -av 'GPU budget' "
                         "| tail -n 500 | cut -c1-600", timeout=120, check=False)
     return text or "(nothing)"
 

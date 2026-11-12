@@ -483,13 +483,14 @@ pub enum JoinTransportResponse {
     OwnerMembershipComplete(OwnerBootstrapV1),
 }
 
-/// Sign an invitation grant, returning its wire bytes.
+/// Sign an invitation grant with the issuer device's `key`, which answers at once
+/// ([`collab_types::signer::sign_now`]), returning its wire bytes.
 pub fn issue_invitation(
     grant: InviteGrant,
-    key: &ed25519_dalek::SigningKey,
+    key: &dyn collab_types::signer::DeviceSigner,
 ) -> Result<Vec<u8>, String> {
     validate_grant(&grant, 0, false)?;
-    if key.verifying_key().to_bytes() != grant.issuer.device_public_key {
+    if key.device_public_key() != grant.issuer.device_public_key {
         return Err("invitation signer is not the declared issuer device".into());
     }
     let view = InvitationView {
@@ -500,7 +501,8 @@ pub fn issue_invitation(
     let signed = SignedInvitation {
         version: INVITATION_VERSION,
         grant,
-        signature: key.sign(&digest).to_bytes(),
+        signature: collab_types::signer::sign_now(key, digest.to_vec())
+            .map_err(|error| error.to_string())?,
     };
     postcard::to_stdvec(&signed).map_err(|error| error.to_string())
 }
@@ -509,11 +511,11 @@ pub fn issue_invitation(
 pub fn issue_invitation_from(
     grant: InviteGrant,
     inviter: Inviter,
-    key: &ed25519_dalek::SigningKey,
+    key: &dyn collab_types::signer::DeviceSigner,
 ) -> Result<Vec<u8>, String> {
     validate_grant(&grant, 0, false)?;
     validate_inviter(&inviter)?;
-    if key.verifying_key().to_bytes() != grant.issuer.device_public_key {
+    if key.device_public_key() != grant.issuer.device_public_key {
         return Err("invitation signer is not the declared issuer device".into());
     }
     let digest = tagged_digest(
@@ -528,7 +530,8 @@ pub fn issue_invitation_from(
         version: INVITATION_WITH_INVITER_VERSION,
         grant,
         inviter,
-        signature: key.sign(&digest).to_bytes(),
+        signature: collab_types::signer::sign_now(key, digest.to_vec())
+            .map_err(|error| error.to_string())?,
     };
     postcard::to_stdvec(&signed).map_err(|error| error.to_string())
 }

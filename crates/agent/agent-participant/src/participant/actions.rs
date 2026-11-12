@@ -50,8 +50,9 @@ pub(crate) fn record_of(provider: &str, workspace: &str) -> Option<DocumentRoute
     })
 }
 
-/// The row offering to open `app` on a new record in workspace `workspace`.
-pub(crate) fn open_row(workspace: &str, app: &str) -> CatalogueRow {
+/// The row offering to open `app` on a new record in workspace `workspace`,
+/// under the name people read it by (`label`).
+pub(crate) fn open_row(workspace: &str, app: &str, label: &str) -> CatalogueRow {
     let target = application_open_target(workspace, app);
     CatalogueRow::for_action(
         target.provider,
@@ -61,11 +62,11 @@ pub(crate) fn open_row(workspace: &str, app: &str) -> CatalogueRow {
             semantic_identity: None,
             address: target.address,
             resource_kind: "applications.app".into(),
-            resource_label: app.to_owned(),
-            action_label: format!("Open {app}"),
+            resource_label: label.to_owned(),
+            action_label: format!("Open {label}"),
             keywords: Vec::new(),
             icon: None,
-            description: Some(format!("Open {app} on a new record in this workspace.")),
+            description: Some(format!("Open {label} on a new record in this workspace.")),
             locus: tilo_actions::ExecutionLocus::ServerPreferred,
             kind: tilo_actions::OperationKind::Effect,
             contract: tilo_actions::ActionContract::default(),
@@ -226,9 +227,8 @@ impl AgentParticipant {
             rows.extend(
                 self.catalogue
                     .iter()
-                    .map(ui::application::ApplicationDefinition::app_id)
-                    .filter(|app| self.identity.delegation.permits_app(app))
-                    .map(|app| open_row(&provider, app)),
+                    .filter(|definition| self.identity.delegation.permits_app(definition.app_id()))
+                    .map(|definition| open_row(&provider, definition.app_id(), definition.title())),
             );
             providers.push(CatalogueProvider {
                 provider,

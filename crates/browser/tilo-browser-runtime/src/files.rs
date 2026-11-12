@@ -13,15 +13,20 @@ fn error(error: &tilo_files::FsError) -> JsValue {
 /// Resolve apps' paths in `profile` and load its app files (each app's data,
 /// settings and state) and the page's secrets into page memory. Idempotent.
 ///
-/// # Errors
-///
-/// The browser has no OPFS, or the tree could not be read.
+/// Returns the cause when this page has no app files — a browser that keeps
+/// none for it (a private window, or site data turned off), or a tree that
+/// could not be read — and `undefined` once the mirror is loaded. A page
+/// without app files still starts: what its apps keep in records is
+/// elsewhere, an app that reads or saves a file of its own is told the
+/// browser keeps none, and the host says so to the person. Never writing is
+/// what keeps that safe: with no mirror loaded no file change of the page's
+/// reaches OPFS, so nothing overwrites what a later session will read.
 #[wasm_bindgen]
-pub async fn mirror_files(profile: String) -> Result<(), JsValue> {
+pub async fn mirror_files(profile: String) -> Option<String> {
     tilo_paths::set_default_profile(&profile);
-    tilo_files::web::mirror(&tilo_paths::default_profile())
+    let files = tilo_files::web::mirror(&tilo_paths::default_profile())
         .await
-        .map_err(|e| error(&e))?;
+        .err();
     // Apps' secrets too, so vault keys load synchronously. Without IndexedDB
     // or WebCrypto the secret store stays asynchronous and apps say so.
     if let Err(error) = tilo_secrets::web::mirror().await {
@@ -29,7 +34,7 @@ pub async fn mirror_files(profile: String) -> Result<(), JsValue> {
             "secrets are not mirrored; synchronous access stays unavailable: {error}"
         )));
     }
-    Ok(())
+    files.map(|error| error.to_string())
 }
 
 /// Whether any change apps made to their files or stored secrets is still

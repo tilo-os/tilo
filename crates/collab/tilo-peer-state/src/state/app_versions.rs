@@ -10,11 +10,12 @@
 //! name that version's surface and are decided against it.
 
 use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
+use collab_types::signer::DeviceSigner;
 use tilo_action_policy::roles::governance;
 use tilo_user_identity::DeviceCert;
 
 use super::facades::PeerGovernance;
-use super::{SigningKey, StatePeer, SystemTime, err, now_ns};
+use super::{StatePeer, SystemTime, err, now_ns};
 use crate::workspace_membership::{AppRelease, WorkspaceMembershipCommand};
 
 /// The governed map that keeps the workspace's app versions, by app id.
@@ -36,7 +37,7 @@ impl StatePeer {
         &mut self,
         caller: &DeviceCert,
         command: &WorkspaceMembershipCommand,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Option<Result<bool, String>> {
         match command {
@@ -54,7 +55,7 @@ impl StatePeer {
         &mut self,
         caller: &DeviceCert,
         release: &AppRelease,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let member = self.check_app_governance(caller, now)?;
@@ -77,7 +78,7 @@ impl StatePeer {
         &mut self,
         caller: &DeviceCert,
         app: &str,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.check_app_governance(caller, now)?;
@@ -108,7 +109,7 @@ impl StatePeer {
         &mut self,
         app: &str,
         row: Option<&InstalledApp>,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let mut doc = self

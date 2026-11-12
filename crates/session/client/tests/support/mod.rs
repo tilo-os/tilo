@@ -336,20 +336,15 @@ pub async fn start_host_serving(
         .await
         .unwrap();
     if packet_relay {
-        relayed(&relay).await;
+        relayed(&relay);
     }
     HOSTS.lock().unwrap().insert(host.cert.device_public_key);
     TestHost { relay, web }
 }
 
-/// Wait until `relay`'s endpoint is reached through its own packet relay,
-/// which its address names from then on.
-async fn relayed(relay: &Relay) {
-    tilo_test_env::within(
-        "the host's packet relay to be online",
-        relay.endpoint.online(),
-    )
-    .await;
+/// A host that serves its own packet relay names it in its address from the start: what
+/// `Relay::start` waits for before it answers anything.
+fn relayed(relay: &Relay) {
     assert!(
         relay.node_addr().relay_urls().next().is_some(),
         "the host names its packet relay"
@@ -417,7 +412,7 @@ pub async fn start_workspace_host_relaying(
         .await
         .unwrap();
     if packet_relay {
-        relayed(&relay).await;
+        relayed(&relay);
     }
     HOSTS.lock().unwrap().insert(host.cert.device_public_key);
     TestHost { relay, web }

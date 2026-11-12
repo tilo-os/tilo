@@ -19,6 +19,7 @@
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
+import {clock} from './timing.mjs';
 
 const [site, relay, out] = process.argv.slice(2);
 if (!site || !relay || !out) {
@@ -26,6 +27,7 @@ if (!site || !relay || !out) {
   process.exit(2);
 }
 mkdirSync(out, {recursive: true});
+const mark = clock();
 const report = {site, relay, at: new Date().toISOString()};
 // As the gate's other pages: the test certificates, a software GPU, a job
 // container's small /dev/shm, and no sandbox where the run is root.
@@ -157,6 +159,7 @@ if (arrival !== 'done') {
     status: document.getElementById('status')?.textContent?.trim().slice(0, 300) ?? null})`)}`);
 }
 console.log('ok: the page booted and arrived');
+mark('the page arrived');
 
 // 2. It joined the Lounge's workspace: a membership on the relay's host.
 const membership = await until(`(() => {
@@ -166,6 +169,7 @@ const membership = await until(`(() => {
 })()`, 'joining the Lounge\'s workspace');
 report.membership = JSON.parse(membership);
 console.log(`ok: the page joined the workspace ${report.membership.room}`);
+mark('the page joined the workspace');
 
 // 3. Notes opens from the search, and its window shows.
 const mac = await tab.evaluate('/Mac/.test(navigator.platform)');
@@ -178,6 +182,7 @@ for (const type of ['mousePressed', 'mouseReleased']) {
 }
 // Open `name` from the search, as a person does, and wait for its window.
 const open = async (name, app) => {
+  const began = Date.now();
   await key('k', mac ? 4 : 2);
   await until('!!globalThis.tiloMount?.state()?.searchOpen', `the search opening for ${name}`);
   await type(name.toLowerCase());
@@ -232,14 +237,17 @@ const open = async (name, app) => {
   const counted = JSON.parse(await tab.evaluate('JSON.stringify(globalThis.__bootOpen)'));
   report.opens = [...(report.opens ?? []), counted];
   console.log(`frames: ${name} shown on frame ${counted.shown}; the page read ${counted.atKeydown} at Enter, the desk had presented ${counted.atKey} when it took the key; frames between: ${JSON.stringify(counted.trace)}`);
+  console.log(`TIMING open=${app} seconds=${((Date.now() - began) / 1000).toFixed(1)}`);
 };
 await open('Notes', 'so.tilo.notes');
 console.log('ok: Notes opened from the search');
+mark('Notes opened');
 
 // 4. Notes stays up a moment, as a person would look at it, and nothing the
 // page did meanwhile failed.
 await sleep(3000);
 await checkPage('showing Notes');
+mark('Notes looked at');
 
 // 5. A sideways swipe over an app whose content scrolls sideways is the
 // app's: Sheets' grid scrolls and the strip of windows stays where it is. The
@@ -310,6 +318,7 @@ if (after?.offset !== before.offset) {
 }
 await checkPage('swiping over Sheets');
 console.log('ok: a sideways swipe over Sheets scrolls Sheets and leaves the strip');
+mark('a sideways swipe over Sheets');
 
 // 6. The GPU device is lost mid-session, as a driver reset or the browser
 // does it: the desk makes a new device and draws on, with every window it
@@ -344,5 +353,6 @@ const kept = beforeLoss.windows.filter(app => !afterLoss.windows.includes(app));
 if (kept.length) await fail(`windows were gone after the GPU device was lost: ${JSON.stringify(kept)}`);
 await checkPage('drawing on after the GPU device was lost');
 console.log('ok: a GPU device lost mid-session is made again, and the desk draws on with its windows');
+mark('a GPU device lost and made again');
 report.frames = await frames();
 await finish(0);

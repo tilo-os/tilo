@@ -99,6 +99,7 @@ qs-power-settings = Energie-Einstellungen
 qs-rotation-lock = Drehsperre
 qs-rotation-locked = Gesperrt
 qs-rotation-unlocked = Dreht sich mit dem Gerät
+qs-sound-no-device = Kein Audiogerät
 qs-sound-output = Tonausgabe
 qs-sound-session-output = Sitzungsausgabe
 qs-sound-settings = Ton-Einstellungen

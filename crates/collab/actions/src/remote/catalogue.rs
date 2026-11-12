@@ -372,40 +372,42 @@ impl CataloguePage {
     #[must_use]
     pub fn from_rows(revision: String, rows: Vec<CatalogueRow>, query: &CatalogueQuery) -> Self {
         if !query.cursor.is_empty() && query.revision.as_deref() != Some(revision.as_str()) {
-            return Self {
-                revision,
-                stale_cursor: true,
-                ..Self::default()
-            };
+            return Self::stale(revision);
         }
-        let parent = query.parent_resource.as_deref().unwrap_or("");
-        let mut matching = rows.into_iter().filter(|row| {
-            row.parent_resource == parent
-                && query.app_id.as_deref().is_none_or(|app| row.app_id == app)
-                && query.view_resource.as_ref().is_none_or(|wanted| {
-                    row.resource.id == wanted.id
-                        && row.resource.kind == wanted.kind
-                        && row
-                            .action
-                            .as_ref()
-                            .is_some_and(|action| action.kind == crate::OperationKind::View)
-                })
-                && row.matches(&query.needle)
-                && query
-                    .resource_name
-                    .as_deref()
-                    .is_none_or(|name| row.resource.is_named(name))
-                && query.target.as_ref().is_none_or(|target| {
-                    row.action
-                        .as_ref()
-                        .is_some_and(|action| action.address == *target)
-                })
-        });
-        let offset = offset_of(&query.cursor);
-        let size = query.page_size();
-        let rows: Vec<_> = matching.by_ref().skip(offset).take(size).collect();
+        let mut matching = rows.into_iter().filter(|row| query.admits(row));
+        let rows: Vec<_> = matching
+            .by_ref()
+            .skip(query.offset())
+            .take(query.page_size())
+            .collect();
         let more = matching.next().is_some();
-        let next = offset.saturating_add(rows.len());
+        Self::window(revision, rows, query, more)
+    }
+
+    /// A page at `revision` whose cursor was read at another: the caller
+    /// starts again from the first page.
+    #[must_use]
+    pub fn stale(revision: String) -> Self {
+        Self {
+            revision,
+            stale_cursor: true,
+            ..Self::default()
+        }
+    }
+
+    /// The page `query` asks for, from `rows`: the rows it admits
+    /// ([`CatalogueQuery::admits`]) from its cursor on ([`CatalogueQuery::offset`]),
+    /// at most [`CatalogueQuery::page_size`] of them, and whether `more` follow.
+    /// What a host that pages its rows where they are kept answers with, so
+    /// that a page costs its rows and not every row there is.
+    #[must_use]
+    pub fn window(
+        revision: String,
+        rows: Vec<CatalogueRow>,
+        query: &CatalogueQuery,
+        more: bool,
+    ) -> Self {
+        let next = query.offset().saturating_add(rows.len());
         Self {
             revision,
             rows,
@@ -421,6 +423,40 @@ impl CataloguePage {
             exhausted: !more,
             ..Self::default()
         }
+    }
+}
+
+impl CatalogueQuery {
+    /// Whether `row` is one this query lists: under the parent asked for,
+    /// of the app, view, words, name and action it names.
+    #[must_use]
+    pub fn admits(&self, row: &CatalogueRow) -> bool {
+        row.parent_resource == self.parent_resource.as_deref().unwrap_or("")
+            && self.app_id.as_deref().is_none_or(|app| row.app_id == app)
+            && self.view_resource.as_ref().is_none_or(|wanted| {
+                row.resource.id == wanted.id
+                    && row.resource.kind == wanted.kind
+                    && row
+                        .action
+                        .as_ref()
+                        .is_some_and(|action| action.kind == crate::OperationKind::View)
+            })
+            && row.matches(&self.needle)
+            && self
+                .resource_name
+                .as_deref()
+                .is_none_or(|name| row.resource.is_named(name))
+            && self.target.as_ref().is_none_or(|target| {
+                row.action
+                    .as_ref()
+                    .is_some_and(|action| action.address == *target)
+            })
+    }
+
+    /// How many of the rows it admits this query's cursor is past.
+    #[must_use]
+    pub fn offset(&self) -> usize {
+        offset_of(&self.cursor)
     }
 }
 

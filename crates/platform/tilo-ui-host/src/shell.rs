@@ -27,6 +27,12 @@ fn shell_kind() -> String {
     kind("NavShell")
 }
 
+/// The kind of the node a list's rows are: the toolkit's virtual list, whose groups a title can
+/// say the whole of.
+fn list_kind() -> String {
+    kind("VirtualList")
+}
+
 /// The shell a view's tree is: its root, or the first shell under the fragments around it.
 #[must_use]
 pub fn shell_of(tree: &UiNode) -> Option<&UiNode> {
@@ -124,6 +130,74 @@ fn with_slot(mut shell: UiNode, name: &str, children: Vec<UiNode>) -> UiNode {
 #[must_use]
 pub fn has_overview(shell: &UiNode) -> bool {
     !slot_children(shell, "overview").is_empty()
+}
+
+/// The prop naming the title of the view a list stands under, and the one naming how many
+/// things that title counts: what [`ui::widget::VirtualListProps`] reads, which the shell hands
+/// the lists of its content column (`view_title`, `view_count`).
+const VIEW_TITLE: &str = "view_title";
+const VIEW_COUNT: &str = "view_count";
+
+/// The tree with each titled view's title handed to the lists it holds: a list whose rows all
+/// stand in one group then heads no group of them when that heading says what the view's title
+/// already says — the same words, counting the same rows — since the title over the list says it
+/// once.
+///
+/// A view's title is the one its shell's content header reads (`title:` and `count:`), and it
+/// reaches the lists of that column under whatever the app puts between them. A shell's other
+/// columns say their own things and hand nothing: an overview lists under its own title.
+#[must_use]
+pub fn titled_lists(mut node: UiNode) -> UiNode {
+    hand_title(&mut node, None);
+    node
+}
+
+/// What a view's title says: the words its header reads, and how many things it counts beside
+/// them.
+type Title = (String, Option<i64>);
+
+/// The title the shell `node` reads over its content column.
+fn content_title(node: &UiNode) -> Option<Title> {
+    let words = match node.props.get("title") {
+        Some(Value::Text(title)) if !title.trim().is_empty() => title.clone(),
+        _ => return None,
+    };
+    let count = match node.props.get("count") {
+        Some(Value::Int(count)) => Some(*count),
+        _ => None,
+    };
+    Some((words, count))
+}
+
+/// Hand `title` down the tree: into a list that stands in it, and into what the tree holds.
+fn hand_title(node: &mut UiNode, title: Option<&Title>) {
+    let shell = node.kind == shell_kind();
+    let here = if shell {
+        content_title(node)
+    } else {
+        title.cloned()
+    };
+    if let Some((words, count)) = &here
+        && node.kind == list_kind()
+    {
+        node.props
+            .insert(VIEW_TITLE.to_owned(), Value::Text(words.clone()));
+        match count {
+            Some(count) => node.props.insert(VIEW_COUNT.to_owned(), Value::Int(*count)),
+            None => node.props.remove(VIEW_COUNT),
+        };
+    }
+    for child in &mut node.children {
+        // A shell gives its title to the column it heads, and none to the others.
+        let content = !shell
+            || (child.kind == SLOT
+                && matches!(child.props.get("name"), Some(Value::Text(name)) if name == "content"));
+        if content {
+            hand_title(child, here.as_ref());
+        } else {
+            hand_title(child, None);
+        }
+    }
 }
 
 /// Whether `shell` offers the switch between the views the thing it shows declares: the tabs
@@ -361,6 +435,66 @@ mod tests {
             shell.children.push(slot(name, key, children));
         }
         shell
+    }
+
+    /// The node keyed `key` in the tree under `node`.
+    fn find(node: &UiNode, key: &str) -> Option<UiNode> {
+        if node.key == key {
+            return Some(node.clone());
+        }
+        node.children.iter().find_map(|child| find(child, key))
+    }
+
+    /// A node holding others, as an app's view does around its list.
+    fn stack(key: &str, children: Vec<UiNode>) -> UiNode {
+        let mut stack = UiNode::empty("stack", key);
+        stack.children = children;
+        stack
+    }
+
+    #[test]
+    fn a_window_s_titles_reach_the_lists_of_its_content_column() {
+        let titled = shell(
+            "today",
+            vec![
+                ("overview", vec![node("VirtualList", "places", &[])]),
+                (
+                    "content",
+                    vec![stack("column", vec![node("VirtualList", "rows", &[])])],
+                ),
+            ],
+            &[("title", Value::text("Today")), ("count", Value::Int(2))],
+        );
+        let handed = titled_lists(titled);
+        let list =
+            |key: &str| -> UiNode { find(&handed, key).expect("the list stands where it was") };
+        let rows = list("rows");
+        assert_eq!(
+            rows.props.get("view_title"),
+            Some(&Value::text("Today")),
+            "the content list hears the title over it"
+        );
+        assert_eq!(rows.props.get("view_count"), Some(&Value::Int(2)));
+        assert!(
+            !list("places").props.contains_key("view_title"),
+            "the overview lists under its own title"
+        );
+    }
+
+    #[test]
+    fn a_window_with_no_title_hands_none_to_its_lists() {
+        let untitled = shell(
+            "places",
+            vec![("content", vec![node("VirtualList", "rows", &[])])],
+            &[],
+        );
+        let handed = titled_lists(untitled);
+        assert!(
+            !slot_children(&handed, "content")[0]
+                .props
+                .contains_key("view_title"),
+            "no title stands over the list: its headings stand as they say"
+        );
     }
 
     #[test]

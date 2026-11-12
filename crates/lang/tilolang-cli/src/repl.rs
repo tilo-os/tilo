@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value as Json, json};
 
-use door::{Control, Door};
+use door::Door;
 use editor::{Complete, Editor, Read};
 use style::{Role, paint};
 
@@ -294,26 +294,22 @@ impl Complete for Session {
     }
 }
 
-/// The door and control socket of the session `options` names.
-fn locate(options: &ReplOptions) -> Result<(PathBuf, Option<PathBuf>), String> {
+/// The agent door of the session `options` names.
+fn locate(options: &ReplOptions) -> Result<PathBuf, String> {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
     if let Some(door) = &options.door {
-        return Ok((door.clone(), None));
+        return Ok(door.clone());
     }
     if options.real {
-        let door = runtime
+        return runtime
             .map(|runtime| runtime.join("tilo-session").join("agent.sock"))
-            .ok_or("XDG_RUNTIME_DIR is unset: no session door to reach")?;
-        return Ok((door, None));
+            .ok_or_else(|| "XDG_RUNTIME_DIR is unset: no session door to reach".to_owned());
     }
     let nested = match &options.session {
         Some(named) => nested_runtime(named)?,
         None => newest_nested(runtime.as_deref())?,
     };
-    Ok((
-        nested.join("tilo-session").join("agent.sock"),
-        Some(nested.join("control.sock")),
-    ))
+    Ok(nested.join("tilo-session").join("agent.sock"))
 }
 
 /// The runtime directory of the nested session `named` names: its --ready file, its runtime
@@ -369,9 +365,8 @@ fn newest_nested(runtime: Option<&Path>) -> Result<PathBuf, String> {
 pub fn repl(options: &ReplOptions) -> Result<(), String> {
     let mut editor = Editor::new(Some(crate::state_dir().join("repl-history")));
     style::set(options.color.unwrap_or_else(|| editor.is_terminal()));
-    let (socket, control) = locate(options)?;
-    let control = control.filter(|path| path.exists()).map(Control::new);
-    let door = Door::open(&socket, control.as_ref(), &|line| eprintln!("{line}"))?;
+    let socket = locate(options)?;
+    let door = Door::open(&socket, &|line| eprintln!("{line}"))?;
     if !door.serves("tilo") {
         return Err(format!(
             "the session's door at {} has no `tilo` tool, so it runs no tilolang programs (it \

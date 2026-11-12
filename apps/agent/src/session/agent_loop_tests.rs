@@ -343,53 +343,9 @@ const CHAT_RECORD_PEER: u64 = 29;
 const DESKTOP_PEER: u64 = 9;
 const SECOND_PEER: u64 = 10;
 const BROWSER_PEER: u64 = 11;
-const SEARCH_PEER: u64 = 12;
 /// The Browser tab the fixture's Browser publishes its page actions on.
 const BROWSER_TAB: &str = "browser.tab:1";
 const DOC: &str = "word-processor.document";
-
-/// The first run waits for a companion until it has published actions:
-/// a surface of the companion's app holding none (still starting) does
-/// not count, and other apps' surfaces never stand in for it.
-#[test]
-fn a_companion_counts_once_it_has_published_actions() {
-    let companions = vec!["so.tilo.web-search".to_owned()];
-    let surface = |app: &str, actions: Vec<ExportedAction>| BrokerActionSurface {
-        peer_id: PEER,
-        provider: None,
-        app_id: app.into(),
-        cluster_id: Uuid::from_u128(1).to_string(),
-        record_id: String::new(),
-        live: true,
-        actions,
-    };
-    let search = || {
-        descriptor(
-            "search",
-            "Search the web",
-            tilo_actions::OperationKind::Effect,
-            vec![],
-            Availability::Available,
-            vec![],
-        )
-    };
-    assert_eq!(missing_companions(&companions, &[]), companions);
-    assert_eq!(
-        missing_companions(&companions, &[surface("so.tilo.notes", vec![search()])]),
-        companions
-    );
-    assert_eq!(
-        missing_companions(&companions, &[surface("so.tilo.web-search", vec![])]),
-        companions
-    );
-    assert!(
-        missing_companions(
-            &companions,
-            &[surface("so.tilo.web-search", vec![search()])]
-        )
-        .is_empty()
-    );
-}
 
 fn descriptor(
     action: &str,
@@ -425,6 +381,10 @@ fn descriptor(
 /// The document as the fake application holds it, plus the invoker's
 /// own view (its selection).
 #[derive(Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent fact about the world a run meets, not a state machine"
+)]
 struct World {
     blocks: Vec<(String, String)>,
     selection: Option<String>,
@@ -508,9 +468,8 @@ struct World {
     /// read whole by `read-letter` (a host-owned read, which no view
     /// settles after); zero publishes none.
     letters: usize,
-    /// A Browser and the web search beside it are published, and a capture
-    /// of the page answers with this content address; `None` publishes
-    /// neither.
+    /// A Browser is published, and a capture of the page answers with this
+    /// content address; `None` publishes neither.
     browser: Option<String>,
     /// The workspace also runs tilolang Board and Views, whose hosts take programs,
     /// and the conversation's reply lists the run's steps.
@@ -522,6 +481,9 @@ struct World {
     /// A conversation whose message this is: its reply is where the run
     /// records its turn, so `None` records nothing.
     chat: Option<String>,
+    /// Chat is closed: the workspace keeps the offers it last published, none of them
+    /// a message it publishes now.
+    chat_closed: bool,
 }
 
 /// How the fixture host treats a re-ask that asks to be held.
@@ -701,27 +663,6 @@ impl World {
                     tab("capture-page", "Capture the page", vec![]),
                 ],
             });
-            surfaces.push(BrokerActionSurface {
-                peer_id: SEARCH_PEER,
-                provider: None,
-                app_id: "so.tilo.web-search".into(),
-                cluster_id: Uuid::from_u128(1).to_string(),
-                record_id: String::new(),
-                live: true,
-                actions: vec![ExportedAction {
-                    resource: "web.search:default".into(),
-                    resource_kind: "web.search".into(),
-                    resource_label: "Web search".into(),
-                    ..descriptor(
-                        "fetch",
-                        "Fetch a page's text",
-                        tilo_actions::OperationKind::Effect,
-                        vec![ActionParam::required("url", ParamType::Text, "The address")],
-                        Availability::Available,
-                        vec![],
-                    )
-                }],
-            });
         }
         if self.tilolang {
             surfaces.extend(programs::surfaces());
@@ -730,13 +671,21 @@ impl World {
         // the catalogue already offers, beside the one this run answers. Only
         // the latter may be republished late, so the run's wait for it can be
         // told from a workspace whose Chat publishes nothing at all.
+        // A closed Chat keeps the offers it last published, as the broker retains them
+        // until the app runs again.
+        let live = !self.chat_closed;
         let conversation = |record: &'static str, message: &str| BrokerActionSurface {
             peer_id: CHAT_RECORD_PEER,
-            provider: None,
+            provider: (!live).then(|| {
+                format!(
+                    "launchable-actions:{}:so.tilo.chat:{record}",
+                    Uuid::from_u128(1)
+                )
+            }),
             app_id: "so.tilo.chat".into(),
             cluster_id: Uuid::from_u128(1).to_string(),
             record_id: record.into(),
-            live: true,
+            live,
             actions: vec![ExportedAction {
                 state: tilo_actions::ActionState::default(),
                 semantic_identity: None,
@@ -1017,6 +966,11 @@ struct Broker {
     holding: Vec<HeldReask>,
     /// A catalogue still on its way, and the polls until it arrives.
     late: Option<(usize, CollabEvent)>,
+    /// Wakes the agent's link when this host has more to deliver, so the
+    /// agent's waits sleep between deliveries instead of polling for them.
+    wake: crate::wire::TestWake,
+    /// When a wake is already on its way, so one due time is rung once.
+    wake_at: Option<ui::time::Instant>,
 }
 
 /// A native re-ask the fake host holds until its child moves on.
@@ -1109,11 +1063,15 @@ impl ui::collaboration::PeerTransport for Broker {
         self.events
             .extend(due.into_iter().map(|(_, _, event)| event));
         self.answer_held_reasks(now);
+        self.wake_when_due(now);
         if let Some((polls, event)) = self.late.take() {
             if polls == 0 {
                 self.events.push(event);
             } else {
                 self.late = Some((polls - 1, event));
+                // Another poll still has something to deliver: say so now,
+                // so the link reads it at once rather than on a timer.
+                self.wake.ring();
             }
         }
         std::mem::take(&mut self.events)
@@ -1253,6 +1211,35 @@ impl Broker {
             Some((due, terminal)) if *due <= ui::time::now() => terminal.clone(),
             _ => tilo_actions::InvocationUpdate::Accepted { invocation },
         }
+    }
+
+    /// Ring the link when the first answer this host holds becomes due, as a
+    /// real host's answer arrives on its own. An answer already due needs no
+    /// wake: the next poll reads it.
+    fn wake_when_due(&mut self, now: ui::time::Instant) {
+        let due = self
+            .held
+            .iter()
+            .map(|(at, _, _)| *at)
+            .chain(self.holding.iter().map(|held| held.until))
+            // A child of the run moving on is news of its own.
+            .chain(self.world.borrow().settling.values().map(|(due, _)| *due))
+            .filter(|at| *at > now)
+            .min();
+        let Some(due) = due else {
+            self.wake_at = None;
+            return;
+        };
+        if self.wake_at == Some(due) {
+            return;
+        }
+        self.wake_at = Some(due);
+        let wake = self.wake.clone();
+        let wait = due.saturating_duration_since(now);
+        std::thread::spawn(move || {
+            std::thread::sleep(wait);
+            wake.ring();
+        });
     }
 
     /// Answer a native task's re-ask of a started child (by its stable
@@ -1501,6 +1488,28 @@ fn first_catalogue(world: &World) -> Vec<BrokerActionSurface> {
     surfaces
 }
 
+/// The link to the fake host, which wakes it when it has news to deliver as a
+/// real host does, instead of being polled for it.
+fn host_link(
+    world: &Rc<RefCell<World>>,
+    sent: &Rc<RefCell<Vec<CollabRequest>>>,
+) -> crate::wire::Link {
+    let (wake, rx) = crate::wire::test_wake();
+    crate::wire::test_link(
+        Broker {
+            world: world.clone(),
+            sent: sent.clone(),
+            events: Vec::new(),
+            held: Vec::new(),
+            late: late_chat(&world.borrow()),
+            holding: Vec::new(),
+            wake,
+            wake_at: None,
+        },
+        rx,
+    )
+}
+
 fn execution_fixture(
     title: &str,
     world: World,
@@ -1533,14 +1542,7 @@ fn execution_fixture(
         pace,
         emitted,
     });
-    let link = crate::wire::test_link(Broker {
-        world: world.clone(),
-        sent: sent.clone(),
-        events: Vec::new(),
-        held: Vec::new(),
-        late: late_chat(&world.borrow()),
-        holding: Vec::new(),
-    });
+    let link = host_link(&world, &sent);
     let mut run = runtime_collab::TaskRunEnvelope {
         paused: None,
         model: None,
@@ -1575,7 +1577,6 @@ fn execution_fixture(
                 ui::permissions::KindSet::READ_UNDOABLE,
             ),
             content: ui::content::ContentStore::memory(),
-            companions: Vec::new(),
             provider: None,
             identity: None,
         },
@@ -1590,13 +1591,13 @@ fn execution_fixture(
         native_task: None,
         broker_catalogue: catalogue_of(&surfaces),
         next_broker_request: 1,
-        awaiting_companions: Vec::new(),
         record: None,
         broker_revision: 0,
         catalogue_cache: None,
         turn: None,
         outstanding: crate::session::outstanding::Outstanding::default(),
         spending: None,
+        web: None,
     };
     Fixture {
         session,
@@ -1638,6 +1639,8 @@ fn finish(reply: &str, done: bool) -> (&'static str, Value) {
 
 #[path = "agent_loop/tests/anthropic_dialect.rs"]
 mod anthropic_dialect;
+#[path = "agent_loop/tests/catalogue_waits.rs"]
+mod catalogue_waits;
 #[path = "agent_loop/tests/follow_up.rs"]
 mod follow_up;
 #[path = "agent_loop/tests/long_run.rs"]
@@ -1654,6 +1657,8 @@ mod programs;
 mod spending;
 #[path = "agent_loop/tests/turn_records.rs"]
 mod turn_records;
+#[path = "agent_loop/tests/web.rs"]
+mod web;
 #[path = "agent_loop/tests/web_pages.rs"]
 mod web_pages;
 
@@ -1961,6 +1966,8 @@ fn making_the_second_paragraph_bold_selects_it_then_toggles_the_mark() {
                 "describe_operation",
                 "invoke",
                 "read_result",
+                "search_web",
+                "read_page",
                 "tilo",
                 "plan"
             ],

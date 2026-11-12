@@ -130,6 +130,7 @@ fn open(
             workspace: route.cluster_id.to_string(),
             instance: index as u64,
             person: "ada".to_owned(),
+            installed: std::collections::BTreeMap::new(),
         },
         record,
         Arc::clone(bundle),

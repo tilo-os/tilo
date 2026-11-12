@@ -164,6 +164,37 @@ struct Web {
     door: Option<Arc<crate::door::WaitListDoor>>,
 }
 
+/// Where this host keeps the stand-ins it approves for people with.
+#[must_use]
+pub(crate) fn stand_ins_dir(state_root: &std::path::Path) -> std::path::PathBuf {
+    state_root.join("stand-ins")
+}
+
+/// Make this host the stand-in approver of `root`'s person, with a certificate
+/// their root signs: what a host that places browser sessions certifies them
+/// with. Placing sessions is the agents feature's, which is the only thing
+/// that keeps one.
+///
+/// # Errors
+///
+/// The state directory cannot be read or written, or the root would not sign.
+#[cfg(feature = "agents")]
+pub(crate) fn keep_stand_in(
+    state_root: &std::path::Path,
+    root: &ed25519_dalek::SigningKey,
+) -> Result<(), String> {
+    stand_in::keep(&stand_ins_dir(state_root), root)
+}
+
+/// The stand-in certificate and key this host keeps for `user`, when it keeps
+/// a live one.
+pub(crate) fn stand_in_for(
+    state_root: &std::path::Path,
+    user: &[u8; 32],
+) -> Option<(ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert)> {
+    stand_in::kept(&stand_ins_dir(state_root), user)
+}
+
 /// Checks the published origins against the listeners they front.
 fn checked_origins(config: &WebConfig) -> Result<(), String> {
     if config.public_origin.is_none()
@@ -288,14 +319,11 @@ impl Relay {
         }
         let host_cert = context.relay.identity.cert.clone();
         // Where a page dials this host: its endpoint's key and addresses, and
-        // the relay it was told to reach it through. A page has no UDP socket,
-        // so without that relay an endpoint it binds carries no packet at all —
-        // and an endpoint names its relay only once it has connected to it,
-        // which a start that restarts on kept state opens its listener before.
-        let mut endpoint_addr = self.node_addr();
-        if let Some(relay) = &self.pages_reach {
-            endpoint_addr = endpoint_addr.with_relay_url(relay.clone());
-        }
+        // the relay it is reached through — which the endpoint names from the
+        // moment this host serves anything ([`Relay::start`] waits for it), as
+        // a page has no UDP socket and its own endpoint carries no packet
+        // without one.
+        let endpoint_addr = self.node_addr();
         let relay_url = endpoint_addr.relay_urls().next().map(ToString::to_string);
         let (link_listener, web_link) =
             bind_link(&config, udp, addr, public_origin.as_ref(), &identity).map_err(failed)?;
@@ -328,7 +356,7 @@ impl Relay {
                 tilo_clock::unix_now_ns(),
             ),
             login_codes: Arc::new(login_codes::LoginCodes::new(public_origin.clone())),
-            stand_ins: Arc::new(stand_in::StandIns::new(self.state_root().join("stand-ins"))),
+            stand_ins: Arc::new(stand_in::StandIns::new(stand_ins_dir(self.state_root()))),
             door: config.door.clone(),
         });
         web.serve_stand_ins();

@@ -17,6 +17,7 @@ use crate::join_answer::{JoinWorkspaces, WorkspaceTxn};
 use crate::join_ledger::{GovernanceMessages, Governed, JoinError, JoinLedger, Signer};
 use crate::owner_commit::{CommitBinding, CommitTarget, OwnerCommitReceipt};
 use crate::replica::Replica;
+use collab_types::signer::DeviceSigner as _;
 use ed25519_dalek::SigningKey;
 use std::future::Future;
 use std::time::{Duration, SystemTime};
@@ -275,60 +276,64 @@ impl JoinWorkspaces for OwnerJoinWorkspaces {
 }
 
 impl NativeWorkspaceOwner {
-    /// Issue an invitation into `workspace` as this device, signed by `key`, and
+    /// Issue an invitation into `workspace` as this device, signed by `signer`, its custody,
+    /// outside the owner's turn, and
     /// publish it with the workspace's join ledger: the invitation's grant names
     /// this device, which answers its redemption like any other participant.
     ///
     /// # Errors
     ///
-    /// `key` is not the device's, it may not invite, the role it hands out is
+    /// `signer` is not the device's, signing failed, it may not invite, the role it hands out is
     /// above its own, the request is invalid or the workspace cannot be
     /// published.
     pub fn issue_invitation(
         &self,
         workspace: WorkspaceId,
         administrator: &DeviceCert,
-        request: IssueInvitationRequest,
-        transport: Vec<TransportHint>,
-        key: &SigningKey,
+        request: &IssueInvitationRequest,
+        transport: &[TransportHint],
+        signer: &dyn collab_types::signer::DeviceSigner,
         now: SystemTime,
     ) -> Result<IssuedInvitation, String> {
-        let _turn = self.0.mutation.lock();
-        self.change_record(workspace, |view, record| {
-            if key.verifying_key().to_bytes() != record.device.device_public_key {
-                return Err("invitation is not signed by this device".into());
-            }
-            let mut nonce = [0; 16];
-            getrandom::fill(&mut nonce).map_err(|error| error.to_string())?;
-            view.peer().require_member_writer(key, now)?;
-            view.peer()
-                .require_invitation_authority(key, request.role.into(), now)?;
-            let issued = {
-                let governed = Governed {
-                    peer: view.peer().into(),
-                    host: &record.device,
-                    workspace_id: crate::join::room_workspace_id(&workspace.to_string())
-                        .map_err(|error| error.to_string())?,
-                    generation: record.generation,
-                    governance_messages: None,
+        let mut nonce = [0; 16];
+        getrandom::fill(&mut nonce).map_err(|error| error.to_string())?;
+        crate::owner::write::signed_turn(signer, |key| {
+            let _turn = self.0.mutation.lock();
+            self.change_record(workspace, |view, record| {
+                if key.device_public_key() != record.device.device_public_key {
+                    return Err("invitation is not signed by this device".into());
+                }
+                view.peer().require_member_writer(key, now)?;
+                view.peer()
+                    .require_invitation_authority(key, request.role.into(), now)?;
+                let issued = {
+                    let governed = Governed {
+                        peer: view.peer().into(),
+                        host: &record.device,
+                        workspace_id: crate::join::room_workspace_id(&workspace.to_string())
+                            .map_err(|error| error.to_string())?,
+                        generation: record.generation,
+                        governance_messages: None,
+                    };
+                    record
+                        .join_ledger
+                        .issue(
+                            &governed,
+                            administrator,
+                            request.clone(),
+                            transport.to_vec(),
+                            Signer { key, nonce },
+                            crate::owner::enrollment::ns(now)?,
+                        )
+                        .map_err(|error| error.to_string())?
                 };
-                record
-                    .join_ledger
-                    .issue(
-                        &governed,
-                        administrator,
-                        request,
-                        transport,
-                        Signer { key, nonce },
-                        crate::owner::enrollment::ns(now)?,
-                    )
-                    .map_err(|error| error.to_string())?
-            };
-            record.generation = record
-                .generation
-                .checked_add(1)
-                .ok_or("native join generation exhausted")?;
-            Ok(issued)
+                record.generation = record
+                    .generation
+                    .checked_add(1)
+                    .ok_or("native join generation exhausted")?;
+                key.settled()?;
+                Ok(issued)
+            })
         })
     }
 
@@ -350,12 +355,12 @@ impl NativeWorkspaceOwner {
         &self,
         workspace: WorkspaceId,
         request: &CancelInvitationRequest,
-        key: &SigningKey,
+        key: &dyn collab_types::signer::DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let _turn = self.0.mutation.lock();
         self.change_record(workspace, |view, record| {
-            if key.verifying_key().to_bytes() != record.device.device_public_key {
+            if key.device_public_key() != record.device.device_public_key {
                 return Err("invitation is not cancelled by this device".into());
             }
             view.peer().require_member_writer(key, now)?;

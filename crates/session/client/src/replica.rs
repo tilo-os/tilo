@@ -178,7 +178,7 @@ impl Replicas {
             return Err("the workspace has no governance".into());
         };
         self.owner
-            .receive(*workspace, relayed(author), message, None, now)
+            .receive(*workspace, relayed(author), message, now)
     }
 
     /// Keep `documents`, each a document its author wrote to `workspace_id` ([`relayed`]), in
@@ -201,7 +201,7 @@ impl Replicas {
             .into_iter()
             .map(|(author, message)| (relayed(author), message))
             .collect();
-        self.owner.receive_batch(workspace, inputs, None, now)
+        self.owner.receive_batch(workspace, inputs, now)
     }
 
     /// The workspace held as `workspace_id`, once its governance is.

@@ -1737,7 +1737,7 @@ impl Inner {
             let Some(held) = self.apps.get(&app) else {
                 continue;
             };
-            let index = Arc::clone(&held.index);
+            let index = Arc::clone(&*held.index);
             let seen = stamps_after(&self.chunks, &held.heads);
             let own;
             let docs = &self.index;

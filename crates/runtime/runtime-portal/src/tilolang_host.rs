@@ -125,6 +125,12 @@ pub struct InstanceRequest {
     /// conversation a send landed in): the instance shows it as its `open` would.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reveal: Option<String>,
+    /// The tilolang apps installed here, by id, each with the id its records are kept under: a
+    /// package the app uses that is one of them is another app, whose records the instance reads
+    /// from that app's own record and whose changes it asks of that app's door. A package it uses
+    /// that is not installed as an app keeps its records in the app's own.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub installed: std::collections::BTreeMap<String, String>,
 }
 
 /// An action to run against a record at its origin, as the broker admitted it.
@@ -164,6 +170,11 @@ pub struct TaskRequest {
     /// ([`InstanceRequest::records_under`]).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub records_under: std::collections::BTreeMap<String, String>,
+    /// The apps whose records the session changes itself, the packages it runs: a program's
+    /// change of one goes to its record. A change of any other app is the app's own action,
+    /// invoked where the app runs.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub changed_at_record: std::collections::BTreeSet<String>,
 }
 
 /// The descriptors a task arrives with, in the order the door carries them.
@@ -726,6 +737,7 @@ mod tests {
             },
             record: Some("uuid:7a110d00-0000-4000-8000-000000000009".into()),
             reveal: Some("tl.so.tilo.lang.notes.Note:7".into()),
+            installed: [("so.tilo.lang.tasks".into(), "so.tilo.lang.todo".into())].into(),
         };
         let fds = InstanceFds {
             broker: connection(),
@@ -821,6 +833,7 @@ mod tests {
             person: Some("ada".into()),
             apps_len: 3,
             records_under: [("so.tilo.lang.tasks".into(), "so.tilo.lang.todo".into())].into(),
+            changed_at_record: ["so.tilo.shell".into()].into(),
         };
         let fds = TaskFds {
             program: connection(),

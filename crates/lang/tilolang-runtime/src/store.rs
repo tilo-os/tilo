@@ -603,6 +603,12 @@ impl LinkHow {
 /// them is told of, and what a store with an index keeps to answer them from.
 pub const LINKS: &str = "$links";
 
+/// The pseudo-field of a reading of another app's resource that says what the person it was
+/// read for has not seen of the items it holds: `{"first": <the first unseen item's id, or
+/// null>, "count": <how many>}`. The seen marks and versions that answer it are kept where
+/// that app runs, so they come in the reading, as [`LINKS`] do.
+pub const UNSEEN: &str = "$unseen";
+
 /// What the pseudo-field holding when a field of a resource last changed begins with; the
 /// field's id follows, so `$changed.done` holds the version that last changed `done`
 /// ([`Store::field_changed`]).

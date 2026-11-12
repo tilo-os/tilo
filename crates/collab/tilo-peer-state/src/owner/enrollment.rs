@@ -357,7 +357,7 @@ impl NativeWorkspaceOwner {
         next: &NativeAuthorityStorage,
         required: Option<WorkspaceId>,
     ) -> Result<(), String> {
-        self.0.publish(next, Change::Pending, &mut || {
+        self.0.publish(next, Change::Pending, true, &mut || {
             *self.0.authority.write() = next.clone();
             if let Some(workspace) = required {
                 self.0.current.write().required.insert(workspace);

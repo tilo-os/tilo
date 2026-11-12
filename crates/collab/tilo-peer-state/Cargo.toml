@@ -99,6 +99,10 @@ tilo-test-env = { path = "../../dev/test-env" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 # Membership replay is a property over operation sets, not one fixture.
 proptest.workspace = true
+# The desk a received workspace desktop is drawn on: the surface every host
+# shows another device's windows through, reconciled from the tree that
+# arrived, not read as a document.
+tilo-desktop-surface = { path = "../../session/desktop-surface" }
 
 [[test]]
 name = "renewed_membership"

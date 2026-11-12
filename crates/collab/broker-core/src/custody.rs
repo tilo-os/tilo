@@ -2,7 +2,6 @@
 //! where the owner is, whether this device still holds custody of a workspace, and how a commit
 //! reaches the workspace's peers. Every host that holds an owner serves it.
 
-use ed25519_dalek::SigningKey;
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::owner::NativeWorkspaceOwner;
 
@@ -30,15 +29,15 @@ pub trait OwnerCustody: collab_types::signer::MaybeSendSync + 'static {
         owner: &NativeWorkspaceOwner,
         workspace: WorkspaceId,
     ) -> Result<(), String>;
-    /// The key this device signs its own changes of `workspace` with.
+    /// This device's custody of its key, which signs its own changes of `workspace`.
     ///
     /// # Errors
-    /// This device holds no custody of `workspace`, or has no key.
-    fn signing_key(
+    /// This device holds no custody of `workspace`.
+    fn signer(
         &self,
         owner: &NativeWorkspaceOwner,
         workspace: WorkspaceId,
-    ) -> Result<SigningKey, String>;
+    ) -> Result<std::sync::Arc<dyn collab_types::signer::DeviceSigner>, String>;
     /// Send the owner's outgoing custody of `workspace` to its peers soon:
     /// what was just committed leaves this device. Queued, never awaited.
     fn schedule_publication(&self, workspace: WorkspaceId);

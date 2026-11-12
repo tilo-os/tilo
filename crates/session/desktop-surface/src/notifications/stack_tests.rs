@@ -502,6 +502,58 @@ fn banners_keep_clear_of_the_window_bars_under_the_corner() {
     assert!((stack.first_top() - corner).abs() < f64::EPSILON);
 }
 
+/// A page draws a frame when the layer asks for one, and draws nothing between. A banner coming on
+/// screen must keep that asking going until it stands where it rests, at a phone's width as at a
+/// desktop's: a page that stopped asking early would leave it half in — faint, off its corner,
+/// cut off by the edge of the screen — for as long as nothing else happened to need a frame.
+#[test]
+fn a_banner_keeps_the_page_drawing_until_it_stands_at_every_width() {
+    for width in [390.0, 1280.0] {
+        let host = TestHost::default();
+        host.push(Notification::new(
+            "Claude Code finished: 8 changes in Workspace",
+            "Edited Launch notes",
+        ));
+        let mut stack = NotificationStack::new();
+        stack.set_viewport(Rect::new(0.0, 0.0, width, 844.0));
+        let theme = Theme::light();
+        let began = Instant::now();
+        let mut frames = 0;
+        loop {
+            draw(&mut stack, &host, &theme);
+            frames += 1;
+            if !act(&mut stack, &host, |s| s.needs_animation_frame()) {
+                break;
+            }
+            assert!(
+                began.elapsed() < Duration::from_secs(2),
+                "{width} wide: the banner still asks for frames {frames} in"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+        assert!(frames > 2, "{width} wide: the entry took {frames} frames");
+        // Both widths stand a card of the same width, a corner inset from the right edge: the
+        // page draws the same entry, whole.
+        let card_width = (width - CORNER_INSET * 2.0).clamp(0.0, TOAST_WIDTH);
+        assert_eq!(
+            stack.rect(),
+            Rect::new(
+                width - CORNER_INSET - card_width,
+                stack.first_top(),
+                width - CORNER_INSET,
+                stack.rect().y1
+            ),
+            "{width} wide: the banner stands at rest in the corner"
+        );
+        let n = host.log().active()[0].clone();
+        assert_eq!(
+            NotificationStack::animation_state(&n, Instant::now(), (false, false), card_width),
+            (1.0, 0.0),
+            "{width} wide: the banner stands whole, neither faint nor slid"
+        );
+    }
+}
+
 #[test]
 fn live_notification_requests_entry_frames_and_a_future_exit_wake() {
     let host = TestHost::default();
@@ -1226,4 +1278,24 @@ fn a_reply_can_be_given_up_and_is_only_offered_when_it_can_be_carried() {
             .any(|ask| matches!(ask, BannerAsk::Reply { .. })),
         "Escape sends nothing"
     );
+}
+
+/// An agent's own notice ("Claude Code finished: 8 changes in Workspace", sent in its name) leads
+/// with its face and says nothing over its title repeating that name; an app's notice about a
+/// person keeps the app as its source line.
+#[test]
+fn a_notice_in_its_senders_own_name_has_no_source_line_repeating_it() {
+    let own = Notification::new(
+        "Claude Code finished: 8 changes in Workspace",
+        "Working in Notes",
+    )
+    .with_from("Claude Code", "agent-key")
+    .with_app_name("Claude Code");
+    assert_eq!(NotificationStack::source_line(&own), "");
+    let about = Notification::new("Ada sent a message", "Lunch?")
+        .with_from("Ada", "ada-key")
+        .with_app_name("Chat");
+    assert_eq!(NotificationStack::source_line(&about), "Chat");
+    let plain = Notification::new("Saved", "").with_app_name("Notes");
+    assert_eq!(NotificationStack::source_line(&plain), "Notes");
 }

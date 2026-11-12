@@ -223,3 +223,103 @@ fn a_reader_renewed_after_missed_changes_reads_whole() {
     assert!(ready);
     assert_eq!(whole, 2, "the renewed channel starts with a whole read");
 }
+
+/// The workspace's whole copy of a record reaches an owner that cannot read it
+/// (a version this app does not read). The owner keeps its own record: nothing
+/// waits on the capture, the route publishes again, and a later change, whose
+/// base the owner holds, still lands. The unreadable bytes are never asked for
+/// again.
+#[test]
+fn a_whole_capture_the_owner_cannot_read_leaves_the_route_going() {
+    use automerge::transaction::Transactable as _;
+    let mut reader = ReadyReader::start();
+    // The record moves on, and the broker hands a reader that holds the one
+    // before it the whole copy of the new one.
+    {
+        let mut captures = reader.captures.lock().unwrap();
+        captures.committed_history_fixture = Some(vec![0xff; 16]);
+        captures.committed_revision = Some([8; 32]);
+    }
+    reader.wake_waits();
+    let read = reader.next_delivered("the whole capture to reach the owner");
+    assert!(read.is_whole(), "the record arrives whole");
+    assert!(
+        !reader.ready(),
+        "a delivered capture withholds readiness while its owner has it"
+    );
+    let mut owner = reader.graph.clone();
+    let merged = read.take_into(
+        &mut owner,
+        |_document: &mut automerge::AutoCommit, mutation| {
+            let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
+                return Err("changes where the whole document was expected".to_string());
+            };
+            automerge::AutoCommit::load(bytes).map_err(|error| error.to_string())
+        },
+    );
+    assert!(
+        merged.is_none(),
+        "a copy of a version this app does not read is not taken in"
+    );
+    assert!(
+        read.was_refused(),
+        "refusing the whole copy ends the reader's wait on it"
+    );
+    // Nothing waits on the capture: the route publishes the record the owner
+    // holds again, and the delivery turn it held is free.
+    reader.wait_ready("the route to take its owner's record again");
+    assert!(
+        reader.state.document_reads.publishable(&reader.key),
+        "a copy it cannot read never closes the route"
+    );
+    // A change the owner can place, because it holds its base: its own heads,
+    // not the bytes it could not read.
+    let before = owner.get_heads();
+    owner
+        .put(automerge::ROOT, "body", "an edit after the unreadable copy")
+        .unwrap();
+    owner.commit();
+    {
+        let mut captures = reader.captures.lock().unwrap();
+        captures.committed_history_fixture = Some(owner.save());
+        captures.committed_revision = Some([9; 32]);
+        captures.committed_changes = Some(FixtureChanges {
+            from: [8; 32],
+            base: before.iter().map(|head| head.0).collect(),
+            bytes: owner.save_after(&before),
+        });
+    }
+    reader.wake_waits();
+    let later = reader.next_delivered("the change after the unreadable copy");
+    assert!(
+        !later.is_whole(),
+        "the reader went on from the revision it read"
+    );
+    assert!(
+        later.applies_to(&owner),
+        "the change bases on the record the owner holds"
+    );
+    assert!(
+        later
+            .take_into(&mut owner, |document, mutation| {
+                let collab_types::DocumentMutation::Incremental(bytes) = mutation else {
+                    return Err("the whole document where changes were expected".to_string());
+                };
+                tilo_automerge::ApplyIncoming::load_incoming(document, bytes)
+                    .map_err(|error| error.to_string())
+            })
+            .is_some(),
+        "a change it can place still lands"
+    );
+    reader.wait_ready("the reader to confirm the taken change");
+    let whole = whole_reads(&reader.captures.lock().unwrap());
+    let connected = reader.manager.is_connected();
+    let unapplied = reader.delivered.len();
+    reader.finish();
+    assert!(connected, "a capture it cannot read never stops the reader");
+    assert_eq!(
+        whole, 1,
+        "the whole document is asked for once, never the bytes it could not read"
+    );
+    assert_eq!(unapplied, 0, "nothing else is handed over");
+}

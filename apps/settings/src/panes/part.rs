@@ -1,17 +1,18 @@
 //! The panes' part of Settings: the areas, effect families, live
 //! areas and settings rows they bring ([`crate::area::Part`]).
 
-#[cfg(feature = "tilo-os")]
 use crate::categories::Category;
 use crate::effects::AreaVocabulary as _;
 
 #[cfg(feature = "tilo-os")]
 use crate::panes::{
-    about, accounts, agent_models, audio, bluetooth, device_mesh, devices_access, disk_unlock,
-    display, drives, mouse_keyboard, network, notifications, permissions, personal_apps, power,
-    printers, speakers, storage, time_date, updates, users,
+    about, accounts, agent_models, audio, bluetooth, device_mesh, disk_unlock, display, drives,
+    mouse_keyboard, network, notifications, permissions, personal_apps, power, printers, speakers,
+    storage, time_date, updates, users,
 };
-use crate::panes::{accessibility, appearance, billing, keyboard_shortcuts, region};
+use crate::panes::{
+    accessibility, appearance, billing, devices_access, keyboard_shortcuts, region,
+};
 
 /// The host client Device mesh carries pairing requests on, which the areas
 /// that act through the host share.
@@ -121,8 +122,6 @@ pub(crate) const AREAS: &[(u16, crate::area::MakeArea)] = &[
     (230, |context, made| {
         Box::new(billing::BillingArea::new(context, mesh_remote(made)))
     }),
-    // On the web until the person's devices and agents reach it there.
-    #[cfg(feature = "tilo-os")]
     (240, |context, made| {
         Box::new(devices_access::DevicesAccessArea::new(
             context,
@@ -183,7 +182,6 @@ pub(crate) const FAMILIES: &[(u16, &crate::effects::EffectFamily)] = &[
     #[cfg(feature = "tilo-os")]
     (230, accounts::AccountsEffect::FAMILY),
     (270, billing::BillingEffect::FAMILY),
-    #[cfg(feature = "tilo-os")]
     (280, devices_access::DevicesAccessEffect::FAMILY),
 ];
 
@@ -192,7 +190,6 @@ pub(crate) const FAMILIES: &[(u16, &crate::effects::EffectFamily)] = &[
 /// rows show only what its pane already read; `read` with the effects its
 /// model answers for one whose read blocks on the device and so runs on the
 /// background executor ([`crate::effects::BackgroundRead`]).
-#[cfg(feature = "tilo-os")]
 macro_rules! live {
     (@ $order:literal, $name:literal, $pane:ident, $module:ident :: $area:ident,
         $is_open:expr, $background:expr) => {
@@ -240,7 +237,6 @@ macro_rules! live {
 
 /// Every area with live rows, in the order their rows are published.
 pub(crate) const LIVE_AREAS: &[(u16, crate::effects::LiveArea)] = &[
-    #[cfg(feature = "tilo-os")]
     live!(
         250,
         "settings.rows.devices_access",

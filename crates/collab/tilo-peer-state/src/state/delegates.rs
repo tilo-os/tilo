@@ -20,12 +20,13 @@
 //! but it is no reader of the workspace's channels and no op of it is admitted.
 
 use super::facades::{PeerGovernance, PeerGovernanceMut};
+use collab_types::signer::DeviceSigner;
 use serde::{Deserialize, Serialize};
 use tilo_action_policy::roles::agent_policy;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_join::delegation::{Delegate, Delegation};
 
-use super::{GovernedIdentity, Role, SigningKey, SystemTime, err, now_ns, workspace};
+use super::{GovernedIdentity, Role, SystemTime, err, now_ns, workspace};
 
 /// What a governed identity carries when its device is a delegate of its
 /// person: an agent, or an installed bot.
@@ -223,7 +224,7 @@ impl PeerGovernanceMut<'_> {
         self,
         cert: DeviceCert,
         delegation: Delegation,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         if delegation.delegate.agent_id().is_none() {
@@ -321,7 +322,7 @@ impl PeerGovernanceMut<'_> {
     pub fn withdraw_agent(
         self,
         device: [u8; 32],
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let doc = self

@@ -144,6 +144,9 @@ pub struct Core {
     /// Where a task's programs send what they change, in a host that runs no app's code
     /// ([`crate::delegate`]); `None` where the runtime runs actions itself.
     pub invoker: RefCell<Option<Box<dyn crate::delegate::Invoker>>>,
+    /// Whether [`Self::invoker`] takes this runtime's own actions too, as a host that holds no
+    /// records needs, or only other apps'.
+    pub delegates_own: std::cell::Cell<bool>,
     /// The verbs the host's resources publish that no loaded package declares, by resource and
     /// verb ([`crate::published`]): what a view names on the resource it shows (`post` on a
     /// channel) and the runtime sends to the app that publishes it, as it sends any other app's
@@ -294,6 +297,7 @@ impl Core {
             program: RefCell::new(None),
             text_search: RefCell::new(None),
             invoker: RefCell::new(None),
+            delegates_own: std::cell::Cell::new(false),
             published: RefCell::new(crate::published::Published::default()),
             reader: RefCell::new(None),
             trying: std::cell::Cell::new(false),

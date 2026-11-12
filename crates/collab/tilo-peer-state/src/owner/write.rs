@@ -21,7 +21,163 @@ pub enum Write {
 /// A write as the owner committed it, with its receipt.
 pub type Committed = (OwnerCommitRequest, OwnerCommitReceipt);
 
+/// Sign `envelope`, drafted in an owner's turn, with `signer`, this device's custody of its
+/// key, outside that turn.
+pub(crate) async fn sign(
+    signer: &dyn collab_types::signer::DeviceSigner,
+    envelope: &mut collab_types::SignedOp,
+) -> Result<(), String> {
+    let bytes = envelope
+        .signing_bytes()
+        .map_err(|error| error.to_string())?;
+    let signature = signer
+        .sign(bytes)
+        .await
+        .map_err(|error| error.to_string())?;
+    envelope.signature = collab_types::Signature::from_bytes(signature);
+    collab_types::verify_op(envelope).map_err(|error| error.to_string())
+}
+
+/// How many times one signed turn runs before it gives up: each run signs what the one before it
+/// asked, so a turn whose signatures sign over earlier ones (a membership operation on top of the
+/// one it just wrote) runs once per link of that chain.
+const SIGNED_RUNS: usize = 16;
+
+/// This device's signatures as one owner turn takes them: what its signer signed for an earlier
+/// run of the same turn answers at once; anything else answers with a blank signature, and is kept
+/// to be signed outside the turn, so the run still asks for every signature that does not sign
+/// over another. A run that asked for one commits nothing ([`Self::settled`]).
+pub(crate) struct Signatures {
+    device: [u8; 32],
+    signed: parking_lot::Mutex<std::collections::BTreeMap<Vec<u8>, [u8; 64]>>,
+    wanted: parking_lot::Mutex<std::collections::BTreeSet<Vec<u8>>>,
+}
+
+impl Signatures {
+    /// Whether this run signed only with signatures the signer gave: a run that did not commits
+    /// nothing, and runs again once they are signed.
+    pub(crate) fn settled(&self) -> Result<(), String> {
+        if self.wanted.lock().is_empty() {
+            Ok(())
+        } else {
+            Err(UNSIGNED.into())
+        }
+    }
+}
+
+const UNSIGNED: &str = "the device signer signs this change outside the owner's turn";
+
+/// Run `turn`, a change of this device that signs as it goes, with `signer`, this device's
+/// custody of its key: a run that asks for a signature `signer` has not given yet commits
+/// nothing ([`Signatures::settled`]), `signer` signs what it asked for outside the owner's
+/// turn, and the turn runs again, until one run signed everything it wrote. A run sees what
+/// the runs before it saw, or asks again for what changed. `signer` answers at once, as the
+/// custody of every device that holds an owner does ([`collab_types::signer::sign_now`]).
+///
+/// # Errors
+/// `turn` refused, signing failed, or the turn still asked for signatures after its last run.
+pub(crate) fn signed_turn<T>(
+    signer: &dyn collab_types::signer::DeviceSigner,
+    mut turn: impl FnMut(&Signatures) -> Result<T, String>,
+) -> Result<T, String> {
+    let signatures = Signatures {
+        device: signer.device_public_key(),
+        signed: parking_lot::Mutex::default(),
+        wanted: parking_lot::Mutex::default(),
+    };
+    for _ in 0..SIGNED_RUNS {
+        let ran = turn(&signatures);
+        let wanted = std::mem::take(&mut *signatures.wanted.lock());
+        if wanted.is_empty() {
+            return ran;
+        }
+        for message in wanted {
+            let signature = collab_types::signer::sign_now(signer, message.clone())
+                .map_err(|error| error.to_string())?;
+            signatures.signed.lock().insert(message, signature);
+        }
+    }
+    Err(UNSIGNED.into())
+}
+
+impl collab_types::signer::DeviceSigner for Signatures {
+    fn device_public_key(&self) -> [u8; 32] {
+        self.device
+    }
+
+    fn sign(&self, message: Vec<u8>) -> collab_types::signer::SignFuture<'_> {
+        let signed = self.signed.lock().get(&message).copied();
+        let signature = signed.unwrap_or_else(|| {
+            self.wanted.lock().insert(message);
+            [0; 64]
+        });
+        Box::pin(std::future::ready(Ok(signature)))
+    }
+}
+
 impl NativeWorkspaceOwner {
+    /// Keep this device's verdicts on the document writes `heard` names, each with what
+    /// [`Self::receive`] answered for it, in its own slice of `workspace`, signed by `signer`: a
+    /// refused write reaches its author, as the next sync carries the verdict back, and a write
+    /// that landed clears the verdict it lands on. One carrier, the workspace document itself.
+    ///
+    /// # Errors
+    /// The workspace is not held here, `signer` is not this device's, signing failed, or the
+    /// verdicts cannot be committed. A verdict the workspace does not take is left out.
+    pub fn keep_verdicts(
+        &self,
+        workspace: WorkspaceId,
+        heard: &[(&NeighbourMsg, &Result<crate::AdmissionReport, String>)],
+        signer: &dyn collab_types::signer::DeviceSigner,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        let heard = heard
+            .iter()
+            .filter(|(message, _)| matches!(message, NeighbourMsg::AppDocument { .. }))
+            .collect::<Vec<_>>();
+        if heard.is_empty() {
+            return Ok(());
+        }
+        crate::owner::write::signed_turn(signer, |signed| {
+            let _turn = self.0.mutation.lock();
+            let candidate = self.view(workspace)?;
+            let device = candidate.device().clone();
+            let (kept, record) = candidate.change(|live, record| {
+                let mut kept = false;
+                let mut unkept = Vec::new();
+                for (message, report) in &heard {
+                    let verdict = match report {
+                        Ok(_) => live
+                            .workspace_mut()
+                            .clear_landed_write(&device, message, signed, now),
+                        Err(reason) => live
+                            .workspace_mut()
+                            .refuse_write(&device, message, reason, signed, now),
+                    };
+                    match verdict {
+                        Ok(filed) => kept |= filed,
+                        Err(error) => unkept.push(error),
+                    }
+                }
+                signed.settled()?;
+                for error in unkept {
+                    tracing::warn!(%error, "a document write's verdict was not kept");
+                }
+                if kept {
+                    record.generation = record
+                        .generation
+                        .checked_add(1)
+                        .ok_or("native owner generation exhausted")?;
+                }
+                Ok(kept)
+            })?;
+            if kept {
+                self.publish_record(workspace, &candidate, record, None)?;
+            }
+            Ok(())
+        })
+    }
+
     /// Commit the writes `prepare` drafts from `workspace` as it stands, in order: each draft
     /// signed by `signer`, this device's custody of its key, outside the owner's turn. Commits as
     /// many as the workspace's outgoing custody takes; the rest wait until its host answered some
@@ -51,15 +207,7 @@ impl NativeWorkspaceOwner {
                     let CommitOperation::Document { envelope, .. } = &mut request.operation else {
                         return Err("unsupported native owner commit family".into());
                     };
-                    let bytes = envelope
-                        .signing_bytes()
-                        .map_err(|error| error.to_string())?;
-                    let signature = signer
-                        .sign(bytes)
-                        .await
-                        .map_err(|error| error.to_string())?;
-                    envelope.signature = collab_types::Signature::from_bytes(signature);
-                    collab_types::verify_op(envelope).map_err(|error| error.to_string())?;
+                    sign(signer, envelope).await?;
                     request
                 }
             });

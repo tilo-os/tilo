@@ -50,11 +50,12 @@ usage:
       a native app (its committed surface.toml) and a tilolang package alike
   tilolang repl [--session SESSION | --door SOCKET | --real] [--color always|never]
       tilolang typed against a running session through its agent door: the nested session
-      started last by default (SESSION: its --ready file, runtime directory or control socket,
-      where the REPL is admitted as the person's agent, its answers theirs), another session's
-      door, or the person's own session (--real), where the person admits it. Each entry is a
-      program for the door's `tilo` tool, run as the REPL's task: lets are kept, refs (n3) name
-      what answers showed, a bulk change previews until `confirm`, `undo` takes a step back.
+      started last by default (SESSION: its --ready file, runtime directory or control socket),
+      another session's door, or the person's own session (--real). The person admits it there:
+      on the sheet the door puts up, or ahead of time when they start the session
+      (`tilo-session --admit-repl PATH`). Each entry is a program for the door's `tilo` tool, run
+      as the REPL's task: lets are kept, refs (n3) name what answers showed, a bulk change
+      previews until `confirm`, `undo` takes a step back.
   tilolang layout-check [DIR]... [--search DIR]... [--allow FILE] [--json] [--root NAME] [--state NAME=VALUE]... [--key KEY]... [--press LABEL]... [--dump WxH [--shots DIR [--theme NAME]... [--bar-at-rest]]] [--locale TAG]
       lay out every view of each app headlessly, staged from each of its scenarios, at window
       sizes from 320x568 to 3440x1440, display scales 1 and 2 and text scales 1 and 1.5, and

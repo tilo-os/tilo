@@ -349,12 +349,14 @@ Against the targets:
 ## Is `dom: true` ready to be the web default?
 
 Not yet. What is ready: every app of the desktop bundle draws as HTML
-without an error and within 1 % of the canvas's pixels but for two; text
-is real, selectable and in one flow per paragraph; scroll containers are
-native, with the browser's wheel and touch; sign-in fields are real inputs
-that autofill and offer passkeys on; the semantic tree is one with the
-painted one for most widgets; a widget key no longer moves when the
-container that draws it leaves a child out; the start module did not grow
+without an error, and each of the twenty apps the parity run now works the
+way a person works them agrees with the canvas within 1 % of its pixels but
+for one; text is real, selectable and in one flow per paragraph; scroll
+containers are native, with the browser's wheel and touch; sign-in fields
+are real inputs that autofill and offer passkeys on; the semantic tree is
+one with the painted one for most widgets; a widget key no longer moves when
+the container that draws it leaves a child out; a press on anything in the
+window bar acts, as it does on the canvas; the start module did not grow
 beyond noise.
 What blocks it:
 
@@ -371,19 +373,87 @@ What blocks it:
   toolkit to answer "did anything change?" before it draws — a frame that
   only queued work asked for, whose sync leaves the composition at rest,
   should draw nothing.
-- **Not every app is measured past its first screen.** The parity run mounts
-  each app and types into its first field; `parity.mjs` also drives a
-  scenario for the apps that have one (see **Reproducing**): a seeded note
+- **Half the bundle is measured past its first screen.** The parity run
+  mounts each app and types into its first field; `parity.mjs` also drives a
+  scenario for twenty of its forty apps (see **Reproducing**): a seeded note
   typed into, dragged over and asked for its text menu; the canvas app's
-  dialog and two strokes; the video editor's timeline. Those steps agree with
-  the canvas within glyph edges — the note's typed and selected frames differ
-  by 1.1 % — and the run found a dialog that does not: the canvas app's "New
-  artwork…" differs in 47 % of its pixels, with the sheet behind it painted
-  much darker as HTML than on the canvas. ebook's pages agree line for line
-  and word for word, but its column of text carries about 4 % more ink as
-  HTML and its heading is 2.8 % narrower; that is a face or an antialiasing
-  weight, not the line breaks it once looked like, and it is not yet
-  explained.
+  dialog and two strokes; the video editor's timeline; and, on first screens
+  after that, Chat (a channel, a message composed, the window menu, the
+  sidebar dragged in), Word Processor (a menu, typing, a selection dragged
+  over it), Sheets (a value typed into a cell, a range dragged over cells, a
+  formula started from the bar, a sheet added), Settings (another pane, a
+  chooser opened, a density picked), Photos (a library side, the album
+  sheet), Calendar (the month picker, a day pressed and let go on another,
+  the event dialog), Activity (two of its views, the window menu), Tasks (an
+  issue written, the board, the window menu), Slides (a slide's background,
+  the overview, the deck named in the bar), Maps (a zoom, the map dragged,
+  the layer chooser), Contacts and Snippets (the new sheet, a library side),
+  Music (two sides, the window menu), Scratchpad (a line typed, the window
+  menu), Passwords (the new sheet, a side), E-book Reader (the chapter list,
+  a bookmark) and Clocks (two cities added). Browser and Files are not web
+  apps and are not in the bundle; the desk's own surfaces — the people
+  overlay and the search palette — are not on a page that shows one app,
+  whose window search is instead a step of its own.
+
+  Every step agrees with the canvas within glyph and picture edges but one,
+  which is ebook (below). Two steps used to disagree, and neither was a
+  rendering difference:
+  - **Calendar's event dialog** differed in 44.8 % of its pixels, the whole
+    window blank where the canvas drew the dialog over a dimmed month. It was
+    not the scrim, nor a layer the encoder dropped: the press that raises the
+    dialog never acted, so the frame the page held was the month from before
+    it, and the canvas's shot was the only one with a dialog in it. A frame
+    replaces the elements under a still pointer, the browser fires a
+    `pointerout` for the removed node, and the page forwarded every
+    `pointerout` to the runtime, which took it as the pointer leaving the
+    surface and ended the press in hand. Every control that acts when a press
+    ends was dead in HTML — every app's window menu, every sheet raised from
+    the bar. A `pointerout` is now a leave only when the pointer is outside
+    the layer's box; the step went to **0.39 %**.
+  - **Settings' Accessibility pane** differed in 16.2 %, which read as HTML
+    painting large near-black areas. The pane itself agrees with the canvas
+    within **0.4 %**; what differed was that the page still showed the pane
+    before it, because the press that opens the pane was dropped. That is a
+    press lost right after the density was changed, and it is lost in **both**
+    renders: on the canvas too, the click after a density change does
+    nothing. It is the app's or the toolkit's bug, not the renderer's, and the
+    scenario now opens the pane before it changes the density. The run also
+    names any step that changed nothing, in either render, so a press the app
+    dropped can no longer read as a pixel difference.
+- **A scrim was painted as black.** A modal's dim is two fills: a soft-light
+  tone stage and a wash. The encoder handed the page the layer's opacity and
+  dropped its blend mode, so the page painted the tone stage as plain black:
+  the sheet behind the canvas app's "New artwork…" read 104,102,98 against
+  the canvas's 184,179,167. The encoder now names the blend (its CSS name)
+  and the page composites the group with it. That step went from 47.25 % of
+  pixels differing to **0.68 %**, and the sheet is now identical to the
+  canvas to the channel. Every modal of the toolkit draws its dim through
+  that one function, so the fix is the sheet's for all of them; the sheets
+  the scenarios raise (Photos' new album, 1.4 %; Settings' chooser, 0.7 %)
+  agree.
+- **ebook is the app that still differs**, in 4.7 % of its first screen's
+  pixels and 2.8 % of its steps. Its text column is not the difference: the
+  page ground and every body line are the same to the channel, line for line
+  and word for word, and for every run followed on its line the browser's
+  step to the last character is the toolkit's advance to within 0.03 %. Two
+  things are. **The book's title in the window bar is missing**: the slot
+  row's location label ("The Lantern-Keeper's Almanac by Wren Halloway", the
+  div at 112,6,996,28 the semantic tree names, which the canvas paints) has
+  no text run of its own in the HTML frame, though every icon of that bar is
+  there. It is 0.05 % of the page's pixels — small, and a whole word missing
+  is not. The other 4.6 % is the text's coverage: HTML carries more ink over
+  fewer pixels — darker, crisper edges against the canvas's softer ones. No
+  CSS text property moves that: `text-rendering: geometricPrecision` makes it
+  worse (4.0 %), `font-synthesis: none` and `font-kerning: none` change
+  nothing. This is one browser's rasterizer against vello's, as it is on
+  every canvas-versus-HTML figure here, and nothing a page sets changes it.
+- **A press after a change of density is dropped, in both renders.** Picking
+  a density in Settings and then pressing a control does nothing, on the
+  canvas as in HTML: the press is dispatched and the tree says it was
+  handled, and nothing moves. It is what made the pane's step read as 16 %
+  before the run could tell a step that changed nothing from one that
+  changed the wrong thing. Nothing in the renderer is involved, so it is
+  left as it is here.
 - **Phones.** Ten apps are measured at 390 px now, and all of them but Maps
   agree with the canvas within glyph and picture edges; Maps' difference is
   its remote tiles, which the run now counts per render. A picture — a chart
@@ -393,8 +463,20 @@ What blocks it:
   own test. A denser island costs more to draw when it changes: the same
   picture at three device pixels per point is nine times the pixels, capped
   at four million.
-- **Real hardware.** Every number here is headless Chrome without a GPU;
-  Safari and Firefox are not run at all.
+- **Real hardware.** Every number here is headless Chromium without a GPU.
+  The tools drive Firefox and WebKit too (`engines.mjs`, Playwright's own
+  builds), and the page is the same in Firefox to within **0.11 – 0.13 %** of
+  its pixels against Chromium's HTML for the canvas app, Chat and Sheets,
+  scenario steps included. Neither engine has the canvas here (`navigator.gpu`
+  is Chromium's alone in these headless builds), so those runs compare HTML
+  with HTML. WebKit mounts the page too: what once read as "the operation
+  failed for an unknown transient reason" was the *session* rather than the
+  engine. Playwright's `browser.newContext()` is an incognito context, and
+  WebKit hands an incognito — a private — session no file store at all:
+  `navigator.storage.getDirectory()` rejects there, and the mount used to stop
+  on that rejection. A page now mounts without app files and says so, and the
+  tools open a throwaway profile instead of an incognito context, which is the
+  session a person has (`boot.sh` below checks both).
 
 ## Reproducing
 
@@ -413,8 +495,19 @@ crates/browser/tilo-browser-runtime/scripts/build.sh \
   "$CARGO_TARGET_DIR/htmlrenderer/desktop" --bundle desktop --profile release
 tools/web/html-renderer/run-typing.sh [--keys N] [--trace] [--phone]
 tools/web/html-renderer/run-parity.sh [--scenarios] [--phone] [--apps id,id]
+tools/web/html-renderer/run-parity.sh --browser firefox --against <a Chromium run's directory>
+tools/web/html-renderer/engines.sh install   # Playwright's Firefox and WebKit, for the run above
+tools/web/html-renderer/boot.sh "$CARGO_TARGET_DIR/htmlrenderer/desktop" --browser webkit
 node tools/web/html-renderer/names.mjs "$CARGO_TARGET_DIR/htmlrenderer/desktop" so.tilo.notes --seed note
+node tools/web/html-renderer/names.mjs "$CARGO_TARGET_DIR/htmlrenderer/desktop" so.tilo.chat --unnamed
 ```
+
+`boot.sh` is the one check the parity runs cannot stand in for: it loads the
+bundle's page in that engine and says whether the desktop mounted, drew a
+frame and threw nothing — and whether a private window, which the browser
+gives no file store, still mounts and reports `files: 'unavailable'` rather
+than failing. Every visitor on a Mac or an iPhone arrives in WebKit, where a
+mount that only works in Chromium is a locked door.
 
 `run-typing.sh` is what one key costs: the frames it draws and what each
 spent, the toolkit's per-pass timings, the widget paths of what asked for
@@ -423,16 +516,29 @@ one. It measures the plain-DOM page first and rejects the run when that page's
 median is above 8 ms, since a machine busy enough to slow a plain page by that
 much says nothing about this one.
 
-`parity.mjs` drives a scenario where it has one (`--scenarios` runs only
-those apps): a note seeded through the app's own import action and found by
-the name the sidebar gives it, a selection dragged over it, its text menu
-raised; the canvas app's dialog and strokes; the video editor's timeline. Each
-step names its target the way assistive technology does, so both renders are
-worked the same way, and each screenshot is compared after each step. Where a
-render put the named control is reported beside the diff. `--phone` runs the
-same apps at 390 px with three device pixels per point. When a step cannot
-find its target it prints the names the tree does hold, which is what
-`names.mjs` lists on its own.
+`parity.mjs` drives a scenario for twenty of the bundle's forty apps
+(`--scenarios` runs only those): a note seeded through the app's own import
+action and found by the name the sidebar gives it, a selection dragged over
+it, its text menu raised; the canvas app's dialog and strokes; the video
+editor's timeline; and, on the first screens of the rest, what a person does
+with each — a view picked, a line typed, a menu raised from the window bar, a
+sheet put away, the map or the sidebar dragged (the readiness section says
+what each raises). Each step names its target the way assistive technology
+does — from the semantic element itself, the tree a screen reader walks, not
+the widget tree the page keeps for inspection — so both renders are worked
+the same way, and each screenshot is compared after each step, and each is
+also compared with the one before it so a step that moved neither render, or
+only one of them, is named as such rather than left to read as a difference.
+`names.mjs` lists those names, and `--unnamed` lists what a person can act on
+and has none. Where a render put the named control is reported beside the
+diff. `--phone` runs the same apps at 390 px with three device pixels per
+point. When a step cannot find its target it prints the names the tree does
+hold, which is what `names.mjs` lists on its own.
+
+`--browser firefox` or `--browser webkit` runs the same scenarios in that
+engine's own build (`engines.mjs`); `--against DIR` names a Chromium run's
+screenshots to compare that engine's HTML with. Neither engine has WebGPU
+here, so those runs show the HTML renderer alone.
 
 The bundle lands in `$CARGO_TARGET_DIR/htmlrenderer/bundle`; open
 `app.html?render=dom` or `?render=gpu` (`&app=` names another app of the

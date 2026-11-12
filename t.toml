@@ -7,15 +7,14 @@
 # When a check runs is two fields. A check that names no `on` is a default one: it is in `all` and
 # in the run of every new head of a followed branch, so `main` integrates ungated: a push is never
 # held, and whoever broke a check is told and fixes it forward. `default = false` leaves it out of
-# those. `on` names the places the server runs a check by itself: `stable` (release candidates),
-# `idle` (main's newest head when t has room, bisected and attributed when it fails), `dispatch`,
-# `schedule:<cron>` and `tag:<glob>`. A check that names an `on` runs there and when asked, not
-# with every change; `default = true` beside an `on` runs it on every change too. There is no queue
-# and no gate: a change runs what `t scope` says it reaches, and `t suggest` names the opt-in
-# checks it moves.
+# those. `on` names the places the server runs a check by itself: `idle` (main's newest head when t
+# has room, bisected and attributed when it fails), `dispatch`, `schedule:<cron>` and `tag:<glob>`
+# (a release, for the `tag:vMAJOR.MINOR.PATCH` glob). A check that names an `on` runs there and when
+# asked, not with every change; `default = true` beside an `on` runs it on every change too. There
+# is no queue and no gate: a change runs what `t scope` says it reaches, and `t suggest` names the
+# opt-in checks it moves.
 #
-# `heavy = true` marks a check a candidate for `stable` is verified by, and not part of an ordinary
-# change's run.
+# `heavy = true` marks a check a release is verified by, and not part of an ordinary change's run.
 
 # The image every check runs in unless it says otherwise: pinned by digest, so a moving tag can't
 # change what a check runs in without a commit saying so. Move it by changing this line.
@@ -120,7 +119,7 @@ starts = { app-cli = ["install:tilo-install"], tilo-agent-participant = ["tilo-v
 matrix = { arch = ["x86_64", "aarch64"] }
 
 # The packages whose tests cost main a lot for what they catch: on main's newest head when t has
-# room (which bisects a failure to its commit), on release candidates, and by name.
+# room (which bisects a failure to its commit), when dispatched, and by name.
 [[cargo]]
 name = "test-idle"
 tool = "nextest"
@@ -129,10 +128,10 @@ args = ["--locked", "--profile", "ci", "--tests"]
 packages = ["canvas", "music", "pdf-viewer", "tilo-ui"]
 env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1" }
 heavy = true
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 
-# The property tests, with more cases: on release candidates, where a rarer failure is worth the
-# time, and by name.
+# The property tests, with more cases: where a rarer failure is worth the time, when dispatched,
+# and by name.
 [[cargo]]
 name = "test-deep"
 tool = "nextest"
@@ -141,7 +140,7 @@ args = ["--locked", "--profile", "ci", "--tests"]
 packages = ["frame-link", "tilo-doc-codecs", "tilo-reference", "tilo-render-protocol"]
 env = { PROPTEST_CASES = "256", TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1" }
 heavy = true
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 
 # Every package's examples build and run (`cargo test --examples`), with the test environment's
 # asset and NTFS caches in the build directory. Dozens of programs nothing else compiles.
@@ -165,7 +164,7 @@ packages = [
 ]
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json" }
 heavy = true
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 
 # Clippy over the workspace: one driver, one unit per crate, shared with `test` and `check` (t's
 # compiler cache keys a unit by what it was given, whichever family asked for it).
@@ -190,7 +189,7 @@ args = ["--locked", "--all-targets"]
 trailing = ["-D", "warnings"]
 packages = ["music", "tilo-messaging-protocol"]
 heavy = true
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 
 [[cargo]]
 name = "clippy-{arch}"
@@ -383,7 +382,7 @@ git = true
 # the group's suites in the ci-fast image, which is what `file`-shaped tests need. The group list
 # is the file's, so a group added there is a check here. A group runs on every head of main; the
 # `os` group needs root over throwaway fixtures and a disk, so it is a micro-VM step and waits for
-# a release candidate, a dispatch or main's room.
+# a dispatch or main's room.
 
 [[check]]
 name = "suite-{group}"
@@ -399,7 +398,7 @@ when = { group = "os" }
 isolation = "vm"
 needs = ["vm-test-binaries"]
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin", TILO_STAGING_HANDOFF_BIN = "/target/debug/tilo-staging-handoff" }
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 
 [[check.matrix.set]]
@@ -424,7 +423,7 @@ run = "bash tools/test-env.sh cargo test --locked -p tilo-projector --bin tilo-p
 image = { check = "image-ci-builder-x86_64", path = "/target/publish/ci-builder/x86_64/image.oci.tar" }
 env = { TILO_REQUIRE_SCREEN_CAPTURE = "1", TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_TEST_NTFS_FIXTURES = "0" }
 requires = ["arch=x86_64"]
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 
 [[check]]
@@ -475,7 +474,7 @@ run = "cargo deny --workspace check --hide-inclusion-graph"
 name = "machete"
 run = "bash tools/ci/check-unused-dependencies.sh"
 git = true
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 
 [[check]]
@@ -487,7 +486,7 @@ git = true
 name = "app-lints"
 run = "cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- check --lint --all"
 env = { CARGO_PROFILE_DEV_DEBUG = "0" }
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
@@ -510,7 +509,7 @@ image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin", TILO_IMAGE_POLICY_CHECK_BIN = "/target/debug/tilo-image-policy-check", TILO_CRYPTO_BIN = "/target/debug/tilo-crypto", TILO_ESP_WRITE_BIN = "/target/debug/tilo-esp-write", TILO_BOARD_SUCCESSOR_BIN = "/target/debug/tilo-board-successor", TILO_STAGING_HANDOFF_BIN = "/target/debug/tilo-staging-handoff" }
 requires = ["arch=x86_64"]
 isolation = "vm"
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
@@ -518,7 +517,7 @@ name = "release-trust"
 run = "dnf install -y --setopt=install_weak_deps=False skopeo openssl >/dev/null\npython3 tools/signing/release_trust.py check-committed\npython3 os/tests/release_trust_chain_native.py\n"
 requires = ["arch=x86_64"]
 isolation = "vm"
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
@@ -535,14 +534,14 @@ run = "bash tools/test-env.sh cargo nextest run --locked --profile ci --tests --
 image = "registry.tilo.so/tilo/tilo-builder@sha256:e4763a8c16005f544dde0206014c2cc088fff0d5d28f1857ea24961677c666f6"
 env = { TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }
 requires = ["arch=x86_64"]
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 
 [[check]]
 name = "default-builds-{arch}"
 run = "for package in $(python3 tools/ci/package_features.py --default-builds --all); do\n    cargo test --locked --no-run -p \"$package\"\ndone\n"
 requires = ["arch={arch}"]
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 [check.matrix]
 arch = ["x86_64", "aarch64"]
@@ -551,7 +550,7 @@ arch = ["x86_64", "aarch64"]
 name = "session-binaries-{arch}"
 run = "cargo build --locked -p tilo-session --bins\n"
 requires = ["arch={arch}"]
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 [check.matrix]
 arch = ["x86_64", "aarch64"]
@@ -559,21 +558,21 @@ arch = ["x86_64", "aarch64"]
 [[check]]
 name = "portable"
 run = "cargo check --locked -p tilo-ui --no-default-features --lib\ncargo check --locked -p tilo-app --no-default-features --lib\n"
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
 name = "android"
 run = "bash tools/ci/clippy-android.sh"
 requires = ["arch=x86_64"]
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
 name = "wasm"
 run = "bash tools/ci/check-wasm.sh $(python3 tools/ci/package_sets.py browser)"
 env = { CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS = "-D warnings" }
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
@@ -597,7 +596,7 @@ run = "bash tools/ci/build-web-examples.sh $(for d in examples/apps/*/; do print
 # Runs `cargo install` of a crate the state's Cargo.lock doesn't name, so it needs cargo's
 # network; t turns it off where it hands a job the state's crates.
 env = { CARGO_NET_OFFLINE = "false" }
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
@@ -616,7 +615,7 @@ env = { CARGO_NET_OFFLINE = "false" }
 name = "example-scenarios"
 run = "bash tools/test-env.sh bash tools/ci/example-scenarios.sh -p tilo-app-cli"
 env = { TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
@@ -624,7 +623,7 @@ name = "certify"
 run = "cargo run --locked -p tilo-app-cli --bin tilo-app -- certify --workspace"
 env = { TILO_REQUIRE_GPU = "1", TILO_CERTIFY_SURFACES = "/target/certify/surfaces" }
 outputs = ["/target/certify/surfaces/**"]
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 
 [[check]]
@@ -688,7 +687,7 @@ fix = "python3 tools/web/generate_web_desktop.py && python3 tools/apps/generate_
 [[check]]
 name = "sdk-linux"
 run = "cargo test --locked -p tilo-caps\ncargo test --locked -p tilo-app-cli --lib targets::\ncargo build --locked -p tilo-app-cli -p tilo-app-package-cli --bin tilo-app --bin tilo-app-package\nbin=$CARGO_TARGET_DIR/debug\n\"$bin/tilo-app\" build --target linux apps/calculator\ncargo test --locked -p tilo-app-cli --test it outside_repo -- --ignored --nocapture\nTILO_PKG=$bin/tilo-app-package CARGO_PROFILE_THIN_APP_OPT_LEVEL=1 CARGO_PROFILE_THIN_APP_CODEGEN_UNITS=16 CARGO_PROFILE_THIN_APP_DEBUG=0 \"$bin/tilo-app\" package --target linux apps/calculator --output \"$TMPDIR/calculator.tapp\" --force\ntest -s \"$TMPDIR/calculator.tapp\"\n"
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 
 # The web desktop's start module, measured against its budget on every head: the one the page waits
@@ -705,14 +704,14 @@ run = "cargo build --locked -p tilo-app-cli --bin tilo-app\ncargo test --locked 
 needs = ["test-assets"]
 env = { TILO_TEST_ASSET_SEED = "/target/test-assets" }
 
-# The same bundle qualified in Chromium: release candidates, and when there is room.
+# The same bundle qualified in Chromium: when dispatched, and when there is room.
 [[check]]
 name = "sdk-web-qualify"
 run = "cargo build --locked -p tilo-app-cli --bin tilo-app\napp=$CARGO_TARGET_DIR/debug/tilo-app\nexport CARGO_TARGET_DIR=$CARGO_TARGET_DIR/release-web\nbundle=$CARGO_TARGET_DIR/tilo-app/web/calculator/bundle\n\"$app\" build --target web --bundle desktop --release apps/calculator\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nnode crates/browser/tilo-browser-compute/scripts/qualify-packaged.mjs \"$bundle\" \"$TMPDIR/compute-qualification\" --no-sandbox\n"
 needs = ["test-assets"]
 env = { TILO_TEST_ASSET_SEED = "/target/test-assets" }
 git = true
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
@@ -721,7 +720,7 @@ run = "cargo build --locked -p tilo-app-cli --bin tilo-app\nbash tools/ci/ensure
 needs = ["test-assets"]
 env = { TILO_TEST_ASSET_SEED = "/target/test-assets" }
 git = true
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
@@ -729,7 +728,7 @@ name = "render-counters"
 run = "cargo build --locked --release -p ui-examples --example ui-perf\ntest -r \"$VK_DRIVER_FILES\"\npython3 scripts/perf/render_bench.py counters \"$CARGO_TARGET_DIR/release/examples/ui-perf\" --out \"$TMPDIR/render-counters\"\n"
 env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16", VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json" }
 requires = ["arch=x86_64"]
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
@@ -746,7 +745,7 @@ name = "device-vpn-namespaces-build"
 run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\n# Read every message before selecting: closing cargo's pipe early makes it\n# fail with a broken pipe while it is still writing build messages.\ncargo test --locked -p tilo-device-vpn --features test-support --test netns_tunnel --test netns_profile_block --no-run --message-format json | python3 -c '\nimport json, os, shutil, sys\nmessages = list(map(json.loads, sys.stdin))\nbuilt = {m[\"target\"][\"name\"]: m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\")}\ntarget = os.environ[\"CARGO_TARGET_DIR\"]\nshutil.copy(built[\"netns_tunnel\"], target + \"/vm/device-vpn-netns-tunnel\")\nshutil.copy(built[\"netns_profile_block\"], target + \"/vm/device-vpn-netns-profile-block\")\n'\n"
 requires = ["arch=x86_64"]
 outputs = ["/target/vm/device-vpn-netns-tunnel", "/target/vm/device-vpn-netns-profile-block"]
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 
 [[check]]
@@ -756,14 +755,14 @@ needs = ["device-vpn-namespaces-build"]
 env = { TILO_REQUIRE_TUN = "1" }
 requires = ["arch=x86_64"]
 isolation = "vm"
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 
 [[check]]
 name = "files-ux"
 run = "cargo test --locked -p file-explorer --lib -- --nocapture --test-threads=1"
 env = { TILO_FS_FUSE_REQUIRED = "0", TILO_REQUIRE_FUSE = "0" }
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
@@ -772,7 +771,7 @@ run = "# Mounting FUSE needs a user namespace where the check is root: the job s
 env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
 requires = ["/dev/fuse", "/dev/fuse"]
 isolation = "nested"
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
@@ -780,7 +779,7 @@ name = "real-fuse-mounts-build"
 run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\n# Read every message before copying: cargo fails with a broken pipe if its output\n# is closed while it is still writing build messages.\ncargo test --locked -p tilo-fs --test integration_test --test cloud_mount --bin fs --no-run --message-format json | python3 -c '\nimport json, os, shutil, sys\nnames = {\"integration_test\": \"tilo-fs-integration-test\", \"cloud_mount\": \"tilo-fs-cloud-mount\"}\nout = os.path.join(os.environ[\"CARGO_TARGET_DIR\"], \"vm\")\nfor message in map(json.loads, sys.stdin):\n    if message.get(\"reason\") == \"compiler-artifact\" and message.get(\"executable\") and message[\"target\"][\"name\"] in names:\n        shutil.copy(message[\"executable\"], os.path.join(out, names[message[\"target\"][\"name\"]]))\n'\n"
 requires = ["arch=x86_64"]
 outputs = ["/target/vm/tilo-fs-integration-test", "/target/vm/tilo-fs-cloud-mount", "/target/debug/fs"]
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
@@ -790,7 +789,7 @@ env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
 needs = ["real-fuse-mounts-build"]
 requires = ["arch=x86_64"]
 isolation = "vm"
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
@@ -799,7 +798,7 @@ run = "# Mounting FUSE needs a user namespace where the check is root: the job s
 env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
 requires = ["/dev/fuse", "/dev/fuse"]
 isolation = "nested"
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
@@ -808,7 +807,7 @@ run = "# Mounting FUSE needs a user namespace where the check is root: the job s
 env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
 requires = ["/dev/fuse", "/dev/fuse"]
 isolation = "nested"
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
@@ -817,7 +816,7 @@ run = "# Mounting FUSE needs a user namespace where the check is root: the job s
 env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
 requires = ["/dev/fuse", "/dev/fuse"]
 isolation = "nested"
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
@@ -825,7 +824,7 @@ name = "real-fuse-privileged-build"
 run = "# Read every message before selecting: closing cargo's pipe early makes it\n# fail with a broken pipe while it is still writing build messages.\ntest=$(cargo test --locked -p tilo-relay --test it --no-run --message-format json | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == \"it\"))')\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\ncp \"$test\" \"$CARGO_TARGET_DIR/vm/tilo-relay-it\"\n"
 requires = ["arch=x86_64"]
 outputs = ["/target/vm/tilo-relay-it", "/target/debug/tilo-enroll", "/target/debug/tilo-home-peer-control"]
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 
 [[check]]
@@ -834,7 +833,7 @@ run = "cd crates/hosting/tilo-relay\n/target/vm/tilo-relay-it --ignored --exact 
 needs = ["real-fuse-privileged-build"]
 requires = ["arch=x86_64"]
 isolation = "vm"
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 
 [[check]]
@@ -842,7 +841,7 @@ name = "cloud-conformance-build"
 run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\n# Read every message before selecting: closing cargo's pipe early makes it\n# fail with a broken pipe while it is still writing build messages.\nsuite=$(cargo test --locked -p cloud-source-dav --test conformance --no-run --message-format json \\\n  | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == \"conformance\"))')\ncp \"$suite\" \"$CARGO_TARGET_DIR/vm/cloud-source-dav-conformance\"\n"
 requires = ["arch=x86_64"]
 outputs = ["/target/vm/cloud-source-dav-conformance"]
-on = ["stable", "dispatch", "schedule:30 4 * * *"]
+on = ["dispatch", "schedule:30 4 * * *"]
 heavy = true
 
 [[check]]
@@ -852,7 +851,7 @@ needs = ["cloud-conformance-build"]
 requires = ["arch=x86_64"]
 isolation = "vm"
 timeout_secs = 1800
-on = ["stable", "dispatch", "schedule:30 4 * * *"]
+on = ["dispatch", "schedule:30 4 * * *"]
 heavy = true
 
 [[check]]
@@ -871,7 +870,7 @@ name = "sandbox-host-ids-build"
 run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\nbinary_target() {\n  package=$1\n  target=$2\n  name=$3\n  # Read every message before selecting: closing cargo's pipe early makes it\n  # fail with a broken pipe while it is still writing build messages.\n  executable=$(cargo test --locked -p \"$package\" --test \"$target\" --no-run --message-format json | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == sys.argv[1]))' \"$target\")\n  cp \"$executable\" \"$CARGO_TARGET_DIR/vm/$name\"\n}\nbinary_lib() {\n  package=$1\n  lib=$2\n  name=$3\n  shift 3\n  executable=$(cargo test --locked -p \"$package\" --lib --no-run \"$@\" --message-format json | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == sys.argv[1]))' \"$lib\")\n  cp \"$executable\" \"$CARGO_TARGET_DIR/vm/$name\"\n}\nbinary_target tilo-sandbox job tilo-sandbox-job\nbinary_lib runtime-fs runtime_fs runtime-fs-lib\nbinary_lib account-custody account_custody account-custody-lib\nbinary_lib runtime-bundle runtime_bundle runtime-bundle-lib\nbinary_target tilo-install-helpers native_python tilo-install-helpers-native-python\nbinary_target env-tools it env-tools-it\nbinary_target tilo-install-helpers accounts_native installer-accounts-native\nbinary_lib tilo-identity-host tilo_identity_host identity-host-lib --features native-current-device-qualification\n"
 requires = ["arch=x86_64"]
 outputs = ["/target/vm/tilo-sandbox-job", "/target/vm/runtime-fs-lib", "/target/vm/account-custody-lib", "/target/vm/runtime-bundle-lib", "/target/vm/tilo-install-helpers-native-python", "/target/vm/env-tools-it", "/target/vm/installer-accounts-native", "/target/vm/identity-host-lib", "/target/debug/tilo-firstboot-home-seeds", "/target/debug/install-test-firstboot-files", "/target/debug/staging-handoff-native-extractor"]
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 
 [[check]]
@@ -881,7 +880,7 @@ needs = ["sandbox-host-ids-build"]
 env = { TILO_REQUIRE_CHOWN = "1", TILO_REQUIRE_USERNS = "1", TMPDIR = "/var/tmp/tilo-test" }
 requires = ["arch=x86_64"]
 isolation = "vm"
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 
 [[check]]
@@ -889,7 +888,7 @@ name = "ush-guests-build"
 run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\n# Read every message before selecting: closing cargo's pipe early makes it\n# fail with a broken pipe while it is still writing build messages.\ntest_binary() {\n  python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == sys.argv[1] and m[\"profile\"][\"test\"]))' \"$1\"\n}\ncp \"$(cargo test --locked -p ush --lib --no-run --message-format json | test_binary ush)\" \"$CARGO_TARGET_DIR/vm/ush-lib\"\ncp \"$(cargo test --locked -p ush --test it --no-run --message-format json | test_binary it)\" \"$CARGO_TARGET_DIR/vm/ush-it\"\n# The fixtures start the real runtime binary, not this test executable.\ncp \"$CARGO_TARGET_DIR/debug/tilo-ush\" \"$CARGO_TARGET_DIR/vm/tilo-ush\"\n"
 requires = ["arch=x86_64"]
 outputs = ["/target/vm/ush-lib", "/target/vm/ush-it", "/target/vm/tilo-ush", "/target/debug/tilo-ush"]
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 
 [[check]]
@@ -899,7 +898,7 @@ needs = ["ush-guests-build"]
 env = { TILO_REQUIRE_CHOWN = "1", TILO_REQUIRE_SETNS = "1", TILO_REQUIRE_LOADER = "1", TILO_USH_BIN = "/target/vm/tilo-ush" }
 requires = ["arch=x86_64"]
 isolation = "vm"
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 
 [[check]]
@@ -907,7 +906,7 @@ name = "tilo-auth-keyring-build"
 run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\n# Read every message before selecting: closing cargo's pipe early makes it\n# fail with a broken pipe while it is still writing build messages.\ntest_binary() {\n  python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == sys.argv[1] and m[\"profile\"][\"test\"]))' \"$1\"\n}\nfor test in daemon mechanism; do\n  cp \"$(cargo test --locked -p tilo-auth --all-features --test \"$test\" --no-run --message-format json | test_binary \"$test\")\" \\\n    \"$CARGO_TARGET_DIR/vm/tilo-auth-$test\"\ndone\n"
 requires = ["arch=x86_64"]
 outputs = ["/target/vm/tilo-auth-daemon", "/target/vm/tilo-auth-mechanism"]
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
@@ -917,7 +916,7 @@ needs = ["tilo-auth-keyring-build"]
 env = { TILO_REQUIRE_KEYRING = "1", TILO_REQUIRE_SWTPM = "1" }
 requires = ["arch=x86_64"]
 isolation = "vm"
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
@@ -925,7 +924,7 @@ name = "launcher-root-build"
 run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\n# Read every message before selecting: closing cargo's pipe early makes it\n# fail with a broken pipe while it is still writing build messages.\nselect_executable() {\n  python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == sys.argv[1]))' \"$1\"\n}\ncp \"$(cargo test --locked -p launcher --lib --no-run --message-format json | select_executable launcher)\" \"$CARGO_TARGET_DIR/vm/launcher-lib\"\n# The integration tests copy the launcher binary from the path they were compiled with.\ncp \"$(cargo test --locked -p launcher --test it --no-run --message-format json | select_executable it)\" \"$CARGO_TARGET_DIR/vm/launcher-it\"\n"
 requires = ["arch=x86_64"]
 outputs = ["/target/vm/launcher-lib", "/target/vm/launcher-it", "/target/debug/tilo-launcher"]
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 
 [[check]]
@@ -935,7 +934,7 @@ needs = ["launcher-root-build"]
 env = { TILO_REQUIRE_CHOWN = "1", TILO_REQUIRE_USERNS = "1", TMPDIR = "/var/tmp/tilo-test" }
 requires = ["arch=x86_64"]
 isolation = "vm"
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 
 [[check]]
@@ -943,7 +942,7 @@ name = "imager-root-build"
 run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\nbinary_lib() {\n  package=$1\n  lib=$2\n  name=$3\n  executable=$(cargo test --locked -p \"$package\" --features \"$package/installation\" --lib --no-run --message-format json | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == sys.argv[1]))' \"$lib\")\n  cp \"$executable\" \"$CARGO_TARGET_DIR/vm/$name\"\n}\nbinary_lib imager-backend imager_backend imager-backend-lib\nbinary_lib imager imager imager-lib\n"
 requires = ["arch=x86_64"]
 outputs = ["/target/vm/imager-backend-lib", "/target/vm/imager-lib"]
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
@@ -953,7 +952,7 @@ needs = ["imager-root-build"]
 env = { TILO_REQUIRE_CHOWN = "1", TILO_REQUIRE_USERNS = "1", TMPDIR = "/var/tmp/tilo-test", TILO_IMAGER_TEST_CACHE_ROOT = "/var/tmp/tilo-test-imager" }
 requires = ["arch=x86_64"]
 isolation = "vm"
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
@@ -1042,7 +1041,7 @@ run = "set -e\nexport RUSTUP_HOME=/opt/fuzz/rustup PATH=/opt/fuzz/cargo-fuzz/bin
 env = { RUST_BACKTRACE = "1" }
 isolation = "vm"
 timeout_secs = 2700
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 [check.matrix]
 target = ["tapp_ingress", "workspace_invitation", "identity_wire", "sandbox_policy", "render_scene"]
@@ -1057,27 +1056,27 @@ on = ["dispatch"]
 name = "weekly-docs"
 run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets\n# --keep-going: one run names every crate whose documentation fails, not only the first.\ncargo doc --workspace --no-deps --locked --keep-going\n"
 env = { RUSTDOCFLAGS = "-D warnings" }
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 
 [[check]]
 name = "weekly-release"
 run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source\ncargo build --release --workspace --locked\ntools/check-binary-size.sh \"$CARGO_TARGET_DIR/release\"\n"
 requires = ["disk-100g"]
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 
 [[check]]
 name = "weekly-latency"
 run = "cargo test --locked -p tilo-media --features realtime --test realtime -- --ignored --exact realtime_latency_per_frame --nocapture"
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 
 [[check]]
 name = "security-isolation-{part}"
 run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_TEST_NTFS_FIXTURES=0\nany() { local e=\"\" t; for t; do e=\"${e:+$e | }test($t)\"; done; printf '%s' \"$e\"; }\nrun() { bash tools/test-env.sh cargo nextest run --locked --profile ci --no-tests=fail \"$@\"; }\ncase {part} in\n  relay)\n    run -p tilo-relay --lib -E \"$(any room_access rooms:: compute_content host_authority)\"\n    run -p tilo-relay --test it -E \"$(any tenant_isolation:: governed_rooms:: governed_workspace_access:: room_admission:: auth_reject:: federation_cross_user_reject:: cross_user_workspace_host:: compute_content:: remote_action_routing::)\"\n    ;;\n  relay-agents)\n    run -p tilo-relay --features agents --test it -E \"$(any tenant_isolation:: governed_rooms:: governed_workspace_access:: room_admission:: auth_reject:: compute_content:: persistent_room::)\"\n    run -p tilo-relay --features agents --bin tilo-relay -E \"test(persistent_room_cli::tests::a_fresh_workspace_seeds_its_apps_and_keeps_them)\"\n    ;;\n  agent-participant)\n    run -p tilo-agent-participant --test worker_isolation\n    run -p tilo-agent-participant --test room_actions -E \"$(any governed_agent::)\"\n    ;;\nesac\n"
 env = { RUST_BACKTRACE = "1" }
 timeout_secs = 5400
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 [check.matrix]
 part = ["relay", "relay-agents", "agent-participant"]
@@ -1104,28 +1103,28 @@ on = ["dispatch"]
 name = "vm-macos"
 run = "set -eu\ncargo check --locked -p tilo-vm --all-targets\ncargo test --locked -p tilo-vm --lib hypervisor::tests::\n"
 requires = ["os=macos", "arch=arm64"]
-on = ["main", "stable"]
+on = ["main"]
 heavy = true
 
 [[check]]
 name = "runtime-macos"
 run = "cargo check -p tilo-runtime --all-targets --locked"
 requires = ["os=macos", "arch=arm64"]
-on = ["main", "stable"]
+on = ["main"]
 heavy = true
 
 [[check]]
 name = "sdk-macos"
 run = "set -eu\n# The project's environment picks Mesa's Vulkan CPU driver for Linux; on the Mac wgpu picks Metal.\nunset WGPU_BACKEND WGPU_ADAPTER_NAME\n# The Mac's own tilo test cache, which outlives jobs as the Linux nodes' does (font-catalog.py's\n# default): $TMPDIR is each job's own, and the fonts were downloaded again in every run.\nfonts=\"${TILO_TEST_CACHE_DIR:-$HOME/.cache/tilo/test-env}/font-artifacts\"\npython3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$fonts\"\nexport TILO_FONT_ASSET_CACHE=\"$fonts\" TILO_FONT_ASSETS_OFFLINE=1\ncargo build --locked -p tilo-app-cli -p tilo-app-package-cli --bin tilo-app --bin tilo-app-package\nbin=${CARGO_TARGET_DIR:-$PWD/target}/debug\nrustup target add wasm32-unknown-unknown\n# The template takes the SDK from this tree as a git repository (`--sdk-git file://\u2026`, at HEAD):\n# commit the tree here, so HEAD is exactly the files checked, a working tree's changes included.\nif ! git rev-parse --git-dir >/dev/null 2>&1; then\n  git init -q\n  git add -A\n  GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@localhost GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@localhost git commit -q -m 'the checked tree'\nfi\nTILO_SDK_SOURCE=git cargo test --locked -p tilo-app-cli --test it outside_repo -- --ignored --nocapture\nfor app in calculator notes; do\n  bundle=$(\"$bin/tilo-app\" build --target macos \"apps/$app\" | tail -n 1)\n  plutil -lint \"$bundle/Contents/Info.plist\"\n  codesign --verify --deep --strict \"$bundle\"\n  \"$bundle/Contents/MacOS/$app\" --shots \"$TMPDIR/$app.png\"\n  test -s \"$TMPDIR/$app.png\"\ndone\n\"$bin/tilo-app\" package --target macos apps/calculator --output \"$TMPDIR/Calculator-macos.zip\" --force\ntest -s \"$TMPDIR/Calculator-macos.zip\"\ntest -s \"$TMPDIR/Calculator-macos.zip.json\"\n"
 requires = ["os=macos", "arch=arm64"]
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
 name = "apps-macos"
 run = "set -eu\n# The project's environment picks Mesa's Vulkan CPU driver for Linux; on the Mac wgpu picks Metal.\nunset WGPU_BACKEND WGPU_ADAPTER_NAME\n# The Mac's own tilo test cache, which outlives jobs as the Linux nodes' does (font-catalog.py's\n# default): $TMPDIR is each job's own, and the fonts were downloaded again in every run.\nfonts=\"${TILO_TEST_CACHE_DIR:-$HOME/.cache/tilo/test-env}/font-artifacts\"\npython3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$fonts\"\nexport TILO_FONT_ASSET_CACHE=\"$fonts\" TILO_FONT_ASSETS_OFFLINE=1\npackages=$(python3 tools/ci/macos_apps.py)\ncargo build --locked $packages\n# Nextest discovers the tests itself, one process per test as on Linux; the doctests run even\n# when a test failed.\nstatus=0\ncargo nextest run --locked --profile ci --no-fail-fast $packages || status=$?\ncargo test --locked --no-fail-fast --doc $packages || status=$?\nexit $status\n"
 requires = ["os=macos", "arch=arm64"]
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
@@ -1134,7 +1133,7 @@ run = "bash tools/ci/perf-scheduled.sh fs"
 requires = ["arch=x86_64"]
 outputs = ["/target/perf/fs/**"]
 timeout_secs = 7200
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 
 [[check]]
 name = "perf-agent"
@@ -1143,7 +1142,7 @@ env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS 
 requires = ["arch=x86_64"]
 outputs = ["/target/perf/agent/**"]
 timeout_secs = 7200
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 
 [[check]]
 name = "perf-agent-native"
@@ -1152,7 +1151,7 @@ env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS 
 requires = ["arch=x86_64"]
 outputs = ["/target/perf/agent-native/**"]
 timeout_secs = 7200
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 
 [[check]]
 name = "perf-footprint"
@@ -1162,7 +1161,7 @@ requires = ["arch=x86_64"]
 outputs = ["/target/perf/footprint/**"]
 cache = false
 timeout_secs = 7200
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 
 [[check]]
 name = "perf-footprint-image"
@@ -1172,7 +1171,7 @@ requires = ["arch=x86_64"]
 outputs = ["/target/perf/footprint-image/**"]
 cache = false
 timeout_secs = 7200
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 
 [[check]]
 name = "perf-render"
@@ -1181,7 +1180,7 @@ env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS 
 requires = ["arch=x86_64"]
 outputs = ["/target/perf/render/**"]
 timeout_secs = 7200
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 
 [[check]]
 name = "perf-search"
@@ -1190,7 +1189,7 @@ env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS 
 requires = ["arch=x86_64"]
 outputs = ["/target/perf/search/**"]
 timeout_secs = 7200
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 
 [[check]]
 name = "perf-hosting"
@@ -1199,7 +1198,7 @@ env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS 
 requires = ["arch=x86_64"]
 outputs = ["/target/perf/hosting/**"]
 timeout_secs = 7200
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 
 [[check]]
 name = "perf-browser"
@@ -1209,7 +1208,7 @@ env = { npm_config_cache = "/tmp/npm-cache" }
 requires = ["arch=x86_64"]
 outputs = ["/target/perf/browser/**"]
 timeout_secs = 7200
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 
 [[check]]
 name = "perf-scheduled"
@@ -1218,7 +1217,7 @@ needs_any_outcome = ["perf-fs", "perf-agent", "perf-agent-native", "perf-footpri
 image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
 outputs = ["/target/perf/compare/**"]
 cache = false
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 
 [[check]]
 name = "perf-publish"
@@ -1227,7 +1226,7 @@ needs_any_outcome = ["perf-fs", "perf-agent", "perf-agent-native", "perf-footpri
 image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
 outputs = ["/target/perf-publish/**"]
 cache = false
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 secrets = ["TILO_PACKAGES_TOKEN"]
 dispatch_inputs = { accept = "", synthetic_series = "", synthetic_factor = "1.0" }
 
@@ -1253,7 +1252,7 @@ isolation = "vm"
 outputs = ["/target/vm-acceptance/{shard}/report/**"]
 git = true
 timeout_secs = 10800
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 dispatch_inputs = { swap = "none", only = "", outputs = "1920x1080@1,1280x800@1.25", gl = "auto", budgets = "report" }
 [check.matrix]
@@ -1836,7 +1835,7 @@ run = "# Each shard of vm-acceptance writes the records of the checks it ran, an
 needs = ["vm-acceptance/{shard}"]
 image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
 cache = false
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 
 [[check]]
 name = "vm-acceptance-perf-publish"
@@ -1844,7 +1843,7 @@ run = "# Each shard of vm-acceptance writes the records of the checks it ran, an
 needs = ["vm-acceptance/{shard}"]
 image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
 cache = false
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 secrets = ["TILO_PACKAGES_TOKEN"]
 
 [[check]]
@@ -1870,7 +1869,7 @@ requires = ["/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/signin-e2e/**"]
 timeout_secs = 14400
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 dispatch_inputs = { variants = "", pre_pam_tilo_image = "" }
 [check.matrix]
@@ -1889,7 +1888,7 @@ run = "TILO_NATIVE_TIER1_DIR=$TMPDIR/native-tier1 tools/native-tier1.sh --nocapt
 env = { TILO_FS_FUSE_REQUIRED = "0", TILO_REQUIRE_FUSE = "0" }
 requires = ["native-storage", "/dev/loop-control"]
 isolation = "vm"
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 
 [[check]]
@@ -2049,7 +2048,7 @@ needs = ["image-ci-builder", "image-ci-builder-x86_64", "canary-ci-builder-cache
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
 outputs = ["/target/publish/ci-builder/x86_64/payload.json", "/target/publish/ci-builder/x86_64/signature", "/target/publish/ci-builder/x86_64/dry-run.pub", "/target/publish/ci-builder/x86_64/bundle.json", "/target/publish/ci-builder/index/payload.json", "/target/publish/ci-builder/index/signature", "/target/publish/ci-builder/index/dry-run.pub", "/target/publish/ci-builder/index/bundle.json"]
-on = ["stable"]
+on = ["dispatch"]
 id_token = ["sts.amazonaws.com"]
 
 [[check]]
@@ -2071,7 +2070,7 @@ optional_needs = ["sign-ci-builder", "sign-dev-ci-builder", "canary-ci-builder-b
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/ci-builder/x86_64/receipt.json", "/target/publish/ci-builder/index/receipt.json"]
-on = ["main", "dispatch", "stable"]
+on = ["main", "dispatch"]
 id_token = ["registry.tilo.so"]
 
 [[check]]
@@ -2109,9 +2108,9 @@ arch = ["x86_64", "aarch64"]
 # browser peer and the agent participant, which read nearly every source file, so in every
 # head's publication they ran again for each commit while the image stayed the same. Each commit
 # runs the same tests in the pinned builder (`test/tilo-session-client`,
-# `test-x86_64/tilo-agent-participant`), so what this adds is the candidate: it gates a release
-# candidate's signature and publication, runs when dispatched and on main's newest head when t
-# has room (bisected to the commit that broke it), and main's development tags go without it.
+# `test-x86_64/tilo-agent-participant`), so what this adds is the canary: it gates a release's
+# signature and publication, runs when dispatched and on main's newest head when t has room
+# (bisected to the commit that broke it), and main's development tags go without it.
 [[check]]
 name = "canary-ci-builder-browser-tests-{arch}"
 run = "bash tools/ci/publish/ci-builder-canary.sh browser-tests"
@@ -2123,7 +2122,7 @@ arch = ["x86_64", "aarch64"]
 
 [[check.matrix.set]]
 when = { arch = "x86_64" }
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 
 [[check]]
 name = "image-ci-fast-smoke"
@@ -2212,7 +2211,7 @@ requires = ["arch={arch}"]
 isolation = "vm"
 outputs = ["/target/local-model-runtimes/llama-cpp-{backend}-{arch}/*"]
 timeout_secs = 7200
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 [check.matrix]
 backend = ["cpu", "vulkan"]
@@ -2227,7 +2226,7 @@ requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/local-model-runtimes/llama-cpp-cuda-x86_64/*"]
 timeout_secs = 10800
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 
 [[check]]
@@ -2236,7 +2235,7 @@ run = "bash tools/release/local-model-runtime.sh build vllm-cuda-x86_64 /target/
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 requires = ["disk-100g"]
 outputs = ["/target/local-model-runtimes/vllm-cuda-x86_64/*"]
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 
 [[check]]
@@ -2244,7 +2243,7 @@ name = "local-model-runtime-e2e"
 run = "bash tools/release/local-model-runtime-e2e.sh /target/local-model-runtimes/llama-cpp-cpu-x86_64"
 needs = ["local-model-runtime-llama-cpp-cpu-x86_64"]
 requires = ["arch=x86_64"]
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 
 [[check]]
@@ -2294,7 +2293,7 @@ needs = ["test-assets"]
 requires = ["arch={arch}"]
 env = { TILO_TEST_ASSET_SEED = "/target/test-assets" }
 outputs = ["/target/apps-build/{arch}/**"]
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 timeout_secs = 10800
 [check.matrix]
 arch = ["x86_64", "aarch64"]
@@ -2330,7 +2329,7 @@ requires = ["arch={arch}"]
 secrets = ["TAPP_PUBLISHER_IDENTITY", "RUNTIME_BUNDLE_SIGNING_KEY"]
 git = true
 outputs = ["/target/app-release/{arch}/**"]
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 timeout_secs = 5400
 [check.matrix]
@@ -2343,7 +2342,7 @@ arch = ["x86_64", "aarch64"]
 name = "app-reproducible-{arch}"
 run = "bash tools/apps/check-reproducible-tapp.sh calculator"
 requires = ["arch={arch}"]
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 timeout_secs = 5400
 [check.matrix]
@@ -2366,7 +2365,7 @@ python3 -I tools/ci/python.py tools/apps/browser_runtime_release.py compile \
 git = true
 requires = ["arch={arch}"]
 outputs = ["/target/engine-release/{arch}/compiled/**"]
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 timeout_secs = 10800
 [check.matrix]
 arch = ["x86_64", "aarch64"]
@@ -2408,7 +2407,7 @@ secrets = ["TAPP_PUBLISHER_IDENTITY", "RUNTIME_BUNDLE_SIGNING_KEY"]
 git = true
 requires = ["arch={arch}"]
 outputs = ["/target/engine-release/{arch}/signed/package/**", "/target/engine-release/{arch}/signed/bin/**"]
-on = ["stable"]
+on = ["dispatch"]
 timeout_secs = 5400
 [check.matrix]
 arch = ["x86_64", "aarch64"]
@@ -2419,7 +2418,7 @@ run = "set -euo pipefail\n# One release build of the default collection, then th
 outputs = ["/target/app-sizes/{arch}/**"]
 requires = ["arch={arch}"]
 timeout_secs = 5400
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 [check.matrix]
 arch = ["x86_64", "aarch64"]
@@ -2510,7 +2509,7 @@ default = false
 name = "desktop-preflight"
 run = "set -eu\npython3 scripts/check-install-contract.py\nbash -n dist/*.sh dist/*/*.sh dist/ci/proot-apt-key dist/arch/PKGBUILD\ncc -fsyntax-only -Wall -Wextra -Werror dist/ci/qemu-argv0-wrapper.c\ntest \"$(cat dist/VERSION)\" = \"$(sed -n 's/^pkgver=//p' dist/arch/PKGBUILD)\"\ngrep -Fxq \"%{!?tilo_version:%global tilo_version $(cat dist/VERSION)}\" dist/rpm/tilo-session.spec\npython3 -m unittest discover -s tools/tests -p test_rpm_broker.py\ndist/ci/run-payload-contract-tests.sh\nos/tests/portal_config_validity.sh\n"
 git = true
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
@@ -2550,7 +2549,7 @@ isolation = "vm"
 outputs = ["target/host-session-e2e/**"]
 git = true
 timeout_secs = 5400
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 dispatch_inputs = { apps = "" }
 
@@ -2561,7 +2560,7 @@ needs = ["desktop-package-amd64", "desktop-package-arm64", "host-session-e2e"]
 image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/desktop/payload.json"]
-on = ["stable"]
+on = ["dispatch"]
 secrets = ["REGISTRY_TOKEN"]
 pointers = { desktop-payload = "/target/publish/desktop/payload.json" }
 
@@ -2569,17 +2568,23 @@ pointers = { desktop-payload = "/target/publish/desktop/payload.json" }
 name = "mirror-base"
 run = "bash tools/ci/publish/base-mirror.sh"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-on = ["main", "stable", "dispatch"]
+on = ["main", "dispatch"]
 id_token = ["registry.tilo.so"]
 
+# This architecture's frozen RPM snapshot, resolved and verified: the published set where there is
+# one, else the name of the tag whose publication would make it installable (nothing signs a build
+# from the run's own, unsigned). One check per architecture, so a build of one never waits on a
+# node of the other.
 [[check]]
-name = "rpm-snapshot"
-run = "bash tools/ci/publish/rpm-snapshot-ref.sh /target/publish/rpm-snapshot"
+name = "rpm-snapshot-{arch}"
+run = "bash tools/ci/publish/rpm-snapshot-ref.sh {arch} /target/publish/rpm-snapshot/{arch}"
 needs = ["signing-tools"]
-optional_needs = ["publish-rpms"]
+optional_needs = ["publish-rpms-{arch}"]
 image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
-outputs = ["/target/publish/rpm-snapshot/**"]
+outputs = ["/target/publish/rpm-snapshot/{arch}/**"]
 default = false
+[check.matrix]
+arch = ["x86_64", "aarch64"]
 
 # The relay's programs: the image packages what this leaves, so it compiles no Rust inside its
 # build.
@@ -2605,8 +2610,8 @@ default = false
 
 [[check]]
 name = "image-relay"
-run = "bash tools/ci/publish/relay-build.sh /target/publish/rpm-snapshot /target/publish/rpms/x86_64 /target/publish/relay/binaries /target/publish/relay"
-needs = ["relay-binaries", "rpm-snapshot", "image-rpms-x86_64"]
+run = "bash tools/ci/publish/relay-build.sh /target/publish/rpm-snapshot/x86_64 /target/publish/rpms/x86_64 /target/publish/relay/binaries /target/publish/relay"
+needs = ["relay-binaries", "rpm-snapshot-x86_64", "image-rpms-x86_64"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"
@@ -2618,8 +2623,8 @@ default = false
 # same base and snapshot as the relay, which it runs beside. Like the relay's it is packaging only.
 [[check]]
 name = "image-agent-host"
-run = "bash tools/ci/publish/agent-host-build.sh /target/publish/rpm-snapshot /target/publish/rpms/x86_64 /target/publish/agent-host/binaries /target/publish/agent-host"
-needs = ["agent-host-binaries", "rpm-snapshot", "image-rpms-x86_64"]
+run = "bash tools/ci/publish/agent-host-build.sh /target/publish/rpm-snapshot/x86_64 /target/publish/rpms/x86_64 /target/publish/agent-host/binaries /target/publish/agent-host"
+needs = ["agent-host-binaries", "rpm-snapshot-x86_64", "image-rpms-x86_64"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"
@@ -2634,7 +2639,10 @@ needs = ["image-relay", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
 outputs = ["/target/publish/relay/payload.json", "/target/publish/relay/signature", "/target/publish/relay/dry-run.pub", "/target/publish/relay/bundle.json"]
-on = ["tag:v[0-9]*.[0-9]*.[0-9]*"]
+# The release tag signs the relay it builds, and refuses one built from an RPM set that tag did
+# not publish (oci-sign.sh, require_published_snapshot). Dispatched on a release tag it finishes a
+# release whose own run stopped here.
+on = ["tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
 id_token = ["sts.amazonaws.com"]
 
 [[check]]
@@ -2643,7 +2651,7 @@ run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-r
 needs = ["image-relay", "sign-relay", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 outputs = ["/target/publish/relay/receipt.json"]
-on = ["tag:v[0-9]*.[0-9]*.[0-9]*"]
+on = ["tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
 id_token = ["registry.tilo.so"]
 
 # ---- The tilo command ----------------------------------------------------------------------
@@ -2718,7 +2726,7 @@ run = "bash tools/ci/publish/cli-release.sh rehearse /target/publish/cli/release
 setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf clean all" }
 needs = ["cli-release", "signing-tools"]
 requires = ["arch=x86_64"]
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
@@ -2760,7 +2768,7 @@ needs = ["image-legacy-guest", "legacy-guest-e2e", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
 outputs = ["/target/publish/legacy-guest/image/payload.json", "/target/publish/legacy-guest/image/signature", "/target/publish/legacy-guest/image/dry-run.pub", "/target/publish/legacy-guest/image/bundle.json", "/target/publish/legacy-guest/image/certified/**"]
-on = ["stable"]
+on = ["dispatch"]
 id_token = ["sts.amazonaws.com"]
 
 [[check]]
@@ -2769,7 +2777,7 @@ run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/legacy
 needs = ["image-legacy-guest", "legacy-guest-e2e", "sign-legacy-guest", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 outputs = ["/target/publish/legacy-guest/image/receipt.json", "/target/publish/legacy-guest/image/pins.env"]
-on = ["stable"]
+on = ["dispatch"]
 id_token = ["registry.tilo.so"]
 pointers = { legacy-guest = "/target/publish/legacy-guest/image/pins.env" }
 
@@ -2815,11 +2823,10 @@ outputs = ["/target/publish/hosted-guest/image/image.oci.tar", "/target/publish/
 timeout_secs = 14400
 default = false
 
-# Signed with the release key, which signs only a release run: stable's, or a tag's. Until
-# stable publishes the guest, a release is a dispatch of publish-hosted-guest on a tag
-# (vhosted-guest-<date>; the release signer accepts tags beginning with v, and no check is
-# triggered by one that does not continue with a version number), and its pins.env is pinned
-# by hand with `hosted-guest.sh pin`'s checks.
+# Signed with the release key, which signs only a release run: a tag's. A release is a dispatch of
+# publish-hosted-guest on a tag (vhosted-guest-<date>; the release signer accepts tags beginning
+# with v, and no check is triggered by one that does not continue with a version number), and its
+# pins.env is pinned by hand with `hosted-guest.sh pin`'s checks.
 [[check]]
 name = "sign-hosted-guest"
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/hosted-guest /target/publish/hosted-guest/image"
@@ -2827,7 +2834,7 @@ needs = ["image-hosted-guest", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
 outputs = ["/target/publish/hosted-guest/image/payload.json", "/target/publish/hosted-guest/image/signature", "/target/publish/hosted-guest/image/dry-run.pub", "/target/publish/hosted-guest/image/bundle.json", "/target/publish/hosted-guest/image/certified/**"]
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 id_token = ["sts.amazonaws.com"]
 
 [[check]]
@@ -2836,14 +2843,14 @@ run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/hosted
 needs = ["image-hosted-guest", "sign-hosted-guest", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 outputs = ["/target/publish/hosted-guest/image/receipt.json", "/target/publish/hosted-guest/image/pins.env"]
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 id_token = ["registry.tilo.so"]
 pointers = { hosted-guest = "/target/publish/hosted-guest/image/pins.env" }
 
 [[check]]
 name = "image-env-runtime-tree-{arch}"
-run = "bash tools/ci/publish/env-runtime.sh tree {arch} /target/publish/rpm-snapshot /target/publish/rpms/{arch} /target/publish/env-runtime/trees"
-needs = ["rpm-snapshot", "image-rpms-{arch}"]
+run = "bash tools/ci/publish/env-runtime.sh tree {arch} /target/publish/rpm-snapshot/{arch} /target/publish/rpms/{arch} /target/publish/env-runtime/trees"
+needs = ["rpm-snapshot-{arch}", "image-rpms-{arch}"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch={arch}"]
 isolation = "vm"
@@ -2904,7 +2911,7 @@ run = "bash tools/ci/publish/env-runtime.sh seal /target/publish/env-runtime/tre
 needs = ["image-env-runtime-tree-x86_64", "image-env-runtime-tree-aarch64", "env-runtime-packer"]
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/env-runtime/sealed/**"]
-on = ["stable"]
+on = ["dispatch"]
 secrets = ["TAPP_PUBLISHER_IDENTITY"]
 
 [[check]]
@@ -2924,7 +2931,7 @@ needs = ["image-env-runtime", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
 outputs = ["/target/publish/env-runtime/image/payload.json", "/target/publish/env-runtime/image/signature", "/target/publish/env-runtime/image/bundle.json"]
-on = ["stable"]
+on = ["dispatch"]
 id_token = ["sts.amazonaws.com"]
 
 [[check]]
@@ -2933,8 +2940,27 @@ run = "bash tools/ci/publish/env-runtime.sh release /target/publish/env-runtime/
 needs = ["image-env-runtime", "sign-env-runtime", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 outputs = ["/target/publish/env-runtime/image/receipt.json"]
-on = ["stable"]
+on = ["dispatch"]
 id_token = ["registry.tilo.so"]
+
+# ---- The frozen RPM package set
+#
+# One set of RPMs per package set (the direct roots os/Containerfile names and the files that
+# shape the snapshot), built natively for each architecture and, per architecture, given its SLSA
+# provenance, signed and published by a release tag: `once:set-<fingerprint>-<arch>` names it, so
+# the first tag that builds a package set publishes it and every later one finds it there. Each
+# architecture's set is published on its own: a machine of one builds, signs and publishes its own
+# and needs no node, build or tag of the other, and an architecture publishes later — dispatched on
+# a node of its own — without republishing what is already published.
+#
+# Every image that installs from RPMs (the relay, the agent host, the servers, the environment
+# runtime, the OS image) installs from the published set of its own architecture: rpm-snapshot-ARCH
+# resolves it, verifies its signature, its provenance for that architecture's package set and the
+# image's own architecture, and the build records which set it installed from. An image built from
+# a package set no tag has published yet — the run's own image-rpms, loaded unsigned — is built and
+# tested everywhere and is never signed or published: the signing guard (oci-sign.sh,
+# require_published_snapshot) refuses it. So a release tag publishes the set before it builds its
+# images from it, and main only ever builds and tests.
 
 [[check]]
 name = "image-rpms-{arch}"
@@ -2957,37 +2983,47 @@ default = false
 arch = ["x86_64", "aarch64"]
 
 [[check]]
-name = "image-rpms"
-run = "python3 tools/ci/publish/oci-index.py /target/publish/rpms/index /target/publish/rpms/x86_64/image.oci.tar /target/publish/rpms/aarch64/image.oci.tar"
-needs = ["image-rpms-x86_64", "image-rpms-aarch64"]
-outputs = ["/target/publish/rpms/index/image.oci.tar", "/target/publish/rpms/index/digest"]
+name = "provenance-rpms-{arch}"
+run = "bash tools/ci/publish/rpms-provenance.sh {arch} /target/publish/rpms"
+needs = ["image-rpms-{arch}"]
+outputs = ["/target/publish/rpms/{arch}/provenance.json", "/target/publish/rpms/{arch}/fingerprint"]
 default = false
+[check.matrix]
+arch = ["x86_64", "aarch64"]
 
 [[check]]
-name = "provenance-rpms"
-run = "bash tools/ci/publish/rpms-provenance.sh /target/publish/rpms"
-needs = ["image-rpms", "image-rpms-x86_64", "image-rpms-aarch64"]
-outputs = ["/target/publish/rpms/index/provenance.json", "/target/publish/rpms/index/fingerprint", "/target/publish/rpms/x86_64/fingerprint", "/target/publish/rpms/aarch64/fingerprint"]
-default = false
-
-[[check]]
-name = "sign-rpms"
-run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/rpms /target/publish/rpms/x86_64\nbash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/rpms /target/publish/rpms/aarch64\nbash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/rpms /target/publish/rpms/index\nbash tools/ci/publish/oci-attest.sh registry.tilo.so/tilo/rpms /target/publish/rpms/index\n"
-needs = ["image-rpms", "image-rpms-x86_64", "image-rpms-aarch64", "provenance-rpms", "signing-tools"]
+name = "sign-rpms-{arch}"
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/rpms /target/publish/rpms/{arch}\nbash tools/ci/publish/oci-attest.sh registry.tilo.so/tilo/rpms /target/publish/rpms/{arch}\n"
+needs = ["image-rpms-{arch}", "provenance-rpms-{arch}", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
-outputs = ["/target/publish/rpms/x86_64/payload.json", "/target/publish/rpms/x86_64/signature", "/target/publish/rpms/x86_64/dry-run.pub", "/target/publish/rpms/x86_64/bundle.json", "/target/publish/rpms/aarch64/payload.json", "/target/publish/rpms/aarch64/signature", "/target/publish/rpms/aarch64/dry-run.pub", "/target/publish/rpms/aarch64/bundle.json", "/target/publish/rpms/index/payload.json", "/target/publish/rpms/index/signature", "/target/publish/rpms/index/dry-run.pub", "/target/publish/rpms/index/bundle.json", "/target/publish/rpms/index/attestation.json", "/target/publish/rpms/index/attestation.bundle.json"]
-on = ["stable"]
+outputs = ["/target/publish/rpms/{arch}/payload.json", "/target/publish/rpms/{arch}/signature", "/target/publish/rpms/{arch}/dry-run.pub", "/target/publish/rpms/{arch}/bundle.json", "/target/publish/rpms/{arch}/attestation.json", "/target/publish/rpms/{arch}/attestation.bundle.json"]
+# A release tag signs and publishes this architecture's package set, so the images it publishes
+# install from a set that is published and signed. Dispatched on a release tag (`t dispatch
+# sign-rpms-x86_64 --ref tag:vX.Y.Z --publish`) it finishes a release whose own run stopped here,
+# and an arm64 node dispatched so publishes the other architecture's set; the release key's role
+# trusts v* tags only, so a dispatch anywhere else gets no signature.
+on = ["tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
 id_token = ["sts.amazonaws.com"]
+[check.matrix]
+arch = ["x86_64", "aarch64"]
 
 [[check]]
-name = "publish-rpms"
-run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/rpms /target/publish/rpms/x86_64 'once:set-{fingerprint}-x86_64'\nbash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/rpms /target/publish/rpms/aarch64 'once:set-{fingerprint}-aarch64'\nbash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/rpms /target/publish/rpms/index 'once:set-{fingerprint}'\n"
-needs = ["image-rpms", "image-rpms-x86_64", "image-rpms-aarch64", "sign-rpms", "signing-tools"]
+name = "publish-rpms-{arch}"
+run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/rpms /target/publish/rpms/{arch} 'once:set-{fingerprint}-{arch}'\n"
+# provenance-rpms-{arch} is what writes the fingerprint the tag names ({fingerprint}): a check is
+# given the outputs of the checks it needs, and only of those.
+needs = ["image-rpms-{arch}", "provenance-rpms-{arch}", "sign-rpms-{arch}", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-outputs = ["/target/publish/rpms/x86_64/receipt.json", "/target/publish/rpms/aarch64/receipt.json", "/target/publish/rpms/index/receipt.json"]
-on = ["stable"]
+outputs = ["/target/publish/rpms/{arch}/receipt.json"]
+# Ahead of the images of the same run: rpm-snapshot-{arch} names publish-rpms-{arch} as an
+# optional need, so on a release tag the set is published before anything builds from it, and the
+# image of that tag installs from the published set rather than from the run's unsigned one.
+# `once:` tags never move: an architecture's set is published once per package set.
+on = ["tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
 id_token = ["registry.tilo.so"]
+[check.matrix]
+arch = ["x86_64", "aarch64"]
 
 [[check]]
 name = "image-kernel-buildroot-{arch}"
@@ -3009,7 +3045,7 @@ needs = ["image-kernel-buildroot-x86_64", "image-kernel-buildroot-aarch64", "sig
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
 outputs = ["/target/publish/kernel-buildroot/x86_64/payload.json", "/target/publish/kernel-buildroot/x86_64/signature", "/target/publish/kernel-buildroot/x86_64/dry-run.pub", "/target/publish/kernel-buildroot/x86_64/bundle.json", "/target/publish/kernel-buildroot/aarch64/payload.json", "/target/publish/kernel-buildroot/aarch64/signature", "/target/publish/kernel-buildroot/aarch64/dry-run.pub", "/target/publish/kernel-buildroot/aarch64/bundle.json"]
-on = ["stable"]
+on = ["dispatch"]
 id_token = ["sts.amazonaws.com"]
 
 [[check]]
@@ -3018,7 +3054,7 @@ run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-k
 needs = ["image-kernel-buildroot-x86_64", "image-kernel-buildroot-aarch64", "sign-kernel-buildroot", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 outputs = ["/target/publish/kernel-buildroot/x86_64/receipt.json", "/target/publish/kernel-buildroot/aarch64/receipt.json", "/target/publish/kernel-buildroot/pins.env"]
-on = ["stable"]
+on = ["dispatch"]
 id_token = ["registry.tilo.so"]
 pointers = { kernel-buildroot = "/target/publish/kernel-buildroot/pins.env" }
 
@@ -3049,7 +3085,7 @@ needs = ["image-kernel-x86_64", "image-kernel-aarch64", "provenance-kernel", "ke
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
 outputs = ["/target/publish/kernel/x86_64/payload.json", "/target/publish/kernel/x86_64/signature", "/target/publish/kernel/x86_64/dry-run.pub", "/target/publish/kernel/x86_64/bundle.json", "/target/publish/kernel/aarch64/payload.json", "/target/publish/kernel/aarch64/signature", "/target/publish/kernel/aarch64/dry-run.pub", "/target/publish/kernel/aarch64/bundle.json", "/target/publish/kernel/x86_64/attestation.json", "/target/publish/kernel/x86_64/attestation.bundle.json", "/target/publish/kernel/aarch64/attestation.json", "/target/publish/kernel/aarch64/attestation.bundle.json"]
-on = ["stable"]
+on = ["dispatch"]
 id_token = ["sts.amazonaws.com"]
 
 [[check]]
@@ -3058,7 +3094,7 @@ run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-k
 needs = ["image-kernel-x86_64", "image-kernel-aarch64", "kernel-acceptance-x86_64", "kernel-acceptance-aarch64", "sign-kernel", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 outputs = ["/target/publish/kernel/x86_64/receipt.json", "/target/publish/kernel/aarch64/receipt.json", "/target/publish/kernel/pins.env"]
-on = ["stable"]
+on = ["dispatch"]
 id_token = ["registry.tilo.so"]
 pointers = { kernel = "/target/publish/kernel/pins.env" }
 
@@ -3100,44 +3136,12 @@ default = false
 arch = ["x86_64", "aarch64"]
 
 [[check]]
-name = "pin-kernel-buildroot"
-run = "bash tools/ci/publish/kernel-buildroot.sh pin"
-needs = ["signing-tools"]
-on = ["main"]
-reads_pointers = ["stable:kernel-buildroot"]
-pushes = ["os/kernel-buildroot-snapshot.env"]
-
-[[check]]
-name = "pin-kernel"
-run = "bash tools/ci/publish/kernel.sh pin"
-needs = ["signing-tools"]
-on = ["main"]
-reads_pointers = ["stable:kernel"]
-pushes = ["os/kernel-snapshot.env"]
-
-[[check]]
-name = "pin-legacy-guest"
-run = "bash tools/ci/publish/legacy-guest.sh pin"
-needs = ["signing-tools"]
-on = ["main"]
-reads_pointers = ["stable:legacy-guest"]
-pushes = ["os/legacy-guest-snapshot.env"]
-
-[[check]]
-name = "pin-hosted-guest"
-run = "bash tools/ci/publish/hosted-guest.sh pin"
-needs = ["signing-tools"]
-on = ["main"]
-reads_pointers = ["stable:hosted-guest"]
-pushes = ["os/hosted-guest-snapshot.env"]
-
-[[check]]
 name = "development-signing-context-{arch}"
 run = "bash os/tests/development_signing_native.sh context /target/development-signing/{arch}"
 needs = ["signing-tools"]
 requires = ["arch={arch}"]
 outputs = ["/target/development-signing/{arch}/**"]
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 [check.matrix]
 arch = ["x86_64", "aarch64"]
@@ -3149,7 +3153,7 @@ needs = ["development-signing-context-{arch}"]
 requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
 timeout_secs = 2700
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 dispatch_inputs = { proof = "full" }
 [check.matrix]
@@ -3210,7 +3214,7 @@ optional_needs = ["release-env-runtime"]
 isolation = "vm"
 outputs = ["/target/publish/env-tools/plan/**"]
 cache = false
-on = ["stable"]
+on = ["dispatch"]
 id_token = ["registry.tilo.so"]
 
 [[check]]
@@ -3219,7 +3223,7 @@ run = "bash tools/ci/publish/env-tools-release.sh seal /target/publish/env-tools
 needs = ["env-tools-plan", "env-tools-x86_64", "env-tools-aarch64", "env-tools-binaries-x86_64", "signing-tools"]
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/env-tools/sealed/**"]
-on = ["stable"]
+on = ["dispatch"]
 secrets = ["TAPP_PUBLISHER_IDENTITY"]
 
 [[check]]
@@ -3246,7 +3250,7 @@ needs = ["env-tools-plan", "image-env-tools", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
 outputs = ["/target/publish/env-tools/image/payload.json", "/target/publish/env-tools/image/signature", "/target/publish/env-tools/image/bundle.json"]
-on = ["stable"]
+on = ["dispatch"]
 id_token = ["sts.amazonaws.com"]
 
 [[check]]
@@ -3255,7 +3259,7 @@ run = "bash tools/ci/publish/env-tools-release.sh release /target/publish/env-to
 needs = ["env-tools-plan", "image-env-tools", "sign-env-tools", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 outputs = ["/target/publish/env-tools/image/receipt.json"]
-on = ["stable"]
+on = ["dispatch"]
 id_token = ["registry.tilo.so"]
 
 [[check]]
@@ -3723,7 +3727,7 @@ isolation = "vm"
 outputs = ["/target/publish/os-acceptance/{arch}/**"]
 git = true
 timeout_secs = 10800
-on = ["stable", "dispatch", "idle"]
+on = ["dispatch", "idle"]
 heavy = true
 [check.matrix]
 arch = ["x86_64", "aarch64"]
@@ -3780,7 +3784,7 @@ isolation = "vm"
 outputs = ["/target/publish/os-release/{arch}/sealed/**"]
 git = true
 timeout_secs = 5400
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 heavy = true
 [check.matrix]
 arch = ["x86_64", "aarch64"]
@@ -4636,8 +4640,9 @@ on = ["dispatch"]
 # ---- Product images, signatures and publication
 #
 # One chain per image: what it is built from, the image, a test that runs the thing inside it,
-# then signing on the stable branch and publication wherever a release is asked for. Every link
-# is a check of its own, so changing a link leaves every earlier one cached.
+# then signing and publication on a release tag (`vMAJOR.MINOR.PATCH`) or wherever a release is
+# asked for by dispatch. Every link is a check of its own, so changing a link leaves every earlier
+# one cached.
 #
 # The registry server is a `build`: a Containerfile of this tree whose one outside input is a
 # named context, so t makes a check per instruction and caches each on what it reads. The other
@@ -4676,7 +4681,7 @@ needs = ["image-web-entry"]
 outputs = ["/target/publish/web-entry/release/image.oci.tar", "/target/publish/web-entry/release/digest", "/target/publish/web-entry/release/receipt-extra.json"]
 requires = ["arch=x86_64"]
 isolation = "vm"
-on = ["dispatch", "stable"]
+on = ["dispatch"]
 cache = false
 
 [[check]]
@@ -4688,10 +4693,10 @@ outputs = ["/target/publish/web-entry/release/payload.json", "/target/publish/we
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
 requires = ["arch=any"]
-# Signed on stable and on a dispatch: the web entry is released at a release tag, with the relay
-# of the same commit (`t dispatch publish-web-entry --ref tag:vX.Y.Z`). The signing role trusts
-# stable and v* tags only, so a dispatch on main gets no signature and publishes nothing.
-on = ["stable", "dispatch"]
+# Signed on a release tag and on a dispatch: the web entry is released at a release tag, with the
+# relay of the same commit (`t dispatch publish-web-entry --ref tag:vX.Y.Z`). The signing role
+# trusts v* tags only, so a dispatch on main gets no signature and publishes nothing.
+on = ["dispatch"]
 
 [[check]]
 name = "publish-web-entry"
@@ -4896,6 +4901,20 @@ outputs = ["/target/page-two-people/**"]
 timeout_secs = 1200
 default = false
 
+# The gate's shared-link step on its own, in minutes: a document's link copied
+# from the bar's Share opens as that one document, live, on a phone-sized page,
+# and a run's link opens Console on that run. A step of the gate that fails
+# after it is chased here instead of by running the whole gate again.
+[[check]]
+name = "page-share-link"
+run = "bash os/containers/tilo-lounge/test-page-share-link.sh /target/publish/web-desktop/bundle /target/page-share-link"
+needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-tools", "web-desktop-bundle"]
+env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto" }
+requires = ["arch=x86_64"]
+outputs = ["/target/page-share-link/**"]
+timeout_secs = 1200
+default = false
+
 # The two programs the tilo.sh stack's checks run as a release's: tilo-enroll makes the VM host's
 # member device, and tilo-approve answers for the person the startup page made. Built here, once,
 # and handed to the checks that use them, so the micro-VM that runs the stack only runs it: the
@@ -4939,17 +4958,17 @@ default = false
 # as the image's unprivileged browser user, its device key, and what the page costs in memory.
 # What it found stays in /target/tilo-sh-local-vm.
 #
-# Room: a workspace's VM at `default` is 8 GiB, which is all the guest t gives a step, so the stack
-# places it at `small` (4 GiB) here and the door, relay, web entry and VM host fit beside it. t
-# books a step's guest from what its runs measured (8 GiB for a micro-VM step), and a guest short
-# of it says so and is given more next time; a run that needs a bigger workspace VM raises
-# TILO_SH_HOSTED_VM_SIZE and says why.
+# A workspace's VM runs at `default`, the size production places (4 vCPU, 8 GiB,
+# 50 GiB disk), and the VM host's budget follows it, so the placement here is the
+# one a customer's workspace gets: a check that places a smaller VM proves less
+# than the deployment does, and one that runs out of room underneath it says so
+# in its own log instead of the size being quietly turned down.
 [[check]]
 name = "tilo-sh-local-vm"
 run = "bash os/containers/tilo-sh/check-in-vm.sh /target/tilo-sh-local-vm"
 setup = { run = "dnf install -y --setopt=install_weak_deps=False podman passt shadow-utils util-linux e2fsprogs xfsprogs python3-httpx && dnf clean all\nmkdir -p /etc/containers/containers.conf.d\nprintf '[engine]\\ncgroup_manager = \"cgroupfs\"\\nevents_logger = \"file\"\\n' > /etc/containers/containers.conf.d/tilo-sh-local.conf" }
 needs = ["image-lounge", "image-front-door", "image-web-entry", "cli-x86_64", "image-vm-host", "image-hosted-guest", "tilo-sh-tools"]
-env = { TILO_SH_IMAGE_LOUNGE = "/target/publish/lounge/image.oci.tar", TILO_SH_IMAGE_DOOR = "/target/publish/front-door/image.oci.tar", TILO_SH_IMAGE_WEB = "/target/publish/web-entry/image.oci.tar", TILO_SH_IMAGE_VM_HOST = "/target/publish/vm-host/image.oci.tar", TILO_SH_HOSTED_GUEST = "/target/publish/hosted-guest/image", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64", TILO_SH_STATE = "/target/tilo-sh-local-vm-state", TILO_SH_FRESH = "1", TILO_SH_IMAGES = "1", TILO_SH_VM_HOST = "1", TILO_SH_BROWSER_FREE_ACTIONS = "200", TILO_SH_HOSTED_VM_SIZE = "small", TILO_SH_TILO_ENROLL = "/target/tilo-sh-tools/tilo-enroll", TILO_SH_TILO_APPROVE = "/target/tilo-sh-tools/tilo-approve" }
+env = { TILO_SH_IMAGE_LOUNGE = "/target/publish/lounge/image.oci.tar", TILO_SH_IMAGE_DOOR = "/target/publish/front-door/image.oci.tar", TILO_SH_IMAGE_WEB = "/target/publish/web-entry/image.oci.tar", TILO_SH_IMAGE_VM_HOST = "/target/publish/vm-host/image.oci.tar", TILO_SH_HOSTED_GUEST = "/target/publish/hosted-guest/image", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64", TILO_SH_STATE = "/target/tilo-sh-local-vm-state", TILO_SH_FRESH = "1", TILO_SH_IMAGES = "1", TILO_SH_VM_HOST = "1", TILO_SH_BROWSER_FREE_ACTIONS = "200", TILO_SH_TILO_ENROLL = "/target/tilo-sh-tools/tilo-enroll", TILO_SH_TILO_APPROVE = "/target/tilo-sh-tools/tilo-approve" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/tilo-sh-local-vm/**"]
@@ -4958,7 +4977,7 @@ default = false
 
 # Releasing the Lounge: t's own image-lounge build of the released commit (the same cached build
 # the gate runs), with the entrypoint and image tests its check runs, signed with the release key
-# and published as `sha-<commit>` for cloud-deploy, on stable and on a release tag. Published on
+# and published as `sha-<commit>` for cloud-deploy, on a release tag. Published on
 # dispatch as `dev-<commit>`, so a deployment can try a commit before it is released. The release
 # needs no registry image made elsewhere first: any commit tagged is released from its own build.
 [[check]]
@@ -4970,7 +4989,7 @@ outputs = ["/target/publish/lounge/release/payload.json", "/target/publish/loung
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
 requires = ["arch=any"]
-on = ["stable", "tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
+on = ["tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
 
 [[check]]
 name = "publish-lounge"
@@ -4982,7 +5001,7 @@ outputs = ["/target/publish/lounge/release/receipt.json"]
 pointers = { lounge = "/target/publish/lounge/release/receipt.json" }
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
-on = ["dispatch", "stable", "tag:v[0-9]*.[0-9]*.[0-9]*"]
+on = ["dispatch", "tag:v[0-9]*.[0-9]*.[0-9]*"]
 
 # The registry server: this tree is its context, and the compiler-cache client it installs is the
 # fetched asset cache, a named context of `os-assets`' outputs. So t plans it instruction by
@@ -5023,7 +5042,7 @@ outputs = ["/target/publish/registry-server/payload.json", "/target/publish/regi
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
 requires = ["arch=any"]
-on = ["stable"]
+on = ["dispatch"]
 
 [[check]]
 name = "publish-registry-server"
@@ -5034,15 +5053,15 @@ optional_needs = ["sign-registry-server"]
 outputs = ["/target/publish/registry-server/receipt.json"]
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
-on = ["dispatch", "stable"]
+on = ["dispatch"]
 
 # The hosted VM host (os/containers/tilo-vm-host): the service that runs tilo.sh workspaces'
 # Linux programs in jailed Firecracker VMs, its jail helper, Firecracker and pasta. Its programs
 # are t's own compile (vm-host-binaries, cached like every other build here), so the image is
 # packaging only: the pinned Fedora base, the runtime packages from the frozen RPM snapshot and
 # the pinned Firecracker release as a named context. Tested in a micro-VM, and published on
-# dispatch as dev-<commit> for the infra repository's apps/tilo-sh-vm-host to pin, signed on
-# stable.
+# dispatch as dev-<commit> for the infra repository's apps/tilo-sh-vm-host to pin, signed on a
+# release tag.
 [[check]]
 name = "vm-host-binaries"
 run = "bash tools/ci/publish/server-binaries.sh vm-host /target/publish/vm-host/binaries"
@@ -5056,8 +5075,8 @@ default = false
 
 [[check]]
 name = "image-vm-host"
-run = "bash tools/ci/publish/vm-host-build.sh /target/publish/rpm-snapshot /target/publish/rpms/x86_64 /target/publish/vm-host/binaries /target/publish/vm-host"
-needs = ["vm-host-binaries", "rpm-snapshot", "image-rpms-x86_64", "os-assets"]
+run = "bash tools/ci/publish/vm-host-build.sh /target/publish/rpm-snapshot/x86_64 /target/publish/rpms/x86_64 /target/publish/vm-host/binaries /target/publish/vm-host"
+needs = ["vm-host-binaries", "rpm-snapshot-x86_64", "image-rpms-x86_64", "os-assets"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"
@@ -5099,7 +5118,7 @@ outputs = ["/target/publish/vm-host/payload.json", "/target/publish/vm-host/sign
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
 requires = ["arch=any"]
-on = ["stable"]
+on = ["dispatch"]
 
 [[check]]
 name = "publish-vm-host"
@@ -5111,7 +5130,7 @@ outputs = ["/target/publish/vm-host/receipt.json"]
 pointers = { vm-host = "/target/publish/vm-host/receipt.json" }
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
-on = ["dispatch", "stable"]
+on = ["dispatch"]
 
 # The local tilo.sh stack's VM host (os/containers/tilo-sh/vm-host.sh): the same image,
 # privileged with a loop-backed state disk, the placer that places workspaces' VMs on it, and
@@ -5135,7 +5154,7 @@ default = false
 # program is t's own compile (front-door-binaries), so the image is packaging only: the pinned
 # Fedora base and the packages from the frozen RPM snapshot. Tested in a micro-VM against a real
 # start, and published on dispatch as dev-<commit> for the infra repository's deployment to pin,
-# signed on stable.
+# signed on a release tag.
 [[check]]
 name = "front-door-binaries"
 run = "bash tools/ci/publish/server-binaries.sh front-door /target/publish/front-door/binaries"
@@ -5147,8 +5166,8 @@ default = false
 
 [[check]]
 name = "image-front-door"
-run = "bash tools/ci/publish/front-door-build.sh /target/publish/rpm-snapshot /target/publish/rpms/x86_64 /target/publish/front-door/binaries /target/publish/front-door"
-needs = ["front-door-binaries", "rpm-snapshot", "image-rpms-x86_64"]
+run = "bash tools/ci/publish/front-door-build.sh /target/publish/rpm-snapshot/x86_64 /target/publish/rpms/x86_64 /target/publish/front-door/binaries /target/publish/front-door"
+needs = ["front-door-binaries", "rpm-snapshot-x86_64", "image-rpms-x86_64"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"
@@ -5176,7 +5195,7 @@ outputs = ["/target/publish/front-door/payload.json", "/target/publish/front-doo
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
 requires = ["arch=any"]
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 
 [[check]]
 name = "publish-front-door"
@@ -5188,4 +5207,4 @@ outputs = ["/target/publish/front-door/receipt.json"]
 pointers = { front-door = "/target/publish/front-door/receipt.json" }
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
-on = ["dispatch", "stable"]
+on = ["dispatch"]

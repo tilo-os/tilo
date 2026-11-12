@@ -19,6 +19,7 @@
 // document live for the second person.
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
+import {clock} from './timing.mjs';
 
 const [site, origin, workspace, out] = process.argv.slice(2);
 if (!site || !origin || !workspace || !out) {
@@ -31,6 +32,7 @@ mkdirSync(out, {recursive: true});
 // text that fills the window.
 const APP = 'so.tilo.scratchpad';
 const report = {site, origin, workspace, app: APP, at: new Date().toISOString(), shots: []};
+const mark = clock();
 const browsers = [];
 const pages = [];
 
@@ -169,6 +171,7 @@ try {
   // 1. Ada opens the document full tab and writes in it.
   const ada = await person('ada', {width: 1280, height: 800});
   await arrive(ada, documentLink, 'Ada');
+  mark('Ada opened the document full tab');
   const adaBar = JSON.parse(await ada.evaluate(`JSON.stringify({workspace: document.getElementById('bar-workspace').textContent,
     app: document.getElementById('bar-app').textContent, share: !document.getElementById('bar-share').hidden,
     tilo: document.getElementById('other-mode').href})`));
@@ -249,6 +252,7 @@ try {
   }
   await ada.send('Input.dispatchKeyEvent', {type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27});
   await ada.send('Input.dispatchKeyEvent', {type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27});
+  mark('Ada wrote in it and copied its link');
 
   // 3. Bo opens it on a phone: the same document, full tab, Ada's words in it.
   const bo = await person('bo', {width: 390, height: 844, scale: 2, mobile: true});
@@ -259,6 +263,7 @@ try {
   if (report.boTarget?.app !== APP) await failed(`Bo’s page shows ${report.boTarget?.app}, not the shared document`);
   if (await bo.evaluate('Boolean(globalThis.tiloMount?.navigation)')) await failed('Bo’s link opened a desktop, not the one document');
   report.boSawAdaMs = await shows(bo, first, 'Ada’s words on Bo’s page');
+  mark('Bo opened the link on a phone and read Ada’s words');
 
   // 4. Ada writes on; Bo sees it as she writes.
   const next = ` and then ${Date.now().toString(36)}`;
@@ -276,6 +281,7 @@ try {
   await bo.evaluate(`document.getElementById('bar-share').click()`);
   await until(bo, `Boolean(document.querySelector('.bar-sheet'))`, 'Bo’s Share sheet');
   await shoot(bo, 'share-sheet-390');
+  mark('Bo read Ada’s next words live and saw her here');
 
   // 6. A link to an agent run opens the desktop, Console on that run's page.
   const run = `console.run:${process.env.SHARE_LINK_RUN ?? 'no-such-run'}`;
@@ -300,6 +306,7 @@ try {
   if (/not there|cannot open/.test(said)) await failed(`the run's view did not open: ${said}`);
   report.runShows = (await shownText(cy)).slice(0, 400);
   await shoot(cy, 'run-390');
+  mark('a run link opened Console on that run');
   if (report.keyboard?.reached === false) {
     report.error = 'Ada’s keys never reached the editor of a document opened full tab';
     finish(1);

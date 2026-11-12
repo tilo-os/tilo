@@ -111,15 +111,22 @@ pub struct VmStatus {
     pub last_wake_ms: Option<u64>,
     pub last_wake_restored: Option<bool>,
     pub snapshot_bytes: Option<u64>,
+    /// What its process holds of the host's memory, as the kernel measured
+    /// it; `None` when it is not running.
+    pub resident_mib: Option<u64>,
+    /// What its balloon holds back from its guest, which the host has.
+    pub balloon_mib: u64,
 }
 
-/// What a host's VMs take of its memory budget, by their sizes.
+/// What a host's awake VMs take of its memory, as its kernel measures them.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct HostLoad {
-    /// The most its awake VMs may take together; `None` when only its slots
-    /// bound them.
+    /// The most its VMs may take together: the node's memory less what the
+    /// host keeps for itself; `None` when only its jail's slots bound them.
     pub budget_mib: Option<u64>,
-    /// What its awake VMs take.
+    /// What its awake VMs and the templates it is making are counted at: what
+    /// the kernel measured, and what a VM not yet measured is expected to
+    /// take.
     pub awake_mib: u64,
     /// What wakes waiting for room on it ask for.
     pub waiting_mib: u64,

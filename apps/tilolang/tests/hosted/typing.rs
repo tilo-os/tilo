@@ -27,29 +27,9 @@ fn changes(session: &Session) -> usize {
 /// A person at a Notes window of the notebook the record `chunks` holds, as one opens it again
 /// after closing it: what a window kept of a workspace they had open before.
 fn notes_over(route: &RouteSpec, chunks: Chunks) -> Session {
-    let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
-    let manager = CollaborationManager::with_peer_transport(Broker {
-        route: route.clone(),
-        sent: Rc::clone(&sent),
-        inbox: Rc::clone(&inbox),
-        joined: None,
-    });
-    Session::over(
-        manager,
-        route,
-        NOTES,
-        "ada",
-        chunks,
-        None,
-        (Box::new(inbox), sent),
-        |hosted| {
-            Window::Harness(Box::new(FrameHarness::new(
-                ui::State::new(),
-                Box::new(hosted),
-                VIEWPORT,
-            )))
-        },
-    )
+    let mut session = Session::brokered(route, NOTES, "ada", chunks, None, Window::in_harness);
+    session.settle();
+    session
 }
 
 /// The store of the window's instance.

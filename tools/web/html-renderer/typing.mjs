@@ -10,7 +10,8 @@
 // usage: node tools/web/html-renderer/typing.mjs BUNDLE_DIR OUT_DIR [--keys N] [--trace]
 import {mkdirSync, readFileSync, writeFileSync, existsSync} from 'node:fs';
 import {join, resolve} from 'node:path';
-import {launch, serve, sleep} from '../chrome.mjs';
+import {serve} from '../chrome.mjs';
+import {open as openBrowser, sleep} from './engines.mjs';
 
 const bundle = resolve(process.argv[2]);
 const out = resolve(process.argv[3]);
@@ -22,6 +23,10 @@ const tracing = process.argv.includes('--trace');
 const phone = process.argv.includes('--phone');
 const [width, height] = phone ? [390, 844] : [1280, 800];
 const sandbox = process.getuid?.() === 0 ? ['--no-sandbox'] : [];
+// Which browser's build runs the page: Chromium is the only one here with the
+// toolkit's canvas, but a key's cost is the HTML path's, so the other engines
+// measure the same page.
+const engine = (() => { const at = process.argv.indexOf('--browser'); return at < 0 ? 'chromium' : process.argv[at + 1]; })();
 // A plain page slower than this says the machine is busy, not that the page is
 // slow: the numbers of that run mean nothing.
 const REJECT_MS = 8;
@@ -145,15 +150,13 @@ function stages(events) {
 }
 
 async function measured({page, render, width, height, seed}) {
-  const browser = await launch({args: [`--window-size=${width},${height}`, ...sandbox]});
+  const opened = await openBrowser({engine, width, height, scale: phone ? 3 : 1, mobile: phone, args: sandbox});
+  const browser = opened.protocol;
+  const tab = opened.tab;
   const server = await serve(bundle);
-  const result = {page, render, width};
+  const result = {page, render, width, engine};
   try {
-    const tab = await browser.tab();
-    await tab.send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: phone ? 3 : 1, mobile: phone});
-    if (phone) await tab.send('Emulation.setTouchEmulationEnabled', {enabled: true, maxTouchPoints: 5});
-    await tab.send('Emulation.setEmulatedMedia', {features: [{name: 'prefers-color-scheme', value: 'light'}]});
-    await tab.send('Performance.enable', {});
+    await tab.colourScheme('light');
     await tab.navigate(`${server.url}/${page}${render ? `?render=${render}` : ''}`);
     await tab.waitFor('!!window.renderMarks', {timeout: 60000});
     if (page === 'app.html') {
@@ -168,23 +171,27 @@ async function measured({page, render, width, height, seed}) {
       await sleep(1500);
       const item = await tab.evaluate(FIND('Field notes'));
       if (item) {
-        for (const type of ['mousePressed', 'mouseReleased']) await tab.send('Input.dispatchMouseEvent', {type, x: item[0], y: item[1], button: 'left', clickCount: 1});
+        await tab.mouse.down({x: item[0], y: item[1]});
+        await tab.mouse.up({x: item[0], y: item[1]});
         await sleep(1500);
       }
     }
     await tab.evaluate(INSTRUMENT);
     const target = page === 'baseline.html' ? {x: phone ? width / 2 : 600, y: 120} : {x: phone ? 200 : 700, y: phone ? 287 : 256};
-    for (const type of ['mousePressed', 'mouseReleased']) await tab.send('Input.dispatchMouseEvent', {type, x: target.x, y: target.y, button: 'left', clickCount: 1});
+    await tab.mouse.down({x: target.x, y: target.y});
+    await tab.mouse.up({x: target.x, y: target.y});
     await sleep(400);
     if (page === 'baseline.html') await tab.evaluate('(()=>{const s=getSelection();s.selectAllChildren(document.querySelector("#doc p:nth-child(20)"));s.collapseToEnd();return true})()');
     await sleep(200);
     await tab.evaluate(TAKE);
-    const recording = tracing ? trace(browser, keys * 0.1 + 1) : null;
+    // A trace is the DevTools protocol's; the other engines report the frames
+    // and their work without it.
+    const recording = tracing && opened.cdp ? trace(browser, keys * 0.1 + 1) : null;
     await sleep(tracing ? 200 : 0);
     const at = await tab.evaluate('performance.now()');
     for (const ch of TEXT.slice(0, keys)) {
-      await tab.send('Input.dispatchKeyEvent', {type: 'keyDown', key: ch, text: ch, unmodifiedText: ch});
-      await tab.send('Input.dispatchKeyEvent', {type: 'keyUp', key: ch});
+      await tab.key.down({key: ch, text: ch});
+      await tab.key.up({key: ch});
       await sleep(100);
     }
     await sleep(400);
@@ -201,8 +208,8 @@ async function measured({page, render, width, height, seed}) {
     if (render === 'dom') {
       await tab.evaluate(METRICS_ON);
       for (const ch of TEXT.slice(0, Math.min(keys, 8))) {
-        await tab.send('Input.dispatchKeyEvent', {type: 'keyDown', key: ch, text: ch, unmodifiedText: ch});
-        await tab.send('Input.dispatchKeyEvent', {type: 'keyUp', key: ch});
+        await tab.key.down({key: ch, text: ch});
+        await tab.key.up({key: ch});
         await sleep(100);
       }
       await sleep(300);

@@ -83,6 +83,9 @@ arrival-retry = Try again
 arrival-failed-offline = You’re offline. Changes are kept on this device and sent once the connection is back.
 arrival-failed-admission = The workspace can’t take this browser’s changes right now. Changes are kept on this device.
 arrival-failed-saving = Your changes aren’t saved on this device yet. Keep this tab open and try again.
+# A private window, or one where site data is turned off: the browser hands the
+# page no file store, so a desktop draws here but its apps keep no files.
+arrival-failed-files = This window keeps no files, so apps here can’t store files of their own. Open Tilo in a normal window to work with them.
 arrival-failed-renderer = The desktop stopped drawing. Try again to start it, or reload the page.
 arrival-failed-stopped-drawing = The desktop stopped working. Try again to start it.
 arrival-failed-unreachable = Can’t reach { $workspace } right now. Check your connection, then try again.

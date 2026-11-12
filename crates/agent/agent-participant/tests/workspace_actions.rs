@@ -69,6 +69,9 @@ mod governed_agent;
 mod governed_sealed;
 mod harness;
 #[cfg(test)]
+#[path = "workspace_actions/hosted_browser.rs"]
+mod hosted_browser;
+#[cfg(test)]
 #[path = "workspace_actions/hosted_documents.rs"]
 pub mod hosted_documents;
 #[cfg(test)]

@@ -386,6 +386,36 @@ impl ConfinedReplica {
         }
     }
 
+    /// One page of [`Self::survey`] as `query` lists it: how many operations
+    /// it admits in all, and those from the `offset`th on, at most `take`.
+    /// Only the page crosses from the worker: a record holding thousands of
+    /// items costs a page what a record of ten does.
+    pub fn survey_page(
+        &self,
+        query: &tilo_actions::remote::CatalogueQuery,
+        (offset, take): (usize, usize),
+    ) -> (usize, Vec<ActionDescriptor>) {
+        let Ok(query) = serde_json::to_string(query) else {
+            return (0, Vec::new());
+        };
+        let reply = self.call(
+            &mut self.lock(),
+            &Request::SurveyPage {
+                query,
+                can_render: crate::render::can_render(),
+                offset: u64::try_from(offset).unwrap_or(u64::MAX),
+                take: u64::try_from(take).unwrap_or(u64::MAX),
+            },
+        );
+        match reply {
+            Ok(Reply::Page { total, descriptors }) => (
+                usize::try_from(total).unwrap_or(usize::MAX),
+                serde_json::from_str(&descriptors).unwrap_or_default(),
+            ),
+            _ => (0, Vec::new()),
+        }
+    }
+
     /// The keys `mutation` writes in `record`, as the worker holds that record
     /// now, or `None` when it holds none of it.
     pub fn changed_keys(
@@ -921,13 +951,29 @@ impl ConfinedReplica {
             DocumentMutation::Incremental(bytes) => (false, bytes),
         };
         let mut inner = self.lock();
-        // Admitted into a copy of its mirror, kept once the worker took it.
-        let mut candidate = match inner.beside.get(record) {
-            Some(mirror) => mirror.clone(),
-            None if snapshot => AutoCommit::new(),
+        // Admitted here before the worker sees it, as the held record's own
+        // changes are ([`Self::apply`]): a whole document into a copy of the
+        // part's mirror, kept once the worker took it; an increment into the
+        // mirror itself, which then holds more than the worker, never less.
+        // A part's mirror grows with every post: copying it for each one
+        // made a post cost what the part already holds.
+        let candidate = match inner.beside.get_mut(record) {
+            Some(mirror) if !snapshot => {
+                admit_incoming(mirror, bytes)?;
+                None
+            }
+            Some(mirror) => {
+                let mut candidate = mirror.clone();
+                admit_incoming(&mut candidate, bytes)?;
+                Some(candidate)
+            }
+            None if snapshot => {
+                let mut candidate = AutoCommit::new();
+                admit_incoming(&mut candidate, bytes)?;
+                Some(candidate)
+            }
             None => return Ok(()),
         };
-        admit_incoming(&mut candidate, bytes)?;
         let reply = self.call(
             &mut inner,
             &Request::ApplyRecord {
@@ -938,7 +984,9 @@ impl ConfinedReplica {
         );
         let result = match reply {
             Ok(Reply::Done) => {
-                inner.beside.insert(record.clone(), candidate);
+                if let Some(candidate) = candidate {
+                    inner.beside.insert(record.clone(), candidate);
+                }
                 // A write that waited for this part (a post made while the
                 // chain's newest part was on its way) is applied as it lands.
                 inner.beside_dirty = true;

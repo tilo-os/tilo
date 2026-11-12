@@ -349,58 +349,6 @@ impl RecordService {
         any
     }
 
-    /// The reading of the record or item `path` of `app`.
-    fn reading(&self, app: &str, path: &str) -> Option<Json> {
-        use tilolang_runtime::store::Store as _;
-        let probe = ResourceRef::parse_id(path, String::new())?;
-        let ty = self.host.store().type_of(&probe).ok()?;
-        let schema = crate::schema::lookup(&ty)?;
-        if schema.app != app {
-            return None;
-        }
-        let at = ResourceRef::parse_id(path, ty)?;
-        let runtime = self.host.runtime();
-        let mut fields = Map::new();
-        for field in &schema.fields {
-            let Ok(value) = runtime.read(&at, &field.id) else {
-                continue;
-            };
-            let Ok(mut json) = tilolang_runtime::value::to_json(&value) else {
-                continue;
-            };
-            published_refs(&mut json);
-            fields.insert(field.id.clone(), json);
-        }
-        // What links to it, each with how: a view composed elsewhere draws them as this app's
-        // own views do ([`tilolang_runtime::store::LINKS`]), and runs again when they move.
-        if let Ok(links) = self.host.store().linked(&at) {
-            let links: Vec<Json> = links
-                .into_iter()
-                .filter_map(|link| {
-                    let schema = crate::schema::lookup(&link.of.ty)?;
-                    Some(Json::Object(Map::from_iter([
-                        (
-                            "ref".to_owned(),
-                            Json::String(resource_id(&schema.app, &link.of.id_string())),
-                        ),
-                        (
-                            "ty".to_owned(),
-                            Json::String(format!("{}#{}", schema.app, schema.name)),
-                        ),
-                        ("how".to_owned(), Json::String(link.how.word().to_owned())),
-                    ])))
-                })
-                .collect();
-            if !links.is_empty() {
-                fields.insert(
-                    tilolang_runtime::store::LINKS.to_owned(),
-                    Json::Array(links),
-                );
-            }
-        }
-        Some(Json::Object(fields))
-    }
-
     /// The direct edit (a bound control's) of the field `arguments` name in the record or item
     /// `resource`: what a view composed over its reading elsewhere sends when the person types
     /// into it. Both publish these edits, and the same ones: an item is edited in its record by
@@ -608,6 +556,69 @@ fn in_run(
         Some(run) => context.with_group(run.id.clone(), run.label.clone(), run.kind.clone()),
         None => context,
     }
+}
+
+/// The reading of the record or item `resource` (its published id, `tl:<app>:<id>`) that `host`
+/// holds: its fields as the runtime reads them, each by its field id, and what links to it. What a
+/// runtime that loads its package as another app's reads back
+/// ([`tilolang_runtime::Runtime::set_reading`]). `None` for a resource `host` holds none of.
+#[must_use]
+pub fn reading_of(host: &Host, resource: &str) -> Option<Json> {
+    use tilolang_runtime::store::Store as _;
+    let (app, path) = resource.strip_prefix("tl:")?.split_once(':')?;
+    host.package(app)?;
+    let probe = ResourceRef::parse_id(path, String::new())?;
+    let ty = host.store().type_of(&probe).ok()?;
+    let schema = crate::schema::lookup(&ty)?;
+    if schema.app != app {
+        return None;
+    }
+    let at = ResourceRef::parse_id(path, ty)?;
+    let runtime = host.runtime();
+    let mut fields = Map::new();
+    for field in &schema.fields {
+        let Ok(value) = runtime.read(&at, &field.id) else {
+            continue;
+        };
+        let Ok(mut json) = tilolang_runtime::value::to_json(&value) else {
+            continue;
+        };
+        published_refs(&mut json);
+        fields.insert(field.id.clone(), json);
+    }
+    // What the person it is read for has not seen of its items: a view composed elsewhere
+    // counts it as this app's own views do ([`tilolang_runtime::store::UNSEEN`]).
+    if let Some(unseen) = runtime.unseen_reading(&host.viewer().0, &at) {
+        fields.insert(tilolang_runtime::store::UNSEEN.to_owned(), unseen);
+    }
+    // What links to it, each with how: a view composed elsewhere draws them as this app's
+    // own views do ([`tilolang_runtime::store::LINKS`]), and runs again when they move.
+    if let Ok(links) = host.store().linked(&at) {
+        let links: Vec<Json> = links
+            .into_iter()
+            .filter_map(|link| {
+                let schema = crate::schema::lookup(&link.of.ty)?;
+                Some(Json::Object(Map::from_iter([
+                    (
+                        "ref".to_owned(),
+                        Json::String(resource_id(&schema.app, &link.of.id_string())),
+                    ),
+                    (
+                        "ty".to_owned(),
+                        Json::String(format!("{}#{}", schema.app, schema.name)),
+                    ),
+                    ("how".to_owned(), Json::String(link.how.word().to_owned())),
+                ])))
+            })
+            .collect();
+        if !links.is_empty() {
+            fields.insert(
+                tilolang_runtime::store::LINKS.to_owned(),
+                Json::Array(links),
+            );
+        }
+    }
+    Some(Json::Object(fields))
 }
 
 /// Each reference in `json` named as the session publishes it: by its published id, and its
@@ -824,9 +835,7 @@ impl Service for RecordService {
     }
 
     fn read(&self, resource: &str) -> Option<Json> {
-        let (app, path) = resource.strip_prefix("tl:")?.split_once(':')?;
-        self.host.package(app)?;
-        self.reading(app, path)
+        reading_of(&self.host, resource)
     }
 
     fn invoke(

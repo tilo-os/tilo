@@ -40,6 +40,8 @@ struct Inner {
     /// The windows pictured now: their tab, the window it is, and the origin the chrome draws from
     /// (pictures are in its coordinates).
     shown: RefCell<Shown>,
+    /// The surface that draws the overview, which its flight asks frames of.
+    surface: Cell<Option<ui::motion::MotionSurface>>,
     /// The motion the desk moves with, and whether it flies at all.
     motion: EffectiveMotion,
     reduce_motion: bool,
@@ -59,6 +61,7 @@ impl Overview {
                 zoom: RefCell::new(Presence::closed()),
                 open: Rc::default(),
                 shown: RefCell::default(),
+                surface: Cell::new(None),
                 motion,
                 reduce_motion,
             }),
@@ -73,6 +76,12 @@ impl Overview {
     /// Set as the chrome draws, telling the session whether the overview is open.
     pub(crate) fn open_flag(&self) -> Rc<Cell<bool>> {
         Rc::clone(&self.inner.open)
+    }
+
+    /// The overview is drawn on `surface`: its flight asks frames of that surface alone, not of
+    /// every surface on the thread.
+    pub(crate) fn drawn_on(&self, surface: ui::motion::MotionSurface) {
+        self.inner.surface.set(Some(surface));
     }
 
     /// The same flag, borrowed: for a reader that lives for one call.
@@ -94,7 +103,11 @@ impl Overview {
         let open = inner.open.get();
         {
             let mut zoom = inner.zoom.borrow_mut();
-            zoom.show(open, Zoom::OVERVIEW, inner.motion, input_source(), now);
+            let mut show = || zoom.show(open, Zoom::OVERVIEW, inner.motion, input_source(), now);
+            match inner.surface.get() {
+                Some(surface) => ui::motion::on_surface(surface, show),
+                None => show(),
+            }
             if !zoom.is_visible(now) && !open {
                 // Nothing of it is on screen: no picture is owed.
                 drop(zoom);

@@ -247,3 +247,119 @@ async fn a_persons_keys_read_the_list_their_devices_kept_with_the_workspaces_her
     assert_eq!(read(&host, &agent).await.workspaces.len(), 3);
     relay.shutdown().await;
 }
+
+/// The person's devices are one record here: what a desktop holding the root
+/// sends with its list and what a pairing the page's root answered here
+/// issued are added, never taken out; every device of theirs that asks is in
+/// it; a revocation marks a device; an agent's grant reads none of it; and a
+/// certificate another root signed is never taken in.
+#[tokio::test]
+async fn one_record_lists_every_device_the_persons_root_certified() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    workspaces
+        .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
+        .unwrap();
+    let host = HostWorkspaceActions::new();
+    host.attach(workspaces.clone());
+    let root = SigningKey::from_bytes(&rand::random());
+    let home = workspaces.create("Lounge").await.unwrap().workspace;
+    assert!(workspaces.admit_own_through(&home));
+    workspaces
+        .issue(
+            &home,
+            workspaces.serving_certificate(),
+            crate::workspaces::IssueInvitationRequest {
+                request_id: rand::random(),
+                role: tilo_peer_state::join::MemberRole::Viewer,
+                recipient_user_public_key: Some(root.verifying_key().to_bytes()),
+                invitee_name: None,
+                expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap();
+    let desktop = key_of(&root, "studio", DeviceCapabilities::member());
+    let laptop = key_of(&root, "laptop", DeviceCapabilities::member());
+    let foreign = key_of(
+        &SigningKey::from_bytes(&rand::random()),
+        "not theirs",
+        DeviceCapabilities::member(),
+    );
+    let agent = key_of(
+        &root,
+        "Claude",
+        DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+    );
+
+    // The desktop holding the root sends its fleet with its list.
+    let carried = |cert: &DeviceCert| json!({"cert": cert});
+    invoke(
+        &host,
+        &desktop,
+        KEEP_PERSONAL,
+        json!({"list": {"workspaces": [], "devices": [carried(&laptop), carried(&foreign)]}}),
+    )
+    .await
+    .unwrap();
+    // A browser the page's root certified, carried through this host's pairing.
+    let browser = key_of(&root, "Firefox", DeviceCapabilities::member());
+    workspaces.keep_issued_device(&browser);
+
+    let labels = |list: &PersonalList| {
+        let mut labels: Vec<(String, bool)> = list
+            .devices
+            .iter()
+            .map(|device| (device.cert.device_label.clone(), device.revoked))
+            .collect();
+        labels.sort();
+        labels
+    };
+    let listed = read(&host, &desktop).await;
+    assert_eq!(
+        labels(&listed),
+        [
+            ("Firefox".to_owned(), false),
+            ("laptop".to_owned(), false),
+            ("studio".to_owned(), false),
+        ],
+        "every key their root certified, the asking device among them, and no other root's"
+    );
+    assert!(
+        read(&host, &agent).await.devices.is_empty(),
+        "an agent's grant reads no device of the person's"
+    );
+
+    // A later keep naming no devices takes none out.
+    invoke(
+        &host,
+        &desktop,
+        KEEP_PERSONAL,
+        json!({"list": {"workspaces": []}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(labels(&read(&host, &desktop).await).len(), 3);
+
+    // The root takes the laptop back: the record marks it.
+    let mut entry = tilo_user_identity::RevocationEntry {
+        user_public_key: root.verifying_key().to_bytes(),
+        revoked_device_public_key: laptop.device_public_key,
+        revoked_at_ns: tilo_clock::unix_now_ns(),
+        reason: tilo_user_identity::RevocationReason::Stolen,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
+    // As the relay keeps a revocation it took in from one of their sessions.
+    tilo_lock::RwLockRecover::write_recover(&*workspaces.inner.host.revocations)
+        .insert(entry)
+        .unwrap();
+    assert!(
+        labels(&read(&host, &desktop).await).contains(&("laptop".to_owned(), true)),
+        "a revoked device stays in the record, marked"
+    );
+    relay.shutdown().await;
+}

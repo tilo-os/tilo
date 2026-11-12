@@ -368,6 +368,10 @@ impl PersonRecordKinds for InstalledApps {
     fn earlier_ids(&self, app_id: &str) -> Vec<String> {
         self.earlier.of(app_id).to_vec()
     }
+
+    fn reads_records_of(&self, reader: &str, owner: &str) -> bool {
+        tilo_action_broker::SurfacePersonRecords.reads_records_of(reader, owner)
+    }
 }
 
 /// The machine's readings at the launcher's socket for them, from this session's one hub: what the

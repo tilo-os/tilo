@@ -54,6 +54,10 @@ const LINE: &str = "Row";
 /// A heading's widget: the band a section goes by, over what the section holds.
 const HEADING: &str = "SectionHeader";
 
+/// What the accessibility target naming a list's group heading starts with: the rest is the
+/// heading, as the toolkit hands it to the group it heads.
+const GROUP: &str = "group:";
+
 /// A section's widget: the groups a page is made of, each under its heading.
 const SECTION: &str = "Section";
 
@@ -465,12 +469,16 @@ struct Walk<'a> {
     page_titles: Vec<Title>,
     /// The shell's own navigation controls, where the window shows them.
     navigations: Vec<Navigation>,
+    /// The one group heading a list draws over its rows.
+    group_headings: Vec<GroupHeading>,
     out: &'a mut Vec<Problem>,
 }
 
 /// Words a window shows as a title: a column header's, or one its content shows as the page's.
 struct Title {
     words: String,
+    /// How many things the title counts beside it, where it counts any.
+    count: Option<u32>,
     at: Rect,
     /// The keys of the widgets at and above it, innermost first.
     keys: Vec<String>,
@@ -481,6 +489,17 @@ struct Title {
 /// One number a window draws: a column header's count, or a place's.
 struct Count {
     number: u32,
+    at: Rect,
+    /// The keys of the widgets at and above it, innermost first.
+    keys: Vec<String>,
+    widget: String,
+    id: Option<String>,
+}
+
+/// The one group heading a list draws: what it says, and how many rows it heads.
+struct GroupHeading {
+    words: String,
+    count: u32,
     at: Rect,
     /// The keys of the widgets at and above it, innermost first.
     keys: Vec<String>,
@@ -526,6 +545,7 @@ pub fn inspect(
         header_titles: Vec::new(),
         page_titles: Vec::new(),
         navigations: Vec::new(),
+        group_headings: Vec::new(),
         out: &mut out,
     };
     walk.node(
@@ -538,6 +558,7 @@ pub fn inspect(
         "",
     );
     walk.repeated_counts();
+    walk.repeated_group_titles();
     walk.repeated_titles();
     walk.double_navigation();
     walk.placeholder_panes(root, &mut Vec::new());
@@ -836,8 +857,7 @@ impl Walk<'_> {
         }
         if geometric {
             self.overlaps(node, keys, inner_clip);
-            self.counts(node, keys, own, inner_clip);
-            self.titles(node, keys, own);
+            self.says(node, keys, own, inner_clip);
             self.header_rows(node, keys);
             self.content_beside_sidebar(node, keys);
             self.navigation(node, keys, own.intersect(inner_clip));
@@ -1526,6 +1546,14 @@ impl Walk<'_> {
         }
     }
 
+    /// What `node` itself says, before what it holds is read: its titles and the numbers beside
+    /// them, and the one group heading it draws over the rows of a list.
+    fn says(&mut self, node: &InspectionNode, keys: &[String], own: Rect, clip: Rect) {
+        self.counts(node, keys, own, clip);
+        self.titles(node, keys, own);
+        self.group_heading(node, keys);
+    }
+
     /// The numbers `node` draws: a column header's count, or the counts of the places a list
     /// shows. Zero wants no attention, so it is no count at all and may not be drawn; the count
     /// of the place chosen in a list, drawn beside a column's header, is the same number twice.
@@ -1544,6 +1572,7 @@ impl Walk<'_> {
                 {
                     self.header_titles.push(Title {
                         words: name,
+                        count: number(access.value.as_deref()).filter(|count| *count > 0),
                         at: own,
                         keys: keys.iter().rev().cloned().collect(),
                         widget: node.widget.clone(),
@@ -1691,11 +1720,98 @@ impl Walk<'_> {
         };
         self.page_titles.push(Title {
             words: shown,
+            count: None,
             at: own,
             keys: keys.iter().rev().cloned().collect(),
             widget: node.widget.clone(),
             id: node.test_id.clone(),
         });
+    }
+
+    /// The one group heading `node` draws, where it draws exactly one: what it says, how many
+    /// rows it heads, and the list it stands in.
+    fn group_heading(&mut self, node: &InspectionNode, keys: &[String]) {
+        let Some(access) = node.semantics.as_ref() else {
+            return;
+        };
+        let heads_group = |child: &ui::a11y::AccessNode| {
+            child
+                .action_target
+                .as_deref()
+                .is_some_and(|target| target.starts_with(GROUP))
+        };
+        let headings: Vec<usize> = access
+            .children
+            .iter()
+            .enumerate()
+            .filter(|(_, child)| heads_group(child))
+            .map(|(at, _)| at)
+            .collect();
+        // Two groups tell the runs apart, and a heading says something the title does not. Where
+        // the list shows one band, it may head part of a longer list: the rows it heads must be
+        // the rows the list shows, so the count it reads is the count of the list.
+        let [at] = headings[..] else {
+            return;
+        };
+        let Some(heading) = access.children.get(at) else {
+            return;
+        };
+        let (Some(name), Some(count), Some(bounds)) = (
+            heading.name.clone(),
+            heading
+                .value
+                .as_deref()
+                .and_then(|value| value.trim().parse::<u32>().ok()),
+            heading.bounds.map(ui::a11y::AccessBounds::to_rect),
+        ) else {
+            return;
+        };
+        let rows = access
+            .children
+            .iter()
+            .skip(at.saturating_add(1))
+            .take_while(|child| !heads_group(child))
+            .filter(|child| child.role == ui::a11y::Role::ListItem)
+            .count();
+        if rows != usize::try_from(count).unwrap_or(0) {
+            return;
+        }
+        self.group_headings.push(GroupHeading {
+            words: words(&name),
+            count,
+            at: bounds,
+            keys: keys.iter().rev().cloned().collect(),
+            widget: node.widget.clone(),
+            id: node.test_id.clone(),
+        });
+    }
+
+    /// A list's group heading saying what the title over the list already says — the same words,
+    /// counting the same rows: the title names where the person is and how much stands there, so
+    /// the heading over the first row says nothing twice.
+    fn repeated_group_titles(&mut self) {
+        let groups = std::mem::take(&mut self.group_headings);
+        for group in groups {
+            let repeats = self.header_titles.iter().any(|title| {
+                title.words.eq_ignore_ascii_case(&group.words)
+                    && title.count == Some(group.count)
+                    && group.at.y0 >= title.at.y1 - EPSILON
+            });
+            if !repeats {
+                continue;
+            }
+            self.out.push(Problem {
+                kind: Kind::RepeatedGroupTitle,
+                keys: group.keys.clone(),
+                widget: group.widget.clone(),
+                id: group.id.clone(),
+                detail: format!(
+                    "the list's one group is headed {:?} over {} rows, where the title above it \
+                     already reads the same",
+                    group.words, group.count
+                ),
+            });
+        }
     }
 
     /// A bar naming a page while the page shows those same words as its own title: the bar

@@ -35,23 +35,6 @@ impl Feed {
     pub(crate) fn readings(&self) -> Readings {
         self.readings.clone()
     }
-
-    /// The device as it reads now.
-    pub fn set(&self, state: &QuickSettingsState) {
-        self.readings.set(state);
-    }
-
-    /// The device as it reads now: what a readout of a level shows after a
-    /// key changed it.
-    #[must_use]
-    pub fn current(&self) -> QuickSettingsState {
-        self.readings.current()
-    }
-
-    /// Change the readings in place.
-    pub fn update(&self, change: impl FnOnce(&mut QuickSettingsState)) {
-        self.readings.update(change);
-    }
 }
 
 type Projection = Box<dyn Fn(&QuickSettingsState) + Send + Sync>;
@@ -83,12 +66,15 @@ impl Readings {
         }
     }
 
-    pub(crate) fn current(&self) -> QuickSettingsState {
-        self.lock().current.clone()
-    }
-
     pub(crate) fn read<V>(&self, read: impl FnOnce(&QuickSettingsState) -> V) -> V {
         read(&self.lock().current)
+    }
+
+    /// Forget the parts the page built before: it is built again, so its
+    /// parts project what they read anew, and nothing of the page before
+    /// stays to be handed readings it no longer shows.
+    pub(crate) fn built_again(&self) {
+        self.lock().projections.clear();
     }
 
     /// Change the readings, and hand every part what it reads of the new
@@ -112,10 +98,6 @@ impl Readings {
         let mut inner = self.lock();
         let added = std::mem::replace(&mut inner.projections, projections);
         inner.projections.extend(added);
-    }
-
-    fn set(&self, state: &QuickSettingsState) {
-        self.update(|current| current.clone_from(state));
     }
 
     /// What `read` reads of the readings, kept current: a part keyed on it is

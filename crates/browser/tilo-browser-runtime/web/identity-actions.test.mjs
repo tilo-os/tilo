@@ -52,14 +52,14 @@ test('without passkeys the ask offers a recovery key, never a passkey it cannot 
   assert.doesNotMatch(ask.body, /passkey/);
 });
 
-test('an agent grant taken back at the door is revoked by the root this tab holds', async () => {
+test('a key taken back is revoked by the root this tab holds, for the reason chosen', async () => {
   const revoked = [];
-  const identity = {...fakeIdentity(), revokeDevice: async key => { revoked.push(key); return {key}; }};
+  const identity = {...fakeIdentity(), revokeDevice: async (key, reason) => { revoked.push([key, reason]); return {key}; }};
   const errors = [];
   const actions = createIdentityActions({identity, session: memorySession(), passkeys: async () => false,
     onError: error => errors.push(error)});
-  await actions.perform(REVOKE_DEVICE, 'ab'.repeat(32));
-  assert.deepEqual(revoked, ['ab'.repeat(32)]);
+  await actions.perform(REVOKE_DEVICE, {key: 'ab'.repeat(32), reason: 'stolen'});
+  assert.deepEqual(revoked, [['ab'.repeat(32), 'stolen']]);
   assert.deepEqual(errors, []);
 });
 

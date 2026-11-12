@@ -16,6 +16,7 @@
 //! - OPFS keeps no directory modification times; they read as the epoch.
 
 use js_sys::{Function, Object, Promise, Reflect, Uint8Array};
+use std::cell::Cell;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::{JsCast, JsValue};
@@ -29,6 +30,8 @@ use web_sys::{
 use crate::{Entry, Feature, FsError, Kind, LockMode, Meta, VPath};
 
 const NO_OPFS: &str = "This browser has no origin-private file system.";
+const REFUSED_ROOT: &str =
+    "This browser keeps no files for this page: a private window, or site data turned off.";
 const NO_WEB_LOCKS: &str = "This browser has no Web Locks, or the page is not a secure context.";
 const ONE_COMPONENT: &str = "a storage profile is one path component";
 
@@ -360,6 +363,15 @@ fn property(target: &JsValue, name: &str) -> Option<JsValue> {
 }
 
 /// The origin's OPFS root.
+///
+/// Asking for it is the one call that fails for want of the whole file
+/// system rather than of one file: a session that keeps nothing (a private
+/// window) and a page whose site data is turned off have no tree to hand
+/// back, and say so by rejecting `getDirectory()` — `WebKit` answers
+/// `UnknownError`, "The operation failed for an unknown transient reason".
+/// That is this browser not having files, not a file operation going wrong,
+/// so a refused root is [`FsError::Unsupported`] and the caller reports a
+/// missing capability instead of an error.
 async fn storage_root() -> Result<FileSystemDirectoryHandle, FsError> {
     let storage = property(&js_sys::global(), "navigator")
         .and_then(|navigator| property(&navigator, "storage"))
@@ -371,9 +383,29 @@ async fn storage_root() -> Result<FileSystemDirectoryHandle, FsError> {
         });
     };
     let storage: StorageManager = storage.unchecked_into();
-    Ok(await_js(storage.get_directory(), FsError::NotADirectory)
-        .await?
-        .unchecked_into())
+    let root = JsFuture::from(storage.get_directory())
+        .await
+        .map_err(|error| refused_root(&error))?;
+    Ok(root.unchecked_into())
+}
+
+/// The [`FsError`] for a refused OPFS root. The browser's own words go to
+/// the console, once: a page without files meets this again on every file
+/// operation, and the first line is the one that says why.
+fn refused_root(error: &JsValue) -> FsError {
+    thread_local! {
+        static WARNED: Cell<bool> = const { Cell::new(false) };
+    }
+    if !WARNED.with(|warned| warned.replace(true)) {
+        let detail = js_error(error, FsError::NotADirectory);
+        web_sys::console::warn_1(&JsValue::from_str(&format!(
+            "tilo-files: this page has no origin-private file system: {detail}"
+        )));
+    }
+    FsError::Unsupported {
+        feature: Feature::Files,
+        reason: REFUSED_ROOT,
+    }
 }
 
 async fn child_dir(

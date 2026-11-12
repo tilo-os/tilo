@@ -17,11 +17,13 @@
 //!
 //! **Storage.** One directory per workspace and author, granted to the host at its start, keyed by
 //! package inside: `<storage>/<package>/documents` holds the workspace record's on-disk copy, and
-//! `<storage>/<package>/indexes` the workspace's indexes.
+//! `<storage>/<package>/indexes` the indexes its instances read the record through, one per
+//! record, shared by every window of it.
 
 pub mod files;
 pub mod hosted;
 pub mod phrases;
+pub mod stop;
 pub mod task;
 pub mod wait;
 pub mod web;
@@ -584,6 +586,7 @@ impl TilolangHost {
                 workspace: request.room,
                 instance: request.instance,
                 person: request.person,
+                installed: request.installed,
             },
             bundle: Arc::new(bundle),
             manager,

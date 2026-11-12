@@ -195,7 +195,10 @@ enum Reach {
     /// Public web addresses only.
     Web,
     /// Any address: a test's fixture server.
-    #[cfg_attr(not(feature = "fixture-servers"), allow(dead_code))]
+    #[cfg_attr(
+        not(feature = "fixture-servers"),
+        allow(dead_code, reason = "only fixture-server builds construct it")
+    )]
     Fixture,
 }
 

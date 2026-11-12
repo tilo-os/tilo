@@ -1,33 +1,53 @@
 #!/usr/bin/env python3
-"""Key-to-photon latency of the compositor, headless, on the machine's real GPU.
+"""Key-to-present latency of typing on the Rust session, headless.
 
-Runs `shell --backend headless` with a render thread and a simulated display
-(`TILO_HEADLESS_VBLANK_HZ`): every frame is rendered by the real GPU into an
-offscreen target, its flip is queued behind the previous one and retires on a
-vblank grid at the panel's rate, as the DRM presenter does. A synthetic
-`wl_shm` client (`crates/session/session`) redraws its
-whole window on every key and damages either all of it (`--damage full`) or
-only the text line the key typed on (`--damage line`). Keys are injected through the control socket at
-random phases of the refresh interval, through the compositor's input funnel as
-a physical keyboard's keys arrive (`--input seat`) or straight to the focused
-client (`--input direct`). The compositor's own `KEY-LATENCY`
-lines give each key's journey:
+The session times every key from the instant it hands it to the window's client
+until the frame that shows the client's answer reaches the display
+(`crates/session/frame-metrics/src/key_latency.rs`): each answered key is one
+`KEY-LATENCY app=<id> key_to_commit_us=... key_to_submit_us=...
+key_to_present_us=...` line in the session log. This script types into a window,
+reads those lines, and reports the distribution. The legs are the same three the
+old desktop logged, so a number here is comparable with an older one:
 
     key -> client commit -> compositor submit -> vblank that shows it
 
-and `CPU-FRAME` lines give the GPU time of each frame. What it leaves out is
-the panel itself and libinput, so it measures the compositor and the GPU, not
-the whole keyboard-to-photon path.
+What it leaves out is the kernel's input stack and the panel itself: the keys
+enter through the session's control socket, so this is the compositor, the
+client and the GPU.
 
-    cargo build --release -p shell --bin shell --features dev-overrides
-    cargo build --release -p tilo-cli --bin tilo
-    cargo build --release -p shell --example latency_client
-    scripts/perf/headless_key_latency.py --label after --out target/key-latency
-    scripts/perf/headless_key_latency.py --compare before.json after.json
+Two windows to type into:
 
-To type into an installed Tilo app instead of the synthetic client, pass
-`--app APP_ID` (it is launched through the search palette, as a person does)
-and the launcher options of `scripts/perf/frame-loop-bench.py`.
+- **an installed app** (`--app so.tilo.notes`, or a tilolang app's id): opened
+  through the desktop's own launcher, as a person opens it. Its own editor
+  answers each key with a commit, which is what a person feels. The run opens
+  something to type into first (`--open`, an action of the app such as Notes'
+  "New note": a fresh Notes shows no editor), clicks into the window
+  (`--click-at`) so the editor has the caret, and refuses to type when a key
+  changes nothing the app draws.
+- **the synthetic client** (the default): `crates/session/session/examples/
+  latency_client.rs`, a window that answers every key with exactly one commit
+  and draws nothing else, so the compositor's share of the latency stands alone.
+
+The session is the tree's headless desktop (`scripts/headless-examples/
+real_apps.py`): the session `dist/dev/nested-session.sh` starts, its apps
+installed as signed packages, rendering on lavapipe, on a throwaway identity and
+a private runtime directory. Nothing here touches the desktop this runs from.
+
+    # once per tree, or pass --build here
+    dist/dev/nested-session-build.sh                     # through a remote exec
+    cargo build --release -p tilo-session --example latency_client
+    cargo build --release -p click-test-client --bin tilo-loadclient
+
+    # the synthetic client, 300 keys
+    scripts/perf/headless_key_latency.py --label client --client-bin target/release/examples/latency_client
+
+    # a native app and a tilolang app, through the desktop
+    scripts/perf/headless_key_latency.py --label native-notes --app so.tilo.notes \
+        --open "New note" --open-args '{"title": "Latency"}' --click-at 0.5,0.17
+    scripts/perf/headless_key_latency.py --label tilolang-notes --app so.tilo.lang.notes \
+        --tapp notes.tapp --open "New note" --click-at 0.5,0.17
+
+    scripts/perf/headless_key_latency.py --compare target/key-latency/*.json
 """
 from __future__ import annotations
 
@@ -42,29 +62,27 @@ import selectors
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-CLIENT_APP_ID = "so.tilo.latency-client"
+# The window of the synthetic client: what its READY line says its size is.
+CLIENT_APP = "so.tilo.latency-client"
 STAGES = ("key_to_commit_us", "key_to_submit_us", "key_to_present_us")
 KEY_LINE = re.compile(
     r"KEY-LATENCY app=(?P<app>\S*) key_to_commit_us=(?P<key_to_commit_us>\d+) "
     r"key_to_submit_us=(?P<key_to_submit_us>\d+) key_to_present_us=(?P<key_to_present_us>\d+)")
-GPU_LINE = re.compile(r"CPU-FRAME serial=\d+ .*?\bgpu_us=(\d+)")
-UPLOAD_LINE = re.compile(r"CPU-FRAME serial=\d+ .*?\bshm_upload_bytes=(\d+)")
-# What each rendered frame repainted (damage) and rasterised, and whether it
-# rendered the whole output.
-PAINT_LINE = re.compile(
-    r"CPU-FRAME serial=\d+ .*?\bdamage_px=(\d+) raster_px=(\d+) dense=([01])")
-# Frames the simulated display showed as the client's own buffer, rendering nothing.
-SCANOUT_LINE = re.compile(r"CPU-FRAME serial=\d+ .*?\bscanout=1\b")
+UNANSWERED_LINE = re.compile(r"KEY-LATENCY app=(?P<app>\S*) unanswered=1")
+# The synthetic client's own clock, for the legs the compositor cannot see: when its commit went
+# out, and when the compositor showed it.
+CLIENT_COMMIT_LINE = re.compile(r"CLIENT-KEY n=(?P<n>\d+) key_to_commit_us=(?P<us>\d+)")
+CLIENT_FRAME_LINE = re.compile(r"CLIENT-FRAME n=(?P<n>\d+) key_to_frame_us=(?P<us>\d+)")
 
 
-def _bench():
+def real_apps():
+    """The headless session with the tree's apps, as every check starts it."""
     spec = importlib.util.spec_from_file_location(
-        "frame_loop_bench", REPO / "scripts/perf/frame-loop-bench.py")
+        "real_apps", REPO / "scripts/headless-examples/real_apps.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -74,243 +92,233 @@ def percentile(ordered: list[float], p: float) -> float:
     return ordered[max(0, math.ceil(len(ordered) * p / 100) - 1)]
 
 
-def distribution(values_us: list[int]) -> dict:
-    if not values_us:
-        raise ValueError("no samples")
-    ordered = sorted(v / 1000 for v in values_us)
+def distribution(values_us: list[float]) -> dict:
+    ordered = sorted(value / 1000 for value in values_us)
     return {"n": len(ordered), "p50_ms": percentile(ordered, 50),
             "p90_ms": percentile(ordered, 90), "p99_ms": percentile(ordered, 99),
             "max_ms": ordered[-1]}
 
 
-def pixel_distribution(values: list[int]) -> dict:
-    ordered = sorted(values)
-    return {"n": len(ordered), "p50": percentile(ordered, 50), "p90": percentile(ordered, 90),
-            "p99": percentile(ordered, 99), "max": ordered[-1]}
-
-
 def parse_samples(text: str, app: str) -> list[dict]:
-    rows = []
-    for match in KEY_LINE.finditer(text):
-        if match["app"] == app:
-            rows.append({stage: int(match[stage]) for stage in STAGES})
-    return rows
+    return [{stage: int(match[stage]) for stage in STAGES}
+            for match in KEY_LINE.finditer(text) if match["app"] == app]
 
 
-def summarize(rows: list[dict], gpu_us: list[int]) -> dict:
+def summarize(rows: list[dict]) -> dict:
     out = {stage: distribution([row[stage] for row in rows]) for stage in STAGES}
     # The legs between the compositor's own marks, key by key.
     out["commit_to_submit_us"] = distribution(
         [row["key_to_submit_us"] - row["key_to_commit_us"] for row in rows])
     out["submit_to_present_us"] = distribution(
         [row["key_to_present_us"] - row["key_to_submit_us"] for row in rows])
-    if gpu_us:
-        out["gpu_frame_us"] = distribution(gpu_us)
     return out
 
 
-def session_env(root: Path, args: argparse.Namespace, ctl: Path) -> dict[str, str]:
-    """The private session's environment; its per-tick frame trace (paint
-    reasons and the clients that committed) lands next to the log."""
-    env = dict(os.environ)
-    for name in ("WAYLAND_DISPLAY", "DISPLAY", "TILO_RUN_SECONDS"):
-        env.pop(name, None)
-    run = root / "run"
-    env.update({
-        "TILO_TEST_CONTROL": str(ctl),
-        # One panel at its scale and refresh (`--outputs`, e.g. the laptop's
-        # `2944x1840@2~90`), or a bare size at scale 1.
-        **({"TILO_HEADLESS_OUTPUTS": args.outputs} if args.outputs
-           else {"TILO_HEADLESS_SIZE": f"{args.width}x{args.height}"}),
-        "TILO_HEADLESS_VBLANK_HZ": str(args.hz),
-        "TILO_PROFILE_PRESENTATION": "1",
-        "TILO_FRAME_TRACE": str((args.out / f"{args.label}.trace.csv").resolve()),
-        "HOME": str(root / "home"),
-        "XDG_CONFIG_HOME": str(root / "config"),
-        "XDG_DATA_HOME": str(root / "data"),
-        "XDG_CACHE_HOME": str(root / "cache"),
-        "XDG_STATE_HOME": str(root / "state"),
-        # Private, so the session's Wayland socket and its display file can
-        # never replace the ones of a desktop running on this machine.
-        "XDG_RUNTIME_DIR": str(run),
-        "DBUS_SESSION_BUS_ADDRESS": f"unix:path={run}/no-bus",
-        "TILO_STATE_PATH": str(root / "config" / "state.json"),
-        "TILO_IDENTITY_ROOT": str(root / "identity-root"),
-        "TILO_PEER_KEY_PATH": str(root / "keys" / "peer-key"),
-    })
-    return env
-
-
-def wait_client_ready(proc: subprocess.Popen, timeout: float) -> str:
-    """Bound the complete readiness line, including a client that writes only a prefix."""
+def wait_line(proc: subprocess.Popen, timeout: float) -> str:
+    """The client's first stdout line, bounded: it prints `READY <w>x<h>` once its window is drawn."""
     deadline = time.monotonic() + timeout
     data = b""
     reader = proc.stdout
-    # The descriptor, read as bytes, rather than the text stream: the line is
-    # validated as bytes below, and a buffered reader could hold a line this
-    # loop still waits for. `os.read` would block on a descriptor whose reader
-    # already holds the bytes, so the read waits for the line, not the pipe.
-    fd = proc.stdout.fileno()
+    if reader is None:
+        raise RuntimeError("the latency client has no stdout")
+    fd = reader.fileno()
     with selectors.DefaultSelector() as selector:
         selector.register(fd, selectors.EVENT_READ)
         while b"\n" not in data:
             remaining = deadline - time.monotonic()
             if remaining <= 0 or not selector.select(remaining):
-                raise RuntimeError("latency client readiness timed out")
+                raise RuntimeError("the latency client never reported READY")
             try:
                 chunk = reader.read1(4096)
             except BlockingIOError:
                 continue
             if not chunk:
-                raise RuntimeError(f"latency client exited before readiness: {data!r}")
+                raise RuntimeError(f"the latency client exited before READY: {data!r}")
             data += chunk
-    fields = data.split(b"\n", 1)[0].split()
-    if (len(fields) != 2 or fields[0] != b"READY"
-            or re.fullmatch(rb"[1-9][0-9]*x[1-9][0-9]*", fields[1]) is None):
-        raise RuntimeError(f"invalid latency client readiness: {data!r}")
-    return fields[1].decode("ascii")
+    line = data.split(b"\n", 1)[0].decode(errors="replace")
+    if not line.startswith("READY "):
+        raise RuntimeError(f"the latency client's first line is not READY: {line!r}")
+    return line
 
 
-def stop_client(proc: subprocess.Popen) -> None:
+def dismiss_first_login(session, timeout: float = 5.0) -> None:
+    """Complete the disposable session's first-login flow, pressing its own controls."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        names = {target.get("name") for target in session.targets()
+                 if isinstance(target, dict) and isinstance(target.get("name"), str)}
+        onboarding = sorted(name for name in names if name.startswith("onboarding."))
+        if not onboarding:
+            return
+        for name in ("onboarding.begin.button", "onboarding.understood.row",
+                     "onboarding.create.button", "onboarding.backup.skip-acknowledged.row",
+                     "onboarding.backup.continue.button", "onboarding.tour.skip.button",
+                     "onboarding.finish.button"):
+            if name in names:
+                session.click_named(name)
+                break
+        else:
+            return
+        time.sleep(0.2)
+
+
+def wayland_display(session, timeout: float = 10.0) -> str:
+    """The socket the session's clients connect to, named as a client finds it."""
+    runtime = Path(session.runtime_directory())
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        sockets = sorted(path.name for path in runtime.glob("wayland-*")
+                         if path.is_socket())
+        if sockets:
+            return sockets[0]
+        time.sleep(0.05)
+    raise RuntimeError(f"the session bound no Wayland socket in {runtime}")
+
+
+def start_client(args: argparse.Namespace, session, env: dict) -> subprocess.Popen:
+    """The synthetic window that commits once per key, on the session's own socket."""
+    client = Path(args.client_bin)
+    if not client.is_file():
+        sys.exit(f"missing {client}: build it with\n"
+                 "  cargo build --release -p tilo-session --example latency_client")
+    environment = {**env, "XDG_RUNTIME_DIR": session.runtime_directory(),
+                   "WAYLAND_DISPLAY": wayland_display(session)}
+    print(f"[key-latency] client on {environment['WAYLAND_DISPLAY']}: {client}", flush=True)
+    return subprocess.Popen(
+        [str(client), CLIENT_APP, "--damage", args.damage, "--buffers", args.buffers,
+         "--scale", str(args.client_scale)],
+        env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def placed_window(session, app: str, timeout: float) -> dict:
+    """The app's window once the desk has drawn it somewhere: a row says where it is only after
+    the window mapped, so a click has a rectangle to land in."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for row in session.windows():
+            if row.get("app_id") == app and row.get("rect"):
+                return row
+        time.sleep(0.1)
+    raise RuntimeError(f"{app} showed no window to type into")
+
+
+def open_something(session, app: str, title: str, arguments: dict, timeout: float) -> None:
+    """Invoke `app`'s own action named `title`, as a person picks it, so the window shows what
+    keys change. A window publishes its actions after it shows, so the run waits for it."""
+    deadline = time.monotonic() + timeout
+    while True:
+        found = [action for action in session.actions(app)
+                 if action.get("provider") != "applications" and action.get("title") == title]
+        if found or time.monotonic() > deadline:
+            break
+        time.sleep(0.2)
+    if not found:
+        sys.exit(f"[key-latency] {app} offers no action {title!r} to --open")
+    receipt = session.invoke(found[0]["provider"], found[0]["id"], arguments or None)
+    update = receipt.get("receipt", {}).get("update", {})
+    if update.get("state") != "succeeded":
+        sys.exit(f"[key-latency] {app}'s {title!r} did not succeed: {update}")
+
+
+def app_frames(session, app: str) -> int:
+    """How many frames the app's window has committed: a rise is a key it answered."""
+    return max((int(row.get("frames") or 0) for row in session.windows()
+                if row.get("app_id") == app), default=0)
+
+
+def type_keys(session, args: argparse.Namespace, warmup: int, keys: int) -> None:
+    """Press `keys` keys as a person does: at even places on the keyboard, at random phases of the
+    display's refresh, so no position on the refresh grid is favoured."""
+    rng = random.Random(args.seed)
+    letters = "abcdefghijklmnopqrstuvwxyz"
+    for index in range(warmup + keys):
+        session.key(letters[index % len(letters)])
+        time.sleep(args.interval_ms / 1000 + rng.random() / args.refresh_hz)
+
+
+def stop_client(proc: subprocess.Popen) -> str:
+    """Stop the synthetic client and answer what it printed (nothing, if it printed nothing)."""
     if proc.poll() is None:
         proc.terminate()
     try:
-        proc.wait(timeout=5)
+        out, err = proc.communicate(timeout=5)
     except subprocess.TimeoutExpired:
         proc.kill()
-        proc.wait(timeout=5)
-    finally:
-        if proc.stdout is not None:
-            proc.stdout.close()
-
-
-def set_settings(shell: Path, profile: Path, section: str, values: dict) -> None:
-    """Merge `values` into `section` of the profile's settings, with the `tilo`
-    command built beside the shell, before the session starts and holds them."""
-    subprocess.run([str(shell.parent / "tilo"), "settings", "set", "--profile", str(profile),
-                    section, json.dumps(values)], check=True)
+        out, err = proc.communicate(timeout=5)
+    return (out or b"").decode(errors="replace") + (err or b"").decode(errors="replace")
 
 
 def measure(args: argparse.Namespace) -> dict:
-    bench = _bench()
-    shell, client = Path(args.shell_bin), Path(args.client_bin)
-    for binary in ((shell,) if args.app else (shell, client)):
-        if not binary.is_file():
-            sys.exit(f"missing binary {binary}: see the build lines in --help")
-    args.out.mkdir(parents=True, exist_ok=True)
-    root = Path(tempfile.mkdtemp(prefix="tilo-key-latency-"))
-    (root / "run").mkdir(mode=0o700)
-    # The session trusts settings only below an existing login home.
-    (root / "home").mkdir(mode=0o700)
-    ctl_path = root / "run" / "control.sock"
-    env = session_env(root, args, ctl_path)
-    if args.hide_top_bar:
-        # The desktop's bar over the windows everywhere (Settings,
-        # Appearance, Desktop), not only over a maximized window.
-        set_settings(shell, root / "config" / "tilo", "desktop_controls", {"hide_top_bar": True})
-    log = args.out / f"{args.label}.log"
-    proc = client_proc = control = None
+    apps_module = real_apps()
+    out = args.out
+    out.mkdir(parents=True, exist_ok=True)
+    apps_module.prepare(args.state, apps=args.apps, built=args.build,
+                        remote=os.environ.get("TILO_NESTED_SESSION_BUILD_EXEC"))
+    env = {"TILO_HEADLESS_SIZE": args.size}
+    if args.scale:
+        env["TILO_HEADLESS_SCALE"] = str(args.scale)
+    session = apps_module.Session(args.state)
+    client = None
+    app = args.app or CLIENT_APP
     try:
-        provision = subprocess.run(
-            [str(shell), "--provision-identity", "--disable-peer-sync"], env=env,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            timeout=args.startup_timeout, check=False)
-        if provision.returncode != 0:
-            sys.exit(f"could not provision the disposable identity:\n{provision.stdout}")
-        with log.open("wb") as sink:
-            proc = subprocess.Popen(
-                [str(shell), "--mode", "native", "--backend", "headless", "--disable-peer-sync"],
-                env=env, stdout=sink, stderr=subprocess.STDOUT, start_new_session=True)
-            if not bench.wait_for_socket(ctl_path, args.startup_timeout):
-                sys.exit("the control socket never appeared:\n"
-                         + log.read_text(errors="replace")[-3000:])
-            wayland = bench.wait_for_wayland_socket(log, 10.0)
-            if wayland is None:
-                sys.exit("the compositor named no Wayland socket")
-            control = bench.Control(ctl_path)
-            bench.dismiss_first_login(control)
-            app = CLIENT_APP_ID
-            if args.app:
-                app = args.app
-                ok, _, why = bench.launch_and_wait_for_app(control, app, args.app_timeout)
-                if not ok:
-                    sys.exit(f"{app} did not open: {why}")
-            else:
-                client_proc = subprocess.Popen(
-                    [str(client), app, "--damage", args.damage, "--buffers", args.buffers,
-                     "--scale", str(args.client_scale)],
-                    env={**env, "WAYLAND_DISPLAY": wayland},
-                    stdout=subprocess.PIPE, text=True)
-                window = wait_client_ready(client_proc, args.startup_timeout)
-                print(f"[key-latency] client window {window}", flush=True)
-            if args.maximize:
-                # Super+Up, as a person maximizes the window they type in.
-                for request in ({"op": "modifiers", "ctrl": False, "shift": False, "alt": False, "logo": True},
-                                {"op": "key", "key": "ArrowUp"},
-                                {"op": "modifiers", "ctrl": False, "shift": False, "alt": False, "logo": False}):
-                    reply = control.send(request)
-                    if "err" in reply:
-                        sys.exit(f"maximize refused: {reply}")
-            time.sleep(args.settle)
-            rng = random.Random(args.seed)
-            keys = "abcdefghijklmnopqrstuvwxyz"
-            for index in range(args.warmup + args.keys):
-                op = "seat_key" if args.input == "seat" else "key"
-                reply = control.send({"op": op, "key": keys[index % len(keys)]})
-                if "err" in reply:
-                    sys.exit(f"key refused: {reply}")
-                # Random phase against the display so no refresh position is favoured.
-                time.sleep(args.interval_ms / 1000 + rng.random() / args.hz)
-            time.sleep(1.0)
-            if proc.poll() is not None:
-                raise RuntimeError(f"compositor exited during measurement: {proc.returncode}")
-            if client_proc is not None and client_proc.poll() is not None:
-                raise RuntimeError(f"latency client exited during measurement: {client_proc.returncode}")
+        session.start(apps=args.apps, fresh=True, out=out, tag=args.label, env=env,
+                      tapps=args.tapp or None)
+        dismiss_first_login(session)
+        if args.app:
+            window = session.launch(args.app, deadline=args.app_timeout)
+            session.answering(args.app, deadline=args.app_timeout)
+            print(f"[key-latency] {args.app} window {window.get('title')!r}", flush=True)
+            # The window has the keyboard, but its editor has to have the caret before a key
+            # changes anything it draws: a click where the person types puts it there.
+            if args.open:
+                open_something(session, args.app, args.open, json.loads(args.open_args),
+                               args.app_timeout)
+                time.sleep(1.0)
+            across, down = (float(part) for part in args.click_at.split(","))
+            placed = placed_window(session, args.app, args.app_timeout)
+            left, top, width, height = (int(value) for value in placed["rect"])
+            session.click_at(left + int(width * across), top + int(height * down))
+            time.sleep(0.5)
+            frames_before = app_frames(session, args.app)
+            session.key("a")
+            time.sleep(0.5)
+            if app_frames(session, args.app) <= frames_before:
+                sys.exit(f"[key-latency] a key changed nothing {args.app} drew: nothing it shows "
+                         f"takes text at --click-at {args.click_at}; --open an action that shows "
+                         "an editor, or name another point of the window, as fractions of its "
+                         "width and height")
+        else:
+            client = start_client(args, session, os.environ)
+            ready = wait_line(client, args.app_timeout)
+            print(f"[key-latency] client window {ready.split(' ', 1)[1]}", flush=True)
+        time.sleep(args.settle)
+        type_keys(session, args, args.warmup, args.keys)
+        # The last key's frame reaches its vblank a refresh after it was committed.
+        time.sleep(1.0)
     finally:
-        if control is not None:
-            control.close()
-        try:
-            if client_proc is not None:
-                stop_client(client_proc)
-        finally:
-            if proc is not None:
-                bench.stop_process_group(proc)
-            shutil.rmtree(root, ignore_errors=True)
-    text = log.read_text(errors="replace")
-    rows = parse_samples(text, app)[args.warmup:]
+        client_output = stop_client(client) if client is not None else ""
+        session_log = session.log()
+        session.stop()
+
+    rows = parse_samples(session_log, app)[args.warmup:]
+    unanswered = sum(1 for match in UNANSWERED_LINE.finditer(session_log) if match["app"] == app)
     if len(rows) < args.keys * 0.8:
-        sys.exit(f"only {len(rows)} of {args.keys} keys were answered and timed; see {log}")
-    gpu = [int(m[1]) for m in GPU_LINE.finditer(text)]
-    # Frames rendered while typing: between the first and the last answered key, so the
-    # window's opening animation does not count against the keys.
-    key_lines = [m.start() for m in KEY_LINE.finditer(text) if m["app"] == app]
-    typing_frames = sum(1 for m in GPU_LINE.finditer(text)
-                        if key_lines and key_lines[0] < m.start() < key_lines[-1])
-    painted = [(int(m[1]), int(m[2]), m[3] == "1") for m in PAINT_LINE.finditer(text)]
-    paint = {}
-    # A frame proven unchanged keeps the image and repaints nothing.
-    rendered = [frame for frame in painted if frame[0] > 0]
-    if rendered:
-        paint = {"dense_frames": sum(dense for _, _, dense in rendered),
-                 "kept_frames": len(painted) - len(rendered),
-                 "damage_px": pixel_distribution([d for d, _, _ in rendered]),
-                 "raster_px": pixel_distribution([r for _, r, _ in rendered])}
-    paint["scanout_frames"] = sum(1 for _ in SCANOUT_LINE.finditer(text))
-    if "kept_frames" in paint:
-        paint["kept_frames"] -= paint["scanout_frames"]
-    uploads = [int(m[1]) for m in UPLOAD_LINE.finditer(text)]
-    if uploads:
-        paint["shm_upload_bytes"] = pixel_distribution(uploads)
-    result = {"label": args.label, "app": app,
-              "size": args.outputs or f"{args.width}x{args.height}",
-              "maximized": args.maximize, "hide_top_bar": args.hide_top_bar,
-              "hz": args.hz, "keys_sent": args.keys, "damage": args.damage, "input": args.input,
-              "buffers": args.buffers, **paint,
-              # Rendered frames per key sent: a key answered by one commit should cost one.
-              "frames_per_key": round(len(gpu) / (args.keys + args.warmup), 2),
-              "typing_frames_per_key": round(typing_frames / max(1, len(key_lines) - 1), 2),
-              **summarize(rows, gpu)}
-    (args.out / f"{args.label}.json").write_text(json.dumps(result, indent=2))
+        sys.exit(f"[key-latency] only {len(rows)} of {args.keys} keys were answered and timed "
+                 f"by {app}; the session log's last lines:\n"
+                 + "\n".join(session_log.splitlines()[-25:]))
+    result = {"label": args.label, "app": app, "size": args.size,
+              "keys_sent": args.keys, "unanswered": unanswered,
+              "damage": args.damage, "buffers": args.buffers,
+              **summarize(rows)}
+    # The synthetic client times its own two legs: its commit and the frame the compositor showed,
+    # on its own clock. It has no view of the session's marks, so these stand beside them.
+    client_commit = [int(match["us"]) for match in CLIENT_COMMIT_LINE.finditer(client_output)]
+    client_frame = [int(match["us"]) for match in CLIENT_FRAME_LINE.finditer(client_output)]
+    if client_commit:
+        result["client_key_to_commit_us"] = distribution(client_commit[args.warmup:])
+    if client_frame:
+        result["client_key_to_frame_us"] = distribution(client_frame[args.warmup:])
+    (out / f"{args.label}.json").write_text(json.dumps(result, indent=2))
     return result
 
 
@@ -318,72 +326,64 @@ def table(results: list[dict]) -> str:
     """One row per run and stage: p50 / p90 / p99 in milliseconds."""
     stages = [("key_to_commit_us", "key->commit"), ("commit_to_submit_us", "commit->submit"),
               ("submit_to_present_us", "submit->present"), ("key_to_present_us", "key->present"),
-              ("gpu_frame_us", "GPU frame")]
+              ("client_key_to_commit_us", "client key->commit"),
+              ("client_key_to_frame_us", "client key->frame")]
     lines = ["| run | stage | n | p50 | p90 | p99 |", "|---|---|---|---|---|---|"]
-    for r in results:
+    for result in results:
         for key, name in stages:
-            d = r.get(key)
-            if d:
-                lines.append(f"| {r['label']} | {name} | {d['n']} | {d['p50_ms']:.1f} "
-                             f"| {d['p90_ms']:.1f} | {d['p99_ms']:.1f} |")
+            found = result.get(key)
+            if found:
+                lines.append(f"| {result['label']} | {name} | {found['n']} "
+                             f"| {found['p50_ms']:.1f} | {found['p90_ms']:.1f} "
+                             f"| {found['p99_ms']:.1f} |")
     lines.append("")
-    lines.extend(f"{r['label']}: {r['frames_per_key']} rendered frames per key sent, "
-                 f"{r.get('typing_frames_per_key', '?')} per key while typing"
-                 for r in results if "frames_per_key" in r)
-    for r in results:
-        if "raster_px" in r:
-            frames = r["raster_px"]["n"]
-            lines.append(
-                f"{r['label']}: {r['dense_frames']}/{frames} rendered frames drew the whole "
-                f"output, {r.get('kept_frames', 0)} more kept the image unchanged; "
-                f"damage p50 {r['damage_px']['p50']} px, "
-                f"rasterised p50 {r['raster_px']['p50']} px p90 {r['raster_px']['p90']} px")
-        if r.get("scanout_frames"):
-            lines.append(f"{r['label']}: {r['scanout_frames']} frames showed the client's own "
-                         "buffer (direct scanout), rendering nothing")
-        if "shm_upload_bytes" in r:
-            up = r["shm_upload_bytes"]
-            lines.append(f"{r['label']}: wl_shm bytes uploaded per frame p50 {up['p50']} "
-                         f"p90 {up['p90']} max {up['max']}")
+    lines.extend(f"{result['label']}: {result['app']} on a {result['size']} display, "
+                 f"{result['keys_sent']} keys sent, {result.get('unanswered', 0)} unanswered"
+                 for result in results)
     return "\n".join(lines)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """The command line, shared with the tests that drive `measure` directly."""
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--shell-bin", default=str(REPO / "target/release/shell"))
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--app", help="type into this installed app instead of the synthetic client")
+    parser.add_argument("--apps", default="notes", help="apps the session installs (default: notes)")
+    parser.add_argument("--tapp", type=Path, action="append", metavar="PATH",
+                        help="a signed app package the session installs besides them, as a tilolang "
+                             "app is (repeatable)")
+    parser.add_argument("--build", action="store_true",
+                        help="build the session and its apps first (through $TILO_NESTED_SESSION_BUILD_EXEC)")
     parser.add_argument("--client-bin", default=str(REPO / "target/release/examples/latency_client"))
-    parser.add_argument("--out", type=Path, default=REPO / "target/key-latency")
-    parser.add_argument("--label", default="run")
-    parser.add_argument("--width", type=int, default=2944)
-    parser.add_argument("--height", type=int, default=1840)
-    parser.add_argument("--hz", type=float, default=60.0, help="the simulated panel's refresh rate")
-    parser.add_argument("--outputs", help="a headless output spec instead of --width/--height, "
-                        "e.g. 2944x1840@2~90 for the laptop panel at 200 %% and 90 Hz")
-    parser.add_argument("--client-scale", type=int, default=1,
-                        help="buffer pixels per surface pixel the synthetic client draws "
-                        "(2 on a 200 %% panel, so its buffer matches the display)")
-    parser.add_argument("--hide-top-bar", action="store_true",
-                        help="the person's setting that hides the desktop's bar until the "
-                        "pointer is near it, so a maximized window covers the display")
-    parser.add_argument("--maximize", action="store_true",
-                        help="maximize the typed-into window (Super+Up) before timing")
-    parser.add_argument("--keys", type=int, default=300, help="keys timed")
-    parser.add_argument("--warmup", type=int, default=20)
-    parser.add_argument("--interval-ms", type=float, default=100.0)
-    parser.add_argument("--settle", type=float, default=2.0)
-    parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--input", choices=("seat", "direct"), default="seat",
-                        help="seat: keys enter the compositor's input funnel as a physical "
-                             "keyboard's do; direct: straight to the focused client")
     parser.add_argument("--buffers", choices=("shm", "dmabuf"), default="shm",
                         help="the synthetic client's buffers: wl_shm, or LINEAR dma-bufs")
     parser.add_argument("--damage", choices=("full", "line"), default="full",
                         help="what the synthetic client damages per key")
-    parser.add_argument("--app", help="type into this installed app instead of the synthetic client")
-    parser.add_argument("--app-timeout", type=float, default=60.0)
-    parser.add_argument("--startup-timeout", type=float, default=120.0)
+    parser.add_argument("--client-scale", type=int, default=1,
+                        help="buffer pixels per surface pixel the synthetic client draws")
+    parser.add_argument("--state", type=Path,
+                        default=Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+                        / "tilo-key-latency",
+                        help="the session's state directory (default: $XDG_CACHE_HOME/tilo-key-latency)")
+    parser.add_argument("--out", type=Path, default=REPO / "target/key-latency")
+    parser.add_argument("--label", default="run")
+    parser.add_argument("--size", default="1280x800", help="the headless display, WxH")
+    parser.add_argument("--scale", default=None, help="the headless display's density")
+    parser.add_argument("--keys", type=int, default=300, help="keys timed")
+    parser.add_argument("--warmup", type=int, default=20)
+    parser.add_argument("--interval-ms", type=float, default=100.0)
+    parser.add_argument("--refresh-hz", type=float, default=60.0,
+                        help="the display's rate, for the random phase of each key")
+    parser.add_argument("--settle", type=float, default=2.0)
+    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--app-timeout", type=float, default=120.0)
+    parser.add_argument("--open", metavar="TITLE",
+                        help="an action of --app invoked before typing, so the window shows "
+                             "something to type into (Notes: \"New note\")")
+    parser.add_argument("--open-args", default="{}", metavar="JSON",
+                        help="the arguments --open's action takes, as a JSON object")
+    parser.add_argument("--click-at", default="0.5,0.5", metavar="ACROSS,DOWN",
+                        help="where in the app's window to click before typing, as fractions of "
+                             "its width and height, so the editor has the caret (default 0.5,0.5)")
     parser.add_argument("--compare", nargs="+", type=Path, metavar="RESULT.json",
                         help="print a table of earlier results and exit")
     return parser
@@ -392,7 +392,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.compare:
-        print(table([json.loads(p.read_text()) for p in args.compare]))
+        print(table([json.loads(path.read_text()) for path in args.compare]))
         return 0
     result = measure(args)
     print(table([result]))

@@ -561,6 +561,17 @@ pub struct DeskAuthority {
     generation: std::sync::atomic::AtomicU64,
     revocations: crate::engine::Revocations,
     journal: Option<std::path::PathBuf>,
+    /// The person at this device, and the ids they went by before it had an identity: a workspace
+    /// whose governance names them by one of those is theirs, and what the broker decides in it is
+    /// as theirs.
+    names: Names,
+}
+
+/// Who the person at this device is, as the broker's decisions name them.
+#[derive(Clone, Default)]
+pub struct Names {
+    pub person: String,
+    pub earlier: Vec<String>,
 }
 
 impl DeskAuthority {
@@ -573,18 +584,23 @@ impl DeskAuthority {
         tree: tilo_desktop_model::DesktopTree,
         revocations: crate::engine::Revocations,
         journal: Option<std::path::PathBuf>,
+        names: Names,
     ) -> Self {
+        let mut tree = tree;
+        claim_earlier_owners(&mut tree, &names);
         Self {
             tree: Mutex::new(tree),
             generation: std::sync::atomic::AtomicU64::new(0),
             revocations,
             journal,
+            names,
         }
     }
 
     /// The desk as the loop shows it now, for the broker's next decision, which re-checks what
     /// it holds on the announcement rather than on a clock.
-    pub fn publish(&self, tree: tilo_desktop_model::DesktopTree) {
+    pub fn publish(&self, mut tree: tilo_desktop_model::DesktopTree) {
+        claim_earlier_owners(&mut tree, &self.names);
         *self.tree.lock_recover() = tree;
         self.generation
             .fetch_add(1, std::sync::atomic::Ordering::Release);
@@ -595,6 +611,24 @@ impl DeskAuthority {
     /// did not change between the two reads.
     pub fn generation(&self) -> u64 {
         self.generation.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+/// A workspace whose governance names the person by an id they went by before this device had an
+/// identity is theirs as the person they are now: the desk claims it ([`crate::Shared`]'s
+/// `own_workspaces`) and so does the copy the broker decides against, in the same moment, so their
+/// own action in it is never refused for the id their own workspace was founded under.
+fn claim_earlier_owners(tree: &mut tilo_desktop_model::DesktopTree, names: &Names) {
+    if names.earlier.is_empty() {
+        return;
+    }
+    for workspace in &mut tree.workspaces {
+        if workspace
+            .owner()
+            .is_some_and(|owner| names.earlier.iter().any(|earlier| earlier == owner))
+        {
+            workspace.set_owner(names.person.clone());
+        }
     }
 }
 
@@ -709,7 +743,7 @@ impl WorkspaceMemberships for SessionMemberships {
             let identity = engine.identity();
             engine.owner().commit_workspace_membership_command(
                 request,
-                &identity.signing_key()?,
+                identity.signer.as_ref(),
                 std::time::SystemTime::now(),
             )
         })
@@ -822,6 +856,15 @@ fn seams(
                 std::sync::Arc::clone(engine),
             )) as std::sync::Arc<dyn BrowserServiceSessionServices>
         });
+    // The hosts of the workspaces placed away from this device: where the person's actions on
+    // those workspaces go, where their workspace list is kept, and where the devices of that
+    // record are read back from.
+    let hosting = engine.as_ref().and_then(|engine| {
+        crate::hosted_workspaces::HostedWorkspaces::service(
+            Some(engine),
+            tilo_rt::app().handle().clone(),
+        )
+    });
     Seams {
         // No approved-check runner is installed with this session: a check a
         // project's app asks for has nothing to run it.
@@ -998,10 +1041,14 @@ fn seams(
         personal: Seam::when(personal),
         // A workspace placed on a host has its records changed there: the
         // person's actions on them are sent to the host, which decides and
-        // runs them, and the change reaches the windows here by sync.
-        hosted_workspaces: Seam::when(crate::hosted_workspaces::HostedWorkspaces::service(
-            engine.as_ref(),
-        )),
+        // runs them, and the change reaches the windows here by sync. The
+        // person's list is kept there too, and the devices of it read back
+        // from the host that keeps it, so Settings lists the same devices on
+        // every device of theirs.
+        hosted_workspaces: Seam::when(hosting.clone().map(|hosting| {
+            std::sync::Arc::new(hosting)
+                as std::sync::Arc<dyn tilo_action_broker::services::HostedWorkspaces>
+        })),
         // The steps only this session may take for the person: the
         // workspace's activity the Activity app reads, pairing a nearby
         // device, administering their identities and the devices trusted
@@ -1018,6 +1065,8 @@ fn seams(
                     std::sync::Arc::new(crate::identity_admin::BrokerDoor {
                         desk: desk_authority,
                         admin: crate::identity_admin::IdentityAdmin::session(),
+                        hosting,
+                        engine: engine.clone(),
                     }),
                     // The person's account with the host the session runs
                     // on: what Settings and the overview of their Tilo show,
@@ -1335,6 +1384,7 @@ mod tests {
                 tilo_desktop_model::DesktopTree::default(),
                 crate::engine::revocations_of(None),
                 None,
+                Names::default(),
             )),
             shortcuts: library(),
             activity: crate::activity_provider::wire(requests()),

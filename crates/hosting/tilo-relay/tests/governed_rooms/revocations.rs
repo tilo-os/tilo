@@ -396,7 +396,7 @@ async fn every_revocation_is_refused_after_a_restart() {
             "every key revoked before the restart is refused after it"
         );
     }
-    let relay = Relay::start(
+    let relay = crate::common::start_relay(
         RelayConfig {
             state_root: state.path().to_path_buf(),
             iroh_listen: "127.0.0.1:0".parse().unwrap(),

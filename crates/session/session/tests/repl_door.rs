@@ -1261,3 +1261,53 @@ fn the_repl_finds_what_place_found_places() {
         });
     }
 }
+
+/// An installed tilolang app the session does not run itself is named by what its package
+/// declares: its actions by their names (`notes.new_note`), never the ids they are stored under,
+/// and its record's root (`notes.notebook`), which those actions are called on.
+#[test]
+fn an_installed_apps_actions_and_root_are_named_as_it_declares_them() {
+    let _settled = ui::motion::testing::settled();
+    common::app_store();
+    let root = private_home();
+    let program = std::env::current_exe().expect("this test's program");
+    let mut session = crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        shell: true,
+        collab: false,
+        questions: Some(Questions::new()),
+        action_plane: ActionPlane::At(root.path().join("plane.sock")),
+        agent_door: Some(root.path().join("agent.sock")),
+        admit_repl: vec![program],
+        ..Options::default()
+    });
+    until(&mut session, "the bar's controls", |session| {
+        on_screen(session, "Notifications").is_some()
+    });
+    let mut repl = Repl::connect(&root.path().join("agent.sock"));
+    repl.opened(&mut session);
+    let (listed, failed) = repl.call(&mut session, "tilo", &json!({"program": "catalogue"}));
+    assert!(!failed, "{listed}");
+    let catalogue: Value = serde_json::from_str(&listed).expect("the catalogue is JSON");
+    let notes = catalogue["notes"]["signatures"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the notes app is listed: {catalogue:#}"));
+    let named = |kind: &str, name: &str| {
+        notes
+            .iter()
+            .find(|signature| signature["kind"] == kind && signature["name"] == name)
+            .cloned()
+    };
+    let new_note = named("action", "new_note")
+        .unwrap_or_else(|| panic!("notes names its action new_note: {notes:#?}"));
+    assert!(
+        new_note["call"]
+            .as_str()
+            .is_some_and(|call| call.starts_with("notes.new_note(")),
+        "{new_note:#}"
+    );
+    assert!(
+        named("root", "notebook").is_some(),
+        "notes names its root notebook: {notes:#?}"
+    );
+}

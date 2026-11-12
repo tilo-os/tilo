@@ -158,6 +158,9 @@ pub(crate) struct Personal {
     /// Whether `kept` was handed to the hosts too: a session's broker reaches them only once it
     /// serves, so a list said before then is kept on them once it does.
     kept_on_hosts: bool,
+    /// What the files this device's fleet is read from looked like when the list was last said:
+    /// a fleet that moved since — a device this device's root just certified — is said again.
+    pub(crate) fleet: Option<tilo_identity_host::device_fleet::FleetStamps>,
 }
 
 /// The parts of a desk [`Personal::publish_local`] reads.
@@ -276,6 +279,7 @@ impl Personal {
             unreadable: false,
             kept: None,
             kept_on_hosts: false,
+            fleet: None,
         };
         let read = personal
             .store
@@ -813,7 +817,10 @@ impl Personal {
                 })
             })
             .collect();
-        tilo_relay_session::workspaces::PersonalList { workspaces }
+        tilo_relay_session::workspaces::PersonalList {
+            workspaces,
+            devices: Vec::new(),
+        }
     }
 
     pub(crate) fn snapshot(&mut self) -> Option<DirectoryUpdate> {
@@ -965,6 +972,12 @@ impl crate::Shared {
             if let Some(owner) = self.owner_of(workspace.id(), &borrowed) {
                 workspace.set_owner(owner);
                 changed = true;
+            } else {
+                tracing::warn!(
+                    workspace = %workspace.id(),
+                    borrowed = borrowed.contains(&workspace.id()),
+                    "a workspace on the desk is nobody's this pass: nothing may be done in it"
+                );
             }
         }
         if changed {
@@ -981,12 +994,18 @@ impl crate::Shared {
 
     /// Who the governance of a workspace names as its owner: its own, when this device holds it,
     /// else the person at this device for a workspace of their own that no governance here has yet.
-    /// `None` for one joined through a door whose host has not said whose it is here.
+    /// A workspace founded before this device had an identity names the person by the id they went
+    /// by then; it is theirs as the person they are now, which is what their own actions in it are
+    /// decided as. `None` for one joined through a door whose host has not said whose it is here.
     fn owner_of(&self, workspace: WorkspaceId, borrowed: &BTreeSet<WorkspaceId>) -> Option<String> {
         if let Some(engine) = &self.engine
             && let Ok(owner) = engine.owner_of(&workspace.to_string())
         {
-            return Some(owner);
+            return Some(if self.earlier.contains(&owner) {
+                self.person.clone()
+            } else {
+                owner
+            });
         }
         (!borrowed.contains(&workspace)).then(|| self.person.clone())
     }
@@ -1267,6 +1286,7 @@ impl crate::Shared {
             // here.
             personal.refresh_hosts(self.engine.as_deref());
             let mut news = personal.publish_local(&self.handle);
+            news |= self.fleet_moved(&mut personal);
             // A device shown or kept off is a change this desk's pass did
             // not write. The list is sent whole, so this asks for one now;
             // a send that does not happen carries it the next time.
@@ -1373,6 +1393,21 @@ impl crate::Shared {
         }
     }
 
+    /// Whether the fleet this device's root certifies moved since the last pass, which says the
+    /// person's list again: the record keeps the keys with it, and a device paired here — a
+    /// certificate the helper signed into the fleet, on a thread of its own — is in no record
+    /// until the list is said. A fleet whose files stand still costs this pass two stamps.
+    fn fleet_moved(&self, personal: &mut Personal) -> bool {
+        let Some(engine) = &self.engine else {
+            return false;
+        };
+        let stamps =
+            crate::identity_admin::fleet_stamps(&engine.identity().device_cert.user_public_key);
+        let moved = stamps != personal.fleet;
+        personal.fleet = stamps;
+        moved
+    }
+
     /// Keep the person's list where their keys read it, when it moved: this device's door answers
     /// it to a key of theirs that dials it, and every dedicated host of a workspace held here keeps
     /// it for the keys that reach no device of theirs.
@@ -1391,7 +1426,7 @@ impl crate::Shared {
             .as_ref()
             .map(|engine| engine.host_hints().into_iter().collect())
             .unwrap_or_default();
-        let list = personal.readable(|workspace| {
+        let mut list = personal.readable(|workspace| {
             hints.get(workspace).cloned().or_else(|| {
                 self.sync
                     .as_ref()?
@@ -1399,6 +1434,19 @@ impl crate::Shared {
                     .and_then(|hint| postcard::to_stdvec(&hint).ok())
             })
         });
+        // The keys the person's root certified on this device go with the
+        // list, so the record every device of theirs reads holds them.
+        if let Some(engine) = &self.engine {
+            list.devices = crate::identity_admin::root_certificates(
+                &engine.identity().device_cert.user_public_key,
+            )
+            .into_iter()
+            .map(|cert| tilo_relay_session::workspaces::PersonalDevice {
+                cert,
+                revoked: false,
+            })
+            .collect();
+        }
         if personal.kept.as_ref() == Some(&list) && (personal.kept_on_hosts || hosted.is_none()) {
             return;
         }

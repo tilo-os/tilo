@@ -181,7 +181,7 @@ impl Automation {
     /// which cannot read this one.
     /// The desk belongs to the loop ([`DesktopHandle`] hands it out here only) and `desk` reads it
     /// on the broker's thread, so the loop hands over a copy when the desk moved.
-    fn publish_desk(&mut self, desk: Option<&crate::plane::DeskAuthority>) {
+    pub(crate) fn publish_desk(&mut self, desk: Option<&crate::plane::DeskAuthority>) {
         let Some(desk) = desk else {
             return;
         };

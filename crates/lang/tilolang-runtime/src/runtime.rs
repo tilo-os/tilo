@@ -414,6 +414,17 @@ impl Runtime {
         self.core.rust_views.borrow_mut().insert(app, views);
     }
 
+    /// What `person` has not seen of the items the resource `at` holds, as a reading of it
+    /// carries it to another app's runtime ([`crate::store::UNSEEN`]). `None` for a resource
+    /// that holds no items.
+    #[must_use]
+    pub fn unseen_reading(&self, person: &str, at: &ResourceRef) -> Option<Json> {
+        let (field, item) = self.core.item_collection_of(at)?;
+        let first = self.core.first_unseen_of(person, at, &field, &item).ok()?;
+        let count = self.core.unread_count_of(person, at).ok().flatten()?;
+        Some(serde_json::json!({ "first": first, "count": count }))
+    }
+
     /// The reading of `target`, a resource of an app this runtime does not run, as the
     /// session's watch last saw it: the JSON its service read. Views that read a field of it
     /// run again at the next poll. Whether it differs from the reading held before: `false`

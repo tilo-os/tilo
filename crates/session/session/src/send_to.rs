@@ -243,16 +243,9 @@ impl Shared {
     /// The resource `item` names, as a message carries it: the record of the app that publishes
     /// it, found in the catalogue every caller surveys.
     fn carried(&self, item: &str) -> Result<tilo_reference::Attached, String> {
-        fn find<'a>(resources: &'a [ResourceSpec], item: &str) -> Option<&'a ResourceSpec> {
-            resources.iter().find_map(|resource| {
-                (resource.id.as_str() == item)
-                    .then_some(resource)
-                    .or_else(|| find(&resource.children, item))
-            })
-        }
         let resources = self.doors.resources();
-        let resource =
-            find(&resources, item).ok_or_else(|| format!("nothing is published as {item}"))?;
+        let resource = tilo_actions::door::find_resource(&resources, item)
+            .ok_or_else(|| format!("nothing is published as {item}"))?;
         let app = resource
             .app()
             .ok_or_else(|| format!("{item} is no app's resource"))?;

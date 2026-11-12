@@ -315,17 +315,20 @@ fn mint(
     key: &SigningKey,
     now: SystemTime,
 ) -> Result<NeighbourMsg, String> {
-    peer.publication_mut().compact_sealed_history(
-        APP,
-        RECORD,
+    let mut op = peer.publication().draft_sealed_compaction(
+        (APP, RECORD),
+        None,
         &mut |op| open(keys, op),
         &mut |plaintext| {
             keys.seal_content(artifact(), ContentRetention::Checkpoint, plaintext)
                 .map_err(|error| error.to_string())
         },
-        key,
+        key.verifying_key().to_bytes(),
         now,
-    )
+    )?;
+    collab_types::sign_op(&mut op, key).map_err(|error| error.to_string())?;
+    peer.publication_mut()
+        .admit_sealed_compaction(APP, RECORD, op, now)
 }
 
 /// A compaction of `superseded`, sealed with `keys` but not signed.
@@ -513,8 +516,15 @@ fn minting_aborts_without_a_trace_when_any_write_cannot_be_compacted() {
     for (why, mut open, mut seal) in attempts {
         assert!(
             f.host
-                .publication_mut()
-                .compact_sealed_history(APP, RECORD, &mut *open, &mut *seal, &f.owner, now)
+                .publication()
+                .draft_sealed_compaction(
+                    (APP, RECORD),
+                    None,
+                    &mut *open,
+                    &mut *seal,
+                    f.owner.verifying_key().to_bytes(),
+                    now
+                )
                 .is_err(),
             "{why} is compacted"
         );
@@ -1216,7 +1226,7 @@ fn a_full_history_refuses_writes_until_a_verified_compaction_supersedes_it() {
         &other,
         more.clone(),
         now,
-        "compact_sealed_history",
+        "draft_sealed_compaction",
     );
 
     let compaction = forged(
@@ -2068,3 +2078,61 @@ fn a_seal_waits_behind_the_cleartext_writes_held_before_it() {
         );
     }
 }
+
+/// Sealed changes that came before the record's checkpoint, more than the
+/// held queue keeps: the ones let go are no base the checkpoint waits
+/// behind. It founds the record, and the host is asked for what was let go.
+#[test]
+fn a_checkpoint_founds_its_record_behind_sealed_changes_let_go() {
+    let mut f = fixture();
+    let now = f.now;
+    let keys = f.keys();
+    let mut author = Author::new(&f.host);
+    let mut changes = Vec::new();
+    for n in 0..=held::MAX_HELD_INPUTS {
+        let change = write(
+            &f.host,
+            &f.other,
+            &keys,
+            &author.edit("value", &n.to_string()),
+            now,
+        );
+        admit(&mut f.host, &f.other, change.clone(), now);
+        changes.push(change);
+    }
+    let saved = checkpoint(&f.host, &keys, &f.owner, now);
+
+    let mut fresh = StatePeer::new(
+        WORKSPACE,
+        f.authority.clone(),
+        vec![],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    fresh.select_admission_v5().unwrap();
+    fresh
+        .receive_from(origin(&f.owner), f.host.workspace_message(), now)
+        .unwrap();
+    let mut let_go = 0;
+    for change in changes {
+        let report = fresh
+            .receive_from_report(origin(&f.other), change, now)
+            .unwrap();
+        let_go += report.summary().dropped.len();
+    }
+    assert!(let_go > 0, "the held queue let a change go");
+    let report = fresh
+        .receive_from_report(origin(&f.owner), saved.clone(), now)
+        .unwrap();
+    assert!(
+        matches!(report.primary(), InputDisposition::Accepted(_)),
+        "the checkpoint founds the record: {:?}",
+        report.primary()
+    );
+    assert!(report.replay_wanted, "what was let go is asked for again");
+    assert_eq!(held(&fresh).first(), Some(&envelope_of(&saved)));
+}
+
+#[path = "kept_open_tests.rs"]
+mod kept_open;

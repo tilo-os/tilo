@@ -23,6 +23,12 @@ export const searchOpen = tab => tab.evaluate('!!globalThis.tiloMount?.state()?.
  * `owed` says there is nothing left to draw, and never outlives the work it
  * waits for.
  *
+ * `idleMs` ends the wait when the desk has presented no frame for that long,
+ * for a desk that has no answer of its own to give: a desk drawing a
+ * megapixel through a software rasteriser presents every second or two, so a
+ * longer silence is a desk with nothing left to draw, and waiting for the
+ * timeout instead spends it on every step.
+ *
  * `evaluate` reads an expression in the page (`tab.evaluate` in the gate,
  * a stub in a test); `sleep` and `now` are the clock and pause, injectable
  * so a test can prove the wait ends on state without any frame advancing.
@@ -32,6 +38,7 @@ export async function settle({
   evaluate,
   by = 2,
   owed = () => true,
+  idleMs = 0,
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
   now = () => Date.now(),
   timeoutMs = 120_000,
@@ -40,10 +47,18 @@ export async function settle({
 }) {
   const from = await evaluate('globalThis.tiloMount?.state()?.frames ?? 0');
   const deadline = now() + timeoutMs;
+  let lastFrame = from;
+  let lastChange = now();
   for (;;) {
     const frames = await evaluate('globalThis.tiloMount?.state()?.frames ?? 0');
     if (frames >= from + by) return 'frames';
     if (!await owed()) return 'settled';
+    if (frames !== lastFrame) {
+      lastFrame = frames;
+      lastChange = now();
+    } else if (idleMs && now() - lastChange >= idleMs) {
+      return 'idle';
+    }
     if (now() > deadline) {
       if (onTimeout) return onTimeout({from, by});
       return 'timeout';

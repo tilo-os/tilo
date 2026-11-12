@@ -33,10 +33,22 @@ use ui::portable_storage::PortableStorage;
 use ui::record::{RecordCheckout, RecordId, RecordOwners};
 use ui::tilo_resource::{Place, ResourceKind};
 
+/// An app whose records this host keeps and whose windows another device
+/// holds: a hosted workspace's Browser, whose window runs in the workspace's
+/// own VM. Its workspaces list it and open a record for it like any app, and
+/// the device holding the window runs the app; this host mounts none of it,
+/// and reads its records only as bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlacedApp {
+    pub app_id: &'static str,
+    pub title: &'static str,
+}
+
 /// The apps an agent can open, by app id.
 #[derive(Clone)]
 pub struct AppCatalogue {
     apps: Vec<&'static ApplicationDefinition>,
+    placed: Vec<PlacedApp>,
 }
 
 /// Every app the browser desktop registers (from the app manifests): what a
@@ -72,7 +84,10 @@ pub fn agent_only_apps() -> Vec<&'static ApplicationDefinition> {
 impl AppCatalogue {
     #[must_use]
     pub fn new(apps: Vec<&'static ApplicationDefinition>) -> Self {
-        Self { apps }
+        Self {
+            apps,
+            placed: Vec::new(),
+        }
     }
 
     /// [`component_apps`] and [`agent_only_apps`].
@@ -83,6 +98,16 @@ impl AppCatalogue {
         Self::new(apps)
     }
 
+    /// This catalogue, listing `app` too: an app whose windows another device
+    /// holds ([`PlacedApp`]).
+    #[must_use]
+    pub fn placing(mut self, app: PlacedApp) -> Self {
+        if self.placed(app.app_id).is_none() {
+            self.placed.push(app);
+        }
+        self
+    }
+
     #[must_use]
     pub fn get(&self, app_id: &str) -> Option<&'static ApplicationDefinition> {
         self.apps
@@ -91,9 +116,32 @@ impl AppCatalogue {
             .find(|definition| definition.app_id() == app_id)
     }
 
+    /// The [`PlacedApp`] `app_id` names, when another device holds its
+    /// windows: this host lists it and opens its records, and mounts nothing
+    /// of it.
+    #[must_use]
+    pub fn placed(&self, app_id: &str) -> Option<PlacedApp> {
+        self.placed
+            .iter()
+            .copied()
+            .find(|placed| placed.app_id == app_id)
+    }
+
+    /// Whether `app_id` names an app of this catalogue: one this host mounts,
+    /// or one another device holds the windows of.
+    #[must_use]
+    pub fn has(&self, app_id: &str) -> bool {
+        self.get(app_id).is_some() || self.placed(app_id).is_some()
+    }
+
     /// Every app, in registration order.
     pub fn iter(&self) -> impl Iterator<Item = &'static ApplicationDefinition> + '_ {
         self.apps.iter().copied()
+    }
+
+    /// Every app another device holds the windows of, in registration order.
+    pub fn iter_placed(&self) -> impl Iterator<Item = PlacedApp> + '_ {
+        self.placed.iter().copied()
     }
 
     /// Read existing resource view descriptors without mounting or initializing
@@ -515,6 +563,45 @@ impl Replica {
             .into_iter()
             .filter_map(|descriptor| self.offered(descriptor, &in_chains))
             .collect()
+    }
+
+    /// [`Self::survey`] as the rows a catalogue lists it in, kept to answer
+    /// its pages ([`Self::page_of`]).
+    #[must_use]
+    pub fn survey_rows(&self) -> Vec<tilo_actions::remote::CatalogueRow> {
+        self.survey()
+            .into_iter()
+            .map(|descriptor| {
+                tilo_actions::remote::CatalogueRow::for_action("", self.app_id(), descriptor)
+            })
+            .collect()
+    }
+
+    /// What `surveyed` ([`Self::survey_rows`]) lists as `query` asks, on a
+    /// host that `can_render` or not: how many operations it admits, and
+    /// those from the `offset`th on, at most `take`. Only the page is
+    /// handed back.
+    #[must_use]
+    pub fn page_of(
+        surveyed: &[tilo_actions::remote::CatalogueRow],
+        query: &tilo_actions::remote::CatalogueQuery,
+        (can_render, (offset, take)): (bool, (usize, usize)),
+    ) -> (usize, Vec<ActionDescriptor>) {
+        let mut total = 0usize;
+        let mut page = Vec::new();
+        for row in surveyed {
+            let Some(descriptor) = &row.action else {
+                continue;
+            };
+            if (!can_render && crate::render::host_rendered(descriptor)) || !query.admits(row) {
+                continue;
+            }
+            if total >= offset && page.len() < take {
+                page.push(descriptor.clone());
+            }
+            total = total.saturating_add(1);
+        }
+        (total, page)
     }
 
     /// The keys `mutation` writes in `record`, as this replica holds that

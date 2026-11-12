@@ -566,7 +566,6 @@ mod tests {
                             cert.device_public_key,
                         ),
                         postcard::from_bytes(bytes).expect("a workspace change"),
-                        Some(key),
                         now,
                     )
                     .expect("this device takes the workspace as its governor has it");

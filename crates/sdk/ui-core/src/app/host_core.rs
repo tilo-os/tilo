@@ -224,6 +224,10 @@ impl crate::host_core::KeyHost for App {
         self.focusable_order.clone()
     }
 
+    fn keyboard_entry_owed(&mut self) -> &mut bool {
+        &mut self.input.keyboard_entry_owed
+    }
+
     fn move_focus(&mut self, node: Option<taffy::NodeId>) {
         self.set_focused_node(node);
     }

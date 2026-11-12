@@ -49,6 +49,8 @@ pub mod overlays;
 mod record_reads;
 pub mod records;
 pub mod search;
+#[cfg(target_os = "linux")]
+mod search_agent;
 mod search_ask;
 mod session_actions;
 // What a message from another member is, and whether the workspace's policy grants it: the gate

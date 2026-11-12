@@ -259,17 +259,83 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     pub(super) fn set_tail_title(&mut self, title: Option<String>) {
+        if self.tail_title == title {
+            return;
+        }
         self.tail_title = title;
+        self.heads_nothing.set(None);
+    }
+
+    /// The title of the view the list stands under, as its header reads it, and how many things
+    /// it counts beside it ([`Self::in_view`]).
+    pub fn set_view_title(&mut self, title: Option<String>, count: Option<usize>) {
+        if self.view_title == title && self.view_count == count {
+            return;
+        }
+        self.view_title = title;
+        self.view_count = count;
+        self.heads_nothing.set(None);
+        self.regrouped();
+    }
+
+    /// Stand the list under a titled view: one whose rows all fall in one group heads no group
+    /// of them when that heading says what the view's title already says — the same words,
+    /// counting the same rows — since the title over the list says it once. The rows that say
+    /// another heading, and a list of two groups or more, keep theirs.
+    #[must_use]
+    pub fn in_view(mut self, title: impl Into<String>, count: Option<usize>) -> Self {
+        self.set_view_title(Some(title.into()), count);
+        self
+    }
+
+    /// Whether the view's title names the list's one group, so that heading would say nothing
+    /// the title does not: the rows then stand under no heading at all. Read off the rows once,
+    /// and again whenever they are grouped anew.
+    pub(super) fn heads_nothing(&self) -> bool {
+        if let Some(read) = self.heads_nothing.get() {
+            return read;
+        }
+        let read = self.reads_heads_nothing();
+        self.heads_nothing.set(Some(read));
+        read
+    }
+
+    /// Whether the rows say the view's title names their one group
+    /// ([`Self::heads_nothing`]): every row of the list in one group that is no tail, its
+    /// words the title's words and its count the count the title reads.
+    fn reads_heads_nothing(&self) -> bool {
+        let Some(title) = self.view_title.as_deref() else {
+            return false;
+        };
+        let len = self.model.len();
+        let tail = self.tail_title.as_deref();
+        let Some(first) = group_of(&self.model, 0, tail) else {
+            return false;
+        };
+        // A tail heads the rows done with, a fold the person opens: it is the title's business
+        // how it reads, and the fold stays.
+        if first.tail || first.heading != title || self.view_count != Some(len) {
+            return false;
+        }
+        (1..len).all(|index| {
+            group_of(&self.model, index, tail)
+                .is_some_and(|group| !group.tail && group.heading == first.heading)
+        })
     }
 
     /// The row's group, as the model names it: asked of the model once per row, while its
-    /// props stand as they were.
+    /// props stand as they were. A view whose title names the list's one group
+    /// ([`Self::heads_nothing`]) leaves its rows under no heading: the title says it.
     pub(super) fn row_group(&mut self, index: usize) -> Option<Group> {
         let key = self.model.key_at(index)?;
         if let Some(group) = self.row_groups.get(&key) {
             return group.clone();
         }
-        let group = group_of(&self.model, index, self.tail_title.as_deref());
+        let group = if self.heads_nothing() {
+            None
+        } else {
+            group_of(&self.model, index, self.tail_title.as_deref())
+        };
         self.row_groups.insert(key, group.clone());
         group
     }
@@ -277,6 +343,7 @@ impl<M: ListModel> VirtualList<M> {
     /// Forget what the rows were grouped by: their props changed.
     pub(super) fn regrouped(&mut self) {
         self.row_groups.clear();
+        self.heads_nothing.set(None);
     }
 
     /// Forget the group of the rows keyed `keys`: their props changed.
@@ -284,6 +351,7 @@ impl<M: ListModel> VirtualList<M> {
     where
         M::Key: 'k,
     {
+        self.heads_nothing.set(None);
         for key in keys {
             self.row_groups.remove(key);
         }
@@ -291,14 +359,19 @@ impl<M: ListModel> VirtualList<M> {
 
     /// Whether the row `index` takes room: its group is open.
     pub(super) fn row_open(&self, index: usize) -> bool {
-        self.groups
-            .shows(&self.model, index, self.tail_title.as_deref())
+        // Nothing heads the rows: every one of them shows.
+        self.heads_nothing()
+            || self
+                .groups
+                .shows(&self.model, index, self.tail_title.as_deref())
     }
 
     /// Whether the row `index` starts a group: the heading over it.
     pub(super) fn row_starts(&self, index: usize) -> bool {
-        self.groups
-            .starts(&self.model, index, self.tail_title.as_deref())
+        !self.heads_nothing()
+            && self
+                .groups
+                .starts(&self.model, index, self.tail_title.as_deref())
     }
 
     /// The height the row `index` takes in the layout: its own, with the band of the heading

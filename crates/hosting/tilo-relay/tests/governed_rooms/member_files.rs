@@ -37,7 +37,7 @@ impl Room {
         let state = tempfile::tempdir().unwrap();
         // A public host: every visitor has the member budgets.
         let budgets = tilo_relay::member_limits::MemberLimitsConfig::default();
-        let relay = Relay::start(
+        let relay = crate::common::start_relay(
             RelayConfig {
                 state_root: state.path().to_path_buf(),
                 member_limits: Some(budgets),

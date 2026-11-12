@@ -185,6 +185,10 @@ pub enum Kind {
     /// control leads to, and takes the control's cell out of every line the body has, where a
     /// screen that narrow starts its body on the gutter and keeps the control beside the title.
     IndentedBody,
+    /// A list's one group heading saying what the title over the list already says: the same
+    /// words, counting the same rows. The title names where the person is and how much stands
+    /// there, so a heading that says it again over the first row says nothing twice.
+    RepeatedGroupTitle,
 }
 
 impl Kind {
@@ -244,6 +248,7 @@ impl Kind {
             Self::UnruledBody => "unruled-body",
             Self::OfferedTwice => "offered-twice",
             Self::IndentedBody => "indented-body",
+            Self::RepeatedGroupTitle => "repeated-group-title",
         }
     }
 }

@@ -169,6 +169,11 @@ pub struct AppTabs {
     /// The windows apps asked the desk for, by app and in ask order: each is
     /// started once the desk has made the tab it takes.
     held: BTreeMap<String, VecDeque<HeldStart>>,
+    /// The window a send opened on an item, by app and the item's anchor
+    /// (`chat/channels/c_ada`), by the tab it took: a second send landing in the
+    /// conversation a window already shows raises that window rather than
+    /// standing another one on the same conversation.
+    opened: BTreeMap<(String, String), u64>,
 }
 
 /// A window an app asked the desk for: what starting it launches, and the
@@ -275,6 +280,7 @@ impl AppTabs {
             sent: Vec::new(),
             asked: Vec::new(),
             held: BTreeMap::new(),
+            opened: BTreeMap::new(),
         })
     }
 
@@ -315,6 +321,7 @@ impl AppTabs {
                 sent: &mut self.sent,
                 asked: &mut self.asked,
                 held: &mut self.held,
+                opened: &mut self.opened,
                 pages: &shared.pages,
             };
             for request in self.requests.try_iter() {
@@ -389,7 +396,13 @@ impl AppTabs {
                 desktop.with_policy(|policy| policy.release_tab(made.tab));
                 continue;
             };
-            let workspace = apps.workspace_named(&made.workspace);
+            let workspace = apps.workspace_of(Some(made.tab));
+            // What the window opens on is what it shows: a later ask for the same item raises this
+            // window rather than opening another one beside it.
+            if let Some(reveal) = &due.reveal {
+                self.opened
+                    .insert((made.app.clone(), reveal.clone()), made.tab);
+            }
             if let Err(error) = apps.start_beside(
                 &due.launch,
                 &workspace,
@@ -702,6 +715,9 @@ struct Answers<'a> {
     asked: &'a mut Vec<Asked>,
     /// The windows the apps asked the desk for, by app and in ask order.
     held: &'a mut BTreeMap<String, VecDeque<HeldStart>>,
+    /// The window a send opened on an item, by app and the item's anchor, by its tab
+    /// ([`AppTabs::opened`]).
+    opened: &'a mut BTreeMap<(String, String), u64>,
     /// The windows whose apps hand their page over as a paint stream.
     pages: &'a Rc<RefCell<PageTracks>>,
 }
@@ -1104,6 +1120,17 @@ impl Answers<'_> {
     /// beside its sender, for every member, and the window that sent it goes on
     /// showing what it showed.
     fn answer_open_after_send(&mut self, app: &str, anchor: &str) {
+        // One window per item: the conversation a window already shows is that window, so a
+        // second send into it raises the window it stands in instead of opening another on the
+        // same conversation.
+        let item = (app.to_owned(), anchor.to_owned());
+        if let Some(tab) = self.opened.get(&item).copied() {
+            if self.desktop.with_policy(|policy| policy.focus_tab(tab)) {
+                return;
+            }
+            // Its window closed: the item stands nowhere, and a window opens for it again.
+            self.opened.remove(&item);
+        }
         // The place it opens into is there from this frame; the window starts once the desk has
         // made its tab, so the tab is the window's instance.
         if !self

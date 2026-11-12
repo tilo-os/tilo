@@ -24,6 +24,7 @@ use super::{
     poll_bump_counters, with_mount, with_mount_quietly,
 };
 use crate::first_frame;
+use crate::semantics_status::{TreeWait, tree_wait};
 
 mod timer {
     use js_sys::Function;
@@ -395,19 +396,10 @@ impl ApplicationHandler<u64> for Runner {
                 } else {
                     m.semantics.borrow().due()
                 };
-                if let Some(due) = semantics_due {
-                    let drawable = !m.viewport.suspended() && m.presents();
-                    if due <= now && m.frame.replayed_draws() && drawable {
-                        // The last frame replayed windows instead of drawing
-                        // them; the next one draws every window and delivers
-                        // the tree, which then needs no second draw.
-                        m.pending = true;
-                        m.window.request_redraw();
-                    } else if due <= now {
-                        m.publish(id);
-                    } else {
-                        wake(due);
-                    }
+                match tree_wait(semantics_due, now) {
+                    Some(TreeWait::Publish) => m.publish(id),
+                    Some(TreeWait::Wake(at)) => wake(at),
+                    None => {}
                 }
                 // A swipe paused long enough has ended: the frame hears it
                 // as a native trackpad's lift.

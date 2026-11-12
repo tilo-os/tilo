@@ -423,6 +423,10 @@ fn desk_authority(
         handle.read(Clone::clone),
         revocations,
         journal,
+        crate::plane::Names {
+            person: options.person.clone(),
+            earlier: options.earlier.clone(),
+        },
     )))
 }
 

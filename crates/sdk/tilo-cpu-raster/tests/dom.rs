@@ -221,3 +221,67 @@ fn a_picture_is_one_image_until_it_changes() {
     );
     assert_eq!(kinds(&frame.ops).len(), ISLAND_DRAWS + 2);
 }
+
+/// A layer that blends with what is under it carries the blend, by its CSS
+/// name, so a page composites it with what the frames below painted: a
+/// dialog's scrim is a soft-light tone stage and a wash, and painting it
+/// plain turns the first stage black.
+#[test]
+fn a_blending_layer_names_its_blend_for_the_page() {
+    use vello::peniko::{BlendMode, Compose, Mix};
+    let mut scene = Scene::new();
+    let rect = Rect::new(0.0, 0.0, 100.0, 50.0);
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::new(Mix::SoftLight, Compose::SrcOver),
+        0.45,
+        Affine::IDENTITY,
+        &rect,
+    );
+    square(&mut scene, 0.0);
+    scene.pop_layer();
+    // A clip that does not blend, and a group without a clip.
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::new(Mix::Normal, Compose::SrcOver),
+        1.0,
+        Affine::IDENTITY,
+        &rect,
+    );
+    square(&mut scene, 20.0);
+    scene.pop_layer();
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        0.5,
+        Affine::IDENTITY,
+        &rect,
+    );
+    square(&mut scene, 40.0);
+    scene.pop_layer();
+    // A blend no page can express stays what it was: the layer plain.
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::new(Mix::Normal, Compose::SrcAtop),
+        1.0,
+        Affine::IDENTITY,
+        &rect,
+    );
+    square(&mut scene, 60.0);
+    scene.pop_layer();
+
+    let frame = DomEncoder::new().encode(scene.encoding());
+    let ops: Vec<serde_json::Value> = serde_json::from_str(&frame.ops).unwrap();
+    let clips: Vec<&serde_json::Value> = ops.iter().filter(|op| op[0] == "c").collect();
+    assert_eq!(clips.len(), 4);
+    assert_eq!(clips[0][6].as_f64(), Some(0.45));
+    assert_eq!(clips[0][7].as_str(), Some("soft-light"));
+    assert_eq!(
+        clips[1][7],
+        serde_json::Value::Null,
+        "a plain clip names no blend"
+    );
+    assert_eq!(clips[2][7], serde_json::Value::Null);
+    assert_eq!(clips[2][6].as_f64(), Some(0.5), "a group keeps its opacity");
+    assert_eq!(clips[3][7], serde_json::Value::Null);
+}

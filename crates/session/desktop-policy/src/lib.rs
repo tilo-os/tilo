@@ -124,8 +124,6 @@ pub struct HeldLaunch {
     pub app: String,
     /// The tab the window takes when it maps.
     pub tab: TabId,
-    /// The workspace the tab stands in, where the window's process belongs.
-    pub workspace: String,
 }
 
 /// The tabs the desk made for the windows apps asked it for, oldest first: the
@@ -322,7 +320,7 @@ impl TileSource for Windows {
         )))
     }
 
-    fn launch(&mut self, workspace: &Workspace, id: TabId, app: &str) -> Option<Tab> {
+    fn launch(&mut self, _: &Workspace, id: TabId, app: &str) -> Option<Tab> {
         let held = app
             .strip_prefix(HELD_BEHIND_PREFIX)
             .map(|app| (app, true))
@@ -346,7 +344,6 @@ impl TileSource for Windows {
             self.held_launches.borrow_mut().push(HeldLaunch {
                 app: app.to_owned(),
                 tab: id,
-                workspace: workspace.id().to_string(),
             });
             let tab = self.place(id, app);
             self.titles

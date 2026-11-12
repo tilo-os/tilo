@@ -63,11 +63,14 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 
 
-def required_load_client(session_bin: Path, load: str) -> Path | None:
-    """A requested workload must exist before starting a compositor."""
+def required_load_client(
+    session_bin: Path, load: str, named: str | None = None
+) -> Path | None:
+    """A requested workload must exist before starting a compositor: the client named outright, or
+    the one built beside the session."""
     if load == "none":
         return None
-    client = session_bin.parent / "tilo-loadclient"
+    client = Path(named) if named else session_bin.parent / "tilo-loadclient"
     if not client.is_file():
         raise FileNotFoundError(f"Requested {load} load requires {client}")
     return client
@@ -609,7 +612,7 @@ def run_once(args: argparse.Namespace, out_dir: Path) -> dict:
             "build it first: cargo build --release -p tilo-session --bin tilo-session "
             "--features dev-overrides"
         )
-    required_load_client(session_bin, args.load)
+    required_load_client(session_bin, args.load, args.load_client)
     session_root = Path(tempfile.mkdtemp(prefix="tilo-frame-bench-"))
     try:
         return run_session(args, out_dir, session_root)
@@ -626,7 +629,7 @@ def default_session_bin(args: argparse.Namespace) -> Path:
 
 def run_session(args: argparse.Namespace, out_dir: Path, session_root: Path) -> dict:
     session_bin = default_session_bin(args)
-    load_client = required_load_client(session_bin, args.load)
+    load_client = required_load_client(session_bin, args.load, args.load_client)
     label = args.label or f"{args.backend}-{args.load}"
     trace = out_dir / f"{label}.csv"
     summary = out_dir / f"{label}.json"
@@ -769,7 +772,11 @@ def run_session(args: argparse.Namespace, out_dir: Path, session_root: Path) -> 
                             "--app-id",
                             "dev.tilo.frame-loop-load",
                             "--seconds",
-                            str(process_seconds),
+                            # The client stops before the session it draws on does, so its own
+                            # count is printed instead of the session closing under it.
+                            str(max(1.0, process_seconds - 1.0)),
+                            "--windows",
+                            str(args.load_windows),
                         ]
                         if args.load == "fullscreen":
                             ccmd.append("--fullscreen")
@@ -880,11 +887,12 @@ def run_session(args: argparse.Namespace, out_dir: Path, session_root: Path) -> 
                     load_proc.kill()
                     cout, _ = load_proc.communicate(timeout=5)
                 for line in (cout or "").splitlines():
-                    if line.startswith("LOADCLIENT"):
-                        print(f"[bench] {line}")
+                    print(f"[bench] load client: {line}")
                 if sys.exc_info()[0] is None:
                     if load_proc.returncode != 0:
-                        raise RuntimeError(f"requested load client failed: {load_proc.returncode}")
+                        raise RuntimeError(
+                            f"requested load client failed: {load_proc.returncode}"
+                        )
                     if not re.search(r"^LOADCLIENT frames=[1-9][0-9]*(?:\s|$)", cout or "", re.MULTILINE):
                         raise RuntimeError("requested load client produced no frames")
             ctl_path.unlink(missing_ok=True)
@@ -928,6 +936,18 @@ def main() -> None:
         help="run a continuously-painting Wayland client alongside",
     )
     p.add_argument("--input-hz", type=float, default=0.0, help="pointer-move injection rate")
+    p.add_argument(
+        "--load-client",
+        metavar="PATH",
+        help="the client a requested --load runs (default: tilo-loadclient beside the session; "
+        "build it with `cargo build --release -p click-test-client --bin tilo-loadclient`)",
+    )
+    p.add_argument(
+        "--load-windows",
+        type=int,
+        default=1,
+        help="how many windows the load client keeps drawing (default 1)",
+    )
     p.add_argument(
         "--launch-app",
         metavar="APP_ID",

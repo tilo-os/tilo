@@ -49,12 +49,16 @@
 //! acts on, fresh for every act.
 
 mod bounded;
+mod catalogue;
+mod catch_up;
 mod content;
 mod feedback;
 mod keys;
 mod ledger;
 mod link;
+mod listing;
 mod opened;
+mod placed;
 mod publish;
 mod reads;
 mod run_context;
@@ -71,25 +75,27 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use tilo_session_client::engine::RecordReading;
 use tilo_session_client::{Cmd, Event, Events, Link, Outbox};
 
 use crate::apps::{AppCatalogue, Seed};
 use crate::host::CatalogueFactory;
-use crate::participant::actions::{Outcome, door_outcome, open_row, record_of, record_provider};
+use crate::participant::actions::{Outcome, door_outcome, record_of, record_provider};
 use crate::worker::{ConfinedReplica, ConfinedViews};
 use crate::workspace_records::WorkspaceRecords;
+use catch_up::catch_up;
 use collab_types::DocumentMutation;
 use keys::{Keys, catalogue_keys};
 use ledger::Ledger;
+use publish::Unsaved;
 use run_context::{caller_context, said_run_title};
 use tilo_actions::InteractionPhase;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, APPLICATION_START_ACTION,
-    ActionHostError, ActorPlace, Caller, CallerPrincipal, CataloguePage, CatalogueProvider,
-    CatalogueQuery, CatalogueRow, Completer, Confirmation, InvocationReceipt, InvocationState,
-    InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage,
-    application_provider, application_provider_record, pending, provider_workspace,
-    workspace_provider,
+    ActionHostError, ActorPlace, Caller, CallerPrincipal, CataloguePage, CatalogueQuery,
+    CatalogueRow, Completer, Confirmation, InvocationReceipt, InvocationState, InvokeArgument,
+    InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage, application_provider,
+    application_provider_record, pending, provider_workspace,
 };
 use tilo_actions::{
     ActionFailure, ActionOutput, ConfirmationPolicy, InvocationId, InvocationUpdate, PROMPTED_PARAM,
@@ -657,11 +663,12 @@ impl HostActions {
 /// One record held on the service thread, in its own app worker.
 struct Mounted {
     app: ConfinedReplica,
-    /// The revision of its record merged into it last.
-    merged: Option<[u8; 32]>,
+    /// The heads of its record merged into it last: what the next merge
+    /// takes only the changes after.
+    merged: Option<Vec<[u8; 32]>>,
     /// The records held beside it (the parts of a chain its app keeps), by
-    /// route, with the revision of each merged last.
-    parts: HashMap<DocumentRoute, Option<[u8; 32]>>,
+    /// route, with the heads of each merged last.
+    parts: HashMap<DocumentRoute, Option<Vec<[u8; 32]>>>,
     used: u64,
 }
 
@@ -675,8 +682,12 @@ fn is_part(record: &str) -> bool {
 /// What running an action came to: its answer and where it left its actor.
 pub(super) type Performed = Result<(ActionOutput, Option<ActorPlace>), Outcome>;
 
-/// A record saved, and the revision it was saved at.
-type Saved = (Vec<u8>, [u8; 32]);
+/// A record saved, and the heads it was saved at, sorted.
+type Saved = (Vec<u8>, Vec<[u8; 32]>);
+
+/// What a replica merges of a record, and the heads the record stands at
+/// once it has.
+type Update = (DocumentMutation, Vec<[u8; 32]>);
 
 /// A workspace as the session's replica holds it when a request is served.
 struct WorkspaceState {
@@ -694,21 +705,46 @@ impl WorkspaceState {
         self.records.contains(route)
     }
 
-    /// The record at `route`, saved, with its revision, unless it is still at
-    /// `known`.
-    fn document_since(
+    /// What changed of the record at `route` since `held`, the heads a
+    /// replica merged last: only the changes after them where the record
+    /// holds them, the record whole where it does not (or where nothing was
+    /// merged yet), and nothing when it still stands there. With the heads
+    /// it stands at.
+    fn update(
         &self,
         route: &DocumentRoute,
-        known: Option<[u8; 32]>,
-    ) -> Result<Option<Saved>, String> {
-        self.engine
-            .record_since(&route.cluster_id, &route.app_id, &route.record, known)
+        held: Option<&[[u8; 32]]>,
+    ) -> Result<Option<Update>, String> {
+        Ok(
+            match self.engine.record_update(
+                &route.cluster_id,
+                &route.app_id,
+                &route.record,
+                held,
+            )? {
+                RecordReading::Captured { heads, bytes, .. } => {
+                    Some((DocumentMutation::Snapshot(bytes), heads))
+                }
+                RecordReading::Changes { heads, bytes, .. } => {
+                    Some((DocumentMutation::Incremental(bytes), heads))
+                }
+                RecordReading::Unchanged(_) | RecordReading::Pending => None,
+            },
+        )
     }
 
-    /// The record at `route`, saved, with its revision.
+    /// The record at `route`, saved, with its heads.
     fn document(&self, route: &DocumentRoute) -> Result<Saved, String> {
-        self.document_since(route, None)?
-            .ok_or_else(|| format!("the workspace has no record {} open here", route.record))
+        match self
+            .engine
+            .record_update(&route.cluster_id, &route.app_id, &route.record, None)?
+        {
+            RecordReading::Captured { heads, bytes, .. } => Ok((bytes, heads)),
+            _ => Err(format!(
+                "the workspace has no record {} open here",
+                route.record
+            )),
+        }
     }
 }
 
@@ -792,7 +828,11 @@ struct Workspace {
     /// The records this member asked the workspace's host for and that it
     /// has not answered yet ([`Event::RecordOpened`]).
     asked: HashSet<DocumentRoute>,
-    /// The records the host answered it holds none of.
+    /// The records the host answered for, asked once: a chain's head arrives
+    /// on the route of the part it names, never its own, so asking until it
+    /// is held would ask without end.
+    answered: HashSet<DocumentRoute>,
+    /// Of those, the records the host answered it holds none of.
     absent: HashSet<DocumentRoute>,
     /// What earlier waits for keys gave up on.
     gave_up: GaveUp,
@@ -844,6 +884,7 @@ impl Workspace {
             ready: false,
             when_opened: false,
             asked: HashSet::new(),
+            answered: HashSet::new(),
             absent: HashSet::new(),
             gave_up: GaveUp::default(),
             undecided: BTreeSet::new(),
@@ -876,9 +917,13 @@ impl Workspace {
                         "workspace actions: the workspace answered for a record"
                     );
                     // The host sent all it holds of a record this member
-                    // asked for: none means it holds none of it.
-                    if self.asked.remove(&route) && frames == 0 {
-                        self.absent.insert(route);
+                    // asked for, and sends its changes from now on: none
+                    // means it holds none of it.
+                    if self.asked.remove(&route) {
+                        if frames == 0 {
+                            self.absent.insert(route.clone());
+                        }
+                        self.answered.insert(route);
                     }
                 }
                 Event::Landed { route, .. } => {
@@ -888,15 +933,24 @@ impl Workspace {
                     let engine = self.peer.engine();
                     // Undecided: the replica holds the record and cannot read it yet. Keys that
                     // arrived for a record it holds nothing of leave nothing undecided.
-                    let undecided =
-                        match engine.record(&route.cluster_id, &route.app_id, &route.record) {
-                            Ok(read) => read.is_none(),
-                            Err(_) => engine.records(&route.cluster_id).is_ok_and(|records| {
-                                records.iter().any(|(app, record)| {
-                                    *app == route.app_id && *record == route.record
-                                })
-                            }),
-                        };
+                    // Asked without reading the record out, as a write lands for every post;
+                    // this device's own writes not taken in yet leave only a read to decide.
+                    let reads = engine
+                        .record_revision(&route.cluster_id, &route.app_id, &route.record)
+                        .and_then(|revision| match revision {
+                            Some(_) => Ok(true),
+                            None => engine
+                                .record(&route.cluster_id, &route.app_id, &route.record)
+                                .map(|read| read.is_some()),
+                        });
+                    let undecided = match reads {
+                        Ok(reads) => !reads,
+                        Err(_) => engine.records(&route.cluster_id).is_ok_and(|records| {
+                            records.iter().any(|(app, record)| {
+                                *app == route.app_id && *record == route.record
+                            })
+                        }),
+                    };
                     if undecided {
                         self.undecided.insert(route.clone());
                     } else {
@@ -1134,36 +1188,6 @@ fn acts_for(caller: &Caller, person: &str) -> bool {
             delegating.principal() == &CallerPrincipal::Person(person.to_owned())
         }),
         CallerPrincipal::App(_) | CallerPrincipal::Bot(_) => false,
-    }
-}
-
-/// Merge into `mounted` what `state` holds of its record and its parts that
-/// changed since it merged them last.
-fn catch_up(route: &DocumentRoute, mounted: &mut Mounted, state: &WorkspaceState) {
-    match state.document_since(route, mounted.merged) {
-        Ok(Some((bytes, revision))) => {
-            if let Err(error) = mounted.app.apply(&DocumentMutation::Snapshot(bytes)) {
-                tracing::warn!(%error, "workspace actions: a change did not merge");
-            }
-            mounted.merged = Some(revision);
-        }
-        Ok(None) => {}
-        Err(error) => tracing::debug!(%error, "workspace actions: a record does not read"),
-    }
-    for (part, merged) in &mut mounted.parts {
-        let Ok(record) = reads::record_id(&part.record) else {
-            continue;
-        };
-        let Ok(Some((bytes, revision))) = state.document_since(part, *merged) else {
-            continue;
-        };
-        if let Err(error) = mounted
-            .app
-            .apply_record(&record, &DocumentMutation::Snapshot(bytes))
-        {
-            tracing::warn!(%error, "workspace actions: a change to a part did not merge");
-        }
-        *merged = Some(revision);
     }
 }
 
@@ -1678,7 +1702,7 @@ impl Worker {
             self.mount_own(&holder, state)?;
             return Ok(holder);
         }
-        let (bytes, revision) = state.document(route)?;
+        let (bytes, heads) = state.document(route)?;
         let record = reads::record_id(&route.record)?;
         let holders: Vec<DocumentRoute> = state
             .records
@@ -1704,7 +1728,7 @@ impl Worker {
                 .apply_record(&record, &DocumentMutation::Snapshot(bytes.clone()))
             {
                 Ok(()) => {
-                    mounted.parts.insert(route.clone(), Some(revision));
+                    mounted.parts.insert(route.clone(), Some(heads));
                     self.beside.insert(route.clone(), holder.clone());
                     return Ok(holder);
                 }
@@ -1724,7 +1748,7 @@ impl Worker {
         self.clock = self.clock.wrapping_add(1);
         let clock = self.clock;
         if !self.mounted.contains_key(route) {
-            let (bytes, revision) = state.document(route)?;
+            let (bytes, heads) = state.document(route)?;
             while self.mounted.len() >= MAX_MOUNTED {
                 let Some(oldest) = self
                     .mounted
@@ -1754,7 +1778,7 @@ impl Worker {
                 route.clone(),
                 Mounted {
                     app,
-                    merged: Some(revision),
+                    merged: Some(heads),
                     parts: HashMap::new(),
                     used: clock,
                 },
@@ -1886,123 +1910,6 @@ impl Worker {
             .is_some_and(|who| self.admits_bounded(workspace, &who))
     }
 
-    fn catalogue_page(
-        &mut self,
-        workspace_id: u64,
-        caller: &Caller,
-        query: &CatalogueQuery,
-    ) -> Result<CataloguePage, ActionHostError> {
-        // A stranger is told nothing: the workspace's own records are for the
-        // people it admits, and for the person whose device runs this service.
-        // A view lookup is not a listing and carries its own governed check.
-        if query.view_resource.is_none() && !self.admits_member(workspace_id, caller) {
-            return Ok(CataloguePage::from_rows("0".into(), Vec::new(), query));
-        }
-        if let Some(provider) = query.provider.as_deref()
-            && let Some(page) =
-                self.registered_read_catalogue(workspace_id, caller, provider, query)
-        {
-            return Ok(page);
-        }
-        // A record named by its provider waits for its own keys; a listing
-        // waits for the workspace's once ([`catalogue_keys`], which the
-        // service's thread admitted this request by).
-        let keys = catalogue_keys(query);
-        let state = self.refresh(workspace_id, keys.read())?;
-        let revision = state.revision.to_string();
-        // A workspace nothing was written in yet is named by the provider
-        // asked for, so its new records are offered; one this member's replica
-        // holds nothing of yet — a public workspace sends its records when a
-        // device opens them — is named by the session it joined.
-        let asked = query.provider.as_deref().and_then(provider_workspace);
-        let Some(cluster_id) = state
-            .workspace
-            .clone()
-            .or_else(|| {
-                asked
-                    .filter(|named| room_workspace_id(named).ok() == Some(workspace_id))
-                    .map(str::to_owned)
-            })
-            .or_else(|| {
-                self.workspaces
-                    .get(&workspace_id)
-                    .and_then(|workspace| workspace.cluster_id(workspace_id))
-            })
-        else {
-            return Ok(CataloguePage::from_rows(revision, Vec::new(), query));
-        };
-        let routes = self.records(&state, &cluster_id);
-        let own_provider = workspace_provider(&cluster_id);
-        let wanted: Vec<DocumentRoute> = match query.provider.as_deref() {
-            Some(provider) if provider == own_provider => Vec::new(),
-            Some(provider) => {
-                let route = record_of(provider, &cluster_id)
-                    .filter(|route| routes.contains(route))
-                    .ok_or(ActionHostError::UnknownAction)?;
-                vec![route]
-            }
-            None => routes.iter().take(DEFAULT_ROWS_RECORDS).cloned().collect(),
-        };
-        let mut rows = Vec::new();
-        let bounded = self.bounded(caller);
-        for route in &wanted {
-            let provider = record_provider(route);
-            let mut descriptors = match self.listed(workspace_id, bounded.as_ref(), route, &state) {
-                Ok(descriptors) => descriptors,
-                Err(error) => {
-                    tracing::warn!(%error, record = %route.record, "workspace actions: a record did not mount");
-                    continue;
-                }
-            };
-            if let Some(link) = self.shared.link.get().cloned()
-                && let Ok(mut read) = reads::CanonicalRead::prepare(
-                    &self.catalogue,
-                    link.as_ref(),
-                    workspace_id,
-                    caller,
-                    route,
-                )
-                && read
-                    .recheck(link.as_ref(), workspace_id, caller, route)
-                    .is_ok()
-            {
-                descriptors.extend(read.operations());
-            }
-            rows.extend(descriptors.into_iter().map(|descriptor| {
-                CatalogueRow::for_action(provider.clone(), route.app_id.clone(), descriptor)
-            }));
-        }
-        if query
-            .provider
-            .as_deref()
-            .is_none_or(|provider| provider == own_provider)
-            && self.may_across(workspace_id, caller, ActionKind::Undoable)
-        {
-            rows.extend(self.open_rows(&cluster_id));
-        }
-        let mut page = CataloguePage::from_rows(revision, rows, query);
-        if query.provider.is_none() {
-            page.providers = routes
-                .iter()
-                .map(|route| CatalogueProvider {
-                    provider: record_provider(route),
-                    app_id: route.app_id.clone(),
-                    workspace: cluster_id.clone(),
-                    record_id: route.record.clone(),
-                    browsable: true,
-                })
-                .chain(std::iter::once(CatalogueProvider {
-                    provider: own_provider,
-                    app_id: String::new(),
-                    workspace: cluster_id.clone(),
-                    record_id: String::new(),
-                    browsable: false,
-                }))
-                .collect();
-        }
-        Ok(page)
-    }
-
     fn registered_read_catalogue(
         &self,
         workspace: u64,
@@ -2043,33 +1950,10 @@ impl Worker {
         ))
     }
 
-    fn open_rows(&self, workspace: &str) -> Vec<CatalogueRow> {
-        self.catalogue
-            .iter()
-            .map(|definition| open_row(workspace, definition.app_id()))
-            .collect()
-    }
-
     fn invoke(&mut self, workspace_id: u64, invocation: InvocationId) -> InvocationReceipt {
-        let (caller, request) = {
-            let mut ledger = self.ledger();
-            let Some(entry) = ledger.entries.get(&invocation) else {
-                return InvocationReceipt {
-                    invocation,
-                    status: ReceiptStatus::Rejected {
-                        error: ActionHostError::UnknownInvocation,
-                    },
-                };
-            };
-            if entry.update.is_terminal() {
-                // Cancelled before it started.
-                return InvocationState::new(invocation, entry.update.clone()).receipt();
-            }
-            let caller = entry.caller.clone();
-            let request = entry.request.clone();
-            ledger.running = Some(invocation);
-            drop(ledger);
-            (caller, request)
+        let (caller, request) = match self.claim(invocation) {
+            Ok(claimed) => claimed,
+            Err(receipt) => return receipt,
         };
         self.voice(
             workspace_id,
@@ -2109,6 +1993,42 @@ impl Worker {
             &request,
             (&run_voice::ended_phase(&outcome), left),
         );
+        self.settle(invocation, outcome, unsaved)
+    }
+
+    /// Mark `invocation` running, naming its caller and what it asked: a
+    /// receipt instead when it is unknown or already finished.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the receipt is the answer the caller records"
+    )]
+    fn claim(
+        &self,
+        invocation: InvocationId,
+    ) -> Result<(Caller, InvokeRequest), InvocationReceipt> {
+        let mut ledger = self.ledger();
+        let claimed = match ledger.entries.get(&invocation) {
+            None => Err(rejected(invocation, ActionHostError::UnknownInvocation)),
+            Some(entry) if entry.update.is_terminal() => {
+                // Cancelled before it started.
+                Err(InvocationState::new(invocation, entry.update.clone()).receipt())
+            }
+            Some(entry) => Ok((entry.caller.clone(), entry.request.clone())),
+        };
+        if claimed.is_ok() {
+            ledger.running = Some(invocation);
+        }
+        claimed
+    }
+
+    /// Record what `outcome` answered for `invocation` and answer it: done
+    /// once what it wrote is saved, or the failure or refusal it ended with.
+    fn settle(
+        &self,
+        invocation: InvocationId,
+        outcome: Performed,
+        unsaved: Option<Unsaved>,
+    ) -> InvocationReceipt {
         let outcome = match (outcome, unsaved) {
             (Ok(done), Some(unsaved)) => return self.answer_pending(invocation, done, unsaved),
             (outcome, _) => outcome,
@@ -2147,16 +2067,10 @@ impl Worker {
             }
             Err(Outcome::Rejected(error)) => {
                 ledger.forget(&invocation);
-                return InvocationReceipt {
-                    invocation,
-                    status: ReceiptStatus::Rejected { error },
-                };
+                return rejected(invocation, error);
             }
         };
-        if let Some(entry) = ledger.entries.get_mut(&invocation) {
-            entry.update = update.clone();
-            entry.left_at = left_at;
-        }
+        ledger.answered(invocation, &update, left_at);
         drop(ledger);
         InvocationState::new(invocation, update).receipt()
     }
@@ -2275,8 +2189,15 @@ impl Worker {
         if target.address.action == ui::tilo_resource::share::SHARE_LINK {
             // Sharing asks the record for everything it lists, which is what
             // the link is chosen from.
-            let live = live_actions(&mounted.app);
-            let at = (&route, &state, live.as_slice());
+            // The kind of the resource the link names, from the action
+            // asked for, resolved by its address: never a survey of all the
+            // record publishes, which grows with everything it holds.
+            let kind = mounted
+                .app
+                .descriptor(&target.address)
+                .map(|descriptor| descriptor.resource_kind)
+                .ok_or_else(unknown_action)?;
+            let at = (&route, &state, kind);
             return self
                 .share_link(workspace_id, caller, at, target, arguments)
                 .map(|output| (output, None));
@@ -2363,7 +2284,7 @@ impl Worker {
                 target.address.action == APPLICATION_OPEN_ACTION
                     || target.address.action == APPLICATION_START_ACTION
             })
-            .filter(|app| self.catalogue.get(app).is_some())
+            .filter(|app| self.catalogue.has(app))
             .ok_or_else(unknown_action)?
             .to_owned();
         self.open_new(workspace_id, named, &app, who.as_ref())
@@ -2613,41 +2534,46 @@ impl Worker {
                 (who.person.clone(), actor, Some(permissions))
             }
         };
-        // An app that keeps one record per workspace opens that record: the
-        // one the workspace holds when it has it, founded only when its host
-        // answered it holds none.
-        if self
-            .catalogue
-            .get(app)
-            .is_some_and(ui::application::ApplicationDefinition::keeps_workspace_record)
-        {
+        let (route, genesis) = if self.catalogue.placed(app).is_some() {
+            self.placed_route(workspace_id, workspace, app)?
+        } else {
+            // An app that keeps one record per workspace opens that record: the
+            // one the workspace holds when it has it, founded only when its host
+            // answered it holds none.
+            if self
+                .catalogue
+                .get(app)
+                .is_some_and(ui::application::ApplicationDefinition::keeps_workspace_record)
+            {
+                let route = DocumentRoute {
+                    app_id: app.to_owned(),
+                    cluster_id: workspace.to_owned(),
+                    record: String::new(),
+                };
+                if self.held_or_owed(workspace_id, &route)? {
+                    return Ok(ActionOutput {
+                        value: Some(serde_json::json!({
+                            "provider": record_provider(&route),
+                            "record": route.record,
+                        })),
+                        resources: Vec::new(),
+                    });
+                }
+            }
+            let hosted =
+                ConfinedReplica::open(&self.catalogue, app, workspace, &creator, &actor, Seed::New)
+                    .map_err(|error| refused(error.to_string()))?;
+            let hosted = self.lend(hosted, workspace);
             let route = DocumentRoute {
                 app_id: app.to_owned(),
                 cluster_id: workspace.to_owned(),
-                record: String::new(),
+                record: hosted.wire_record().to_owned(),
             };
-            if self.held_or_owed(workspace_id, &route)? {
-                return Ok(ActionOutput {
-                    value: Some(serde_json::json!({
-                        "provider": record_provider(&route),
-                        "record": route.record,
-                    })),
-                    resources: Vec::new(),
-                });
-            }
-        }
-        let hosted =
-            ConfinedReplica::open(&self.catalogue, app, workspace, &creator, &actor, Seed::New)
+            let genesis = hosted
+                .take_mutation()
                 .map_err(|error| refused(error.to_string()))?;
-        let hosted = self.lend(hosted, workspace);
-        let route = DocumentRoute {
-            app_id: app.to_owned(),
-            cluster_id: workspace.to_owned(),
-            record: hosted.wire_record().to_owned(),
+            (route, genesis)
         };
-        let genesis = hosted
-            .take_mutation()
-            .map_err(|error| refused(error.to_string()))?;
         if let (Some(permissions), Some(mutation)) = (&permissions, &genesis) {
             let unwritable =
                 bounded::refused_writes(permissions, (app, None), None, mutation, (None, false))
@@ -2659,11 +2585,12 @@ impl Worker {
         // When the host device takes part in the workspace's channels, it opens a
         // new record's channel for the member and hands it the keys, so the
         // first change goes out sealed instead of waiting for keys.
-        if let Some(keys) = self
-            .shared
-            .link
-            .get()
-            .and_then(|link| link.host_keys(&route, true))
+        if genesis.is_some()
+            && let Some(keys) = self
+                .shared
+                .link
+                .get()
+                .and_then(|link| link.host_keys(&route, true))
         {
             let keys = keys.map_err(|reason| {
                 Outcome::Rejected(ActionHostError::Unavailable {
@@ -2705,11 +2632,7 @@ impl Worker {
         &mut self,
         workspace_id: u64,
         caller: &Caller,
-        (route, state, live): (
-            &DocumentRoute,
-            &WorkspaceState,
-            &[tilo_actions::ActionDescriptor],
-        ),
+        (route, state, kind): (&DocumentRoute, &WorkspaceState, String),
         target: &tilo_actions::remote::RemoteActionTarget,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<ActionOutput, Outcome> {
@@ -2724,14 +2647,9 @@ impl Worker {
             })
         };
         let resource = &target.address.resource;
-        // The record's own actions name the resource's kind; its views are
-        // attached where the app renders, which the lookup below runs. A
-        // resource with none is a record's root: its link names the record.
-        let kind = live
-            .iter()
-            .find(|descriptor| descriptor.address.resource == *resource)
-            .map(|descriptor| descriptor.resource_kind.clone())
-            .ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?;
+        // The resource's views are attached where the app renders, which the
+        // lookup below runs. A resource with none is a record's root: its
+        // link names the record.
         // The record itself, opened at its primary view.
         let opened = self.holder_of(route);
         let root = self
@@ -2741,7 +2659,9 @@ impl Worker {
         let plain = ["view", "start", "end"]
             .iter()
             .all(|name| arguments.get(*name).is_none_or(serde_json::Value::is_null));
-        if root && plain && opened == *route {
+        // The root of a part of a chain is the record it is held beside,
+        // whose link names that record: no view of it is looked up.
+        if root && plain {
             let request = ui::tilo_resource::share::ShareRequest {
                 resource: resource.clone(),
                 kind,
@@ -2749,7 +2669,7 @@ impl Worker {
                 invite: false,
                 args: arguments,
             };
-            return self.record_link(workspace_id, caller, route, &request);
+            return self.record_link(workspace_id, caller, &opened, &request);
         }
         let query = CatalogueQuery {
             provider: Some(record_provider(route)),
@@ -2822,12 +2742,9 @@ impl Worker {
             return Ok(caller.clone());
         };
         let offered = self
-            .bounded_actions(workspace_id, &who, route, state)
+            .bounded_descriptor(workspace_id, &who, (route, state), &target.address)
             .map_err(Outcome::Rejected)?;
-        if offered
-            .iter()
-            .any(|descriptor| descriptor.address == target.address)
-        {
+        if offered.is_some_and(|descriptor| descriptor.address == target.address) {
             Ok(who.person_caller)
         } else {
             Err(Outcome::Rejected(ActionHostError::UnknownAction))
@@ -2951,6 +2868,14 @@ fn speaks_for_a_member(caller: &Caller) -> bool {
             caller.user_public_key().is_some() && caller.device_public_key().is_some()
         }
         _ => false,
+    }
+}
+
+/// The receipt of an invocation the host turns away outright, with why.
+fn rejected(invocation: InvocationId, error: ActionHostError) -> InvocationReceipt {
+    InvocationReceipt {
+        invocation,
+        status: ReceiptStatus::Rejected { error },
     }
 }
 

@@ -36,6 +36,10 @@ window.mount = await mountDesktop(document.getElementById('app'), {
     // What the runtime answered a control pressed by name, for the check that
     // presses them (`check-activation.mjs`).
     if (state.semanticAction) marks.reports.push(state);
+    // Whether this window keeps app files at all, and why not, for the check
+    // that boots the page in each engine (`check-boot.mjs`): a private window
+    // has none, and the mount says so instead of failing.
+    if (state.files) { marks.files = state.files; marks.filesError = state.filesError; }
   },
   onDomFrame: stats => {
     marks.presented.push(performance.now());

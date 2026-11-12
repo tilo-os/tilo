@@ -31,8 +31,8 @@ mode = "off"
 [sandbox.portals]
 
 [sandbox.services]
-collab = "optional@20"
-tilo-fs = "optional@20"
+collab = "optional@21"
+tilo-fs = "optional@21"
 # A task's menu carries its issue as the subject of the send-to box beside it.
 shell-ui = "optional@27"
 

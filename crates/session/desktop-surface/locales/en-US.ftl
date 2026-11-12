@@ -941,8 +941,7 @@ a11y-shell-join-description = Connect using an authenticated invitation
 a11y-shell-workspace-activity-description = Review grouped outcomes and what happened while you were away
 
 # Empty-workspace launchpad
-launchpad-title = Make something together
-launchpad-title-private = Start something
+launchpad-title = Start something
 launchpad-description = Choose a conversation, notes, tasks, a call, an invitation, or workspace activity.
 launchpad-open-app = Open an app
 launchpad-discuss = Discuss
@@ -953,7 +952,7 @@ launchpad-invite = Invite people
 launchpad-activity = Catch up
 launchpad-discuss-detail = Open the shared conversation
 launchpad-notes-detail = Write ideas together
-launchpad-tasks-detail = Open the to-do list in Calendar
+launchpad-tasks-detail = Write down what needs doing
 launchpad-meet-detail = Talk with this workspace in Chat
 launchpad-invite-detail = Bring someone into this workspace
 launchpad-activity-detail = See what changed and why
@@ -1012,9 +1011,9 @@ a11y-people-pin = Keep who is here on screen
 a11y-people-overlay = Who is here
 a11y-people-follow = Follow { $name }
 a11y-people-stop-following = Stop following { $name }
-launchpad-subtitle = Pick a way to start. Everyone in this workspace sees what you make here.
-launchpad-subtitle-private = Pick a way to start. Only you see what you make here until you invite someone.
-launchpad-subtitle-public = Pick a way to start. This workspace is public: anyone who joins sees what you make here.
+launchpad-subtitle = Everyone in this workspace sees what you make here.
+launchpad-subtitle-private = Only you see what you make here until you invite someone.
+launchpad-subtitle-public = This workspace is public: anyone who joins sees what you make here.
 
 # The Alt+Tab window switcher.
 window-switcher-title = Switch windows

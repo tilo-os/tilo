@@ -216,6 +216,34 @@ impl Session {
         self.push_step(run, resource, &label, outcome, why.as_deref())
     }
 
+    /// Add one web search or page the run did to the reply's step list: what
+    /// it asked for or read, and what came of it.
+    pub(super) fn record_web(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        call: &crate::tools::web::Call,
+        report: &crate::tools::InvokeReport,
+    ) -> Result<()> {
+        // The same vocabulary the person is told the step in, so the record
+        // and the note say the same thing.
+        let (resource, label) = match call {
+            crate::tools::web::Call::Search { query, .. } => (
+                "web.search",
+                tilo_actions::task_step::TaskStep::Searching(query.clone()).note(),
+            ),
+            crate::tools::web::Call::Page { url, .. } => (
+                "web.page",
+                tilo_actions::task_step::TaskStep::Reading(url.clone()).note(),
+            ),
+        };
+        let (outcome, why) = if report.succeeded {
+            ("applied", None)
+        } else {
+            ("refused", report.error.as_deref())
+        };
+        self.push_step(run, resource, &label, outcome, why)
+    }
+
     /// Record one step of the turn, keyed by the place it takes in the list.
     fn push_step(
         &mut self,
@@ -347,12 +375,12 @@ impl Session {
     }
 
     /// Whether this run still waits for its reply's `record-work` to be
-    /// published, at most [`RECORD_WAIT`]: once per run, and only while the
-    /// workspace publishes `record-work` at all. What the wait covers is Chat
+    /// published, at most [`RECORD_WAIT`]: once per run, and only while a
+    /// running application publishes `record-work`. What the wait covers is Chat
     /// republishing the message the run answers moments after the run
-    /// started; a workspace whose Chat is not in the catalogue publishes none
-    /// and never will, and one that waited the bound out on every step would
-    /// spend it again on each of them.
+    /// started. A closed Chat keeps the offers it last published — a
+    /// workspace whose Chat is closed, or that publishes none at all, has
+    /// nothing coming and would spend the bound on every step.
     fn waits_for_record_work(&mut self) -> bool {
         let Some(record) = self
             .record
@@ -362,10 +390,13 @@ impl Session {
             return false;
         };
         record.looked_for_work = true;
-        self.task_catalogue()
-            .offers
-            .iter()
-            .any(|offer| offer.descriptor.address.action == RECORD_WORK)
+        self.broker_catalogue.surfaces().iter().any(|surface| {
+            surface.live
+                && surface
+                    .actions
+                    .iter()
+                    .any(|action| action.action == RECORD_WORK)
+        })
     }
 }
 

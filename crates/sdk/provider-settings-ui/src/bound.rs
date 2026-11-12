@@ -429,6 +429,10 @@ impl<R: Resource<State = R> + Model> Setting<'_, R> {
         let placeholder = current.get();
         let chooser = Dropdown::from_state(options, current)
             .with_placeholder(&placeholder)
+            // The row names the setting; what the chooser shows is the value.
+            // Named by the value alone, a reader says "100 %" and never what
+            // of, which is the same silence as no name at all.
+            .with_resolved_accessible_name(self.label.clone())
             .with_enabled(self.enabled);
         match &self.id {
             Some(id) => chooser.with_id(id),

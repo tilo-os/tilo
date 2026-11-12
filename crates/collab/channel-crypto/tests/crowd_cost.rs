@@ -180,3 +180,53 @@ fn a_crowd_asking_together_is_admitted_in_one_commit() {
     assert_eq!(crowd.committer_writes, one.committer_writes, "{crowd:?}");
     assert_eq!(crowd.member_writes, one.member_writes, "{crowd:?}");
 }
+
+/// The signatures a device admitted to a channel of `members` checks in
+/// full while taking in its Welcome, and those of the tree's leaves it
+/// leaves to the committer ([`channel_crypto::welcome`]).
+fn joining(members: u32) -> (u64, u64) {
+    let channel = ChannelId::new();
+    let mut committer = ChannelPeer::create_now(None, channel, Box::new(key(0)), &vault()).unwrap();
+    committer.published();
+    let mut allowed: BTreeSet<Ed25519PublicKey> = [public(&key(0))].into();
+    for n in 1..members {
+        let (_, request) = asking(channel, n, None);
+        committer.learn_request(request).unwrap();
+        allowed.insert(public(&key(n)));
+    }
+    committer.reconcile_now(&allowed, &vault()).unwrap();
+    committer.published();
+    let (mut joiner, request) = asking(channel, 900_000, None);
+    committer.learn_request(request).unwrap();
+    allowed.insert(public(&key(900_000)));
+    committer.reconcile_now(&allowed, &vault()).unwrap();
+    let welcome = committer
+        .outbox()
+        .iter()
+        .find(|frame| frame.join_material().is_some())
+        .unwrap()
+        .clone();
+    let _ = channel_crypto::welcome::take_welcome_signatures();
+    let taken = joiner.receive(welcome, &allowed, &vault()).unwrap();
+    assert!(
+        matches!(taken, channel_crypto::PeerEvent::Joined { .. }),
+        "{taken:?}"
+    );
+    let (left, checked) = channel_crypto::welcome::take_welcome_signatures();
+    (checked, left)
+}
+
+/// A newcomer joining a channel of 300 checks as many signatures in full as
+/// one joining a channel of 30: the tree's leaves, one per member, are the
+/// committer's to have checked. Only the tree's hash, which every leaf goes
+/// into, still grows with the channel.
+#[test]
+fn joining_checks_the_same_signatures_at_300_members_as_at_30() {
+    let (small, small_leaves) = joining(30);
+    let (large, large_leaves) = joining(300);
+    assert_eq!((small_leaves, large_leaves), (31, 301));
+    assert_eq!(
+        large, small,
+        "signatures checked in full joining 300 against 30"
+    );
+}

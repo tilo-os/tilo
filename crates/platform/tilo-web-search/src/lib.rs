@@ -21,6 +21,8 @@
 
 pub mod engines;
 mod fetch;
+#[cfg(all(feature = "fixture-servers", not(target_family = "wasm")))]
+pub mod fixtures;
 mod guard;
 pub mod html;
 pub mod merge;
@@ -34,6 +36,8 @@ pub use fetch::fetch_fixture;
 pub use fetch::{FetchError, FetchLimits, FetchedBody, FetchedPage, fetch};
 pub use guard::{Refusal, check_address, check_url};
 pub use merge::SearchResult;
+#[cfg(feature = "fixture-servers")]
+pub use search::search_fixture;
 pub use search::{
     EngineReport, EngineStatus, FIRST_BACKOFF, MAX_BACKOFF, MAX_QUERY_CHARS, SearchError,
     SearchLimits, SearchResponse, SearchState, search,

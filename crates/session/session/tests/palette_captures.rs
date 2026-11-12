@@ -120,7 +120,6 @@ fn hold_workspace(state: &Path, device: &ed25519_dalek::SigningKey, cert: &Devic
                 workspace,
                 TransportOrigin::RetainedRelayDelta(host),
                 postcard::from_bytes(&frame).expect("a publication is a message"),
-                None,
                 std::time::SystemTime::now(),
             )
             .expect("the host admits the workspace's people");

@@ -36,11 +36,11 @@ use crate::cached_document::CachedDocument;
 use crate::verified_certificate::VerifiedCertificate;
 use automerge::AutoCommit;
 use automerge::transaction::Transactable as _;
+use collab_types::signer::DeviceSigner;
 use collab_types::{
     ArtifactKind, ChannelState, DocumentMutation, Ed25519PublicKey, OpKind, SignedOp,
     WholeDocumentPayload,
 };
-use ed25519_dalek::SigningKey;
 use neighbour_wire::{RefusalReason, WriteRefusal};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -230,10 +230,10 @@ impl PersonalStore {
         record: &str,
         envelope: &SignedOp,
         reason: &str,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<(), String> {
-        if key.verifying_key().to_bytes() != self.device.device_public_key {
+        if key.device_public_key() != self.device.device_public_key {
             return Err("a refusal is signed by the refusing device's own key".into());
         }
         // A device the person revoked refuses nothing: its verdicts are not
@@ -539,7 +539,7 @@ impl PersonalStore {
     /// a device the person revoked.
     fn take_devices_update(
         &mut self,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<Option<NeighbourMsg>, String> {
         use collab_types::CommitNamed as _;
@@ -685,10 +685,10 @@ impl PersonalStore {
         app: &str,
         record: &str,
         mutation: &DocumentMutation,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<NeighbourMsg, String> {
-        let author = Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
+        let author = Ed25519PublicKey::from_bytes(key.device_public_key());
         let signed = self.sign(app, record, mutation, &author, key, now)?;
         self.admit_local(app, record, signed.clone(), key, now)?;
         Ok(self.frame(app, record, signed))
@@ -702,7 +702,7 @@ impl PersonalStore {
         app: &str,
         record: &str,
         envelope: SignedOp,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<NeighbourMsg, String> {
         if envelope.author.as_bytes() != &self.device.device_public_key {
@@ -748,7 +748,7 @@ impl PersonalStore {
     /// no document.
     fn documents_for(
         &mut self,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         remote: &[u8; 32],
         now: SystemTime,
     ) -> Result<Option<Vec<NeighbourMsg>>, String> {
@@ -786,7 +786,7 @@ impl PersonalStore {
     /// follow once the certificate it shows is admitted.
     pub fn catch_up(
         &mut self,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         remote: [u8; 32],
         now: SystemTime,
     ) -> Result<Vec<NeighbourMsg>, String> {
@@ -799,12 +799,12 @@ impl PersonalStore {
     /// connection proved.
     pub fn receive(
         &mut self,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         source: [u8; 32],
         message: NeighbourMsg,
         now: SystemTime,
     ) -> Result<ReceiveOutcome, String> {
-        if key.verifying_key().to_bytes() != self.device.device_public_key {
+        if key.device_public_key() != self.device.device_public_key {
             return Err("a store reads with the key of the device that holds it".into());
         }
         let mut candidate = self.clone();
@@ -817,7 +817,7 @@ impl PersonalStore {
 
     fn receive_inner(
         &mut self,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         source: [u8; 32],
         message: NeighbourMsg,
         now: SystemTime,
@@ -885,7 +885,7 @@ impl PersonalStore {
 
     fn receive_document(
         &mut self,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         source: [u8; 32],
         message: NeighbourMsg,
         now: SystemTime,
@@ -1056,7 +1056,7 @@ impl PersonalStore {
         record: &str,
         mutation: &DocumentMutation,
         author: &Ed25519PublicKey,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<SignedOp, String> {
         if author.as_bytes() != &self.device.device_public_key {
@@ -1371,7 +1371,7 @@ impl PeerPersonal {
         app: &str,
         record: &str,
         envelope: SignedOp,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<NeighbourMsg, String> {
         self.write(|store| store.admit_local(app, record, envelope, key, now))
@@ -1395,6 +1395,7 @@ mod tests {
     use super::*;
     use automerge::ReadDoc as _;
     use collab_types::CommitNamed as _;
+    use ed25519_dalek::SigningKey;
     use tilo_user_identity::{DeviceCapabilities, RevocationReason, sign_device_cert};
 
     fn device(
@@ -1405,7 +1406,7 @@ mod tests {
         let key = SigningKey::from_bytes(&[n; 32]);
         let mut cert = DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
+            device_public_key: key.device_public_key(),
             device_label: format!("device-{n}"),
             capabilities,
             issued_at_ns: 1,
@@ -1852,10 +1853,10 @@ mod tests {
 
     /// The certificate `key` holds under `root`, for a device that already
     /// sent its own.
-    fn b_cert_of(root: &SigningKey, key: &SigningKey) -> DeviceCert {
+    fn b_cert_of(root: &SigningKey, key: &dyn DeviceSigner) -> DeviceCert {
         let mut cert = DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
+            device_public_key: key.device_public_key(),
             device_label: "device-b".into(),
             capabilities: DeviceCapabilities::member(),
             issued_at_ns: 1,

@@ -655,7 +655,15 @@ impl Widget for OverviewPanel {
         self.measure_tilo_actions(text, theme);
         self.reconcile_window_selection();
         let p = ui::num::f32_of_f64(progress);
-        ui::overlay::scrim::whole_view(scene, transform, self.rect, p, theme);
+        // The ground only fades as the overview comes and goes: the host fades it, drawn once.
+        let rect = self.rect;
+        ui::lift::lifted(
+            scene,
+            transform,
+            (ui::scene_parts::PartKey::new("overview.ground", 0), rect),
+            ui::lift::Pose::faded(p),
+            |scene, transform| ui::overlay::scrim::whole_view(scene, transform, rect, theme),
+        );
         self.paint_panel_at(scene, transform, text, theme, panel_curve(p));
         let pictures = self.paint_picture(scene, transform, text, theme, progress);
         if let Some(flight) = &self.flight {

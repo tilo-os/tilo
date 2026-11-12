@@ -34,7 +34,7 @@ pub(crate) const CONTENT_BATCH_BYTES: usize = 32 * 1024 * 1024;
 
 /// Bumped whenever a message changes shape. A supervisor and a worker are the
 /// same executable, so a mismatch means a stale binary on disk.
-pub(crate) const PROTOCOL_VERSION: u32 = 6;
+pub(crate) const PROTOCOL_VERSION: u32 = 7;
 
 /// What a worker is started to do. It decides what the worker prepares
 /// before it confines itself: a reader loads the fonts a component lays its
@@ -89,6 +89,18 @@ pub(crate) enum Request {
     },
     /// Every operation the held record publishes now.
     Survey,
+    /// One page of what the held record publishes, as a catalogue query
+    /// lists it: the operations the JSON `CatalogueQuery` admits, from the
+    /// `offset`th on, at most `take` of them, with how many it admits in
+    /// all ([`Reply::Page`]). Operations this host cannot render are left
+    /// out first (`can_render`). A page costs its rows, never the
+    /// encoding of every operation the record holds.
+    SurveyPage {
+        query: String,
+        can_render: bool,
+        offset: u64,
+        take: u64,
+    },
     /// The keys `mutation` writes in `record`, as the worker holds that record
     /// now: what a host checks a caller's change against without reading the
     /// record whole for every action.
@@ -207,6 +219,9 @@ pub(crate) enum Reply {
     Opened { record: String },
     /// JSON `Vec<ActionDescriptor>`.
     Descriptors(String),
+    /// One page of a survey: how many operations the query admits in all,
+    /// and the JSON `Vec<ActionDescriptor>` of those on the page.
+    Page { total: u64, descriptors: String },
     /// JSON `Option<Vec<Vec<String>>>`: the keys a change writes, or none for
     /// a record the worker holds nothing of.
     Keys(String),

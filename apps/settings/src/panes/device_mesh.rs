@@ -2651,6 +2651,7 @@ mod tests {
             current,
             revoked: false,
             can_host,
+            kind: ui::tilo_actions::remote::identity_admin::KeyKind::Device,
         };
         pane.personal_devices = vec![
             device(THIS_DEVICE, "Ada's Laptop", true, false),

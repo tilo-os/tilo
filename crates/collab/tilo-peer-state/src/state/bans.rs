@@ -4,7 +4,7 @@
 
 use super::SystemTime;
 use super::facades::PeerGovernanceMut;
-use ed25519_dalek::SigningKey;
+use collab_types::signer::DeviceSigner;
 use tilo_action_policy::{Subject, roles};
 
 impl PeerGovernanceMut<'_> {
@@ -19,7 +19,7 @@ impl PeerGovernanceMut<'_> {
         self,
         user_public_key: [u8; 32],
         by: &str,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let person = hex::encode(user_public_key);
@@ -43,7 +43,7 @@ impl PeerGovernanceMut<'_> {
     pub fn unban_member(
         self,
         user_public_key: [u8; 32],
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let id = roles::block_grant_id(&hex::encode(user_public_key));

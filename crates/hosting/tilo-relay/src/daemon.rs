@@ -201,13 +201,6 @@ pub struct Relay {
     /// The packet relay this host runs for the pages it serves, when it runs
     /// one ([`RelayConfig::packet_relay`]).
     packet_server: Option<iroh_relay::server::Server>,
-    /// The relay the host's pages reach it through, as they are told it: its
-    /// own packet relay, or the one it was configured with. A page has no UDP
-    /// socket, so a relay is the only way it reaches its host, and this is the
-    /// configuration's answer — an endpoint reports a relay only once it has
-    /// connected to it, which a start that restarts on kept state outruns.
-    #[cfg(feature = "web")]
-    pub(crate) pages_reach: Option<iroh::RelayUrl>,
 }
 
 /// The relay state the page's pre-session routes answer with.
@@ -232,6 +225,17 @@ impl Relay {
     #[must_use]
     pub fn confirmations(&self) -> crate::certification::CertificationProtocol {
         self.web.certification.clone()
+    }
+
+    /// The stand-in certificate and key this host keeps for `user`, when it
+    /// keeps a live one: what it approves for them with.
+    #[cfg(feature = "web")]
+    #[must_use]
+    pub fn stand_in(
+        &self,
+        user: &[u8; 32],
+    ) -> Option<(ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert)> {
+        crate::web::stand_in_for(self.state_root(), user)
     }
 
     /// Name the device of the session beside this node (the shell that runs
@@ -543,10 +547,6 @@ impl Relay {
             }
             None => (None, relay_mode),
         };
-        #[cfg(feature = "web")]
-        let pages_reach = relay_mode
-            .as_ref()
-            .and_then(|mode| mode.relay_map().urls::<Vec<_>>().into_iter().next());
         let endpoint = match endpoint {
             Some(endpoint) => endpoint,
             None => bind_endpoint(&cfg, &identity.device_signing_key, relay_mode).await?,
@@ -572,6 +572,12 @@ impl Relay {
         })
         .transpose()?
         .map(Arc::new);
+        // Where this host is dialled — what each workspace's governance names of
+        // it, and what a link it hands out carries — is the relay, which the
+        // endpoint knows only once it has connected to one. The workspaces opened
+        // below name it straight away, and a host that has none yet names it when
+        // it makes its first, so wait for the relay before serving either.
+        tilo_room_host::workspaces::await_relay(&endpoint).await;
         let (sessions, governed) = crate::host::HostSessions::open(
             crate::host::HostConfig {
                 state_root: cfg.state_root.clone(),
@@ -625,6 +631,9 @@ impl Relay {
             live.clone(),
             Some(workspaces.clone()),
         );
+        if let Some(governed) = &governed {
+            certification.keep_issued_in(governed.clone());
+        }
         let web = Box::new(WebContext {
             relay: handler.clone(),
             #[cfg(feature = "web")]
@@ -714,8 +723,6 @@ impl Relay {
             content,
             _channels: channels,
             packet_server: packet_relay,
-            #[cfg(feature = "web")]
-            pages_reach,
         })
     }
 
@@ -1828,6 +1835,9 @@ mod tests {
                     home_peer_bundle: bundle_path,
                     device_role: crate::mesh::DeviceRole::AlwaysOnServer,
                     services: crate::mesh::ServiceCapabilities::home_peer(),
+                    // The relay runs its own packet relay on this machine's loopback, as the
+                    // tests' hosts do: nothing here reaches number 0.
+                    packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
                     ..RelayConfig::default()
                 },
                 RelayIdentity {
@@ -1845,7 +1855,7 @@ mod tests {
                 host.public_key.as_slice(),
                 "relay transport discovery must not collide with the filesystem node"
             );
-            let client_endpoint = Endpoint::bind(presets::N0).await.unwrap();
+            let client_endpoint = test_relay::direct_endpoint().await;
             let discovered = crate::client::RelayClient::discover_content_endpoint(
                 &client_endpoint,
                 relay.node_addr(),

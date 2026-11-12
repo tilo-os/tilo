@@ -45,7 +45,7 @@ impl Shared {
             return;
         }
         let now = self.doors.revision();
-        if now.is_some() && *self.observed.borrow() == now {
+        if *self.observed.borrow() == now {
             return;
         }
         self.observed.replace(now);

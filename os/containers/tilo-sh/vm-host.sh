@@ -29,8 +29,14 @@
 #                                       ships it (default: on PATH)
 #   TILO_SH_HOSTED_VM_SIZE=default      the size a workspace's VM runs at, as
 #                                       the plans file names it (`small`,
-#                                       `default`, `large`, `xlarge`): a
+#                                       `default`, `large`, `xlarge`): the
+#                                       size production places, unless a
 #                                       machine with less room places smaller
+#   TILO_SH_VM_HOST_MEMORY_MIB          what the host holds awake at once: by
+#                                       default the size's own memory (8 GiB
+#                                       at `default`) beside the host's own,
+#                                       so the machine's room is what bounds
+#                                       it, not this stack's default
 #   TILO_SH_RELAY_SECRETS=<state>/secrets
 #                                       where the relay's secrets are on this
 #                                       machine: the hosts' member devices and
@@ -63,7 +69,18 @@ relay_iroh=${TILO_SH_RELAY_IROH:-127.0.0.1:24104}
 relay_root=${TILO_SH_RELAY_ROOT:-$secrets/room-root-lounge}
 relay_state=${TILO_SH_RELAY_STATE:-$state/rooms/lounge/relay}
 enroll=${TILO_SH_TILO_ENROLL:-tilo-enroll}
-memory_mib=${TILO_SH_VM_HOST_MEMORY_MIB:-6144}
+# What the host holds awake at once: the memory of the size it places, as the
+# size table gives it (crates/runtime/legacy-vm/src/hosted/size.rs: small
+# 4 GiB, default 8 GiB, large 16 GiB, xlarge 32 GiB), beside the host's own
+# few hundred megabytes. A VM woken past a short budget waits for room rather
+# than running, so a host that places 8 GiB VMs needs more than 8 GiB here.
+case ${TILO_SH_HOSTED_VM_SIZE:-default} in
+  small) size_memory_mib=4096 ;;
+  large) size_memory_mib=16384 ;;
+  xlarge) size_memory_mib=32768 ;;
+  *) size_memory_mib=8192 ;;
+esac
+memory_mib=${TILO_SH_VM_HOST_MEMORY_MIB:-$((size_memory_mib + 2048))}
 # The relay's own view of what this host writes for it: the stack mounts its
 # secrets at /run/secrets and the relay's state at /run/tilo-rooms.
 relay_secrets=/run/secrets

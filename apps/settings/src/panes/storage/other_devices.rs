@@ -154,6 +154,7 @@ mod tests {
             current,
             revoked,
             can_host: false,
+            kind: ui::tilo_actions::remote::identity_admin::KeyKind::Device,
         }
     }
 

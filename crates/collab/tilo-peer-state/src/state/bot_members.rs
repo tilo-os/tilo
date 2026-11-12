@@ -9,6 +9,7 @@
 
 use super::facades::PeerGovernance;
 use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
+use collab_types::signer::DeviceSigner;
 use tilo_action_policy::{
     Context, Grant, GrantId, WorkspacePolicy, bot,
     roles::{self, governance},
@@ -17,7 +18,7 @@ use tilo_automation::program::{parse_program, program_hash};
 use tilo_user_identity::DeviceCert;
 
 use super::delegates::{GovernedDelegateRow, holds_no_power};
-use super::{GovernedIdentity, SigningKey, StatePeer, SystemTime, err, governed_map, now_ns};
+use super::{GovernedIdentity, StatePeer, SystemTime, err, governed_map, now_ns};
 use crate::installation::Installation;
 use crate::workspace_membership::{BotDevice, BotInstall, BotRenewal};
 
@@ -164,7 +165,7 @@ impl StatePeer {
         &mut self,
         caller: &DeviceCert,
         install: &BotInstall,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let member = self.membership(caller.device_public_key, now)?;
@@ -276,7 +277,7 @@ impl StatePeer {
         &mut self,
         caller: &DeviceCert,
         renewal: &BotRenewal,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let member = self.membership(caller.device_public_key, now)?;
@@ -343,7 +344,7 @@ impl StatePeer {
     pub(super) fn put_bot_change(
         &mut self,
         write: &BotWrite,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let mut doc = self
@@ -414,7 +415,7 @@ impl StatePeer {
         &mut self,
         caller: &DeviceCert,
         request: &crate::workspace_membership::BotRequest,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let member = self.check_bot_governance(caller, governance::INSTALL_BOT, now)?;
@@ -460,7 +461,7 @@ impl StatePeer {
         &mut self,
         caller: &DeviceCert,
         entry: &str,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.check_bot_governance(caller, governance::UNINSTALL_BOT, now)?;
@@ -475,7 +476,7 @@ impl StatePeer {
         &mut self,
         entry: &str,
         row: Option<&RequestedBot>,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let mut doc = self
@@ -622,7 +623,7 @@ impl StatePeer {
         &mut self,
         caller: &DeviceCert,
         id: &str,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.check_bot_governance(caller, governance::UNINSTALL_BOT, now)?;
@@ -654,7 +655,7 @@ impl StatePeer {
         id: &str,
         action: &str,
         change: impl FnOnce(&mut Installation) -> bool,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.check_bot_governance(caller, action, now)?;
@@ -681,7 +682,7 @@ impl StatePeer {
         &mut self,
         caller: &DeviceCert,
         adoption: &crate::workspace_membership::BotAdoption,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let member = self.check_bot_governance(caller, governance::ADOPT_BOT, now)?;
@@ -714,7 +715,7 @@ impl StatePeer {
         // sees: the granter is the signer, whether it acts for itself or on
         // the adopter's behalf.
         let signer = self
-            .certificate(&key.verifying_key().to_bytes(), now)
+            .certificate(&key.device_public_key(), now)
             .map_err(|error| error.to_string())?
             .user_public_key;
         let cx = Context::at_time(now);

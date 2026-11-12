@@ -13,9 +13,9 @@
 use super::channel_key;
 use super::route_keys::Arrived;
 use super::{
-    ActionDirectoryRequest, Backend, CatalogueChange, CollabEvent, CollabRequest, CollabTransport,
-    CollaborationManager, Collaborator, DocumentMutation, DocumentPublicationError,
-    DocumentPublicationReceipt, ExportedAction, ExportedInput, PresenceKey, PresencePayload,
+    ActionCatalogue, ActionDirectoryRequest, Backend, CatalogueChange, CollabEvent, CollabRequest,
+    CollabTransport, CollaborationManager, Collaborator, DocumentMutation,
+    DocumentPublicationError, DocumentPublicationReceipt, PresenceKey, PresencePayload,
     PrimaryRouteState, RouteSpec, SignedOp, TransportCommand, TransportError, TransportStatus,
     Uuid, auto_hello_env, mpsc,
 };
@@ -1094,12 +1094,14 @@ pub(crate) struct BridgeState {
     route_record_kinds: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
     healthy: Arc<AtomicBool>,
     publication_failure: Arc<std::sync::Mutex<Option<DocumentPublicationError>>>,
-    /// The last change the peer answered but would not accept, when nothing
-    /// later has gone through. It is not a publication failure: the bridge
-    /// stays up and later changes and publications go on, so the owner is
-    /// told which change to reconcile and never mistakes it for a lost
-    /// connection (see [`Self::note_refused_change`]).
-    last_refused_change: Arc<std::sync::Mutex<Option<String>>>,
+    /// Per record route, the last change the peer answered but would not
+    /// accept, when nothing later has gone through on that route. It is not
+    /// a publication failure: the bridge stays up and later changes and
+    /// publications go on, so the owner is told which change to reconcile
+    /// and never mistakes it for a lost connection (see
+    /// [`Self::note_refused_change`]). Another record's change going through
+    /// says nothing about this one.
+    last_refused_change: Arc<std::sync::Mutex<std::collections::BTreeMap<String, String>>>,
     /// The broker refused or failed an action-surface publication; the owner
     /// takes this and republishes.
     action_surface_failed: Arc<AtomicBool>,
@@ -1304,7 +1306,7 @@ impl BridgeState {
             route_record_kinds: Arc::default(),
             healthy: Arc::new(AtomicBool::new(true)),
             publication_failure: Arc::new(std::sync::Mutex::new(None)),
-            last_refused_change: Arc::new(std::sync::Mutex::new(None)),
+            last_refused_change: Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new())),
             action_surface_failed: Arc::new(AtomicBool::new(false)),
             directory_rpc_successes: Arc::new(AtomicU64::new(0)),
             directory_rpc_failures: Arc::new(AtomicU64::new(0)),
@@ -1441,7 +1443,12 @@ impl BridgeState {
     /// open and later changes and publications go through. Only that change
     /// is not accepted, and the owner is told so it can reconcile its local
     /// copy instead of waiting for a reconnect that would change nothing.
-    fn note_refused_change(&self, context: &'static str, error: impl std::fmt::Display) {
+    fn note_refused_change(
+        &self,
+        route: &RouteSpec,
+        context: &'static str,
+        error: impl std::fmt::Display,
+    ) {
         let refusal = DocumentPublicationError::Refused(format!("{context}: {error}"));
         let said = refusal.to_string();
         tracing::warn!(
@@ -1449,18 +1456,30 @@ impl BridgeState {
             %error,
             "collab: the broker refused one document change; this bridge stays open"
         );
-        *self.last_refused_change.lock_recover() = Some(said);
+        self.last_refused_change
+            .lock_recover()
+            .insert(route.channel_id(), said);
         self.notify_events();
     }
 
-    /// A change the peer refused while nothing later has been sent, if any.
+    /// A change the peer refused while nothing later has been sent on its
+    /// route, if any.
     fn refused_change(&self) -> Option<String> {
-        self.last_refused_change.lock_recover().clone()
+        self.last_refused_change
+            .lock_recover()
+            .values()
+            .next()
+            .cloned()
     }
 
-    /// A change went through: nothing is waiting to be reconciled any more.
-    fn change_sent(&self) {
-        let cleared = self.last_refused_change.lock_recover().take().is_some();
+    /// A change of `route` went through: nothing of it is waiting to be
+    /// reconciled any more.
+    fn change_sent(&self, route: &RouteSpec) {
+        let cleared = self
+            .last_refused_change
+            .lock_recover()
+            .remove(&route.channel_id())
+            .is_some();
         if cleared {
             self.notify_events();
         }
@@ -3685,6 +3704,11 @@ async fn drive_shovel(
     // the commands that wait for it, in the order they came: one route's
     // join never holds up the rest of the app's connection.
     let mut joining = std::collections::HashMap::<String, Vec<(u64, QueuedSdkCommand)>>::new();
+    // A `Hello` naming a route that is already joining, with the owner's
+    // wait for the primary route that follows it: the route joins once, so
+    // the announcement waits for that join instead of starting another.
+    let mut held_primary: Vec<(u64, PrimaryHello)> = Vec::new();
+    let mut held_primary_ready: Vec<(u64, QueuedSdkCommand)> = Vec::new();
     let (joined_tx, mut joined_rx) = tokio_mpsc::unbounded_channel::<JoinedRoute>();
     // Commands whose route answered, and barriers whose joins ended, taken
     // before anything newer, in the order they first came: each already had
@@ -3748,6 +3772,7 @@ async fn drive_shovel(
             }),
             Some((spec, joined)) = joined_rx.recv() => {
                 let key = spec.channel_id();
+                let joined_ok = joined.is_ok();
                 let mut waiting = joining.remove(&key).unwrap_or_default();
                 match joined {
                     Ok(route) => {
@@ -3789,6 +3814,20 @@ async fn drive_shovel(
                         for (_, waited) in std::mem::take(&mut waiting) {
                             refuse_unjoined(waited.command, &reason, &inbound_tx.state, &key);
                         }
+                        // A switch to this route hears why it is not the
+                        // primary route, as it would from a join of its own.
+                        let before = held_primary.len();
+                        held_primary.retain(|(_, hello)| hello.route.channel_id() != key);
+                        if held_primary.len() != before {
+                            primary = None;
+                            primary_result = Err(reason);
+                            inbound_tx.state.notify_events();
+                            for (_, owed) in std::mem::take(&mut held_primary_ready) {
+                                if let SdkCommand::PrimaryReady(reply) = owed.command {
+                                    let _ = reply.send(primary_result.clone());
+                                }
+                            }
+                        }
                     }
                 }
                 for (waits_for, _, _) in &mut held_barriers {
@@ -3809,6 +3848,18 @@ async fn drive_shovel(
                 }
                 released.sort_by_key(|(arrival, _)| *arrival);
                 replay.extend(released);
+                if joined_ok {
+                    // The route the switch asked for is joined: it becomes
+                    // the primary route, and the owner's wait is answered
+                    // with it, in the order they came.
+                    let mut owed =
+                        take_held_announcements(&mut held_primary, &key, &inbound_tx.state);
+                    if !owed.is_empty() {
+                        owed.append(&mut std::mem::take(&mut held_primary_ready));
+                        owed.sort_by_key(|(arrival, _)| *arrival);
+                        replay.extend(owed);
+                    }
+                }
                 continue;
             }
             // The broker hung up: every call on this connection now fails,
@@ -3917,11 +3968,24 @@ async fn drive_shovel(
         let document = command.document_len().is_some();
         let mut published = true;
         match command {
-            SdkCommand::Hello(PrimaryHello {
-                route: spec,
-                record_kind,
-                handle,
-            }) => {
+            SdkCommand::Hello(hello) => {
+                // A route already joining beside this loop (the record this
+                // window prepared) joins once: a second join of the same
+                // channel replaces the committed read the first one staged,
+                // and leaves the owner with a route it cannot publish on.
+                // So this announcement joins nothing and takes the route as
+                // the primary one when that join ends.
+                if !routes.contains_key(&hello.route.channel_id())
+                    && joining.contains_key(&hello.route.channel_id())
+                {
+                    held_primary.push((arrival, hello));
+                    continue;
+                }
+                let PrimaryHello {
+                    route: spec,
+                    record_kind,
+                    handle,
+                } = hello;
                 participant_handle = handle;
                 let key = spec.channel_id();
                 // The join ends when the broker answers it or it fails, with
@@ -4039,6 +4103,19 @@ async fn drive_shovel(
                 }
             }
             SdkCommand::PrimaryReady(reply) => {
+                if !held_primary.is_empty() {
+                    // The route the owner switched to is still joining: its
+                    // answer is owed once that join ends and the announcement
+                    // replayed here has made it the primary route.
+                    held_primary_ready.push((
+                        arrival,
+                        QueuedSdkCommand {
+                            command: SdkCommand::PrimaryReady(reply),
+                            _reservation: inbound_tx.state.command_bytes.empty_reservation(),
+                        },
+                    ));
+                    continue;
+                }
                 let _ = reply.send(primary_result.clone());
                 // A manager still connecting settles on this answer.
                 inbound_tx.state.notify_events();
@@ -4312,6 +4389,33 @@ async fn personal_cluster_presentation(
     .encode()
     .ok()?;
     Some((workspace, bytes))
+}
+
+/// The announcements of `key`'s route held while it was joining, as commands
+/// to replay once it has joined (or to refuse, when it did not), in the order
+/// they came. Announcements of other routes stay held.
+fn take_held_announcements(
+    held: &mut Vec<(u64, PrimaryHello)>,
+    key: &str,
+    state: &BridgeState,
+) -> Vec<(u64, QueuedSdkCommand)> {
+    let mut released = Vec::new();
+    let mut still_held = Vec::new();
+    for (arrival, hello) in std::mem::take(held) {
+        if hello.route.channel_id() == key {
+            released.push((
+                arrival,
+                QueuedSdkCommand {
+                    command: SdkCommand::Hello(hello),
+                    _reservation: state.command_bytes.empty_reservation(),
+                },
+            ));
+        } else {
+            still_held.push((arrival, hello));
+        }
+    }
+    *held = still_held;
+    released
 }
 
 /// Keep `joined`, the outcome of joining `spec`, where the route's owner and
@@ -5160,8 +5264,10 @@ async fn spawn_action_catalogue_stream(
     admit_initial_action_catalogue(&initial, inbound_tx, Some(turn))?;
 
     let tx = inbound_tx.clone();
+    let channel = channel.clone();
     tokio::task::spawn_local(async move {
-        forward_action_catalogues(async || stream.read().await.map_err(|_| ()), &tx, turns).await;
+        let source = BrokerCatalogue { channel, stream };
+        forward_action_catalogues(source, initial, &tx, turns).await;
     });
     Ok(())
 }
@@ -5183,30 +5289,123 @@ fn admit_initial_action_catalogue(
     Ok(())
 }
 
-/// Forward catalogue changes from `read` until it or the bridge fails. At
-/// most one change is queued at a time: the next read waits until the owner
-/// has dequeued the previous one, and the broker composes what changed
-/// meanwhile into the next.
+/// Where a follower's catalogue changes come from: the stream it reads, and
+/// the whole catalogue asked for again when a change does not apply.
+trait CatalogueSource {
+    /// The next change, as the broker sent it; `Err` once the stream ended.
+    async fn read(&mut self) -> Result<String, ()>;
+    /// Ask the broker for the whole catalogue: its next change is a reset,
+    /// not a delta.
+    async fn restart(&mut self) -> Result<(), ()>;
+}
+
+/// One connection's catalogue stream, replaced by a fresh subscription when a
+/// change does not apply to what the follower holds.
+struct BrokerCatalogue {
+    channel: runtime_collab::ChannelHandle,
+    stream: runtime_collab::ActionCatalogueStream,
+}
+
+impl CatalogueSource for BrokerCatalogue {
+    async fn read(&mut self) -> Result<String, ()> {
+        self.stream.read().await.map_err(|_| ())
+    }
+
+    async fn restart(&mut self) -> Result<(), ()> {
+        self.stream = self
+            .channel
+            .subscribe_action_catalogue()
+            .await
+            .map_err(|_| ())?;
+        Ok(())
+    }
+}
+
+/// Follow the catalogue after `initial` (whose admission the caller does),
+/// forwarding each change once it applies to a shadow of what the follower
+/// holds. At most one change is queued at a time: the next read waits until
+/// the owner has dequeued the previous one, and the broker composes what
+/// changed meanwhile into the next.
+///
+/// A change that does not apply — the revisions do not join, it names a shape
+/// the follower was never sent, or its bytes do not decode — asks the broker
+/// for the whole catalogue at once, and that answer is forwarded as the next
+/// change. The follower is never sent a change it cannot apply, and never left
+/// with an empty catalogue: it keeps the last one that did until the reset
+/// arrives.
 async fn forward_action_catalogues(
-    mut read: impl AsyncFnMut() -> Result<String, ()>,
+    mut source: impl CatalogueSource,
+    initial: String,
     tx: &InboundBridge,
     turns: Arc<tokio::sync::Semaphore>,
 ) {
+    let mut held = ActionCatalogue::default();
+    let admitted = match serde_json::from_str::<CatalogueChange>(&initial) {
+        Ok(change) => match held.apply(&change) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "collab: the initial action catalogue does not apply; asking for the whole catalogue"
+                );
+                false
+            }
+        },
+        Err(error) => {
+            tracing::warn!(%error, "collab: invalid initial action catalogue change");
+            false
+        }
+    };
+    if !admitted && source.restart().await.is_err() {
+        return;
+    }
+    // The whole catalogue was asked for above; a snapshot that does not apply
+    // to what is held cannot be fixed by asking again, so it ends the stream
+    // rather than looping on the broker.
+    let mut asked = !admitted;
     loop {
         let Ok(turn) = turns.clone().acquire_owned().await else {
             break;
         };
-        let Ok(change) = read().await else {
+        let Ok(text) = source.read().await else {
             break;
         };
-        // A change cannot be skipped: every later one builds on it.
-        let decoded = match serde_json::from_str::<CatalogueChange>(&change) {
+        let decoded = match serde_json::from_str::<CatalogueChange>(&text) {
             Ok(decoded) => decoded,
-            Err(error) => {
-                tracing::error!(%error, "collab: invalid broker action catalogue change");
+            Err(error) if asked => {
+                tracing::error!(%error, "collab: the whole action catalogue does not decode");
                 break;
             }
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "collab: invalid broker action catalogue change; asking for the whole catalogue"
+                );
+                if source.restart().await.is_err() {
+                    break;
+                }
+                asked = true;
+                continue;
+            }
         };
+        match held.apply(&decoded) {
+            Ok(()) => asked = false,
+            Err(error) if asked => {
+                tracing::error!(%error, "collab: the whole action catalogue does not apply");
+                break;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "collab: the broker's action catalogue change does not apply; asking for the whole catalogue"
+                );
+                if source.restart().await.is_err() {
+                    break;
+                }
+                asked = true;
+                continue;
+            }
+        }
         if !tx
             .send_durable_turn(
                 CollabEvent::ActionCatalogue { change: decoded },
@@ -5497,21 +5696,21 @@ async fn send_document_frame(
 ) -> Result<(), DocumentPublicationError> {
     match try_send_frame(route, signer, cleartext.clone(), claims, state).await {
         FrameSend::Sent | FrameSend::Held => {
-            state.change_sent();
+            state.change_sent(&route.spec);
             Ok(())
         }
         FrameSend::Failed(error) => Err(error),
         FrameSend::Refused(refusal) => {
             if !refresh_route_keys(route, signer).await || !refusal.is_definite() {
-                return Err(frame_refused(state, &refusal));
+                return Err(frame_refused(state, &route.spec, &refusal));
             }
             match try_send_frame(route, signer, cleartext, claims, state).await {
                 FrameSend::Sent | FrameSend::Held => {
-                    state.change_sent();
+                    state.change_sent(&route.spec);
                     Ok(())
                 }
                 FrameSend::Failed(error) => Err(error),
-                FrameSend::Refused(refusal) => Err(frame_refused(state, &refusal)),
+                FrameSend::Refused(refusal) => Err(frame_refused(state, &route.spec, &refusal)),
             }
         }
     }
@@ -5521,10 +5720,14 @@ async fn send_document_frame(
 /// peer answered about this very change — fails that change alone; anything
 /// else (a lost call, an overload) leaves the outcome unknown and ends the
 /// bridge as it always has.
-fn frame_refused(state: &BridgeState, refusal: &FrameRefusal) -> DocumentPublicationError {
+fn frame_refused(
+    state: &BridgeState,
+    route: &RouteSpec,
+    refusal: &FrameRefusal,
+) -> DocumentPublicationError {
     match refusal {
         FrameRefusal::Definite(reason) => {
-            state.note_refused_change("document commit RPC", reason);
+            state.note_refused_change(route, "document commit RPC", reason);
             DocumentPublicationError::Refused(format!("document commit RPC: {reason}"))
         }
         FrameRefusal::Unknown(reason) => {
@@ -6080,12 +6283,14 @@ async fn dispatch_sdk_request(
         CollabRequest::Hello { .. } => {}
         CollabRequest::SignedOperation { envelope } => match postcard::to_stdvec(&*envelope) {
             Ok(bytes) => match route.channel.send(&bytes).await {
-                Ok(()) => inbound_tx.state.change_sent(),
+                Ok(()) => inbound_tx.state.change_sent(&route.spec),
                 // A definite refusal is the peer's answer about this signed
                 // change: it alone is not accepted and the bridge stays open.
-                Err(error) if refused_by_peer(&error) => inbound_tx
-                    .state
-                    .note_refused_change("signed document commit RPC", &error),
+                Err(error) if refused_by_peer(&error) => inbound_tx.state.note_refused_change(
+                    &route.spec,
+                    "signed document commit RPC",
+                    &error,
+                ),
                 Err(error) => {
                     inbound_tx
                         .state
@@ -6770,6 +6975,7 @@ mod tests {
         clippy::unreachable,
         clippy::string_slice,
         clippy::disallowed_methods,
+        clippy::future_not_send,
         reason = "the tests and the fixtures they share with the toolkit's tests are test code"
     )]
     use super::*;
@@ -10306,6 +10512,25 @@ mod tests {
         thread.join().unwrap();
     }
 
+    /// A refusal belongs to the record it was about: another record's change
+    /// going through leaves it standing, its own record's next change ends it.
+    #[test]
+    fn a_refused_change_stands_until_its_own_record_takes_a_change() {
+        let route = |record: &str| RouteSpec {
+            app_id: "so.tilo.notes".into(),
+            cluster_id: uuid::Uuid::from_bytes([7; 16]),
+            record: Some(record.into()),
+        };
+        let state = BridgeState::new();
+        state.note_refused_change(&route("full"), "document commit RPC", "history is full");
+        state.change_sent(&route("other"));
+        assert!(state.refused_change().is_some());
+        assert!(state.publication_result().is_err());
+        state.change_sent(&route("full"));
+        assert_eq!(state.refused_change(), None);
+        assert!(state.publication_result().is_ok());
+    }
+
     #[test]
     fn document_publication_unavailable_and_rejected_markers_are_errors() {
         let mut manager = CollaborationManager::disabled();
@@ -12344,6 +12569,53 @@ mod tests {
         assert!(!state.is_healthy());
     }
 
+    /// A catalogue source that answers each read with the whole catalogue of
+    /// connection `reads + 1`: `initial` is connection 1, so a read ahead of
+    /// the owner would be visible in the connection it names.
+    struct NextWindow {
+        reads: std::rc::Rc<std::cell::Cell<u64>>,
+    }
+
+    impl CatalogueSource for NextWindow {
+        async fn read(&mut self) -> Result<String, ()> {
+            let next = self.reads.get() + 1;
+            self.reads.set(next);
+            Ok(notebook_action_catalogue_fixture(
+                Uuid::nil(),
+                1,
+                next,
+                "notebook",
+            ))
+        }
+
+        async fn restart(&mut self) -> Result<(), ()> {
+            Err(())
+        }
+    }
+
+    /// A catalogue source a test scripts: what each read answers, and the
+    /// whole catalogue each restart asks for.
+    struct ScriptedCatalogue {
+        changes: std::collections::VecDeque<Result<String, ()>>,
+        snapshots: std::collections::VecDeque<String>,
+        restarts: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+
+    impl CatalogueSource for ScriptedCatalogue {
+        async fn read(&mut self) -> Result<String, ()> {
+            self.changes.pop_front().unwrap_or(Err(()))
+        }
+
+        async fn restart(&mut self) -> Result<(), ()> {
+            self.restarts.set(self.restarts.get() + 1);
+            let Some(snapshot) = self.snapshots.pop_front() else {
+                return Err(());
+            };
+            self.changes.push_front(Ok(snapshot));
+            Ok(())
+        }
+    }
+
     /// A headless worker is drained only between pumps. Catalogue changes
     /// (one per host publication) must not pile up in its bounded bridge:
     /// one stays queued, and the broker composes the rest into the next.
@@ -12356,23 +12628,15 @@ mod tests {
         let (tx, mut rx) = tokio_mpsc::channel(SDK_EVENT_QUEUE);
         let state = BridgeState::new();
         let inbound = InboundBridge::new(tx, state.clone());
-        let published = std::rc::Rc::new(std::cell::Cell::new(0u64));
-        let reads = published.clone();
+        let reads = std::rc::Rc::new(std::cell::Cell::new(0u64));
+        let counted = reads.clone();
         let local = tokio::task::LocalSet::new();
         local.block_on(&runtime, async move {
             let forwarder = inbound.clone();
             tokio::task::spawn_local(async move {
                 forward_action_catalogues(
-                    async || {
-                        let next = reads.get() + 1;
-                        reads.set(next);
-                        Ok(notebook_action_catalogue_fixture(
-                            Uuid::nil(),
-                            1,
-                            next,
-                            "notebook",
-                        ))
-                    },
+                    NextWindow { reads: counted },
+                    notebook_action_catalogue_fixture(Uuid::nil(), 1, 1, "notebook"),
                     &forwarder,
                     Arc::new(tokio::sync::Semaphore::new(1)),
                 )
@@ -12400,7 +12664,133 @@ mod tests {
             ));
             assert!(state.is_healthy());
         });
-        assert_eq!(published.get(), 2, "no read while a catalogue is queued");
+        assert_eq!(reads.get(), 2, "no read while a catalogue is queued");
+    }
+
+    /// A change the follower cannot apply — the revisions do not join, a shape
+    /// it was never sent, bytes that do not decode — asks the broker for the
+    /// whole catalogue: the follower keeps the last one it applied, and the
+    /// answer is forwarded as a reset. It is never left with an empty one.
+    #[test]
+    fn a_catalogue_change_that_does_not_apply_asks_for_the_whole_catalogue() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (tx, mut rx) = tokio_mpsc::channel(SDK_EVENT_QUEUE);
+        let state = BridgeState::new();
+        let inbound = InboundBridge::new(tx, state.clone());
+        let initial = notebook_action_catalogue_fixture(Uuid::nil(), 1, 1, "notebook");
+        let mut gap: CatalogueChange = serde_json::from_str(&initial).unwrap();
+        gap.reset = false;
+        gap.since = 5;
+        let restarts = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let counted = restarts.clone();
+        let source = ScriptedCatalogue {
+            changes: std::collections::VecDeque::from([
+                Ok(serde_json::to_string(&gap).unwrap()),
+                Ok("{not a catalogue".to_string()),
+            ]),
+            snapshots: std::collections::VecDeque::from([
+                notebook_action_catalogue_fixture(Uuid::nil(), 1, 2, "notebook"),
+                notebook_action_catalogue_fixture(Uuid::nil(), 1, 3, "notebook"),
+            ]),
+            restarts: counted,
+        };
+        let local = tokio::task::LocalSet::new();
+        let admitted = initial.clone();
+        local.block_on(&runtime, async move {
+            let forwarder = inbound.clone();
+            tokio::task::spawn_local(async move {
+                forward_action_catalogues(
+                    source,
+                    initial,
+                    &forwarder,
+                    Arc::new(tokio::sync::Semaphore::new(1)),
+                )
+                .await;
+            });
+            let mut held = ActionCatalogue::default();
+            held.apply(&serde_json::from_str(&admitted).unwrap())
+                .expect("the initial catalogue");
+            for peer in [2, 3] {
+                for _ in 0..64 {
+                    tokio::task::yield_now().await;
+                }
+                let Ok(QueuedCollabEvent {
+                    event: CollabEvent::ActionCatalogue { change },
+                    ..
+                }) = rx.try_recv()
+                else {
+                    panic!("the follower is sent connection {peer}'s catalogue whole");
+                };
+                assert!(change.reset, "each answer is the whole catalogue");
+                assert_eq!(change.surfaces[0].surface.peer_id, peer);
+                held.apply(&change).unwrap();
+                assert!(
+                    !held.surfaces().is_empty(),
+                    "the follower never holds an empty catalogue"
+                );
+            }
+            assert_eq!(restarts.get(), 2, "a gap and a corrupt change are re-asked");
+            assert!(state.is_healthy());
+        });
+    }
+
+    /// A whole catalogue that does not apply to what is held is a fault on
+    /// the wire, not a follower that fell behind: it ends the stream instead
+    /// of asking for the whole catalogue again and again.
+    #[test]
+    fn a_whole_catalogue_that_does_not_apply_ends_the_stream() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (tx, mut rx) = tokio_mpsc::channel(SDK_EVENT_QUEUE);
+        let state = BridgeState::new();
+        let inbound = InboundBridge::new(tx, state.clone());
+        let initial = notebook_action_catalogue_fixture(Uuid::nil(), 1, 1, "notebook");
+        let mut gap: CatalogueChange = serde_json::from_str(&initial).unwrap();
+        gap.reset = false;
+        gap.since = 5;
+        let mut broken: CatalogueChange = serde_json::from_str(&notebook_action_catalogue_fixture(
+            Uuid::nil(),
+            1,
+            2,
+            "notebook",
+        ))
+        .unwrap();
+        broken.templates.clear();
+        let restarts = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let counted = restarts.clone();
+        let source = ScriptedCatalogue {
+            changes: std::collections::VecDeque::from([Ok(serde_json::to_string(&gap).unwrap())]),
+            snapshots: std::collections::VecDeque::from([serde_json::to_string(&broken).unwrap()]),
+            restarts: counted,
+        };
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&runtime, async move {
+            let forwarder = inbound.clone();
+            let asked = restarts.clone();
+            tokio::task::spawn_local(async move {
+                forward_action_catalogues(
+                    source,
+                    initial,
+                    &forwarder,
+                    Arc::new(tokio::sync::Semaphore::new(1)),
+                )
+                .await;
+            });
+            for _ in 0..64 {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(asked.get(), 1, "the whole catalogue is asked for once");
+            assert!(
+                rx.try_recv().is_err(),
+                "nothing that cannot be applied is forwarded"
+            );
+            assert!(state.is_healthy());
+        });
     }
 
     fn notebook_action(index: usize) -> serde_json::Value {
@@ -12413,7 +12803,7 @@ mod tests {
             "operation_kind": tilo_actions::OperationKind::View,
             "params": [tilo_actions::ActionParam::required("page", tilo_actions::ParamType::Resource, "The page to open")],
             "contract": tilo_actions::ActionContract::view(),
-            "input": ExportedInput::None
+            "input": crate::ExportedInput::None
         })
     }
 

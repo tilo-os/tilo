@@ -124,6 +124,7 @@ impl Session {
         // carries. Everything the person does here — the workspaces they
         // own, what the desk records, what the sheets change — is theirs.
         let seat = crate::identity::seat(&options);
+        options.earlier.clone_from(&seat.earlier);
         options.person = seat.person;
         // The ids this device mints are its own, as every workspace derives
         // them from its key: a computer with an identity mints under that
@@ -390,16 +391,7 @@ impl Session {
                 }) else {
                     return false;
                 };
-                let to = match agents.kept(&workspace, &policy, &person) {
-                    Some((id, name)) => ui::floating_surface::Recipient::found(
-                        ui::floating_surface::RecipientKind::Agent,
-                        id,
-                        name,
-                    ),
-                    None => ui::floating_surface::Recipient::new_agent(crate::i18n::t(
-                        "session-agent-name",
-                    )),
-                };
+                let to = crate::agents::agent_recipient(agents.kept(&workspace, &policy, &person));
                 let arguments = serde_json::json!({
                     "to": [to],
                     "text": text,
@@ -750,7 +742,6 @@ impl Session {
                     signals: Rc::clone(&notice_signals),
                     readings: Rc::clone(&readings),
                     activities: Rc::clone(&activities),
-                    notices: crate::notifications::RoleNotices::of(&notifications),
                     tray: tray.clone(),
                     fullscreen: Rc::clone(&fullscreen),
                     shares: Rc::clone(&window_shares),
@@ -1467,7 +1458,7 @@ impl Session {
             lock_layouts: options.config.keyboard_layouts.clone(),
             lock_layout: Cell::new(0),
             session_actions: options.session_actions,
-            observed: RefCell::new(None),
+            observed: RefCell::default(),
             here_at: Cell::new(0),
             here_seen: Cell::new(0),
             places_seen: RefCell::default(),
@@ -2454,7 +2445,9 @@ impl Session {
         // reads a place. They are read again only once the door moved, and what is offered then
         // is compared with what was offered before, so the broker is told only when the rows
         // themselves moved.
-        if !actions.door_moved(self.shared.doors.revision()) {
+        // A held pointer drags or resizes a window: every frame of it moves the desk, never what
+        // the steps offer, so the rows are read once the person lets go.
+        if self.shared.underway.get().gesture || !actions.door_moved(self.shared.doors.revision()) {
             return;
         }
         let rows = tilo_actions::door::survey_placed(&self.shared.doors.resources());
@@ -2463,6 +2456,17 @@ impl Session {
         {
             broker.host_steps_changed();
         }
+    }
+
+    /// Keep the broker's copy of the desk level with the desk as the pass leaves it: the workspaces
+    /// the pass opened, and whose each of them is, are decided here and a person's own action is
+    /// decided against that copy.
+    pub(crate) fn publish_desk(&mut self) {
+        let Some(plane) = &self.action_plane else {
+            return;
+        };
+        let desk = std::sync::Arc::clone(&plane.desk);
+        self.automation.publish_desk(Some(&desk));
     }
 
     /// Start the shortcuts whose triggers fired since the last pass, and keep

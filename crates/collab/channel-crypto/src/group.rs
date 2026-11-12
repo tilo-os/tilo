@@ -792,6 +792,9 @@ impl ChannelGroup {
                 });
             }
         };
+        // The tree's leaf signatures are the committer's to have checked
+        // ([`crate::welcome`]); everything else of the Welcome is checked here.
+        let reading = member.provider.reading_welcome();
         let staged = StagedWelcome::new_from_welcome(
             &member.provider,
             &group_join_config(),
@@ -801,6 +804,7 @@ impl ChannelGroup {
             None,
         )
         .map_err(Error::openmls)?;
+        drop(reading);
         let group = staged
             .into_group(&member.provider)
             .map_err(Error::openmls)?;

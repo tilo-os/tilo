@@ -96,10 +96,21 @@ pub(crate) enum HostRequest {
     /// page has the workspace's session open the resource there, as a mention's notice does. It
     /// never reaches the embedding page.
     ShowInApp { app: String, resource: String },
-    /// The person takes back the agent grant of this device (its key, as
-    /// hex): the page's root signs the revocation and every session of
-    /// theirs announces it (`onHostAction('revoke-device', key)`).
-    Revoke(String),
+    /// The person takes back a key of theirs (a device, an agent's grant):
+    /// the page's root signs the revocation and every session of theirs
+    /// announces it (`onHostAction('revoke-device', {key, reason})`).
+    Revoke(Revoking),
+}
+
+/// One key the person took back: an agent's grant at their door, or one of
+/// their devices in Settings.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct Revoking {
+    /// The device key, hex.
+    pub key: String,
+    /// Why, as a revocation names it: `retired`, `lost`, `stolen` or
+    /// `compromised`.
+    pub reason: String,
 }
 
 /// The page's host action that lets the person choose their name; the

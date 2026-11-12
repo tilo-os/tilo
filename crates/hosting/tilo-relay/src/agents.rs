@@ -800,6 +800,23 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
     }
 }
 
+/// The apps this host's workspaces offer: `catalogue` (this machine's
+/// registry when `None`), and Browser when this host places its windows
+/// ([`HostedBrowsers`](crate::hosted_browser::HostedBrowsers)). A workspace
+/// lists Browser and opens a record for it like any app, though no worker of
+/// this host mounts it: the window runs in the workspace's VM.
+fn app_catalogue(
+    catalogue: Option<CatalogueFactory>,
+    browsers: Option<&Arc<crate::hosted_browser::HostedBrowsers>>,
+) -> CatalogueFactory {
+    let catalogue = catalogue.unwrap_or_else(|| Arc::new(AppCatalogue::native));
+    if browsers.is_none() {
+        return catalogue;
+    }
+    let placed = crate::hosted_browser::placed_app();
+    Arc::new(move || catalogue().placing(placed))
+}
+
 /// Start `cfg`'s relay serving its workspaces' records to pages, without agents:
 /// the host mounts a record of an app in `catalogue` (this machine's
 /// registry when `None`) and runs an action on it for whoever the workspace's
@@ -817,7 +834,7 @@ pub async fn start_serving_records(
     browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
 ) -> Result<Relay, RelayError> {
     let host_cert = identity.device_cert.clone();
-    let catalogue = catalogue.unwrap_or_else(|| Arc::new(AppCatalogue::native));
+    let catalogue = app_catalogue(catalogue, browsers.as_ref());
     cfg.services.app_serving = true;
     let plane = Arc::new(WorkspaceRecordsPlane {
         actions: WorkspaceActions::new(catalogue),
@@ -848,10 +865,20 @@ fn attach_records(
         shell.serve_from(relay);
     }
     if let Some(browsers) = &browsers {
+        // A session in a workspace's VM joins as a device of the person's,
+        // which a stand-in certifies: the one this host keeps for them, else
+        // a host that is itself one.
+        let user = relay.workspace_records().user_public_key();
+        let (key, cert) = relay.stand_in(&user).unwrap_or_else(|| {
+            (
+                relay.workspace_records().signing_key().clone(),
+                host_cert.clone(),
+            )
+        });
         browsers.serve_from(crate::hosted_browser::Authority {
-            user_public_key: relay.workspace_records().user_public_key(),
-            cert: host_cert.clone(),
-            key: relay.workspace_records().signing_key().clone(),
+            user_public_key: user,
+            cert,
+            key,
             // The sessions in the environments dial this host from a machine
             // that reaches the public internet and nothing of this network:
             // the address they are given is the public one.
@@ -914,9 +941,7 @@ async fn start_inner(
     relay_mode: Option<iroh::RelayMode>,
 ) -> Result<(Relay, AgentHost), RelayError> {
     let host_cert = identity.device_cert.clone();
-    let catalogue = options
-        .catalogue
-        .unwrap_or_else(|| Arc::new(AppCatalogue::native));
+    let catalogue = app_catalogue(options.catalogue, options.browsers.as_ref());
     let content = crate::content::stores(&cfg.state_root);
     let mut agents = AgentHost::new(
         identity.user_public_key,

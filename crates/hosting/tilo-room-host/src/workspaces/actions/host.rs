@@ -496,6 +496,7 @@ impl Workspaces {
         args: &Args,
     ) -> Result<Value, ActionHostError> {
         if operation == HostOperation::ReadPersonalList {
+            self.note_own_device(device);
             let here = self.listed(device).await;
             return answer(&self.personal(device, &here));
         }
@@ -514,6 +515,7 @@ impl Workspaces {
         let kept = self
             .keep_personal(device, list)
             .map_err(|error| refused(&error))?;
+        self.note_own_device(device);
         Ok(serde_json::json!({ "kept": kept }))
     }
 

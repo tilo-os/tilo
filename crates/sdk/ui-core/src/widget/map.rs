@@ -13,6 +13,11 @@
 //! Each child is a `MapPin`: its key, its `x` and `y` in canvas pixels, its width, and the view
 //! it shows. The map changes nothing itself: the caller commits one arranging action when the
 //! person moves a place.
+//!
+//! A place that arrives on the map is shown: the camera pans the least it takes for it to stand
+//! whole inside the viewport, as a scroll shows the row it was asked for, and no place moves.
+//! The lens is the person's, so a map built again around changed places takes the camera over
+//! from the one it replaces ([`Map::carry_from`]) rather than looking at the canvas' origin.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -42,6 +47,10 @@ pub const MAP_ZOOM_MAX: f64 = 2.5;
 
 /// How much one wheel notch zooms, when a gesture zooms over the map.
 const ZOOM_PER_DETENT: f64 = 1.1;
+
+/// The room a place that arrives keeps from the viewport's edges when the camera shows it: a
+/// window's frame at the very edge of the canvas reads as cut off, so the pan leaves a gap.
+const ARRIVAL_MARGIN: f64 = 16.0;
 
 /// A pin's place, in canvas pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -211,6 +220,10 @@ pub struct Map {
     /// pin's pose is taken about.
     laid: Rc<std::cell::RefCell<HashMap<String, Rect>>>,
 
+    /// The place that arrived on the map and is to be shown: the camera pans to it before the
+    /// places are laid out, so a window a person just opened stands where they can see it.
+    reveal: Option<String>,
+
     /// Input or a new document value changed what this widget paints: it
     /// repaints once, and rests after the frame draws it.
     dirty: bool,
@@ -241,6 +254,7 @@ impl Map {
             key_pan: f64::from(crate::tokens::Metrics::BASE.wheel_line),
             placed: HashMap::new(),
             laid: Rc::default(),
+            reveal: None,
         }
     }
 
@@ -263,6 +277,30 @@ impl Map {
         if !self.camera.same(camera) {
             self.camera = camera;
             self.invalidation.invalidate();
+        }
+    }
+
+    /// Take over what the person was looking at from `old`, the map this one is built around when
+    /// the places on it changed: its camera, and where its pins were drawn, so a place arriving
+    /// neither resets the lens nor makes every window on the canvas arrive again. The place that
+    /// arrived since is shown ([`Self::reveal_on_layout`]), so what a person just opened stands
+    /// where they can see it.
+    pub fn carry_from(&mut self, old: &Map) {
+        self.camera = old.camera;
+        // The room the places stand in was laid out last frame: a place that arrived is shown in
+        // it before this layout places it.
+        self.rect = old.rect;
+        for (key, placed) in &old.placed {
+            self.placed.insert(key.clone(), placed.clone());
+        }
+        let arrived = self
+            .pins
+            .iter()
+            .rev()
+            .find(|(key, _, _)| !old.pins.iter().any(|(held, _, _)| held == key))
+            .map(|(key, _, _)| key.clone());
+        if let Some(arrived) = arrived {
+            self.reveal_on_layout(arrived);
         }
     }
 
@@ -304,6 +342,69 @@ impl Map {
             .iter()
             .map(|(key, place, _)| (key.clone(), *place))
             .collect()
+    }
+
+    /// Show the place `key`, once a layout places it: the camera pans the least it takes for the
+    /// whole place to stand inside the viewport, and nothing on the canvas changes its place.
+    pub fn reveal_on_layout(&mut self, key: impl Into<String>) {
+        self.reveal = Some(key.into());
+    }
+
+    /// Show the place that arrived, if any: what [`Self::carry_from`] left to be shown. The
+    /// camera pans there before the places are laid out, so the places, and the windows in their
+    /// wells, stand where it carried them on the frame the arrival is shown.
+    fn show_asked(&mut self) {
+        let Some(key) = self.reveal.clone() else {
+            return;
+        };
+        self.reveal = None;
+        // The region places the places about its own origin, so the viewport is read there: the
+        // map's own room, where its content starts.
+        let view = Rect::from_origin_size(Point::ORIGIN, self.rect.size());
+        if view.width() <= 0.0 || view.height() <= 0.0 {
+            return;
+        }
+        let Some((_, place, _)) = self.pins.iter().find(|(held, _, _)| *held == key) else {
+            return;
+        };
+        let place = *place;
+        let camera = self.camera;
+        let (x0, y0) = (
+            (place.x - camera.origin.x) * camera.zoom,
+            (place.y - camera.origin.y) * camera.zoom,
+        );
+        let width = place.width * camera.zoom;
+        // A place whose height its view says is as tall as a window is wide over tall.
+        let height = place
+            .height
+            .map_or(width / 1.6, |height| height * camera.zoom);
+        // What it takes for the place to stand whole inside the viewport, with the least move: a
+        // place that pokes out an edge is brought in with a gap, and one already in view stays
+        // where it is. A place wider than the viewport keeps its leading edge in view.
+        let margin = ARRIVAL_MARGIN
+            .min(view.width() / 2.0)
+            .min(view.height() / 2.0);
+        let along = |start: f64, end: f64, from: f64, to: f64| {
+            if start < from {
+                start - from - margin
+            } else if end > to {
+                end - to + margin
+            } else {
+                0.0
+            }
+        };
+        let (dx, dy) = (
+            along(x0, x0 + width, view.x0, view.x1),
+            along(y0, y0 + height, view.y0, view.y1),
+        );
+        if dx.abs() < 0.5 && dy.abs() < 0.5 {
+            return;
+        }
+        // Moving the place left by `dx` on screen is the camera looking `dx` further along its
+        // canvas: the places keep their points, and the lens moves over them.
+        let mut camera = self.camera;
+        camera.origin += Vec2::new(dx, dy) / camera.zoom.max(f64::EPSILON);
+        self.set_camera(camera);
     }
 
     /// The region that lays the pins out, when built.
@@ -758,6 +859,9 @@ impl Widget for Map {
     ) -> NodeId {
         self.slop = f64::from(theme.tokens.metrics.click_slop);
         self.key_pan = f64::from(theme.tokens.metrics.wheel_line);
+        // What arrived is shown before the places are laid out, so this layout stands them, and
+        // the windows in their wells, where the camera carried them.
+        self.show_asked();
         self.rebuild_region(theme);
         let node = self.parts.build(
             Style {

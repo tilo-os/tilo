@@ -743,6 +743,7 @@ async fn a_key_of_the_persons_reads_their_workspace_list_from_a_device_and_no_on
     };
     let held = PersonalList {
         workspaces: vec![entry(DESK, "Build box"), entry(ON_RELAY, "eu1.tilo.sh")],
+        ..PersonalList::default()
     };
     *b.door.list.lock().unwrap() = Some(held.clone());
     // A key reaching all their workspaces reads all of them, each with its

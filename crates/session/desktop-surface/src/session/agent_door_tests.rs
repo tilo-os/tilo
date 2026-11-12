@@ -108,7 +108,7 @@ fn the_persons_asks_reach_the_door_the_host_hands_the_session() {
     );
 
     let door = Arc::new(Door::default());
-    session.serve_agent_door(door.clone());
+    session.serve_person_door(agent_door::PROVIDER, door.clone());
     let read = ask(agent_door::DOOR);
     let id = read.invocation;
     assert!(answer(session.invoke(&person, read)).is_ok());

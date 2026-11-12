@@ -54,6 +54,25 @@ pub trait DeviceSigner: MaybeSendSync {
     }
 }
 
+/// What `signer` signs `message` with when it answers at once, as a key held
+/// in the clear does: a write made in one turn signs this way.
+///
+/// # Errors
+/// The signer refused, or it would answer only later (a browser's key signs
+/// through a promise; its writes are signed outside the turn).
+pub fn sign_now(signer: &dyn DeviceSigner, message: Vec<u8>) -> Result<[u8; 64], SignError> {
+    let mut signing = signer.sign(message);
+    match signing
+        .as_mut()
+        .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+    {
+        std::task::Poll::Ready(signature) => signature,
+        std::task::Poll::Pending => Err(SignError(
+            "the device signer answers only later, outside this turn".into(),
+        )),
+    }
+}
+
 /// A shared handle to one device's custody signs as that custody does.
 impl<T: DeviceSigner + ?Sized> DeviceSigner for std::sync::Arc<T> {
     fn device_public_key(&self) -> [u8; 32] {

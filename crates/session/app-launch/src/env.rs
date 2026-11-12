@@ -141,6 +141,18 @@ impl SessionEnvironment {
         }
     }
 
+    /// The environment of a launch that draws nothing — an app's origin connector
+    /// (`docs/architecture/apps.md` §1): this session's runtime directory and bus, the person's
+    /// variables, and no display at all, so nothing it runs reaches a compositor or an X server.
+    #[must_use]
+    pub fn windowless_variables(&self) -> BTreeMap<String, String> {
+        let mut variables = self.variables();
+        for display in ["WAYLAND_DISPLAY", "DISPLAY", "XAUTHORITY"] {
+            variables.remove(display);
+        }
+        variables
+    }
+
     /// The whole environment a Tilo package's launcher is started with.
     /// [`plan::Planned`] spawns it with `env_clear()` and exactly this, so a
     /// stale `WAYLAND_DISPLAY` or the session's own `DISPLAY` can never

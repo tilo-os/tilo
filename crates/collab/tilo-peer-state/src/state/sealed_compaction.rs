@@ -5,82 +5,54 @@ use super::{
     AutoCommit, DocumentMutation, Ed25519PublicKey, NeighbourMsg, OpKind, PeerPublication,
     PeerPublicationMut, Route, SignedOp, SigningKey, StatePeer, SystemTime, err, peer_handle,
 };
+use collab_types::signer::DeviceSigner;
 use collab_types::{ContentRetention, EncryptionMetadata, SealedCompaction};
 
 type Floors = std::collections::HashMap<Ed25519PublicKey, u64>;
-/// A key holder sealing a compaction's snapshot under the channel's current
-/// epoch, with checkpoint retention.
+/// A key holder sealing a record's content under the channel's current epoch:
+/// a compaction's snapshot with checkpoint retention, a write with delta retention.
 pub type SealCheckpoint<'a> =
     dyn FnMut(&[u8]) -> Result<(EncryptionMetadata, Vec<u8>), String> + 'a;
-/// A key holder sealing a write to a record under the channel's current
-/// epoch, with delta retention.
-pub type SealDelta<'a> = SealCheckpoint<'a>;
 
 /// Writes a sealed history must hold before it is compacted to make workspace in
 /// a full exact admission index: fewer would fold little for the work.
 pub(super) const PRESSED_HISTORY: usize = 64;
 
-impl PeerPublicationMut<'_> {
-    /// Compact `record`'s sealed history as the key holder of its channel
-    /// and supersede it here, returning the compaction to publish.
+impl PeerPublication<'_> {
+    /// Draft the compaction of `record`'s sealed history as the key holder of
+    /// its channel, for `author` to sign and
+    /// [`PeerPublicationMut::admit_sealed_compaction`] to admit.
     ///
     /// `open` opens any write of the history, under any epoch whose key is
     /// held, and a previous compaction through
     /// [`collab_types::sealed_ciphertext`]. Every write is opened, decoded
     /// and merged over the record's cleartext base into one document; one
     /// that does not open, decode or merge completely aborts the whole
-    /// compaction. `seal` seals that document's snapshot under the channel's
-    /// current epoch with [`ContentRetention::Checkpoint`] retention. The
-    /// compaction is signed by `key` and admitted here through the same
-    /// checks every keyless replica applies, so `key` must be a device the
-    /// record admits as a writer of it (or the workspace's governor, compacting
-    /// by its `compact` governance action).
-    pub fn compact_sealed_history(
-        self,
-        app: &str,
-        record: &str,
-        open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
-        seal: &mut SealCheckpoint<'_>,
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<NeighbourMsg, String> {
-        let route = Route {
-            app: app.into(),
-            record: record.into(),
-        };
-        let document = self
-            .peer
-            .core
-            .documents
-            .get(&route)
-            .ok_or("sealed compaction of a record this state does not hold")?;
-        let merged = merge_sealed(document, open)?;
-        self.compact_sealed_history_into(app, record, merged, open, seal, key, now)
-    }
-
-    /// [`Self::compact_sealed_history`] into `rebuilt`, the record as its
-    /// key holder rebuilt it from a history that does not merge whole: one
-    /// writer wrote a sequence twice, so no merge holds both changes, and the
-    /// operator repairing the record carried what the change left out wrote
-    /// into `rebuilt`. The compaction replaces exactly the writes it covers,
-    /// as any compaction does; a replica without the key admits it the same
-    /// way. Nothing checks that `rebuilt` holds what the writes did: that is
-    /// the repair's to answer for.
+    /// compaction. `rebuilt` replaces that document when the record's key
+    /// holder rebuilt it from a history that does not merge whole: one writer
+    /// wrote a sequence twice, so no merge holds both changes, and the operator
+    /// repairing the record carried what the change left out wrote into it.
+    /// Nothing checks that `rebuilt` holds what the writes did: that is the
+    /// repair's to answer for. `seal` seals the document's snapshot under the
+    /// channel's current epoch with [`ContentRetention::Checkpoint`] retention.
+    /// The compaction replaces exactly the writes it covers, and its admission
+    /// applies the checks every keyless replica applies, so `author` must be a
+    /// device the record admits as a writer of it (or the workspace's governor,
+    /// compacting by its `compact` governance action).
     ///
     /// # Errors
     ///
-    /// As [`Self::compact_sealed_history`], or `rebuilt` does not load.
-    pub fn compact_sealed_history_into(
+    /// The history does not merge, `rebuilt` does not load, or the seal is not
+    /// a checkpoint of the record's channel that opens to the document.
+    pub fn draft_sealed_compaction(
         self,
-        app: &str,
-        record: &str,
-        rebuilt: Vec<u8>,
+        (app, record): (&str, &str),
+        rebuilt: Option<Vec<u8>>,
         open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
         seal: &mut SealCheckpoint<'_>,
-        key: &SigningKey,
+        author: [u8; 32],
         now: SystemTime,
-    ) -> Result<NeighbourMsg, String> {
-        AutoCommit::load(&rebuilt).map_err(err)?;
+    ) -> Result<SignedOp, String> {
         let route = Route {
             app: app.into(),
             record: record.into(),
@@ -91,6 +63,11 @@ impl PeerPublicationMut<'_> {
             .documents
             .get(&route)
             .ok_or("sealed compaction of a record this state does not hold")?;
+        let rebuilt = match rebuilt {
+            Some(rebuilt) => rebuilt,
+            None => merge_sealed(document, open)?,
+        };
+        AutoCommit::load(&rebuilt).map_err(err)?;
         if document.sealed.is_empty() {
             return Err("the record holds no sealed history to compact".into());
         }
@@ -106,7 +83,7 @@ impl PeerPublicationMut<'_> {
             .map_err(err)?
             .encode()
             .map_err(err)?;
-        let author = Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
+        let author = Ed25519PublicKey::from_bytes(author);
         let seq = document
             .channel
             .last_seq_per_author
@@ -115,7 +92,7 @@ impl PeerPublicationMut<'_> {
             .unwrap_or(0)
             .checked_add(1)
             .ok_or("sequence exhausted")?;
-        let mut op = SignedOp::new_unsigned_with_encryption(
+        let op = SignedOp::new_unsigned_with_encryption(
             payload,
             collab_types::document_artifact_id(app, &self.peer.core.workspace, record),
             author,
@@ -125,17 +102,35 @@ impl PeerPublicationMut<'_> {
             seq,
             metadata,
         );
-        collab_types::sign_op(&mut op, key).map_err(err)?;
         // Keyless replicas cannot tell an unreadable compaction from a good
         // one, so only one that opens to the merged record leaves here.
         if open(&op)? != snapshot {
             return Err("the sealed compaction does not open to the merged record".into());
         }
+        Ok(op)
+    }
+}
+
+impl PeerPublicationMut<'_> {
+    /// Admit `op`, a compaction of `record` drafted by
+    /// [`PeerPublication::draft_sealed_compaction`] and signed by its author,
+    /// superseding the history it covers here, and answer it as the message
+    /// to publish. On an error nothing changes.
+    pub fn admit_sealed_compaction(
+        self,
+        app: &str,
+        record: &str,
+        op: SignedOp,
+        now: SystemTime,
+    ) -> Result<NeighbourMsg, String> {
+        if op.kind != OpKind::Compaction {
+            return Err("a sealed compaction is a compaction write".into());
+        }
         let mut candidate = self.peer.clone();
         candidate.admit_new_local_document(app, record, op.clone(), now)?;
         *self.peer = candidate;
         Ok(NeighbourMsg::AppDocument {
-            peer: peer_handle(author.as_bytes()),
+            peer: peer_handle(op.author.as_bytes()),
             app_id: app.into(),
             cluster_id: self.peer.core.workspace.clone(),
             record_id: record.into(),
@@ -564,8 +559,8 @@ impl PeerPublicationMut<'_> {
         app: &str,
         record: &str,
         changes: Vec<u8>,
-        seal: &mut SealDelta<'_>,
-        key: &SigningKey,
+        seal: &mut SealCheckpoint<'_>,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<NeighbourMsg, String> {
         self.publish_sealed(
@@ -598,7 +593,7 @@ impl PeerPublicationMut<'_> {
         record: &str,
         document: Vec<u8>,
         seal: &mut SealCheckpoint<'_>,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<NeighbourMsg, String> {
         self.publish_sealed(
@@ -617,7 +612,7 @@ impl PeerPublicationMut<'_> {
         record: &str,
         mutation: &DocumentMutation,
         seal: &mut SealCheckpoint<'_>,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<NeighbourMsg, String> {
         let plaintext = mutation.encode().map_err(err)?;
@@ -625,7 +620,7 @@ impl PeerPublicationMut<'_> {
             (app, record),
             &plaintext,
             Some(seal),
-            key.verifying_key().to_bytes(),
+            key.device_public_key(),
             0,
             now,
         )?;
@@ -660,8 +655,8 @@ impl PeerPublicationMut<'_> {
         delegate: &SigningKey,
         (app, record): (&str, &str),
         changes: Vec<u8>,
-        seal: &mut SealDelta<'_>,
-        key: &SigningKey,
+        seal: &mut SealCheckpoint<'_>,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<NeighbourMsg, String> {
         let author = delegate.verifying_key().to_bytes();

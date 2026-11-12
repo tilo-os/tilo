@@ -10,8 +10,9 @@
 //! suite can arrive under a versioned handshake.
 //!
 //! `openmls::group::MlsGroup` is parameterised over an `OpenMlsProvider`
-//! (storage + crypto). Each `ChannelGroup` owns its own
-//! [`OpenMlsRustCrypto`] instance so groups are isolated — leaking
+//! (storage + crypto). Each `ChannelGroup` owns its own provider
+//! ([`crate::welcome::Provider`]: openmls's Rust crypto and memory storage)
+//! so groups are isolated — leaking
 //! storage between groups would be a bug. Signature keypairs live in the
 //! provider's storage, looked up by public-key bytes when openmls signs
 //! a commit; [`MemberKey`] owns the provider and ensures every stored
@@ -19,7 +20,6 @@
 
 use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
-use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_traits::OpenMlsProvider;
 
 use crate::errors::{Error, Result};
@@ -49,7 +49,7 @@ pub struct MemberKey {
     pub(crate) signer: SignatureKeyPair,
     /// Storage + crypto backend, owning all secret state derived from this
     /// member's participation in any group built from this `MemberKey`.
-    pub(crate) provider: OpenMlsRustCrypto,
+    pub(crate) provider: crate::welcome::Provider,
 }
 
 impl MemberKey {
@@ -63,7 +63,7 @@ impl MemberKey {
     /// keypair fails, or [`Error::Storage`] if persisting its secret half
     /// into the provider's storage fails.
     pub fn generate(name: impl AsRef<[u8]>) -> Result<Self> {
-        let provider = OpenMlsRustCrypto::default();
+        let provider = crate::welcome::Provider::default();
         let signer = SignatureKeyPair::new(SignatureScheme::ED25519).map_err(Error::openmls)?;
         // Persist the signer's secret half in the provider's storage —
         // without this, `KeyPackage::builder().build(...)` can't mint a key

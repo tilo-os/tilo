@@ -190,9 +190,12 @@ pub struct CanvasSurface {
     finding: Rc<Cell<bool>>,
     /// What a click is reading off a picture of the artwork.
     sampling: Option<Sampling>,
-    /// What that reading came to, when it is a write: applied by the frame's
-    /// settle, never by its paint.
-    read: Option<Invoke<Artwork>>,
+    /// What this frame writes, taken up between frames (a click's reading, a
+    /// chooser's picture, a view's answer): applied by the frame's
+    /// [`settle`](Widget::settle), never by its paint, so a write lands
+    /// before the frame reads the document again and never after the frame
+    /// decided it was quiet.
+    writes: Vec<Invoke<Artwork>>,
     /// Views whose pictures the frame loop is rendering, answered once
     /// they came.
     due: Vec<views::Due>,
@@ -269,7 +272,7 @@ impl CanvasSurface {
             pictures: crate::background::Pictures::default(),
             finding: Rc::default(),
             sampling: None,
-            read: None,
+            writes: Vec::new(),
             due: Vec::new(),
             tools,
             tool,
@@ -513,14 +516,20 @@ impl CanvasSurface {
 
     /// A picture the chooser answered with: the artwork, when the sheet is
     /// empty; else placed on it, fitted inside and selected.
-    fn take_picked(&mut self) {
+    ///
+    /// What it answers with is a write, so it is not made here: the frame
+    /// that takes the answer up writes it in its [`settle`](Widget::settle)
+    /// pass, so the picture reaches the artwork in the frame it arrived in.
+    /// Answers whether it took an answer up, so the frame that did syncs and
+    /// shows it.
+    fn take_picked(&mut self) -> bool {
         let answer = {
             let picking = self.tools.picking.borrow();
             let Some(channel) = picking.as_ref() else {
-                return;
+                return false;
             };
             match channel.try_recv() {
-                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Err(std::sync::mpsc::TryRecvError::Empty) => return false,
                 Ok(answer) => Some(answer),
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
             }
@@ -536,28 +545,35 @@ impl CanvasSurface {
         };
         let files = match answer {
             Some(ui::portal::ContentsOutcome::Picked(files)) => files,
-            Some(ui::portal::ContentsOutcome::Cancelled) => return,
-            Some(ui::portal::ContentsOutcome::Failed(why)) => return said(why),
-            None => return said(crate::locales::CATALOG.t("canvas-chooser-gone")),
+            Some(ui::portal::ContentsOutcome::Cancelled) => return true,
+            Some(ui::portal::ContentsOutcome::Failed(why)) => {
+                said(why);
+                return true;
+            }
+            None => {
+                said(crate::locales::CATALOG.t("canvas-chooser-gone"));
+                return true;
+            }
         };
         let Some(file) = files.into_iter().next() else {
-            return;
+            return true;
         };
         if self.art.marks.is_empty() {
             match crate::resource::open_picture(&file.name, &file.bytes) {
                 Ok(open) => {
-                    self.dispatch(&open);
+                    self.writes.push(open);
                     self.select_made(vec!["picture".into()]);
                     self.tools.tool.set(Tool::Select);
                 }
                 Err(error) => said(error),
             }
-            return;
+            return true;
         }
         match crate::resource::keep_picture_bytes(&file.name, &file.bytes) {
             Ok((src, size)) => self.place_picture(src, size),
             Err(error) => said(error),
         }
+        true
     }
 
     /// The picture at `src` placed on the artwork: as large as fits inside
@@ -579,7 +595,7 @@ impl CanvasSurface {
         };
         let id = edit::fresh_id(&self.art, "picture", &[]);
         let ink = self.ink();
-        self.dispatch(&Artwork::DRAW.with(Draw {
+        self.writes.push(Artwork::DRAW.with(Draw {
             layer: ink.layer,
             marks: vec![NewMark {
                 id: Some(id.clone()),
@@ -822,7 +838,7 @@ impl CanvasSurface {
             Some(area::found(&found, mode))
         };
         if let Some(action) = action {
-            self.read = Some(action);
+            self.writes.push(action);
         }
         true
     }
@@ -3065,11 +3081,8 @@ impl Widget for CanvasSurface {
     ) {
         self.advance_zoom();
         self.follow_tool();
-        self.follow_keys();
         self.follow_view();
         self.follow_crop();
-        self.take_picked();
-        self.take_due();
         scene.push_layer(
             Fill::NonZero,
             ui::vello::peniko::BlendMode::default(),
@@ -3292,7 +3305,7 @@ impl Widget for CanvasSurface {
             // A click waits for the picture it reads before it writes what
             // it finds.
             || self.sampling.is_some()
-            || self.read.is_some()
+            || !self.writes.is_empty()
             || renderer.pictures.decoding()
             || renderer.detail_pending()
             || renderer.settling()
@@ -3309,7 +3322,7 @@ impl Widget for CanvasSurface {
             || self.tools.picking.borrow().is_some()
             || self.sampling.is_some()
             // A reading is owed the write its frame makes.
-            || self.read.is_some()
+            || !self.writes.is_empty()
             || !self.due.is_empty()
             || self.finding.get()
             || self.tools.renderer.borrow().pictures.decoding()
@@ -3358,35 +3371,42 @@ impl Widget for CanvasSurface {
         })
     }
 
-    /// Between frames: take up a click's reading once the picture it reads
-    /// came. The frame that does syncs and writes it, so the person sees the
-    /// colour or the area in the frame the picture became available in, never
-    /// a reading of a picture that was not there yet.
+    /// Between frames: take up what a surface answered since the last one — a
+    /// click's reading, a chooser's picture, a view's answer. The frame that
+    /// does syncs and writes it, so the reading, the picture or the area
+    /// reaches the artwork in the frame it arrived in, never a frame after it
+    /// and never after the frame decided to rest.
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // A reading taken up here, or one the click already had because the
         // thread could wait for its picture, is this frame's to write.
-        let taken = self.take_sampled();
-        taken || self.read.is_some()
+        let sampled = self.take_sampled();
+        let picked = self.take_picked();
+        let answered = self.take_due();
+        // Keys a menu or a panel pressed for the person, and what a press
+        // picked from under it: the frame's sync carries them out.
+        let waiting = self.tools.waiting();
+        !self.writes.is_empty() || sampled || picked || answered || waiting
     }
 
     /// Write what the frame's update took up, through the one door every
     /// canvas edit goes through, before this frame reads the document again:
-    /// what a click read and what it writes reach the artwork in one frame.
+    /// what the person's click, chooser or view answered with reaches the
+    /// artwork in one frame.
     fn settle(&mut self, edits: &mut Edits<'_>, _path: &ui::automerge::ObjId) {
-        let Some(action) = self.read.take() else {
-            return;
-        };
-        if self.read_only {
+        let writes = std::mem::take(&mut self.writes);
+        if writes.is_empty() || self.read_only {
             return;
         }
         let Some(dispatcher) = &self.dispatcher else {
             return;
         };
-        if let Err(refused) = dispatcher.submit_now(edits, action) {
-            self.tools.notice.set(Some(CATALOG.t_args(
-                "canvas-write-refused",
-                &[("why", refused.to_string().into())],
-            )));
+        for action in writes {
+            if let Err(refused) = dispatcher.submit_now(edits, action) {
+                self.tools.notice.set(Some(CATALOG.t_args(
+                    "canvas-write-refused",
+                    &[("why", refused.to_string().into())],
+                )));
+            }
         }
     }
 

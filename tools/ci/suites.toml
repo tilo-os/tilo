@@ -920,6 +920,16 @@ inputs = ["crates/agent/provider-config/tests/fixtures/openrouter-models.json"]
 readers = ["crates/sdk/provider-settings-ui/src/app_tests.rs"]
 
 [[cargo]]
+package = "agent"
+# The web tools' tests serve the engine answers the search library records, so
+# a changed fixture reruns them.
+inputs = ["crates/platform/tilo-web-search/tests/fixtures/"]
+readers = [
+  "apps/agent/src/tools/web.rs",
+  "apps/agent/src/session/agent_loop/tests/web.rs",
+]
+
+[[cargo]]
 package = "mail"
 # The engine test mirrors the end mark the mail writes.
 inputs = ["apps/browser/chromium/tests/resize_frames.py"]
@@ -1545,9 +1555,17 @@ scope = { inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrom
 
 [[cargo]]
 package = "tilo-desktop-surface"
-# The page the peer page test's engine shows: a snapshot the paint stream's own tests keep.
-inputs = ["crates/browser/paint-stream/tests/fixtures/layers.top.json"]
-readers = ["crates/session/desktop-surface/tests/peer_page.rs"]
+# The page the peer page test's engine shows: a snapshot the paint stream's own tests keep. The
+# search test opens every app the web page offers, taking its list from the page's shipped
+# catalogue.
+inputs = [
+  "crates/browser/paint-stream/tests/fixtures/layers.top.json",
+  "crates/browser/tilo-web-desktop/apps.json",
+]
+readers = [
+  "crates/session/desktop-surface/tests/peer_page.rs",
+  "crates/session/desktop-surface/tests/every_web_app_opens_from_search.rs",
+]
 
 [[cargo]]
 package = "ui-examples"
@@ -1650,6 +1668,10 @@ reason = "a newcomer's tour kept as pictures for a person to review, judging not
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-page-two-people.sh"
 reason = "needs the built web desktop bundle, headless Chromium and the built relay and crypto programs, in two browsers at once; the page-two-people check runs it in its image"
+
+[[unrequired]]
+suite = "os/containers/tilo-lounge/test-page-share-link.sh"
+reason = "needs the built web desktop bundle, headless Chromium and the built relay and crypto programs, in three browsers at once; the page-share-link check runs it in its image"
 
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-image.sh"

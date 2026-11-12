@@ -456,6 +456,7 @@ impl DropZone {
 impl SurfaceHost for DropZone {
     fn layers(&self) -> Vec<HostLayer> {
         vec![HostLayer {
+            pose: tilo_session_core::surface::LayerPose::SETTLED,
             location: (500, 20),
             size: (100, 100),
             frame: HostFrame::from_pixels((100, 100), self.pixels.clone()),

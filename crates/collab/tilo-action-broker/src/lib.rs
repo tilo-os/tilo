@@ -52,6 +52,10 @@ impl tilo_identity_host::broker::PersonRecordKinds for SurfacePersonRecords {
     fn person_record_kinds(&self, app_id: &str) -> Vec<String> {
         ui::app_surface::person_record_kinds(app_id)
     }
+
+    fn reads_records_of(&self, reader: &str, owner: &str) -> bool {
+        ui::app_surface::reads_app(reader, owner)
+    }
 }
 
 /// Run the signed package `app_id` with `surface`, the `surface.toml` it

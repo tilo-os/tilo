@@ -34,7 +34,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use automerge::ChangeHash;
-use tilolang_tilo::index::{Index, Opened, file_of};
+use tilolang_tilo::index::{Held, Index, Opened, file_of};
 
 const APP: &str = "so.tilo.bench";
 const SCHEMA: &str = "bench/1";
@@ -57,7 +57,7 @@ fn head(index: usize) -> ChangeHash {
     ChangeHash::try_from(&bytes[..]).expect("a change hash")
 }
 
-fn open(path: &Path) -> Index {
+fn open(path: &Path) -> Held {
     match Index::open(path, APP, SCHEMA).expect("an index") {
         Opened::Ready(index, _) | Opened::Empty(index) => index,
     }

@@ -47,6 +47,8 @@
 //             the agent's device key, the throwaway HOMEs (default:
 //             $CARGO_TARGET_DIR/agent-shell-work, which is not fetched)
 //   --build   cargo build the relay and the CLI, and build the bundle
+//   --record-scale  the device scale the follow is recorded at (default 1; 2, the shots' own,
+//             on a machine with a GPU)
 // Needs Chrome (CHROME, or Playwright's cache), node, and openssl. The
 // recording is Chrome's screencast, encoded by ffmpeg where it is installed
 // and otherwise by the browser itself, so no video tool has to be installed.
@@ -99,6 +101,11 @@ for (const dir of [shotsDir, videoDir, browserDir]) mkdirSync(dir, {recursive: t
 const widths = option('--widths', '1280,390').split(',').map(Number).filter(Boolean);
 const themes = option('--themes', 'light,dark').split(',').filter(Boolean);
 const withVideo = !flag('--no-video');
+// The scale the follow is recorded at: 1 by default, for a machine that draws in software; a
+// machine with a GPU records at the shots' own 2 (`--record-scale 2`), with no change of scale.
+// A change of the emulated scale alone (2 to 1, the CSS size kept) left the page laid out at its
+// old pixel width read as CSS pixels: a phone's recording came out in a laptop's layout.
+const recordScale = Number(option('--record-scale', '1'));
 
 const t0 = Date.now();
 const logLines = [];
@@ -290,6 +297,36 @@ async function afterFrames(tab, frames = 1, ms = 30000) {
   const first = await presentedFrames(tab);
   if (first === null) { await sleep(400); return; }
   await until(async () => ((await presentedFrames(tab)) ?? first) - first >= frames || undefined, ms, 150);
+}
+/** Shoot `name` once two screenshots in a row are the same while `up()` still holds: what moves
+ * on the clock is at rest then. Something else on the page may keep changing (a frame for another
+ * part of the desk), so by `settledMs` the screenshot then is kept, as the notice stands at rest
+ * long before it starts to leave; the last one taken before it left would be on its way out. */
+async function restingShot(tab, combo, name, up, ms = 15000, settledMs = 2000) {
+  const began = Date.now();
+  let previous = null;
+  let kept = null;
+  while (Date.now() - began < ms) {
+    const png = await tab.screenshot();
+    if (!(await up())) break;
+    if (png) {
+      if (previous && png.equals(previous)) {
+        writeFileSync(join(shotsDir, `${combo}-${name}.png`), png);
+        log(`${combo}: shot ${name} at rest, ${Date.now() - began} ms in`);
+        return;
+      }
+      if (Date.now() - began >= settledMs) {
+        writeFileSync(join(shotsDir, `${combo}-${name}.png`), png);
+        log(`${combo}: shot ${name} ${Date.now() - began} ms in, with the page still changing around it`);
+        return;
+      }
+      kept = png;
+      previous = png;
+    }
+    await sleep(300);
+  }
+  if (kept) writeFileSync(join(shotsDir, `${combo}-${name}.png`), kept);
+  log(`${combo}: shot ${name} never at rest while it stood; kept the last screenshot it stood in`);
 }
 /** A port nothing holds, and no other of this run's: a port is free again the
  * moment it is closed, so asking twice can answer with the same one. */
@@ -1817,11 +1854,15 @@ try {
         await pacing(0, recordFrom);
         const scaled = scale => tab.send('Emulation.setDeviceMetricsOverride',
           {width, height, deviceScaleFactor: scale, mobile});
-        await scaled(1);
-        await sleep(1500);
+        if (recordScale !== 2) {
+          await scaled(recordScale);
+          await sleep(1500);
+        }
         const video = await record(browser, tab, combo, {width, height}, () => pacing(recordFrom, steps.length));
-        await scaled(2);
-        await sleep(1500);
+        if (recordScale !== 2) {
+          await scaled(2);
+          await sleep(1500);
+        }
         // The shots are of the agent working: an action it could not do is
         // the run's failure, not a note about the product.
         for (const step of steps) {
@@ -1993,11 +2034,22 @@ try {
           finalLeft ? 'gone' : `still listed 30 s after, by ${await stillSays()}: ${names(await semantics(tab))}`);
         const finishedNotice = node => /claude code finished/i.test(`${node.name} ${node.description ?? ''}`);
         const finished = await until(async () => (await semantics(tab))
-          .find(node => /claude code finished: \d+ changes?/i.test(`${node.name} ${node.description ?? ''}`)), 150000, 1000);
+          .find(node => /claude code finished: \d+ changes?/i.test(`${node.name} ${node.description ?? ''}`)), 150000, 250);
         if (!finished) log(`${combo}: the finished notice`, (await semantics(tab)).filter(finishedNotice).map(node => node.name).join(' | ') || 'none');
         check(`${combo}: the person is told what the agent changed once it stops`, Boolean(finished),
           finished ? finished.name : names(await semantics(tab)));
-        await shot(tab, combo, 'agent-finished');
+        // The notice slides in on the clock and stands a few seconds before it fades out, and the
+        // builder draws a frame in seconds: it is shot once two screenshots in a row are the same
+        // while it is still up, which is the notice at rest, neither part way in nor on its way out.
+        // Taken as it is: closing what covers the desk first would close the notice too.
+        // A person reading it rests the pointer on it, which holds it where it stands (a held
+        // banner does not age): the builder takes seconds per screenshot, longer than the notice
+        // stands untouched.
+        if (finished?.rect) {
+          const x = (finished.rect.x0 + finished.rect.x1) / 2, y = (finished.rect.y0 + finished.rect.y1) / 2;
+          for (const dx of [0, 1, 0]) await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x: x + dx, y});
+        }
+        await restingShot(tab, combo, 'agent-finished', async () => (await semantics(tab)).some(finishedNotice));
 
         const exceptions = tab.log.filter(line => line.startsWith('EXC') || /panic/i.test(line));
         check(`${combo}: no exceptions in the page`, exceptions.length === 0, exceptions.join(' | '));

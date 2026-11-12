@@ -1,21 +1,14 @@
 //! Same-barrier native outgoing custody; relay queue acceptance is never an ACK.
+use crate::StatePeer;
 use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, enrollment, record};
 use crate::owner_commit::{CommitBinding, CommitOperation, OwnerCommitRequest};
-use crate::{Reseal, StatePeer};
+use collab_types::signer::DeviceSigner;
 use collab_types::{EncryptionMetadata, OpKind, SignedOp};
-use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use neighbour_wire::Retention;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use web_time::SystemTime;
-
-/// A key holder sealing a record's merged history — `seal(app, record,
-/// snapshot)` — under that record's channel's current epoch, with checkpoint
-/// retention: what a device folding the sealed history it holds publishes in
-/// its place.
-pub type SealRecord<'a> =
-    dyn FnMut(&str, &str, &[u8]) -> Result<(EncryptionMetadata, Vec<u8>), String> + 'a;
 
 pub(crate) const MAX_ENTRIES: usize = 64;
 /// What a commit is refused with while this device's custody holds as many writes as it
@@ -1097,45 +1090,57 @@ impl NativeWorkspaceOwner {
     /// device's own count, and two of them stamping the same receipts would
     /// leave every member with a receipt no other member can merge.
     ///
+    /// The snapshots are signed by `signer`, this device's custody of its key,
+    /// outside the owner's turn.
+    ///
     /// # Errors
-    /// The workspace is not held here, `key` is not this device's, or the
-    /// commit failed.
+    /// The workspace is not held here, `signer` is not this device's, signing
+    /// failed, or the commit failed.
     pub fn commit_bootstrap(
         &self,
         workspace: WorkspaceId,
-        key: &SigningKey,
+        signer: &dyn collab_types::signer::DeviceSigner,
         now: SystemTime,
     ) -> Result<Vec<NeighbourMsg>, String> {
-        let _turn = self.0.mutation.lock();
-        let candidate = self.view(workspace)?;
-        if key.verifying_key().to_bytes() != candidate.device().device_public_key {
-            return Err("native bootstrap signer differs from selected device".into());
-        }
-        // A device that does not host the workspace and holds no record in the
-        // clear signs nothing for a catch-up and takes no number: there is
-        // nothing to make durable, and a link costs no write of its record.
-        if !candidate.record.hosted_here() {
-            let mut live = candidate.live();
-            if !live.holds_clear_records() {
-                return live.publication_mut().bootstrap_messages(key, now);
+        crate::owner::write::signed_turn(signer, |signed| {
+            let _turn = self.0.mutation.lock();
+            let candidate = self.view(workspace)?;
+            if signed.device_public_key() != candidate.device().device_public_key {
+                return Err("native bootstrap signer differs from selected device".into());
             }
-        }
-        let (messages, stored) = candidate.change(|live, stored| {
-            let generation = stored
-                .generation
-                .checked_add(1)
-                .ok_or("native owner generation exhausted")?;
-            let messages = if stored.hosted_here() {
-                live.publication_mut()
-                    .durable_bootstrap_messages(key, now, generation)?
-            } else {
-                live.publication_mut().bootstrap_messages(key, now)?
-            };
-            stored.generation = generation;
+            // A device that does not host the workspace and holds no record in the
+            // clear signs nothing for a catch-up and takes no number: there is
+            // nothing to make durable, and a link costs no write of its record.
+            if !candidate.record.hosted_here() {
+                let mut live = candidate.live();
+                if !live.holds_clear_records() {
+                    let mut next = live.clone();
+                    let messages = next.publication_mut().bootstrap_messages(signed, now)?;
+                    signed.settled()?;
+                    *live = next;
+                    drop(live);
+                    return Ok(messages);
+                }
+                drop(live);
+            }
+            let (messages, stored) = candidate.change(|live, stored| {
+                let generation = stored
+                    .generation
+                    .checked_add(1)
+                    .ok_or("native owner generation exhausted")?;
+                let messages = if stored.hosted_here() {
+                    live.publication_mut()
+                        .durable_bootstrap_messages(signed, now, generation)?
+                } else {
+                    live.publication_mut().bootstrap_messages(signed, now)?
+                };
+                signed.settled()?;
+                stored.generation = generation;
+                Ok(messages)
+            })?;
+            self.publish_record(workspace, &candidate, stored, None)?;
             Ok(messages)
-        })?;
-        self.publish_record(workspace, &candidate, stored, None)?;
-        Ok(messages)
+        })
     }
     /// Retire every retained frame the workspace has refused or a durable
     /// receipt names, and commit the retirement.
@@ -1255,69 +1260,54 @@ impl NativeWorkspaceOwner {
     }
     /// Renew this device's sealed writes that expired in custody before the
     /// governor retired them, through `reseal`, the channels' key holder
-    /// (see [`PeerOutboxMut::renew_local_sealed`](crate::PeerOutboxMut::renew_local_sealed)). Each renewal replaces its
-    /// original in one durable commit and moves behind every other entry,
-    /// so an author's writes still send in sequence order. A write `reseal`
-    /// refuses stays exactly as it was.
+    /// (see [`PeerOutbox::draft_sealed_renewals`](crate::PeerOutbox::draft_sealed_renewals)).
+    /// Each renewal replaces its original in one durable commit and moves behind every other
+    /// entry, so an author's writes still send in sequence order. A write `reseal` refuses stays
+    /// exactly as it was.
     ///
     /// # Errors
-    /// `key` is not the enrolled device, it may no longer write, the workspace is
-    /// fenced or the renewals cannot be committed.
-    pub fn renew_outgoing(
+    /// As [`Self::sign_and_commit`].
+    pub async fn renew_outgoing(
         &self,
         workspace: WorkspaceId,
-        key: &SigningKey,
-        reseal: &mut Reseal<'_>,
+        signer: &dyn collab_types::signer::DeviceSigner,
+        mut reseal: impl FnMut(&SignedOp) -> Result<(EncryptionMetadata, Vec<u8>), String>,
         now: SystemTime,
     ) -> Result<(), String> {
-        let _turn = self.0.mutation.lock();
-        let candidate = self.view(workspace)?;
-        if key.verifying_key().to_bytes() != candidate.device().device_public_key {
-            return Err("native outgoing signer differs from selected device".into());
-        }
-        candidate
-            .peer
-            .permissions(candidate.device().device_public_key, now)
-            .map_err(|error| error.to_string())?;
-        let (renewed, mut record) = candidate.change(|live, record| {
-            let mut renewed = false;
-            for entry in state_of(record)?.entries.clone() {
-                let original: NeighbourMsg =
-                    postcard::from_bytes(&entry.bytes).map_err(|e| e.to_string())?;
-                let renewal = match live
-                    .outbox_mut()
-                    .renew_local_sealed(&original, reseal, key, now)
-                {
-                    Ok(Some(renewal)) => renewal,
-                    Ok(None) => continue,
-                    Err(error) => {
-                        // The write stays valid only until its own expiry: a
-                        // person whose change does not reach the workspace needs
-                        // this in the journal, not below what the journal keeps.
-                        tracing::warn!(%error, "sealed write stays unrenewed in custody");
-                        continue;
-                    }
-                };
-                record
-                    .publication
-                    .as_mut()
-                    .ok_or("publication absent")?
-                    .entries
-                    .retain(|kept| kept.id != entry.id);
-                append(record, encode(&renewal, MAX_BYTES)?)?;
-                renewed = true;
-            }
-            Ok(renewed)
-        })?;
-        if !renewed {
-            return Ok(());
-        }
-        record.generation = record
-            .generation
-            .checked_add(1)
-            .ok_or("native owner generation exhausted")?;
-        self.publish_record(workspace, &candidate, record, None)
+        let draft = |view: &NativeCommittedView| {
+            let entries = &state_of(&view.record)?.entries;
+            let originals = entries
+                .iter()
+                .map(|entry| postcard::from_bytes(&entry.bytes).map_err(|e| e.to_string()))
+                .collect::<Result<Vec<NeighbourMsg>, String>>()?;
+            let device = view.device().device_public_key;
+            let drafts =
+                view.peer
+                    .outbox()
+                    .draft_sealed_renewals(&originals, &mut reseal, device, now);
+            Ok(entries
+                .iter()
+                .zip(originals)
+                .zip(drafts)
+                .filter_map(|((entry, original), draft)| {
+                    // The write stays valid only until its own expiry: a person whose change
+                    // does not reach the workspace needs this in the journal.
+                    let renewal = draft
+                        .inspect_err(|error| tracing::warn!(%error, "sealed write stays unrenewed"))
+                        .ok()??;
+                    Some((Some(entry.id), original, renewal))
+                })
+                .collect())
+        };
+        let admit = |live: &mut StatePeer, original: NeighbourMsg, renewal| {
+            live.outbox_mut()
+                .admit_sealed_renewal(&original, renewal, now)
+        };
+        self.sign_and_commit(workspace, signer, now, draft, admit)
+            .await
+            .map(drop)
     }
+
     /// Compact every sealed record history of `workspace` that has used most of
     /// its bound into one sealed checkpoint, and commit the compactions
     /// into this device's outgoing custody, where they publish as the
@@ -1325,22 +1315,21 @@ impl NativeWorkspaceOwner {
     /// device can read, and `seal` seals a record's merged snapshot under
     /// its channel's current epoch, both from the channel keys this device
     /// holds as a writer of the record
-    /// ([`PeerPublicationMut::compact_sealed_history`]). A record whose
-    /// keys are not here, or whose history does not merge yet, waits for a
-    /// later call.
+    /// ([`PeerPublication::draft_sealed_compaction`](crate::PeerPublication::draft_sealed_compaction)).
+    /// A record whose keys are not here, or whose history does not merge yet, waits for a later
+    /// call.
     ///
     /// Answers how many histories were compacted. Every device taking part
     /// maintains its own copy this way; no host compacts for it.
     ///
     /// # Errors
-    /// `key` is not the enrolled device, it may no longer write, the workspace
-    /// is fenced, or a compaction cannot be committed.
-    pub fn compact_outgoing(
+    /// As [`Self::sign_and_commit`].
+    pub async fn compact_outgoing(
         &self,
         workspace: WorkspaceId,
-        key: &SigningKey,
-        open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
-        seal: &mut SealRecord<'_>,
+        signer: &dyn collab_types::signer::DeviceSigner,
+        mut open: impl FnMut(&SignedOp) -> Result<Vec<u8>, String>,
+        mut seal: impl FnMut(&str, &str, &[u8]) -> Result<(EncryptionMetadata, Vec<u8>), String>,
         now: SystemTime,
     ) -> Result<usize, String> {
         if self.with_current(workspace, |view| {
@@ -1352,42 +1341,101 @@ impl NativeWorkspaceOwner {
         })? {
             return Ok(0);
         }
+        let draft = |view: &NativeCommittedView| {
+            let device = view.device().device_public_key;
+            let due = view.peer.publication().sealed_records_to_compact();
+            Ok(due
+                .into_iter()
+                .filter_map(|(app, record)| {
+                    let mut seal = |snapshot: &[u8]| seal(&app, &record, snapshot);
+                    let route = (app.as_str(), record.as_str());
+                    let drafted = view.peer.publication().draft_sealed_compaction(
+                        route, None, &mut open, &mut seal, device, now,
+                    );
+                    let op = drafted
+                        .inspect_err(|error| {
+                            tracing::warn!(%error, %app, %record, "sealed record history stays uncompacted");
+                        })
+                        .ok()?;
+                    Some((None, (app, record), op))
+                })
+                .collect())
+        };
+        let admit = |live: &mut StatePeer, (app, record): (String, String), op| {
+            live.publication_mut()
+                .admit_sealed_compaction(&app, &record, op, now)
+        };
+        self.sign_and_commit(workspace, signer, now, draft, admit)
+            .await
+    }
+
+    /// Draft writes of `workspace` in one owner turn, each with the custody entry it replaces,
+    /// sign each with `signer`, this device's custody of its key, outside it, and commit those
+    /// `admit` takes into the outgoing custody in one durable commit of a second turn. One write
+    /// of this device runs at a time, so a draft's sequence is still past its record's floor when
+    /// it is admitted. A write `admit` refuses, or one whose entry left custody meanwhile, stays
+    /// out. Answers how many writes were taken.
+    ///
+    /// # Errors
+    /// `signer` is not the enrolled device, it may no longer write, the workspace is fenced,
+    /// signing failed, or what was taken cannot be committed.
+    async fn sign_and_commit<T>(
+        &self,
+        workspace: WorkspaceId,
+        signer: &dyn collab_types::signer::DeviceSigner,
+        now: SystemTime,
+        draft: impl FnOnce(&NativeCommittedView) -> Result<Vec<(Option<[u8; 32]>, T, SignedOp)>, String>,
+        mut admit: impl FnMut(&mut StatePeer, T, SignedOp) -> Result<NeighbourMsg, String>,
+    ) -> Result<usize, String> {
+        let _writing = self.0.writes.lock().await;
+        let mut drafted = {
+            let _turn = self.0.mutation.lock();
+            let view = self.view(workspace)?;
+            let device = view.device().device_public_key;
+            if signer.device_public_key() != device {
+                return Err("native outgoing signer differs from selected device".into());
+            }
+            view.peer
+                .permissions(device, now)
+                .map_err(|error| error.to_string())?;
+            draft(&view)?
+        };
+        if drafted.is_empty() {
+            return Ok(0);
+        }
+        for (_, _, op) in &mut drafted {
+            crate::owner::write::sign(signer, op).await?;
+        }
         let _turn = self.0.mutation.lock();
         let candidate = self.view(workspace)?;
-        if key.verifying_key().to_bytes() != candidate.device().device_public_key {
-            return Err("native compaction signer differs from selected device".into());
-        }
-        candidate
-            .peer
-            .permissions(candidate.device().device_public_key, now)
-            .map_err(|error| error.to_string())?;
-        let (compacted, mut record) = candidate.change(|live, record| {
-            let due = live.publication().sealed_records_to_compact();
-            let mut compacted = 0usize;
-            for (app, record_id) in &due {
-                // Compacted on a copy: a history that cannot be committed as one
-                // custody entry stays where it is rather than folding here only.
+        let (taken, mut record) = candidate.change(|live, record| {
+            let mut taken = 0usize;
+            for (replaces, with, op) in drafted {
+                let entries = &mut record
+                    .publication
+                    .as_mut()
+                    .ok_or("publication absent")?
+                    .entries;
+                if replaces.is_some_and(|id| !entries.iter().any(|kept| kept.id == id)) {
+                    continue;
+                }
+                // Admitted on a copy: a write that cannot be committed as one custody entry
+                // leaves the replica as it was.
                 let mut attempt = live.clone();
-                let mut seal = |snapshot: &[u8]| seal(app, record_id, snapshot);
-                let made = attempt
-                    .publication_mut()
-                    .compact_sealed_history(app, record_id, open, &mut seal, key, now)
-                    .and_then(|message| encode(&message, MAX_BYTES));
-                match made {
+                match admit(&mut attempt, with, op).and_then(|message| encode(&message, MAX_BYTES))
+                {
                     Ok(bytes) => {
+                        entries.retain(|kept| Some(kept.id) != replaces);
                         *live = attempt;
                         append(record, bytes)?;
-                        compacted = compacted.saturating_add(1);
+                        taken = taken.saturating_add(1);
                     }
-                    Err(error) => {
-                        tracing::warn!(%error, %app, %record_id,
-                            "sealed record history stays uncompacted here");
-                    }
+                    Err(error) => tracing::warn!(%error, "an outgoing write stays as it was"),
                 }
             }
-            Ok(compacted)
+            Ok(taken)
         })?;
-        if compacted == 0 {
+        if taken == 0 {
             return Ok(0);
         }
         record.generation = record
@@ -1395,7 +1443,7 @@ impl NativeWorkspaceOwner {
             .checked_add(1)
             .ok_or("native owner generation exhausted")?;
         self.publish_record(workspace, &candidate, record, None)?;
-        Ok(compacted)
+        Ok(taken)
     }
 }
 #[cfg(test)]

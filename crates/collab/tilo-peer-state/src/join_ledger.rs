@@ -20,7 +20,6 @@ use std::ops::Deref;
 
 use web_time::SystemTime;
 
-use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
@@ -269,7 +268,7 @@ impl Governed<'_> {
 /// invitation unique.
 #[derive(Clone, Copy)]
 pub struct Signer<'a> {
-    pub key: &'a SigningKey,
+    pub key: &'a dyn collab_types::signer::DeviceSigner,
     pub nonce: [u8; 16],
 }
 
@@ -868,7 +867,7 @@ impl JoinLedger {
         &self,
         candidate: &mut StatePeer,
         joins: &[Redeeming<'_>],
-        key: &SigningKey,
+        key: &dyn collab_types::signer::DeviceSigner,
         now: u64,
     ) -> Vec<Option<JoinError>> {
         joins

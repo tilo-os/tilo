@@ -240,6 +240,7 @@ history-local-action-retry = Retry
 history-local-action-unrecorded = Your changes in this window are saved, but your history doesn't record them.
 
 history-sync-refused = This workspace didn't accept one change. Everything else keeps syncing; the change stays on this device.
+history-sync-unreadable = This record's shared copy couldn't be read here. Your own changes stay on this device and keep saving.
 history-sync-remote-waiting = Remote updates will apply when the current edit finishes.
 history-sync-owner-closed = Document owner closed or changed. Reconnect before synchronizing its replacement.
 

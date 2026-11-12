@@ -918,3 +918,139 @@ async fn workspaces_joined_at_once_each_answer_their_first_catalogue() {
         "{WORKED_AT_ONCE} answered at once: p50 {p50:?} but the slowest {max:?}, which is a queue"
     );
 }
+
+/// The Lounge given its history as the stack seeds it: a member's key posts
+/// into its chat through the door, one message at a time, each naming the
+/// chat's messages by path. Every post lands within the door's wait, the
+/// chat reads back the last of them, and the last posts cost about what the
+/// first did.
+///
+/// What a post cost once grew without bound: every request naming a part
+/// of the chat asked the workspace for the chain's head again (what the
+/// host sends for it arrives on the part's own route), waiting out the
+/// keys' wait each time until posts were left pending; the record a post
+/// changed was read whole again before the next request; and each page of
+/// the door's listing handed over everything the chat publishes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_members_key_posts_a_long_history_into_the_lounges_chat() {
+    const MESSAGES: usize = 60;
+    /// The posts compared at each end.
+    const EACH_END: usize = 10;
+    let on_relay = door_on_relay(ISSUER).await;
+    let door = Arc::clone(&on_relay.door);
+    let lobby = on_relay.lobby.clone();
+    // Its chat, as the operator seats it, with the channel posts go to.
+    let workspaces = on_relay.hosted.relay.workspaces().unwrap();
+    let serving = workspaces.serving_certificate().clone();
+    workspaces
+        .prepare_application(&lobby, &serving, &common::catalogue(), "so.tilo.chat", "")
+        .await
+        .unwrap();
+    workspaces
+        .author_application(
+            &lobby,
+            &serving,
+            &common::catalogue(),
+            "so.tilo.chat",
+            "",
+            |doc| {
+                chat::demo::apply_as(
+                    doc,
+                    "operator",
+                    chat::Chat::CREATE_CHANNEL_WITH_ID.with(
+                        chat::record::chat::CreateChannelWithId {
+                            id: "c_general".into(),
+                            name: "general".parse().expect("a channel name"),
+                            category: None,
+                            kind: None,
+                            topic: None,
+                            participants: None,
+                        },
+                    ),
+                )
+                .map_err(|error| error.to_string())
+            },
+        )
+        .await
+        .unwrap();
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+    let key = approved_key(&on_relay, &ada, &page, "Lounge history").await;
+    let mut lounge = Mcp {
+        door: &door,
+        path: format!("/w/{lobby}/mcp"),
+        token: key,
+        session: None,
+    };
+    let (status, init) = lounge.initialize().await;
+    assert_eq!(status, 200, "{init}");
+
+    let mut took: Vec<Duration> = Vec::with_capacity(MESSAGES);
+    for index in 0..MESSAGES {
+        // As long as what members write: a few lines to a few paragraphs.
+        let text = format!(
+            "#{index} {}",
+            "lounge history words ".repeat(20 + index * 37 % 120)
+        );
+        let began = Instant::now();
+        // Answered within the door's wait: a post left pending is one the
+        // agent posting the next waits on in vain.
+        let reply = lounge
+            .tilo_do(json!({"path": "chat/Messages#post",
+                            "args": {"channel": "c_general", "text": text}}))
+            .await;
+        assert_eq!(
+            reply["result"]["structuredContent"]["status"], "ok",
+            "post {index} landed: {}",
+            reply["result"]["structuredContent"]["error"]
+        );
+        took.push(began.elapsed());
+    }
+
+    // The chat holds every one of them, as its host keeps it.
+    let kept = workspaces
+        .record_history(&lobby, "so.tilo.chat", chat::parts::part(0).route())
+        .await
+        .unwrap()
+        .expect("the host keeps the chat's part");
+    let mut doc = automerge::AutoCommit::load(&kept.base).unwrap_or_default();
+    for write in kept.writes {
+        match write.mutation.expect("every write of the part opens") {
+            collab_types::DocumentMutation::Snapshot(bytes)
+            | collab_types::DocumentMutation::Incremental(bytes) => {
+                tilo_automerge::ApplyIncoming::load_incoming(&mut doc, &bytes).unwrap();
+            }
+        }
+    }
+    let held = chat::messages::read_part(&doc);
+    let texts: Vec<String> = held
+        .messages
+        .iter()
+        .map(|(_, message)| message.text.clone())
+        .collect();
+    for index in 0..MESSAGES {
+        let marker = format!("#{index} ");
+        assert!(
+            texts.iter().any(|text| text.starts_with(&marker)),
+            "post {index} is in the chat: {} messages held",
+            texts.len()
+        );
+    }
+
+    let mean = |posts: &[Duration]| {
+        let count = u32::try_from(posts.len()).unwrap();
+        (posts.iter().sum::<Duration>() / count).as_secs_f64() * 1000.0
+    };
+    let (first, last) = (mean(&took[..EACH_END]), mean(&took[MESSAGES - EACH_END..]));
+    println!(
+        "door chat post: {first:.0} ms on average over the first {EACH_END} posts, \
+         {last:.0} ms over the last {EACH_END} of {MESSAGES}"
+    );
+    // What a post still costs more grows with the part it is written to
+    // (merging it, checking what it writes, saving it), never with the
+    // door asking again or reading the chat whole.
+    assert!(
+        last <= first * 4.0 + 100.0,
+        "a post costs more as the chat grows: {first:.0} ms early, {last:.0} ms late"
+    );
+}
