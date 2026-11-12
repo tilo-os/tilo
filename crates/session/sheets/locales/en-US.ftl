@@ -598,6 +598,7 @@ invite-lasts = { $minutes } min left
 invite-for-anyone = For anyone with the link
 invite-for-person = For { $name }
 invite-for-someone = For a person this workspace knows
+invite-person-unnamed = Someone without a name yet
 invite-pending-title = Links that still work
 invite-pending-empty = No link is waiting to be used.
 invite-revoke = Take back

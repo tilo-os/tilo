@@ -100,6 +100,10 @@ pub(crate) enum HostRequest {
     /// the page's root signs the revocation and every session of theirs
     /// announces it (`onHostAction('revoke-device', {key, reason})`).
     Revoke(Revoking),
+    /// Fetch the profiles of these people (root keys, hex), who are not here to say their names:
+    /// the page hands each name back (`desktop_set_person_name`), an empty one for a profile that
+    /// keeps none, so the invite sheet names them as they chose.
+    Profiles(Vec<String>),
 }
 
 /// One key the person took back: an agent's grant at their door, or one of

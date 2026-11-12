@@ -16,7 +16,7 @@ use ui::prelude::*;
 use ui::tokens::Rhythm;
 use ui::widget::{
     Banner, Button, ButtonRole, Column, ControlSize, Element, ListRow, ModalDialog, QrWidget, Row,
-    Section, Segment, Spacer, Text, TextInput, ToggleGroup,
+    Section, Segment, Text, TextInput, ToggleGroup,
 };
 
 use crate::presentation::{Presentation, Seat, presented};
@@ -25,9 +25,10 @@ use crate::{word, words};
 /// The app the shell mounts the sheet as.
 pub const APP_ID: &str = "so.tilo.invite";
 
-/// The widest the code is drawn, quiet zone and all: room enough for squares
-/// a phone reads across a desk, and no wider than the sheet gives it.
-pub const CODE_MAX_PX: usize = 245;
+/// The widest the code is drawn, quiet zone and all: room enough for squares a
+/// phone held near the screen reads, and small enough that the link and its
+/// buttons, not the code, are what the sheet is about.
+pub const CODE_MAX_PX: usize = 144;
 
 /// The narrowest each module is drawn: an invitation's own bytes make a code
 /// so dense that its squares are counted rather than guessed at, and below
@@ -298,6 +299,13 @@ pub fn made(
     }
 }
 
+/// How the sheet names a person who chose no name: never by a piece of their key, which tells
+/// nobody who they are.
+#[must_use]
+pub fn unnamed_person() -> String {
+    word("invite-person-unnamed")
+}
+
 /// Who a link brings in, in the sheet's words: the part it brings them in at,
 /// and the person it names when it names one.
 #[must_use]
@@ -537,16 +545,15 @@ pub fn sheet(
         .with_intrinsic_height()
         .with_no_padding()
         .with_rhythm(Rhythm::Section);
-    if let Some(note) = &invite.note {
+    // In the order the person goes: who the link brings in and as what, the button that makes it,
+    // then the link it made with the buttons that copy it and take it back. What a press did is
+    // said under the press, not at the top of a sheet the person scrolled down.
+    body = body.push(composing(invite, choosing, ask));
+    if let Some(created) = &invite.created {
+        body = body.push(handover(created, link, ask, invite.note.as_ref()));
+    } else if let Some(note) = &invite.note {
         body = body.push(notice(note, ask));
     }
-    // The link last made stands first: it is what the person hands over, and
-    // the form that makes another one falls under it. The code is taller than
-    // a field, so anywhere but the top of the sheet it would open clipped.
-    if let Some(created) = &invite.created {
-        body = body.push(handover(created, link, ask));
-    }
-    body = body.push(composing(invite, choosing, ask));
     if invite.may_invite {
         body = body.push(pending_rows(invite, ask));
     }
@@ -623,7 +630,12 @@ fn composing(invite: &Invite, choosing: &LocalState<Choosing>, ask: &Ask) -> Ele
     items.push(Box::new(
         Row::new().with_rhythm(Rhythm::Related).push(Box::new(
             Button::new("invite-create", &invite.create)
-                .role(ButtonRole::Primary)
+                // Once a link is made, copying it is what comes next: making another is not.
+                .role(if invite.created.is_some() {
+                    ButtonRole::Secondary
+                } else {
+                    ButtonRole::Primary
+                })
                 .on_view(move || {
                     let at = picked_role.get().role.unwrap_or(default_role);
                     let role = role_keys.get(at).cloned().unwrap_or_default();
@@ -639,9 +651,15 @@ fn composing(invite: &Invite, choosing: &LocalState<Choosing>, ask: &Ask) -> Ele
     Box::new(Section::new(items))
 }
 
-/// The link last made, standing on its own: the thing the person hands over.
-fn handover(created: &Created, link: &LocalState<String>, ask: &Ask) -> Element {
-    Box::new(Section::new(handover_parts(created, link, ask)))
+/// The link last made, standing on its own: the thing the person hands over, and what the last
+/// press on it did.
+fn handover(
+    created: &Created,
+    link: &LocalState<String>,
+    ask: &Ask,
+    note: Option<&Note>,
+) -> Element {
+    Box::new(Section::new(handover_parts(created, link, ask, note)))
 }
 
 /// The parts on offer, the one the person may bring someone in at chosen.
@@ -693,9 +711,15 @@ fn whose(invite: &Invite, choosing: &LocalState<Choosing>, picked: &Choosing) ->
     )
 }
 
-/// The link last made: what it brings someone in at, how long it works, the
-/// code to scan and the button that copies the text.
-fn handover_parts(created: &Created, link: &LocalState<String>, ask: &Ask) -> Vec<Element> {
+/// The link last made: the text to hand over with the buttons that copy it and take it back,
+/// what it brings someone in at and how long it works, then the code to scan, small, for a phone
+/// beside the screen.
+fn handover_parts(
+    created: &Created,
+    link: &LocalState<String>,
+    ask: &Ask,
+    note: Option<&Note>,
+) -> Vec<Element> {
     if link.get() != created.link {
         link.set(created.link.clone());
     }
@@ -710,45 +734,37 @@ fn handover_parts(created: &Created, link: &LocalState<String>, ask: &Ask) -> Ve
     let drawn = QrWidget::new(created.code.clone()).with_id("invite-code");
     let px = module_px(drawn.total_modules());
     let code = drawn.with_module_px(px).with_alt(created.alt.clone());
-    // The code stands on a line of its own, centred: the room its modules
-    // need is wider than what is left beside a field.
-    vec![
+    let mut parts: Vec<Element> = vec![
         caption(&created.link_label),
+        Box::new(text),
         Box::new(
             Row::new()
                 .with_rhythm(Rhythm::Tight)
-                .push(Box::new(Spacer::new()))
-                .push(Box::new(code))
-                .push(Box::new(Spacer::new())),
-        ),
-        Box::new(
-            Column::new()
-                .with_intrinsic_height()
-                .with_no_padding()
-                .with_rhythm(Rhythm::Related)
-                .push(Box::new(text))
-                .push(caption(&created.brings))
-                .push(caption(&created.lasts))
                 .push(Box::new(
-                    Row::new()
-                        .with_rhythm(Rhythm::Tight)
-                        .push(Box::new(
-                            Button::new("invite-copy-link", &created.copy).on_view(move || {
-                                copying(InviteEffect::Copy {
-                                    link: copied.clone(),
-                                });
-                            }),
-                        ))
-                        .push(Box::new(
-                            Button::new("invite-revoke-made", &created.revoke).on_view(move || {
-                                revoking(InviteEffect::Revoke {
-                                    invite: invite_id.clone(),
-                                });
-                            }),
-                        )),
+                    Button::new("invite-copy-link", &created.copy)
+                        .role(ButtonRole::Primary)
+                        .on_view(move || {
+                            copying(InviteEffect::Copy {
+                                link: copied.clone(),
+                            });
+                        }),
+                ))
+                .push(Box::new(
+                    Button::new("invite-revoke-made", &created.revoke).on_view(move || {
+                        revoking(InviteEffect::Revoke {
+                            invite: invite_id.clone(),
+                        });
+                    }),
                 )),
         ),
-    ]
+    ];
+    if let Some(note) = note {
+        parts.push(notice(note, ask));
+    }
+    parts.push(caption(&created.brings));
+    parts.push(caption(&created.lasts));
+    parts.push(Box::new(code));
+    parts
 }
 
 /// How wide each module of a code `modules` across is drawn: as wide as

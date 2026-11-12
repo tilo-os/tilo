@@ -152,6 +152,28 @@ pub fn desktop_set_person_links(id: u64, user: &str, linked: &str) -> Result<(),
     })
 }
 
+/// The name `user`'s (root key, hex) profile keeps, empty for none, as the page fetched it for
+/// someone not here to say it (`HostRequest::Profiles`): the invite sheet names them by it.
+///
+/// # Errors
+///
+/// Rejects a mount without a desktop.
+#[wasm_bindgen]
+pub fn desktop_set_person_name(id: u64, user: &str, name: &str) -> Result<(), JsValue> {
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        if desktop.here.borrow_mut().set_profile_name(user, name) {
+            desktop.shared.wake();
+            m.pending = true;
+            m.window.request_redraw();
+        }
+        Ok(())
+    })
+}
+
 /// What the person's profile says they are doing (`status`, empty for
 /// nothing) and how they share it (`automatic`, `manual` or `off`; anything
 /// else leaves it as it is): what they set on another of their devices.

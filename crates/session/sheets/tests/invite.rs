@@ -252,3 +252,61 @@ fn taking_back_the_link_just_made_asks_for_that_invitation() {
         "taking back the link shown takes back the invitation it names"
     );
 }
+
+/// Where the widget with test id `id` stands, in logical window coordinates.
+fn rect_of(app: &mut HeadlessApp<InviteApp>, id: &str) -> [f64; 4] {
+    fn find(node: &ui::headless::InspectionNode, id: &str) -> Option<[f64; 4]> {
+        if node.test_id.as_deref() == Some(id) && node.rect[2] > 0.0 && node.rect[3] > 0.0 {
+            return Some(node.rect);
+        }
+        node.children.iter().find_map(|child| find(child, id))
+    }
+    find(&app.harness().inspection().root, id).unwrap_or_else(|| panic!("{id} is drawn"))
+}
+
+/// On a phone, the sheet reads in the order the person goes: the part they join as, the button
+/// that makes the link, the link with the button that copies it and what that press did, and the
+/// code to scan last and small. Nothing of it is wider than the screen.
+#[test]
+fn on_a_phone_the_link_follows_the_choice_and_the_code_comes_last_and_small() {
+    const PHONE: (u32, u32) = (390, 844);
+    let (mut app, _seat) = seated(with_link());
+    app.harness().resize(PHONE).unwrap();
+    app.settle();
+    let order = [
+        "invite-role",
+        "invite-create",
+        "invite-link",
+        "invite-copy-link",
+        "invite-note",
+        "invite-code",
+    ];
+    let rects: Vec<[f64; 4]> = order.iter().map(|id| rect_of(&mut app, id)).collect();
+    for (pair, ids) in rects.windows(2).zip(order.windows(2)) {
+        assert!(
+            pair[0][1] + pair[0][3] <= pair[1][1] + 0.5,
+            "{} stands above {}: {:?} then {:?}",
+            ids[0],
+            ids[1],
+            pair[0],
+            pair[1]
+        );
+    }
+    let width = f64::from(PHONE.0);
+    for (id, rect) in order.iter().zip(&rects) {
+        assert!(
+            rect[0] >= 0.0 && rect[0] + rect[2] <= width,
+            "{id} fits the phone's width: {rect:?}"
+        );
+    }
+    let code = rect_of(&mut app, "invite-code");
+    let field = rect_of(&mut app, "invite-link");
+    assert!(
+        code[2] <= 160.0,
+        "the code is a small second way, not the sheet's subject: {code:?}"
+    );
+    assert!(
+        code[2] < field[2],
+        "the link, not the code, is the widest thing handed over"
+    );
+}

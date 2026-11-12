@@ -160,7 +160,7 @@ impl sheet::Invitations for Invite {
                 .filter(|person| person.key == recipient)
                 .map(|person| person.name)
                 .next()
-                .unwrap_or_else(|| recipient.chars().take(8).collect())
+                .unwrap_or_else(sheet::unnamed_person)
         });
         let brings = sheet::brings(&label, name.as_deref());
         let (site, host) = self.workspace.shelf();

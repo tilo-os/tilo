@@ -290,6 +290,30 @@ impl Workspace for PageWorkspace {
 
     fn opened(&self, listed: Answer<()>) {
         self.pending.borrow_mut().clear();
+        // The people the sheet may make a link for, who are not here to say their names: the page
+        // asks their profiles once, and the sheet names them from those.
+        let unknown: Vec<String> = {
+            let here = self.here.borrow();
+            let own = self.person.map(hex::encode);
+            self.shared
+                .members
+                .borrow()
+                .iter()
+                .flatten()
+                .filter(|member| Some(*member) != own.as_ref())
+                .filter(|member| {
+                    here.person(member).is_none() && here.profile_name(member).is_none()
+                })
+                .cloned()
+                .collect()
+        };
+        if !unknown.is_empty() {
+            self.shared
+                .requests
+                .borrow_mut()
+                .push(HostRequest::Profiles(unknown));
+            self.shared.wake();
+        }
         let Some(workspace) = self.workspace() else {
             return;
         };
@@ -323,11 +347,18 @@ impl Workspace for PageWorkspace {
             .into_iter()
             .filter(|member| Some(member) != own.as_ref())
             .map(|member| sheet::Person {
+                // Who they are as they say it here now, else as their profile keeps it (the page
+                // fetches it when the sheet opens, `HostRequest::Profiles`), else in plain words.
                 name: here
                     .person(&member)
                     .map(|(name, _)| name)
-                    .filter(|name| !name.is_empty())
-                    .unwrap_or_else(|| member.chars().take(8).collect()),
+                    .filter(|name| !name.is_empty() && *name != tilo_desktop::here::guest_label())
+                    .or_else(|| {
+                        here.profile_name(&member)
+                            .filter(|name| !name.is_empty())
+                            .map(str::to_owned)
+                    })
+                    .unwrap_or_else(sheet::unnamed_person),
                 key: member,
             })
             .collect()
