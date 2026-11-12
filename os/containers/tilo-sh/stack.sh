@@ -444,12 +444,18 @@ vm_host() {
   # it leaves in the state: a later `vm_host env` reads the relay's device with
   # it, in a shell that has nothing else of `up`.
   local enrol=${enroll:-${TILO_SH_TILO_ENROLL:-$(cat "$state/vm-host-enroll" 2>/dev/null || true)}}
+  # Where the relay that places here reads what the host writes for it: the
+  # image's volumes with --images, the stack's own state natively.
+  local secrets_view=/run/secrets rooms_view=/run/tilo-rooms
+  if [[ $mode == native ]]; then secrets_view=$state/secrets rooms_view=$state/relay; fi
   "${sudo[@]}" env \
     TILO_SH_STATE="$vm_state" \
     "TILO_SH_IMAGE_VM_HOST=${TILO_SH_IMAGE_VM_HOST:-$(image_archive image-vm-host image.oci.tar)}" \
     "TILO_SH_HOSTED_GUEST=${TILO_SH_HOSTED_GUEST:-$state/images/$commit/image-hosted-guest}" \
     "TILO_SH_TILO_ENROLL=$enrol" \
     "TILO_SH_RELAY_SECRETS=$state/secrets" \
+    "TILO_SH_RELAY_SECRETS_VIEW=$secrets_view" \
+    "TILO_SH_RELAY_ROOMS_VIEW=$rooms_view" \
     "TILO_SH_RELAY_ROOT=$state/secrets/room-root-lounge" \
     "TILO_SH_RELAY_STATE=$state/relay/lounge/relay" \
     "TILO_SH_RELAY_IROH=127.0.0.1:$iroh_port" \

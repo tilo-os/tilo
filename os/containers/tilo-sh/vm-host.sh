@@ -42,6 +42,15 @@
 #                                       machine: the hosts' member devices and
 #                                       the plans file are written there, for
 #                                       the relay to read
+#   TILO_SH_RELAY_SECRETS_VIEW=/run/secrets
+#                                       where that relay reads them (the image
+#                                       mounts them at /run/secrets; the
+#                                       native stack's relay reads them in the
+#                                       stack's own state)
+#   TILO_SH_RELAY_ROOMS_VIEW=/run/tilo-rooms
+#                                       where that relay reads its own state
+#                                       (the image's volume, or natively the
+#                                       stack's state)
 #   TILO_SH_RELAY_ROOT=<state>/secrets/room-root-lounge
 #                                       the relay's owner root, 64 hex
 #                                       characters: what certifies the member
@@ -83,10 +92,11 @@ case ${TILO_SH_HOSTED_VM_SIZE:-default} in
   *) size_memory_mib=8192 ;;
 esac
 memory_mib=${TILO_SH_VM_HOST_MEMORY_MIB:-$((size_memory_mib + 3072))}
-# The relay's own view of what this host writes for it: the stack mounts its
-# secrets at /run/secrets and the relay's state at /run/tilo-rooms.
-relay_secrets=/run/secrets
-relay_rooms=/run/tilo-rooms
+# The relay's own view of what this host writes for it: the image's secrets
+# volume and state volume, or, for the stack that runs the relay natively, the
+# paths of its state (TILO_SH_RELAY_SECRETS_VIEW, TILO_SH_RELAY_ROOMS_VIEW).
+relay_secrets=${TILO_SH_RELAY_SECRETS_VIEW:-/run/secrets}
+relay_rooms=${TILO_SH_RELAY_ROOMS_VIEW:-/run/tilo-rooms}
 # A VM host's state disk is 512 GiB on the cloud: a sparse file that size
 # holds the same, since only what is written is stored.
 state_size=${TILO_SH_VM_HOST_STATE_SIZE:-512G}
