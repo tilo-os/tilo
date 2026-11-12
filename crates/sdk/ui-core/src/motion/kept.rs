@@ -190,7 +190,10 @@ impl<T: 'static> HandOn<T> {
     }
 
     /// Laid out at `at`. At its first layout, a widget its identity matched
-    /// nothing for takes what was left from this place ([`Found::Where`]).
+    /// nothing for takes what the same widget left since it was built — a
+    /// list keeps the row it replaces laid out until the new one is mounted,
+    /// so what that row leaves comes after the build ([`Found::Same`]) — else
+    /// what was left from this place ([`Found::Where`]).
     pub fn place(&mut self, at: Rect) -> Option<(T, Found)> {
         self.place_by(at, |was| {
             let near = |a: f64, b: f64| (a - b).abs() < 0.5;
@@ -207,6 +210,9 @@ impl<T: 'static> HandOn<T> {
             return None;
         }
         self.carry = Carry::Bound;
+        if let Some(left) = self.identity.as_deref().and_then(take_kept::<T>) {
+            return Some((left, Found::Same));
+        }
         take_where::<T>(|entry| entry.at.is_some_and(&near)).map(|left| (left, Found::Where))
     }
 
