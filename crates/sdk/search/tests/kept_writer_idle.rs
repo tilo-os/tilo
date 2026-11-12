@@ -61,6 +61,14 @@ fn writer_switches() -> BTreeMap<String, u64> {
     switches
 }
 
+/// The writer's threads and how often each has switched, once every one of them is asleep:
+/// `None` while one still runs. A commit respawns the indexing thread and tantivy schedules a
+/// merge of its own after it, so a set of threads that merely happens to be asleep for a moment
+/// is not yet a writer at rest.
+fn writers_at_rest() -> Option<BTreeMap<String, u64>> {
+    writers_asleep().then(writer_switches)
+}
+
 #[test]
 fn a_kept_writer_sleeps_between_commits_and_leaves_with_its_index() {
     let mut index = SearchIndex::default();
@@ -76,9 +84,16 @@ fn a_kept_writer_sleeps_between_commits_and_leaves_with_its_index() {
     }
     assert_eq!(index.search("new", Page::first(10)).hits.len(), 5);
 
-    // Let the indexing thread a commit respawns reach its channel.
-    tilo_test_env::wait_until("the writer threads to go to sleep", writers_asleep);
-    let before = writer_switches();
+    // Wait for the writer's own set of threads to stand still, not just for the ones that exist
+    // to be asleep: a thread a merge is still starting has not yet finished with its first
+    // wakeup, and reading it as one that woke under a busy machine is no defect of the writer.
+    let mut standing = writers_at_rest();
+    let before = tilo_test_env::wait_for("the writer's threads to stand still", || {
+        let now = writers_at_rest()?;
+        let still = standing.as_ref() == Some(&now);
+        standing = Some(now.clone());
+        still.then_some(now)
+    });
     assert!(
         before.len() >= 2,
         "the kept writer's threads were not found: {before:?}"
