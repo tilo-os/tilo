@@ -680,9 +680,13 @@ lay_out_lounge() {
   [[ -x $lounge/bin/tilo-relay ]] || die "TILO_SH_LOUNGE names $lounge, which holds no bin/tilo-relay"
   [[ -f $lounge/entrypoint.sh ]] || die "TILO_SH_LOUNGE names $lounge, which holds no entrypoint.sh"
   # The image installs the catalog at /usr/share/fonts/tilo; outside it a Tilo
-  # program finds it in fonts/ beside itself.
+  # program looks beside itself, and TILO_FONT_CATALOG names where the catalog
+  # is instead. The variable is the one the programs read, so a context this
+  # stack was handed — a check's, laid out and published by t — stays read-only
+  # to it; the link is for anything that only looks beside the program.
   [[ -d $lounge/fonts ]] || die "TILO_SH_LOUNGE names $lounge, which holds no fonts"
-  [[ -e $lounge/bin/fonts ]] || ln -sfn ../fonts "$lounge/bin/fonts"
+  font_catalog=$lounge/fonts
+  if [[ -w $lounge/bin ]]; then ln -sfn ../fonts "$lounge/bin/fonts"; fi
 }
 
 # The desktop bundle the web entry serves (build.sh --bundle desktop, the
@@ -827,8 +831,10 @@ start_native_relay() {
   { private_env relay "$lounge/bin"
     image_env_here "$repo/os/containers/tilo-lounge/Containerfile" \
       "TILO_ROOMS_STATE=$state/relay" "TILO_SECRETS_DIR=$state/relay/secrets"
-    # Where the image keeps the app surfaces the relay publishes at start.
+    # Where the image keeps the app surfaces the relay publishes at start,
+    # and the product font catalog its components lay text out from.
     printf '%s\n' "TILO_SURFACES=$lounge/surfaces"
+    printf '%s\n' "TILO_FONT_CATALOG=${font_catalog:-$lounge/fonts}"
     relay_env
   } > "$runs/relay.env"
   run_native relay "$state/relay" sh "$lounge/entrypoint.sh"
