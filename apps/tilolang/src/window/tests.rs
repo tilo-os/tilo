@@ -33,6 +33,7 @@ use ui::widget::DrawChild;
 
 mod clocks;
 mod mail;
+mod names;
 mod opening;
 mod personal;
 mod tree;
