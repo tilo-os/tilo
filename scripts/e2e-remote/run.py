@@ -1182,12 +1182,15 @@ ip -o addr show dev "$dev"
                 rows = held_on_a()
                 return rows if "Live" in json.dumps(rows, ensure_ascii=False) else []
 
-            # The tab's row is there once the stream's start reached A, and says Live once its
-            # first picture did.
+            # The window's pictures travel the workspace's live plane, on a track of its own that
+            # A's plane asks B's for while A's desk shows the tab. The tab's row is there once the
+            # track's first keyframe reached A, and says Live once its tile decoded it.
             rows = wait_until(pictured_on_a, 120, 2.0) or held_on_a()
             res.facts["peer_surface_rows"] = json.dumps(rows or [], ensure_ascii=False)[:1500]
             # How far the share came, on each end: the governance that names it, and what each
-            # session says it shares, asks for and received.
+            # session says it shares, watches and received. `received` holds a window from its
+            # first keyframe on; `viewers` are the devices that told B they view it, which is
+            # what B names them and lets them in by, and no condition of the pictures.
             on_a, on_b = desk(a), desk(b)
             seen = {
                 "governed_on_b": governed(on_b), "governed_on_a": governed(on_a),
@@ -1217,12 +1220,13 @@ ip -o addr show dev "$dev"
                 elif not seen["watching_on_a"]:
                     why = ("A's desk reads the share and asks no device for the window: it does not "
                            "know which device hosts the tab")
-                elif not viewers:
-                    why = f"A asks for the window and B heard no viewer: {res.facts['watching_on_a'][:300]}"
                 elif not seen["received_on_a"]:
-                    why = "B streams the window to A and nothing of it reached A"
+                    heard = ("B names A as viewing it" if viewers
+                             else "nor did A's word that it views it reach B")
+                    why = ("A watches the window and no keyframe of its track reached A over the "
+                           f"workspace's live plane ({heard}): {res.facts['watching_on_a'][:300]}")
                 else:
-                    why = f"the stream reached A and no tab pictures it: {res.facts['received_on_a'][:300]}"
+                    why = f"the window's pictures reached A and no tab pictures it: {res.facts['received_on_a'][:300]}"
                 raise Failed(f"A's desk never held the window B shares: {why}")
             if "Live" not in res.facts["peer_surface_rows"]:
                 raise Failed("A's desk holds the shared window's tab and no picture of it came: "
