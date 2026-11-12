@@ -13,6 +13,11 @@
 //! Each child is a `MapPin`: its key, its `x` and `y` in canvas pixels, its width, and the view
 //! it shows. The map changes nothing itself: the caller commits one arranging action when the
 //! person moves a place.
+//!
+//! A place that arrives on the map is shown: the camera pans the least it takes for it to stand
+//! whole inside the viewport, as a scroll shows the row it was asked for, and no place moves.
+//! The lens is the person's, so a map built again around changed places takes the camera over
+//! from the one it replaces ([`Map::carry_from`]) rather than looking at the canvas' origin.
 
 use std::collections::HashMap;
 use std::rc::Rc;
