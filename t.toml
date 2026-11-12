@@ -2951,6 +2951,10 @@ id_token = ["registry.tilo.so"]
 # unsigned — is built and tested everywhere and is never signed or published: the signing guard
 # (oci-sign.sh, require_published_snapshot) refuses it. So a release tag publishes the set before
 # it builds its images from it, and main only ever builds and tests.
+#
+# The index is of both architectures, so publishing a set needs a connected node of each: without
+# one, t plans `image-rpms-<arch>` as "no node for its platform" and every check that publishes
+# from the set is skipped, its log saying why. `t status` names the nodes there are.
 
 [[check]]
 name = "image-rpms-{arch}"
