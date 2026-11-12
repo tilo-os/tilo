@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """The canonical snapshot pin files, and the protected-branch PR that can land one.
 
-`open-snapshot-pr.py pins KIND ...` prints the canonical pin file; t's pin-kernel,
-pin-kernel-buildroot, pin-legacy-guest and pin-hosted-guest checks write it with
-this and push it to main. Without `pins`, it lands a pin committed to an automation branch named after
+`open-snapshot-pr.py pins KIND ...` prints the canonical pin file from the references a
+release published, for the commit that moves the pins. Without `pins`, it lands a pin committed to an automation branch named after
 the file's SHA-256 through a pull request instead, checking that branch, digest and
 references agree before opening (or re-finding) it.
 
@@ -48,7 +47,7 @@ def kernel_contents(x86_ref: str, arm_ref: str) -> str:
     """Return the canonical os/kernel-snapshot.env for both native kernels."""
     return "\n".join((
         "# Per-architecture Tilo kernel RPM repositories, signed and pinned by digest.",
-        "# Updated atomically by the pin-kernel check after both native builds verify.",
+        "# Both native kernels of one release, pinned together after both builds verify.",
         f"KERNEL_RPMS_X86_64_REF={x86_ref}",
         f"KERNEL_RPMS_AARCH64_REF={arm_ref}",
         "",
@@ -59,7 +58,7 @@ def kernel_buildroot_contents(x86_ref: str, arm_ref: str) -> str:
     """Return the canonical os/kernel-buildroot-snapshot.env for both buildroots."""
     return "\n".join((
         "# Per-architecture Tilo kernel buildroots, signed and pinned by digest.",
-        "# Updated atomically by the pin-kernel-buildroot check after both native builds verify.",
+        "# Both native buildroots of one release, pinned together after both builds verify.",
         f"KERNEL_BUILDROOT_X86_64_REF={x86_ref}",
         f"KERNEL_BUILDROOT_AARCH64_REF={arm_ref}",
         "",
@@ -108,7 +107,7 @@ def legacy_guest_contents(x86_ref: str) -> str:
     """Return the canonical os/legacy-guest-snapshot.env."""
     return "\n".join((
         "# The Linux legacy VM guest image, pinned by digest and signed with the",
-        "# release key. Written by the pin-legacy-guest check; `tilo-legacy` compiles",
+        "# release key. Pinned from what a release published; `tilo-legacy` compiles",
         "# it in and fetches nothing else.",
         f"LEGACY_GUEST_X86_64_REF={x86_ref}",
         "",
@@ -132,7 +131,7 @@ def hosted_guest_contents(x86_ref: str) -> str:
     """Return the canonical os/hosted-guest-snapshot.env."""
     lines = [
         "# The hosted VM guest image, pinned by digest and signed with the release",
-        "# key. Written by the pin-hosted-guest check; `tilo-legacy hosted fetch-guest`",
+        "# key. Pinned from what a release published; `tilo-legacy hosted fetch-guest`",
         "# compiles it in and fetches nothing else.",
         "#",
         "# A Firecracker kernel and the root filesystem every workspace VM's disk",

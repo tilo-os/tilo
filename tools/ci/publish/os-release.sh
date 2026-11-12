@@ -47,8 +47,8 @@
 #                                            os-release-image-ARCH composed; a difference fails,
 #                                            with a report of it in OUT
 #   os-release.sh rehearse TARGET SEALED OUT sign-boot, apply, sign and publish with throwaway
-#                                            keys into the OCI layout OUT/registry, as a release of
-#                                            this tree from stable would, with no credentials
+#                                            keys into the OCI layout OUT/registry, as a release tag
+#                                            of this tree would, with no credentials
 #
 # TARGET is an architecture, x86_64 or aarch64, or a board of release_boards.
 set -euo pipefail
@@ -250,7 +250,7 @@ provenance() {
   . os/base-snapshot.env
   . os/kernel-snapshot.env
   local rpms
-  rpms=$(bash os/dev/resolve-rpm-snapshot.sh) || die 'a release installs from a published RPM snapshot'
+  rpms=$(bash os/dev/resolve-rpm-snapshot.sh --arch "$arch") || die 'a release installs from a published RPM snapshot'
   env RELEASE_DIGEST="$(cat "$dir/digest")" TILO_GENERATION="$(cat "$dir/generation")" \
     SOURCE_DATE_EPOCH="$(bash os/dev/image-epoch.sh "$BASE_REF" "$rpms")" BASE_REF="$BASE_REF" \
     RPMS_REF="$rpms" SOURCE_REVISION='{commit}' "$@" \
@@ -421,7 +421,8 @@ cmd_rehearse() {
   rm -rf "$out"
   mkdir -p "$out/registry"
   export TILO_PUBLISH_DRY_RUN=$out/registry TILO_BOOT_SIGNER_DRY_RUN=$scratch/boot-keys TILO_BOOT_SIGNING_DRY_RUN=1
-  export T_REF=stable T_COMMIT
+  # The rehearsal's own reference, as a release tag's run would have: it publishes into a layout.
+  export T_REF=tag:v0.0.0-rehearsal T_COMMIT
   T_COMMIT=$(git rev-parse --verify HEAD) || die 'the rehearsal names its commit: git = true'
   cmd_sign_boot "$sealed" "$scratch/signed"
   cmd_apply "$sealed" "$scratch/signed" "$dir"

@@ -13,9 +13,9 @@ out=${2:?}
 command -v podman >/dev/null || dnf install -y --setopt=install_weak_deps=False podman skopeo jq >/dev/null
 . os/base-snapshot.env
 status=0
-bash os/dev/resolve-rpm-snapshot.sh --exists || status=$?
+bash os/dev/resolve-rpm-snapshot.sh --exists --arch "$arch" || status=$?
 case $status in
-  0) RPMS_REF=$(bash os/dev/resolve-rpm-snapshot.sh) ;;
+  0) RPMS_REF=$(bash os/dev/resolve-rpm-snapshot.sh --arch "$arch") ;;
   1)
     built=/target/publish/rpms/$arch
     [[ -f $built/image.oci.tar ]] || die "no published RPM snapshot for this package set and no image-rpms-$arch in this run"

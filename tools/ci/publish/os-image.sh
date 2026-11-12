@@ -118,22 +118,22 @@ build_board() {
   rm -rf "$work"
 }
 
-# The frozen RPM snapshot the build installs from, as RPMS_REF: the published one for this
-# tree's package set, verified as every build verifies it. Only a release tag publishes snapshots,
-# so on main and branches a changed package set has none until a release tag publishes it; the
-# build then installs from the set image-rpms-ARCH built in this run from the same
+# The frozen RPM snapshot the build installs from, as RPMS_REF: this architecture's published set
+# for this tree's package set, verified as every build verifies it. Only a release tag publishes
+# snapshots, so on main and branches a changed package set has none until a release tag publishes
+# it; the build then installs from the set image-rpms-ARCH built in this run from the same
 # os/Containerfile.rpms, which build-image.sh takes unsigned (TILO_RPMS_TRUST=unsigned) and labels
 # so (org.tilo.rpms.trust), and which nothing signs or publishes.
 rpms_snapshot() {
   local arch=$1 built=/target/publish/rpms/$1 status=0 id
-  bash os/dev/resolve-rpm-snapshot.sh --exists || status=$?
+  bash os/dev/resolve-rpm-snapshot.sh --exists --arch "$arch" || status=$?
   case $status in
-    0) RPMS_REF=$(bash os/dev/resolve-rpm-snapshot.sh) ;;
+    0) RPMS_REF=$(bash os/dev/resolve-rpm-snapshot.sh --arch "$arch") ;;
     1)
       [[ -f $built/image.oci.tar ]] || die "no published RPM snapshot for this package set and no image-rpms-$arch in this run"
       [[ $(archive_digest "$built/image.oci.tar") == "$(cat "$built/digest")" ]] || die "$built/image.oci.tar is not the build"
       id=$(podman pull -q "oci-archive:$built/image.oci.tar")
-      RPMS_REF=localhost/tilo-rpms:$(bash os/dev/resolve-rpm-snapshot.sh --tag)-$arch
+      RPMS_REF=localhost/tilo-rpms:$(bash os/dev/resolve-rpm-snapshot.sh --tag --arch "$arch")-$arch
       podman tag "$id" "$RPMS_REF"
       export TILO_RPMS_TRUST=unsigned
       printf 'no published RPM snapshot for this package set: installing from image-rpms-%s (%s), unsigned\n' \

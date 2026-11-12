@@ -2571,14 +2571,20 @@ image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a
 on = ["main", "dispatch"]
 id_token = ["registry.tilo.so"]
 
+# This architecture's frozen RPM snapshot, resolved and verified: the published set where there is
+# one, else the name of the tag whose publication would make it installable (nothing signs a build
+# from the run's own, unsigned). One check per architecture, so a build of one never waits on a
+# node of the other.
 [[check]]
-name = "rpm-snapshot"
-run = "bash tools/ci/publish/rpm-snapshot-ref.sh /target/publish/rpm-snapshot"
+name = "rpm-snapshot-{arch}"
+run = "bash tools/ci/publish/rpm-snapshot-ref.sh {arch} /target/publish/rpm-snapshot/{arch}"
 needs = ["signing-tools"]
-optional_needs = ["publish-rpms"]
+optional_needs = ["publish-rpms-{arch}"]
 image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
-outputs = ["/target/publish/rpm-snapshot/**"]
+outputs = ["/target/publish/rpm-snapshot/{arch}/**"]
 default = false
+[check.matrix]
+arch = ["x86_64", "aarch64"]
 
 # The relay's programs: the image packages what this leaves, so it compiles no Rust inside its
 # build.
@@ -2604,8 +2610,8 @@ default = false
 
 [[check]]
 name = "image-relay"
-run = "bash tools/ci/publish/relay-build.sh /target/publish/rpm-snapshot /target/publish/rpms/x86_64 /target/publish/relay/binaries /target/publish/relay"
-needs = ["relay-binaries", "rpm-snapshot", "image-rpms-x86_64"]
+run = "bash tools/ci/publish/relay-build.sh /target/publish/rpm-snapshot/x86_64 /target/publish/rpms/x86_64 /target/publish/relay/binaries /target/publish/relay"
+needs = ["relay-binaries", "rpm-snapshot-x86_64", "image-rpms-x86_64"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"
@@ -2617,8 +2623,8 @@ default = false
 # same base and snapshot as the relay, which it runs beside. Like the relay's it is packaging only.
 [[check]]
 name = "image-agent-host"
-run = "bash tools/ci/publish/agent-host-build.sh /target/publish/rpm-snapshot /target/publish/rpms/x86_64 /target/publish/agent-host/binaries /target/publish/agent-host"
-needs = ["agent-host-binaries", "rpm-snapshot", "image-rpms-x86_64"]
+run = "bash tools/ci/publish/agent-host-build.sh /target/publish/rpm-snapshot/x86_64 /target/publish/rpms/x86_64 /target/publish/agent-host/binaries /target/publish/agent-host"
+needs = ["agent-host-binaries", "rpm-snapshot-x86_64", "image-rpms-x86_64"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"
@@ -2843,8 +2849,8 @@ pointers = { hosted-guest = "/target/publish/hosted-guest/image/pins.env" }
 
 [[check]]
 name = "image-env-runtime-tree-{arch}"
-run = "bash tools/ci/publish/env-runtime.sh tree {arch} /target/publish/rpm-snapshot /target/publish/rpms/{arch} /target/publish/env-runtime/trees"
-needs = ["rpm-snapshot", "image-rpms-{arch}"]
+run = "bash tools/ci/publish/env-runtime.sh tree {arch} /target/publish/rpm-snapshot/{arch} /target/publish/rpms/{arch} /target/publish/env-runtime/trees"
+needs = ["rpm-snapshot-{arch}", "image-rpms-{arch}"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch={arch}"]
 isolation = "vm"
@@ -2940,21 +2946,21 @@ id_token = ["registry.tilo.so"]
 # ---- The frozen RPM package set
 #
 # One set of RPMs per package set (the direct roots os/Containerfile names and the files that
-# shape the snapshot), built natively for each architecture, joined into an index, given its SLSA
-# provenance, signed and published by a release tag: `once:set-<fingerprint>` names it, so the
-# first tag that builds a package set publishes it and every later one finds it there.
+# shape the snapshot), built natively for each architecture and, per architecture, given its SLSA
+# provenance, signed and published by a release tag: `once:set-<fingerprint>-<arch>` names it, so
+# the first tag that builds a package set publishes it and every later one finds it there. Each
+# architecture's set is published on its own: a machine of one builds, signs and publishes its own
+# and needs no node, build or tag of the other, and an architecture publishes later — dispatched on
+# a node of its own — without republishing what is already published.
 #
 # Every image that installs from RPMs (the relay, the agent host, the servers, the environment
-# runtime, the OS image) installs from that published set: rpm-snapshot resolves it, verifies its
-# signature, provenance and both architectures, and the build records which set it installed from.
-# An image built from a package set no tag has published yet — the run's own image-rpms, loaded
-# unsigned — is built and tested everywhere and is never signed or published: the signing guard
-# (oci-sign.sh, require_published_snapshot) refuses it. So a release tag publishes the set before
-# it builds its images from it, and main only ever builds and tests.
-#
-# The index is of both architectures, so publishing a set needs a connected node of each: without
-# one, t plans `image-rpms-<arch>` as "no node for its platform" and every check that publishes
-# from the set is skipped, its log saying why. `t status` names the nodes there are.
+# runtime, the OS image) installs from the published set of its own architecture: rpm-snapshot-ARCH
+# resolves it, verifies its signature, its provenance for that architecture's package set and the
+# image's own architecture, and the build records which set it installed from. An image built from
+# a package set no tag has published yet — the run's own image-rpms, loaded unsigned — is built and
+# tested everywhere and is never signed or published: the signing guard (oci-sign.sh,
+# require_published_snapshot) refuses it. So a release tag publishes the set before it builds its
+# images from it, and main only ever builds and tests.
 
 [[check]]
 name = "image-rpms-{arch}"
@@ -2977,44 +2983,45 @@ default = false
 arch = ["x86_64", "aarch64"]
 
 [[check]]
-name = "image-rpms"
-run = "python3 tools/ci/publish/oci-index.py /target/publish/rpms/index /target/publish/rpms/x86_64/image.oci.tar /target/publish/rpms/aarch64/image.oci.tar"
-needs = ["image-rpms-x86_64", "image-rpms-aarch64"]
-outputs = ["/target/publish/rpms/index/image.oci.tar", "/target/publish/rpms/index/digest"]
+name = "provenance-rpms-{arch}"
+run = "bash tools/ci/publish/rpms-provenance.sh {arch} /target/publish/rpms"
+needs = ["image-rpms-{arch}"]
+outputs = ["/target/publish/rpms/{arch}/provenance.json", "/target/publish/rpms/{arch}/fingerprint"]
 default = false
+[check.matrix]
+arch = ["x86_64", "aarch64"]
 
 [[check]]
-name = "provenance-rpms"
-run = "bash tools/ci/publish/rpms-provenance.sh /target/publish/rpms"
-needs = ["image-rpms", "image-rpms-x86_64", "image-rpms-aarch64"]
-outputs = ["/target/publish/rpms/index/provenance.json", "/target/publish/rpms/index/fingerprint", "/target/publish/rpms/x86_64/fingerprint", "/target/publish/rpms/aarch64/fingerprint"]
-default = false
-
-[[check]]
-name = "sign-rpms"
-run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/rpms /target/publish/rpms/x86_64\nbash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/rpms /target/publish/rpms/aarch64\nbash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/rpms /target/publish/rpms/index\nbash tools/ci/publish/oci-attest.sh registry.tilo.so/tilo/rpms /target/publish/rpms/index\n"
-needs = ["image-rpms", "image-rpms-x86_64", "image-rpms-aarch64", "provenance-rpms", "signing-tools"]
+name = "sign-rpms-{arch}"
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/rpms /target/publish/rpms/{arch}\nbash tools/ci/publish/oci-attest.sh registry.tilo.so/tilo/rpms /target/publish/rpms/{arch}\n"
+needs = ["image-rpms-{arch}", "provenance-rpms-{arch}", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
-outputs = ["/target/publish/rpms/x86_64/payload.json", "/target/publish/rpms/x86_64/signature", "/target/publish/rpms/x86_64/dry-run.pub", "/target/publish/rpms/x86_64/bundle.json", "/target/publish/rpms/aarch64/payload.json", "/target/publish/rpms/aarch64/signature", "/target/publish/rpms/aarch64/dry-run.pub", "/target/publish/rpms/aarch64/bundle.json", "/target/publish/rpms/index/payload.json", "/target/publish/rpms/index/signature", "/target/publish/rpms/index/dry-run.pub", "/target/publish/rpms/index/bundle.json", "/target/publish/rpms/index/attestation.json", "/target/publish/rpms/index/attestation.bundle.json"]
-# A release tag signs and publishes the package set it builds, so the images it publishes install
-# from a set that is published and signed. Dispatched on a release tag (`t dispatch sign-rpms
-# --ref tag:vX.Y.Z --publish`) it finishes a release whose own run stopped here; the release
-# key's role trusts v* tags only, so a dispatch anywhere else gets no signature.
+outputs = ["/target/publish/rpms/{arch}/payload.json", "/target/publish/rpms/{arch}/signature", "/target/publish/rpms/{arch}/dry-run.pub", "/target/publish/rpms/{arch}/bundle.json", "/target/publish/rpms/{arch}/attestation.json", "/target/publish/rpms/{arch}/attestation.bundle.json"]
+# A release tag signs and publishes this architecture's package set, so the images it publishes
+# install from a set that is published and signed. Dispatched on a release tag (`t dispatch
+# sign-rpms-x86_64 --ref tag:vX.Y.Z --publish`) it finishes a release whose own run stopped here,
+# and an arm64 node dispatched so publishes the other architecture's set; the release key's role
+# trusts v* tags only, so a dispatch anywhere else gets no signature.
 on = ["tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
 id_token = ["sts.amazonaws.com"]
+[check.matrix]
+arch = ["x86_64", "aarch64"]
 
 [[check]]
-name = "publish-rpms"
-run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/rpms /target/publish/rpms/x86_64 'once:set-{fingerprint}-x86_64'\nbash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/rpms /target/publish/rpms/aarch64 'once:set-{fingerprint}-aarch64'\nbash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/rpms /target/publish/rpms/index 'once:set-{fingerprint}'\n"
-needs = ["image-rpms", "image-rpms-x86_64", "image-rpms-aarch64", "sign-rpms", "signing-tools"]
+name = "publish-rpms-{arch}"
+run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/rpms /target/publish/rpms/{arch} 'once:set-{fingerprint}-{arch}'\n"
+needs = ["image-rpms-{arch}", "sign-rpms-{arch}", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-outputs = ["/target/publish/rpms/x86_64/receipt.json", "/target/publish/rpms/aarch64/receipt.json", "/target/publish/rpms/index/receipt.json"]
-# Ahead of the images of the same run: rpm-snapshot names publish-rpms as an optional need, so on
-# a release tag the set is published before anything builds from it, and the relay of that tag
-# installs from the published set rather than from the run's unsigned one.
+outputs = ["/target/publish/rpms/{arch}/receipt.json"]
+# Ahead of the images of the same run: rpm-snapshot-{arch} names publish-rpms-{arch} as an
+# optional need, so on a release tag the set is published before anything builds from it, and the
+# image of that tag installs from the published set rather than from the run's unsigned one.
+# `once:` tags never move: an architecture's set is published once per package set.
 on = ["tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
 id_token = ["registry.tilo.so"]
+[check.matrix]
+arch = ["x86_64", "aarch64"]
 
 [[check]]
 name = "image-kernel-buildroot-{arch}"
@@ -3125,38 +3132,6 @@ timeout_secs = 3600
 default = false
 [check.matrix]
 arch = ["x86_64", "aarch64"]
-
-[[check]]
-name = "pin-kernel-buildroot"
-run = "bash tools/ci/publish/kernel-buildroot.sh pin"
-needs = ["signing-tools"]
-on = ["main"]
-reads_pointers = ["stable:kernel-buildroot"]
-pushes = ["os/kernel-buildroot-snapshot.env"]
-
-[[check]]
-name = "pin-kernel"
-run = "bash tools/ci/publish/kernel.sh pin"
-needs = ["signing-tools"]
-on = ["main"]
-reads_pointers = ["stable:kernel"]
-pushes = ["os/kernel-snapshot.env"]
-
-[[check]]
-name = "pin-legacy-guest"
-run = "bash tools/ci/publish/legacy-guest.sh pin"
-needs = ["signing-tools"]
-on = ["main"]
-reads_pointers = ["stable:legacy-guest"]
-pushes = ["os/legacy-guest-snapshot.env"]
-
-[[check]]
-name = "pin-hosted-guest"
-run = "bash tools/ci/publish/hosted-guest.sh pin"
-needs = ["signing-tools"]
-on = ["main"]
-reads_pointers = ["stable:hosted-guest"]
-pushes = ["os/hosted-guest-snapshot.env"]
 
 [[check]]
 name = "development-signing-context-{arch}"
@@ -5098,8 +5073,8 @@ default = false
 
 [[check]]
 name = "image-vm-host"
-run = "bash tools/ci/publish/vm-host-build.sh /target/publish/rpm-snapshot /target/publish/rpms/x86_64 /target/publish/vm-host/binaries /target/publish/vm-host"
-needs = ["vm-host-binaries", "rpm-snapshot", "image-rpms-x86_64", "os-assets"]
+run = "bash tools/ci/publish/vm-host-build.sh /target/publish/rpm-snapshot/x86_64 /target/publish/rpms/x86_64 /target/publish/vm-host/binaries /target/publish/vm-host"
+needs = ["vm-host-binaries", "rpm-snapshot-x86_64", "image-rpms-x86_64", "os-assets"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"
@@ -5189,8 +5164,8 @@ default = false
 
 [[check]]
 name = "image-front-door"
-run = "bash tools/ci/publish/front-door-build.sh /target/publish/rpm-snapshot /target/publish/rpms/x86_64 /target/publish/front-door/binaries /target/publish/front-door"
-needs = ["front-door-binaries", "rpm-snapshot", "image-rpms-x86_64"]
+run = "bash tools/ci/publish/front-door-build.sh /target/publish/rpm-snapshot/x86_64 /target/publish/rpms/x86_64 /target/publish/front-door/binaries /target/publish/front-door"
+needs = ["front-door-binaries", "rpm-snapshot-x86_64", "image-rpms-x86_64"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"

@@ -2,7 +2,7 @@
 # The web entry image a release publishes: the build in BUILD (image-web-entry's, tested there)
 # carrying the version of the image production serves now, so tabs open on that version survive
 # the deploy (crates/browser/tilo-browser-runtime/container/carry.sh). Writes OUT/image.oci.tar
-# and OUT/digest, which sign-web-entry signs and publish-web-entry publishes from stable, and
+# and OUT/digest, which sign-web-entry signs and publish-web-entry publishes from a release tag, and
 # OUT/receipt-extra.json, which adds to the receipt the image this one replaces and the version
 # it carries.
 #
@@ -31,7 +31,7 @@ revision=$(curl -fsS --retry 3 --max-time 30 -H 'Cache-Control: no-store' "$live
 use_buildah web-entry overlay
 # No credentials: the registry serves its images to anyone. Production may run a release
 # (sha-<revision>) or a build published from main (dev-<revision>), as tilo.sh does when it
-# ships ahead of stable; either is the image whose version open tabs hold.
+# ships ahead of a release; either is the image whose version open tabs hold.
 tag=
 for candidate in "sha-$revision" "dev-$revision"; do
   if b pull --quiet "docker://$repository:$candidate" >/dev/null 2>&1; then

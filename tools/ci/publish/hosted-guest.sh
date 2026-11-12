@@ -25,15 +25,10 @@
 #   hosted-guest.sh pins OUT            after publish-hosted-guest published OUT,
 #                                       write OUT/pins.env: its reference and the
 #                                       inputs it was built from
-#   hosted-guest.sh pin                 write os/hosted-guest-snapshot.env's
-#                                       HOSTED_GUEST_<ARCH>_REF from stable's pins
-#                                       (T_POINTER_HOSTED_GUEST) when main builds the
-#                                       same guest
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 cd "$repo_root"
 repository=registry.tilo.so/tilo/hosted-guest
-pins=os/hosted-guest-snapshot.env
 # A longterm kernel, pinned by URL and checksum in
 # os/external-assets/github-assets.tsv like every other external input.
 kernel_version=6.12.116
@@ -245,21 +240,5 @@ case ${1:-} in
       "$repository" "$(cat "$out/digest")" "$(inputs_digest)" > "$out/pins.env"
     cat "$out/pins.env"
     ;;
-  pin)
-    [[ -n ${T_POINTER_HOSTED_GUEST:-} ]] || { echo 'stable has published no hosted guest yet'; exit 0; }
-    ref=$(sed -n 's/^HOSTED_GUEST_X86_64_REF=//p' <<<"$T_POINTER_HOSTED_GUEST")
-    built_from=$(sed -n 's/^INPUTS_SHA256=//p' <<<"$T_POINTER_HOSTED_GUEST")
-    if [[ $built_from != "$(inputs_digest)" ]]; then
-      echo "stable's hosted guest was built from other inputs than main's; leaving the pin"
-      exit 0
-    fi
-    [[ $ref =~ ^registry\.tilo\.so/tilo/hosted-guest@sha256:[0-9a-f]{64}$ ]] \
-      || die "not an immutable hosted guest reference: $ref"
-    use_cosign
-    cosign verify --key keys/cosign.pub "$ref" >/dev/null
-    python3 os/dev/open-snapshot-pr.py pins hosted-guest --x86-ref "$ref" > "$pins"
-    printf 'build(os): pin the hosted workspace VM guest image\n' > .t-commit-message
-    cat "$pins"
-    ;;
-  *) die 'usage: hosted-guest.sh kernel|agent|session|build|pins|pin ...' ;;
+  *) die 'usage: hosted-guest.sh kernel|agent|session|build|pins ...' ;;
 esac

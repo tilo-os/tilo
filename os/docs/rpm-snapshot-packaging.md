@@ -25,15 +25,18 @@ environment would conceal the omission. The boundary regression tests cover both
 
 ## Local preparation
 
-Publication runs through t: on a release tag (`vMAJOR.MINOR.PATCH`), the checks
-`image-rpms-<arch>`, `image-rpms`, `provenance-rpms`, `sign-rpms` and
-`publish-rpms` build both architectures natively, join them into an index, sign it
-with the release key and tag it `registry.tilo.so/tilo/rpms:set-<fingerprint>`.
-A tag builds, signs and publishes the set its own tree resolves, so the images of
-that tag install from a set that is published; main builds and tests the set and
-publishes nothing. Local builds are supported for preparation and diagnosis; they
-do not publish, sign or promote an artifact. There is no `os/dev/snapshot-rpms.sh`
-helper.
+Publication runs through t, one architecture at a time: on a release tag
+(`vMAJOR.MINOR.PATCH`), the checks `image-rpms-<arch>`, `provenance-rpms-<arch>`,
+`sign-rpms-<arch>` and `publish-rpms-<arch>` build that architecture natively, give
+it its SLSA provenance, sign it with the release key and tag it
+`registry.tilo.so/tilo/rpms:set-<fingerprint>-<arch>`. A tag builds, signs and
+publishes the set its own tree resolves, so the images of that tag install from a
+set that is published; main builds and tests the set and publishes nothing. Each
+architecture is published on its own, so the architecture with a connected node
+publishes without waiting for the other, and the other's set is published later,
+when a dispatch runs on a node of it. Local builds are supported for preparation
+and diagnosis; they do not publish, sign or promote an artifact. There is no
+`os/dev/snapshot-rpms.sh` helper.
 
 On the native target architecture, use the exact base pin and a named context
 containing `virtio-win-0.1.302-1.noarch.rpm`. The recipe independently checks its
@@ -53,7 +56,7 @@ The pinned base must already be present locally when using `--pull=never`.
 Snapshot creation downloads Fedora inputs; consumption uses the frozen repository.
 Record the resulting immutable local repository digest before supplying
 `RPMS_REF` to `os/dev/build-image.sh` (or let `resolve-rpm-snapshot.sh` look
-up the published `set-<fingerprint>` tag). A local digest is not a
+up the published `set-<fingerprint>-<arch>` tag). A local digest is not a
 published fingerprint tag.
 
 Every non-VirtIO RPM must produce a verified cryptographic signature and valid

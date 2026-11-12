@@ -29,7 +29,6 @@ PUBLISHING = (
     "release-imager.yml",
     "release-desktop.yml",
     "build-kernel.yml",
-    "build-rpms.yml",
     "build-env-runtime.yml",
     "build-env-tools.yml",
 )

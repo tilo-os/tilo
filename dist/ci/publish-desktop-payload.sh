@@ -5,15 +5,15 @@
 #
 #   dist/ci/publish-desktop-payload.sh POINTER
 #
-# Runs only in trusted runs of stable (T_REF, T_COMMIT), with REGISTRY_TOKEN: a token that may
-# write generic packages. The pointer is JSON: {"schema": 1, "x86_64": {"url", "sha256"},
+# Runs only in a trusted run of a release tag (T_REF, T_COMMIT), with REGISTRY_TOKEN: a token
+# that may write generic packages. The pointer is JSON: {"schema": 1, "x86_64": {"url", "sha256"},
 # "aarch64": {…} or null, "source": <commit>}.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 source tools/ci/publish/lib.sh
 
 pointer=${1:?usage: publish-desktop-payload.sh POINTER}
-[[ $(channel) == release ]] || die "the desktop payload is published from stable, not ${T_REF}"
+[[ $(channel) == release ]] || die "the desktop payload is published from a release tag, not ${T_REF}"
 require_commit
 token=${REGISTRY_TOKEN:?the package token is not set: the check needs secrets = [\"REGISTRY_TOKEN\"]}
 unset REGISTRY_TOKEN

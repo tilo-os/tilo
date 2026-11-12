@@ -4,17 +4,17 @@
 # signature oci-sign.sh made if there is one, and point TAG... at it.
 # Writes OUT/receipt.json, the digest receipt deployments pin. Logs in to the registry as `oidc`
 # with an identity token from t for the registry (`id_token = ["registry.tilo.so"]`), which the
-# registry accepts for this repository's main, stable and v* tags, or to the forge's registry
+# registry accepts for this repository's main branch and v* tags, or to the forge's registry
 # code.tilo.so with REGISTRY_TOKEN (lib.sh registry_login); never signing credentials.
 #
 # usage: oci-publish.sh dev|release|branch|any REPOSITORY OUT TAG...
 # The first argument is the channel the check publishes to; it must be this run's (lib.sh), so a
-# release check can never publish main's tree and a development check never stable's. A branch's
+# release check can never publish main's tree and a development check never a tag's. A branch's
 # build is published only signed, with the development key. With
 # `any` the check publishes on both, and each TAG says its channel: `dev:dev-{commit}`,
 # `release:sha-{commit}`; only the run's channel's tags are pushed, so one check, with its
-# signature as an optional need, pushes development tags from main and the signed release from
-# stable.
+# signature as an optional need, pushes development tags from main and the signed release from a
+# release tag.
 # Tags may contain {commit}, replaced by T_COMMIT, on a release tag v<version> {version}, and
 # {rust}, the toolchain channel rust-toolchain.toml pins (the CI builder's), {fingerprint},
 # OUT/fingerprint (the RPM snapshot's package-set fingerprint), and {generation},
@@ -22,7 +22,7 @@
 #
 # With TILO_RELEASE_OUT=DIR a release publishes the archive, digest and signature in DIR instead
 # of OUT's: a product whose release is derived from its build
-# publishes that image from stable and the build's from main. The receipt goes to OUT either way,
+# publishes that image from a release tag and the build's from main. The receipt goes to OUT either way,
 # where the check's pointer reads it. A receipt-extra.json beside the archive, one JSON object on
 # one line, adds its members to the receipt (the web entry: the image it replaces, the version
 # it carries).

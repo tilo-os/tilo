@@ -5,7 +5,7 @@ does not fan out into unrelated builds:
 
 | Component | Publication trigger | Expensive work | Published output |
 |---|---|---|---|
-| Relay, Lounge, web entry, `tilo` command | A `vX.Y.Z` tag (t's `tag:vX.Y.Z` checks), or a dispatch of one of them on that tag | The frozen RPM set for both architectures when the tree's package set is new, the images, the musl builds of the command | Images under `sha-<commit>`, the version and `latest`; the CLI archives; the published `set-<fingerprint>` RPM snapshot |
+| Relay, Lounge, web entry, `tilo` command | A `vX.Y.Z` tag (t's `tag:vX.Y.Z` checks), or a dispatch of one of them on that tag | The frozen RPM set of each architecture that has a build node, the images, the musl builds of the command | Images under `sha-<commit>`, the version and `latest`; the CLI archives; the published `set-<fingerprint>-<arch>` RPM snapshots |
 | Apps | Relevant `main` pushes, `app-<directory>-vX.Y.Z`, `apps-vX.Y.Z`, or a manual **Release / apps** run with `publish` | Affected apps on routine `main`; selected apps once per enabled native architecture for explicit releases | Independently versioned tapps and immutable collection bundles |
 | Desktop session | `desktop-vX.Y.Z`; scheduled/manual runs from `main` publish the OS payload | Enabled native host-package lanes; compiler objects shared per architecture | Debian, RPM, Arch and Nix packages plus checksums; immutable OS payload |
 | OS | `tools/ci/publish/os-release.sh` dispatched on a `vX.Y.Z` tag | Release image, sealed-image boot, boot signing, independent rebuild | Signed generation image, SBOM, provenance and freshness |
@@ -25,10 +25,11 @@ package set its own tree resolves (t's `publish-rpms`), and the images of that t
 install from the published set, so nothing signs an image built from a set that is
 not published. Main builds and tests the set and publishes nothing.
 
-The snapshot is one index of both architectures and every consumer verifies both, so
-a release needs a build node of each connected to t: without one, t plans
-`image-rpms-aarch64` (or `-x86_64`) as "no node for its platform" and everything that
-publishes from the set is skipped. `t status` lists the nodes there are.
+Each architecture's set is published on its own, so a release tag with only one
+architecture's node connected publishes that architecture: its images install from the
+set it published, and the other architecture's set is published by a dispatch on a node
+of it. An image never installs from another architecture's set, and never signs one that
+is not published.
 
 ## Fast validation versus release gates
 

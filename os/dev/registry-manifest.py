@@ -3,6 +3,9 @@
 
   registry-manifest.py digest HOST/REPOSITORY:TAG|@DIGEST   print the manifest's digest
   registry-manifest.py raw HOST/REPOSITORY:TAG|@DIGEST      print the manifest itself
+  registry-manifest.py config HOST/REPOSITORY:TAG|@DIGEST   print the image's config blob,
+                                                           whose `architecture` and `os`
+                                                           say what it was built for
 
 Exit 1 with "manifest unknown" when the registry has no such manifest, 3 when it could not be
 asked, as skopeo's errors are told apart by the resolver scripts.
@@ -45,9 +48,8 @@ def fetch(url: str, token: str | None = None) -> bytes:
         return response.read()
 
 
-def manifest(ref: str) -> bytes:
-    host, repository, reference = parse(ref)
-    url = f"https://{host}/v2/{repository}/manifests/{reference}"
+def fetch_pulling(host: str, repository: str, url: str) -> bytes:
+    """URL, with the anonymous pull token the registry's challenge names when it asks for one."""
     try:
         return fetch(url)
     except HTTPError as error:
@@ -63,8 +65,23 @@ def manifest(ref: str) -> bytes:
     return fetch(url, answer.get("token") or answer.get("access_token"))
 
 
+def manifest(ref: str) -> bytes:
+    host, repository, reference = parse(ref)
+    return fetch_pulling(host, repository, f"https://{host}/v2/{repository}/manifests/{reference}")
+
+
+def config(ref: str, body: bytes) -> bytes:
+    """The config blob an image manifest names: its `architecture` and `os` are what it is for."""
+    header = json.loads(body)
+    descriptor = header.get("config")
+    if not isinstance(descriptor, dict) or "digest" not in descriptor:
+        raise ValueError("the manifest names no config blob (it is an index of images)")
+    host, repository, _ = parse(ref)
+    return fetch_pulling(host, repository, f"https://{host}/v2/{repository}/blobs/{descriptor['digest']}")
+
+
 def main() -> int:
-    if len(sys.argv) != 3 or sys.argv[1] not in ("digest", "raw"):
+    if len(sys.argv) != 3 or sys.argv[1] not in ("digest", "raw", "config"):
         print(__doc__, file=sys.stderr)
         return 2
     try:
@@ -80,6 +97,8 @@ def main() -> int:
         return 3
     if sys.argv[1] == "digest":
         print("sha256:" + hashlib.sha256(body).hexdigest())
+    elif sys.argv[1] == "config":
+        sys.stdout.write(config(sys.argv[2], body).decode())
     else:
         sys.stdout.write(body.decode())
     return 0

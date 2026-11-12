@@ -13,13 +13,10 @@
 #                                       (CI builder)
 #   legacy-guest.sh pins OUT            after publish-legacy-guest published OUT, write
 #                                       OUT/pins.env: its reference and the inputs it was built from
-#   legacy-guest.sh pin                 write os/legacy-guest-snapshot.env from stable's pins
-#                                       (T_POINTER_LEGACY_GUEST) when main builds the same guest
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 cd "$repo_root"
 repository=registry.tilo.so/tilo/legacy-guest
-pins=os/legacy-guest-snapshot.env
 
 # Everything that ends up in the guest disk.
 inputs_digest() {
@@ -90,21 +87,5 @@ case ${1:-} in
       "$repository" "$(cat "$out/digest")" "$(inputs_digest)" > "$out/pins.env"
     cat "$out/pins.env"
     ;;
-  pin)
-    [[ -n ${T_POINTER_LEGACY_GUEST:-} ]] || { echo 'stable has published no legacy guest yet'; exit 0; }
-    ref=$(sed -n 's/^LEGACY_GUEST_X86_64_REF=//p' <<<"$T_POINTER_LEGACY_GUEST")
-    built_from=$(sed -n 's/^INPUTS_SHA256=//p' <<<"$T_POINTER_LEGACY_GUEST")
-    if [[ $built_from != "$(inputs_digest)" ]]; then
-      echo "stable's legacy guest was built from other inputs than main's; leaving the pin"
-      exit 0
-    fi
-    [[ $ref =~ ^registry\.tilo\.so/tilo/legacy-guest@sha256:[0-9a-f]{64}$ ]] \
-      || die "not an immutable legacy guest reference: $ref"
-    use_cosign
-    cosign verify --key keys/cosign.pub "$ref" >/dev/null
-    python3 os/dev/open-snapshot-pr.py pins legacy-guest --x86-ref "$ref" > "$pins"
-    printf 'build(os): pin the Linux legacy VM guest image\n' > .t-commit-message
-    cat "$pins"
-    ;;
-  *) die 'usage: legacy-guest.sh agent|build|binaries|pins|pin ...' ;;
+  *) die 'usage: legacy-guest.sh agent|build|binaries|pins ...' ;;
 esac

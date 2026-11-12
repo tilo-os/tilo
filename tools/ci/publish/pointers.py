@@ -5,7 +5,7 @@ On t a release check publishes a pointer (t's pipelines document, "Pointers"): `
 `app-collection` pointer to the collections it uploaded, `publish-desktop-payload` the
 `desktop-payload` pointer to the OS desktop payloads. They replace the repository variables
 `TILO_APP_COLLECTION_*` and `TILO_DESKTOP_PAYLOAD_*` the Forgejo workflows wrote. A check reads one
-as `T_POINTER_<NAME>` (`reads_pointers = ["stable:app-collection"]`), or as the pointer file in
+as `T_POINTER_<NAME>` (`reads_pointers = ["<reference>:app-collection"]`), or as the pointer file in
 the outputs of the check that sets it, when it `needs` that check in the same run.
 
     pointers.py show NAME [--file FILE]                the pointer, checked, as JSON

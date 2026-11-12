@@ -3,12 +3,12 @@
 # Containerfiles name, signature-checked and laid out as a repository image, into OUT. Holds no
 # secrets.
 #
-# Where this package set is already published, the published snapshot IS this output: it is
-# verified (signature, provenance, both architectures) and copied rather than resolved from Fedora
-# again, which takes a minute where a resolution takes tens of minutes and would in any case
-# produce a different snapshot of the same package set, since Fedora's repositories move. Where it
-# is not published yet, os/Containerfile.rpms is built from the live repositories here
-# (oci-build.sh), and stable publishes the result.
+# Where this architecture's set is already published, the published snapshot IS this output: it is
+# verified (signature, provenance of this architecture's package set, the image's own architecture)
+# and copied rather than resolved from Fedora again, which takes a minute where a resolution takes
+# tens of minutes and would in any case produce a different snapshot of the same package set,
+# since Fedora's repositories move. Where it is not published yet, os/Containerfile.rpms is built
+# from the live repositories here (oci-build.sh), and a release tag publishes the result.
 #
 # usage: rpms-build.sh ARCH OUT
 #
@@ -45,46 +45,29 @@ snapshot_epoch() {
   printf '%s\n' "$epoch"
 }
 
-# The image a registry serves for REF, as JSON: skopeo where the check image has it, else the
-# anonymous reader resolve-rpm-snapshot.sh falls back to.
-manifest_raw() {
-  if command -v skopeo >/dev/null; then
-    skopeo inspect --raw "docker://$1"
-  else
-    python3 "$repo_root/os/dev/registry-manifest.py" raw "$1"
-  fi
-}
-
 # A published snapshot for this package set IS this check's output, so reuse it instead of
 # resolving Fedora again. The job still reaches the registry, so t never serves this check's
 # result (a job that connects out is keyed by every file of its state and not served); that is why
 # the copy matters: it is the honest floor for a check that must ask the network.
 status=0
-bash "$repo_root/os/dev/resolve-rpm-snapshot.sh" --exists || status=$?
+bash "$repo_root/os/dev/resolve-rpm-snapshot.sh" --exists --arch "$arch" || status=$?
 case $status in
   0)
-    # resolve-rpm-snapshot.sh verifies the published snapshot against this tree's package set, its
-    # base and both architectures. It reads the registry's JSON with jq and copies with skopeo, and
-    # this check image carries neither (the images resolve their snapshot in ci-fast), so take
-    # them here: a few seconds against the resolution they save.
+    # resolve-rpm-snapshot.sh verifies the published snapshot against this architecture's package
+    # set, its base and its own architecture. It reads the registry's JSON with jq and copies with
+    # skopeo, and this check image carries neither (the images resolve their snapshot in ci-fast),
+    # so take them here: a few seconds against the resolution they save.
     if ! command -v jq >/dev/null || ! command -v skopeo >/dev/null; then
       dnf install -y --setopt=install_weak_deps=False jq skopeo >/dev/null 2>&1 \
         || die 'could not install jq and skopeo to verify and copy the published snapshot'
     fi
     use_cosign
-    ref=$(bash "$repo_root/os/dev/resolve-rpm-snapshot.sh")
+    ref=$(bash "$repo_root/os/dev/resolve-rpm-snapshot.sh" --arch "$arch")
     [[ $ref =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]] || die "unexpected snapshot $ref"
-    digest=$(manifest_raw "$ref" | python3 -c '
-import json, sys
-arch = sys.argv[1]
-images = [m["digest"] for m in json.load(sys.stdin).get("manifests", [])
-          if m.get("platform", {}).get("os") == "linux"
-          and m.get("platform", {}).get("architecture") == arch]
-print(images[0] if len(images) == 1 else "")' "${platform#linux/}")
-    [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || die "the published snapshot $ref names no $arch image"
+    digest=${ref##*@}
     # skopeo copies blobs and manifest verbatim, so the archive holds the published digest; buildah
     # rewrites the manifest, which would make this a second snapshot of the same package set.
-    skopeo copy --quiet "docker://registry.tilo.so/tilo/rpms@$digest" "oci-archive:$out/image.oci.tar"
+    skopeo copy --quiet "docker://$ref" "oci-archive:$out/image.oci.tar"
     [[ $(archive_digest "$out/image.oci.tar") == "$digest" ]] \
       || die "the copy of $digest is not the published image"
     printf '%s\n' "$digest" > "$out/digest"
