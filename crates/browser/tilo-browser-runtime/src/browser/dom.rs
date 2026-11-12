@@ -398,7 +398,7 @@ impl Mount {
         let requested = self.viewport.requested();
         let viewport = requested.logical_size();
         // Pictures are drawn at the density of the screen showing them.
-        let device_scale = f64::from(requested.dpr);
+        let device_scale = requested.dpr;
         let presented = MOUNTS.with_borrow_mut(|mounts| {
             let shown = mounts.get_mut(&self.id)?;
             let publish_theme = shown.theme_published != Some(theme_generation);
