@@ -1972,11 +1972,24 @@ try {
           names(await semantics(tab)));
         // A window filling the desk: the bar's own controls and the reading it shows stand apart at
         // every width, the phone's included.
-        if (await press(tab, /^maximize$/i, {what: 'maximizing the window'})) {
+        // The window maximized is one the person sees: on a phone the strip's other windows stand
+        // off the screen, their controls published where they are drawn, beyond its edge. The
+        // windows are published in the order they are drawn, so the last one on screen is in front.
+        const onScreen = node => node.rect && node.rect.x0 >= 0 && node.rect.x1 <= width
+          && node.rect.y0 >= 0 && node.rect.y1 <= height;
+        const maximize = (await semantics(tab)).filter(node => speaks(node, /^maximize$/i) && onScreen(node)).at(-1);
+        if (maximize) {
+          const {x0, y0, x1, y1} = maximize.rect;
+          const at = [Math.round((x0 + x1) / 2), Math.round((y0 + y1) / 2)];
+          await clickAt(tab, ...at);
+          log(`pressed maximizing the window: Maximize at ${at.join(',')}`);
           // The window's control is Restore once it fills the desk.
-          await untilDrawn(tab, async () => matching(await semantics(tab), /^restore$/i), 900);
+          const filled = await untilDrawn(tab, async () => matching(await semantics(tab), /^restore$/i), 900);
+          note(`${combo}: the window's Maximize fills the desk`, Boolean(filled),
+            filled ? 'its control reads Restore' : `no Restore after the press: ${names(await semantics(tab))}`);
           await shot(tab, combo, 'maximized');
-          await press(tab, /^(restore|maximize)$/i, {what: 'restoring the window'});
+          await clickAt(tab, ...at);
+          log(`pressed restoring the window at ${at.join(',')}`);
           await untilDrawn(tab, async () => matching(await semantics(tab), /^maximize$/i), 600);
         }
         const overlay = await semantics(tab);
