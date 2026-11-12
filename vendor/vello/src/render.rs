@@ -822,8 +822,15 @@ impl Render {
         };
         let atlas_width = images.width.max(1);
         let atlas_height = images.height.max(1);
+        // A scene that draws no image resolves to no atlas (`images.width` 0) and leaves the
+        // atlas as it is: the resolver's images stay uploaded where it placed them, and a new
+        // texture would draw them blank in the next scene that shows them without uploading
+        // them again (Tilo patch).
         let (image_atlas, atlas_proxy_action) = match persistent_image_atlas {
-            Some(proxy) if proxy.width == atlas_width && proxy.height == atlas_height => {
+            Some(proxy)
+                if images.width == 0
+                    || (proxy.width == atlas_width && proxy.height == atlas_height) =>
+            {
                 (*proxy, AtlasProxyAction::Reused)
             }
             Some(proxy) => {
@@ -2401,6 +2408,92 @@ mod tests {
             })
             .collect();
         assert_canonical_heapsort_preserves_records(larger_fill);
+    }
+
+    /// Coarse-render `encoding` into a fresh recording against the persistent `atlas`.
+    fn render_coarse(
+        encoding: &Encoding,
+        resolver: &mut Resolver,
+        atlas: &mut Option<ImageProxy>,
+    ) -> Recording {
+        let mut recording = Recording::default();
+        Render::new().render_encoding_coarse_with_dispatch(
+            encoding,
+            resolver,
+            &direct_shaders(1),
+            atlas,
+            &mut recording,
+            &mut Vec::new(),
+            &RenderParams {
+                base_color: peniko::Color::TRANSPARENT,
+                width: 16,
+                height: 16,
+                antialiasing_method: AaConfig::Area,
+            },
+            &vello_encoding::BumpBudget::INITIAL,
+            false,
+            false,
+            None,
+            false,
+            None,
+        );
+        recording
+    }
+
+    #[test]
+    fn a_scene_without_images_keeps_the_atlas_its_images_were_uploaded_to() {
+        let image = peniko::ImageData {
+            data: peniko::Blob::new(std::sync::Arc::new(vec![200_u8; 4 * 4 * 4])),
+            format: peniko::ImageFormat::Rgba8,
+            alpha_type: peniko::ImageAlphaType::Alpha,
+            width: 4,
+            height: 4,
+        };
+        let mut pictured = Scene::new();
+        pictured.fill(
+            peniko::Fill::NonZero,
+            peniko::kurbo::Affine::IDENTITY,
+            &peniko::ImageBrush::new(image),
+            None,
+            &peniko::kurbo::Rect::new(0.0, 0.0, 4.0, 4.0),
+        );
+        let mut resolver = Resolver::new();
+        let mut atlas = None;
+
+        let first = render_coarse(pictured.encoding(), &mut resolver, &mut atlas);
+        let uploaded = atlas.expect("a scene with an image has an atlas");
+        assert!(
+            first
+                .commands
+                .iter()
+                .any(|command| matches!(command, Command::WriteImage(proxy, ..) if proxy.id == uploaded.id)),
+            "the image is uploaded to the atlas"
+        );
+
+        let bare = render_coarse(&Encoding::default(), &mut resolver, &mut atlas);
+        assert!(
+            atlas.is_some_and(|kept| kept.id == uploaded.id),
+            "a scene without images keeps the atlas"
+        );
+        assert!(
+            !bare
+                .commands
+                .iter()
+                .any(|command| matches!(command, Command::FreeImage(proxy) if proxy.id == uploaded.id)),
+            "and does not free it"
+        );
+
+        // The image is resident, so the next scene that shows it draws it from where it was
+        // uploaded, into the same texture.
+        let again = render_coarse(pictured.encoding(), &mut resolver, &mut atlas);
+        assert!(atlas.is_some_and(|kept| kept.id == uploaded.id));
+        assert!(
+            !again
+                .commands
+                .iter()
+                .any(|command| matches!(command, Command::WriteImage(..))),
+            "a resident image is not uploaded again"
+        );
     }
 
     #[test]

@@ -494,6 +494,15 @@ JavaScript collects it: a 60-window soak kept up to 1,100 of them alive.
 maximum is 8192 px per side, a 256 MB texture. Images that do not fit after
 eviction are omitted and reported, as they already were at the maximum.
 
+## A scene without images keeps the image atlas (`render.rs`)
+
+A scene with no image resolves to no atlas, and upstream then replaced the
+persistent atlas with a 1×1 one. The resolver still held its images as
+uploaded, so the next scene that drew them read a fresh, empty texture: a
+window whose frame first renders its blurred backdrop (a scene of plain
+paths) lost every picture it had uploaded before, until one changed. Such a
+scene now leaves the atlas as it is. Own test in `render.rs`.
+
 ## Image cache eviction, shrink and stats (`image_cache.rs`, `resolve.rs`, `lib.rs`)
 
 Upstream evicts a resident image only when an allocation fails, and never
