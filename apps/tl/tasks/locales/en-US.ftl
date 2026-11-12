@@ -268,6 +268,9 @@ d-rxpe5yqk = Place~present
 
 d-i2mhsb3h = Home
     .w-tasks = Tasks
+    .w-new-task-in = New task in { $name }
+    .w-new-task-for-today = New task for today
+    .w-new-task = New task
     .w-projects = Projects
     .w-no-tasks-here = No tasks here
 
