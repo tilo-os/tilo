@@ -33,14 +33,12 @@ app gets on a real system:
   idle       each app untouched for 10 s, native Notes and the tilolang host that
              runs the apps' instances included: every thread of them sleeps
   routes     the broker's route access, as the attested launch of an app: the
-             collaboration probe (crates/dev/collab-probe) is installed as
-             Today, whose surface declares that it reads Notes' kinds, and as
-             Tasks, which declares no read. Tasks cannot join Notes' route at
-             all; Today's join is refused before the read it declares is read,
-             by the broker that keeps what it admits (a tilolang host holds an
-             app's route). This runs in a second start of the same throwaway
-             session, with the probe packages installed in place of Today and
-             Tasks.
+             collaboration probe (crates/dev/collab-probe) is installed as Today
+             (which declares that it reads Notes' kinds) and as Tasks (which
+             declares no read), in a second start of the same throwaway session.
+             Tasks cannot join Notes' route at all; Today's join is refused
+             before the read it declares is read, by the broker that keeps what
+             it admits, a tilolang host holding an app's route.
 
 Usage:
   scripts/headless-examples/tilolang-e2e.py [--no-build] [--out DIR] [--keep]
@@ -60,7 +58,6 @@ import json
 import os
 import re
 import shutil
-import signal
 import struct
 import subprocess
 import sys
@@ -82,7 +79,6 @@ def app_id(name: str) -> str:
 
 
 BIN = BUILD / "bin"
-# The desk's own resource, whose verbs a tool invokes as the session publishes them.
 DESK_RESOURCE = "desktop:desk"
 APPS = ["notes", "chat", "tasks", "today"]
 # The native app installed beside them, to hold the tilolang apps to what it does.
@@ -187,11 +183,11 @@ def host_pids(session_pid: int) -> list[int]:
 
 # --- checks ---------------------------------------------------------------------
 
-def check_registry(session: Session, names=APPS) -> dict:
+def check_registry(session: Session) -> dict:
     # A cold query starts the index's refresh and may answer before it has
     # every application (docs/headless-testing.md): ask again until it does.
     found = {}
-    for name in names:
+    for name in APPS:
         hits = until(f"{app_id(name)} among the session's applications", lambda: [
             a for a in session.actions(app_id(name))
             if a.get("provider") == "applications" and a.get("id") == app_id(name)
@@ -388,16 +384,6 @@ def check_windows(session: Session, processes: dict, session_pid: int, out: Path
             "process": procs[0], "host": hosts[0], "changed": len(after)}
 
 
-def own_action(session: Session, name: str, title: str, kind: str):
-    """The action `name`'s own window publishes as `title`, of the kind `kind` its effect has
-    (`View` for a view, `Document` for one that writes the app's record)."""
-    for action in session.actions(title):
-        if (action.get("application") == app_id(name) and action.get("title") == title
-                and action.get("operation_kind") == kind):
-            return action
-    return None
-
-
 def invoke_found(session: Session, found: dict, args: dict | None = None) -> dict:
     """Invoke the action the listing printed, as the tools do: its own provider and id."""
     return session.invoke(found["provider"], found["id"], args)
@@ -405,7 +391,7 @@ def invoke_found(session: Session, found: dict, args: dict | None = None) -> dic
 
 def history_total(session: Session, name: str) -> int:
     history = until(f"{app_id(name)}'s history action",
-                    lambda: own_action(session, name, "History", "View"))
+                    lambda: app_action(session, app_id(name), "History", "View"))
     answer = invoke_found(session, history)
     try:
         return answer["receipt"]["update"]["output"]["value"]["total"]
@@ -424,7 +410,7 @@ def check_actions(session: Session) -> dict:
         out[app_id(name)] = {"published": len(published)}
     for name, title in news.items():
         action = until(f"{app_id(name)}'s {title!r}",
-                       lambda: own_action(session, name, title, "Document"))
+                       lambda: app_action(session, app_id(name), title, "Document"))
         before = history_total(session, name)
         state = invoke_found(session, action)["receipt"]["update"]["state"]
         after = until(f"{title!r} in {app_id(name)}'s history",
@@ -440,17 +426,19 @@ def value_of(answer: dict):
         raise Failed(f"an answer without a value: {json.dumps(answer)[:2000]}") from None
 
 
-def app_action(session: Session, app: str, title: str):
-    """The first action called `title` that the window of `app` publishes. Its application is
-    `app` exactly: so.tilo.notes never matches so.tilo.lang.notes."""
+def app_action(session: Session, app: str, title: str, kind: str | None = None):
+    """The first action called `title` that the window of `app` publishes, of the kind its effect
+    has when `kind` names one (`View`, `Document`). Its application is `app` exactly: so.tilo.notes
+    never matches so.tilo.lang.notes."""
     for action in session.actions(title):
-        if action.get("application") == app and action.get("title") == title:
+        if (action.get("application") == app and action.get("title") == title
+                and kind in (None, action.get("operation_kind"))):
             return action
     return None
 
 
 def focus(session: Session, window: dict) -> None:
-    """Bring the tab of `window` to the front, as the desk's own verb does for the window menu."""
+    """Bring the tab of `window` to the front, as the desk's own verb does."""
     session.invoke("so.tilo.session", f"{DESK_RESOURCE}\u001ffocus", {"tab": str(window["tab"])})
 
 
@@ -526,11 +514,9 @@ def native_pid(session_pid: int) -> int | None:
 
 
 def check_idle(session: Session, processes: dict, session_pid: int, seconds: float = 10.0) -> dict:
-    """Every app, native Notes among them, and the tilolang host that runs the apps' instances,
-    left untouched for 10 s: every thread of them sleeps. Nothing animates here — each app's
-    workspace is one this device holds, so no app waits for anything to arrive — and this session
-    reports no per-window frame count, so a thread that woke woke for work nobody asked for, and
-    the check fails on it and names the threads."""
+    """Every app, native Notes and the tilolang host that runs the apps' instances, left untouched
+    for 10 s: every thread of them sleeps. Nothing animates here and this session reports no
+    per-window frame count, so a thread that woke woke for work nobody asked for."""
     time.sleep(3)
     pids = {app: info["pid"] for app, info in processes["apps"].items()}
     native = native_pid(session_pid)
@@ -573,9 +559,8 @@ def check_hosted_here(session: Session, windows: dict, out: Path) -> dict:
     another device), so its apps wait on no host and each shows its own state at once."""
     state = session.state_dump()
     held = {row["workspace"] for row in state.get("held_workspaces") or []}
-    waiting = [workspace["name"] or workspace["room"]
-               for workspace in state["workspace_tree"]["workspaces"]
-               if workspace["id"] not in held]
+    waiting = [w["name"] or w["room"] for w in state["workspace_tree"]["workspaces"]
+               if w["id"] not in held]
     if waiting:
         raise Failed(f"the session's own workspace is held by another device, so its apps wait "
                      f"on that host: {waiting}")
@@ -621,10 +606,9 @@ def probe_packages(state: Path, out: Path) -> list[Path]:
     return tapps
 
 
-def open_probes(session: Session) -> list[str]:
-    """The probe packages up, each with a window of its own: one the desk already shows is left
-    to it (a workspace's record says what was open in it), and one without a window is opened
-    through the applications listing, as a person opens an app."""
+def open_probes(session: Session) -> None:
+    """The probe packages up, each with a window: one the desk already shows is left to it (a
+    workspace's record says what was open in it), the rest opened as a person opens an app."""
     def up():
         windows = {window.get("app_id") for window in session.windows()}
         missing = [name for name in PROBE_ROUTES if app_id(name) not in windows]
@@ -635,7 +619,7 @@ def open_probes(session: Session) -> list[str]:
             if opened is not None:
                 session.invoke("applications", opened["id"])
         return windows if not missing else None
-    return sorted(until("a window of each probe package", up, 120))
+    until("a window of each probe package", up, 120)
 
 
 def check_routes(session: Session) -> dict:
@@ -651,12 +635,11 @@ def check_routes(session: Session) -> dict:
     today = result.get(f"{app_id('today')} -> {app_id('notes')}", "")
     tasks = result.get(f"{app_id('tasks')} -> {app_id('notes')}", "")
     if not (today.startswith("JOINED") and "WRITE-REFUSED" in today and "changes nothing" in today):
-        if "host-owned worker descriptor admission" in today:
-            raise Failed(
-                "Today's declared read of Notes cannot be exercised: this session's broker keeps "
-                "what it admits, and refuses an app process's join of another app's route before "
-                f"the read it declares is read (a tilolang host holds that route instead): {today!r}")
-        raise Failed(f"Today's declared read of Notes was not a read-only join: {today!r}")
+        why = ("this session's broker keeps what it admits and refuses an app process's join of "
+               "another app's route before the read it declares is read, a tilolang host holding "
+               "that route" if "host-owned worker descriptor admission" in today
+               else "it was not a read-only join")
+        raise Failed(f"Today's declared read of Notes: {why}: {today!r}")
     if not tasks.startswith("JOIN-REFUSED"):
         raise Failed(f"Tasks, which declares no read of Notes, joined its route: {tasks!r}")
     return result
@@ -692,11 +675,13 @@ def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
         ("hosted-here", lambda: check_hosted_here(session, summary["checks"]["launch"], out)),
         ("actions", lambda: check_actions(session)),
         ("snapshots", lambda: snapshots(session, summary["checks"]["launch"], out)),
-        ("windows", lambda: check_windows(session, summary["checks"]["processes"], pid, out)),
         ("native", lambda: check_native(session, out)),
         ("activation", lambda: check_activation(session)),
         ("read", lambda: check_read(session)),
+        # Before the checks that type into the desk: every app's threads are held to sleeping
+        # on a desk no other check has just touched.
         ("idle", lambda: check_idle(session, summary["checks"]["processes"], pid)),
+        ("windows", lambda: check_windows(session, summary["checks"]["processes"], pid, out)),
     ])
     stop_session(proc)
     running["proc"] = None

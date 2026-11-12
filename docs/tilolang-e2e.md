@@ -44,10 +44,10 @@ Today. The session installs them (`--install-tapp`) beside native Notes
   host's instance's, with the history verbs, `read` and "Show this window"
   every app publishes. Invoking "New note", "New channel"
   and "New task" each adds an entry to that app's history.
-- **hosted-here**: one PNG of the session per app as first opened, with that
-  app in front (`first-*.png`). The session's own workspace is one this device
-  holds (`held_workspaces` in `state-dump` names it), so its apps wait on no
-  other host: each shows its own state at once, as native Notes does.
+- **hosted-here**: one PNG of the session per app as first opened, with that app
+  in front (`first-*.png`). The session's workspace is one this device holds
+  (`held_workspaces` in `state-dump` names it), so its apps wait on no other
+  host, and each shows its own state at once, as native Notes does.
 - **snapshots**: one PNG of the session per app, with that app in front.
 - **native**: native Notes (`so.tilo.notes`) opens beside them, presents a
   frame and publishes its actions. Both apps are called Notes; they are told
@@ -59,19 +59,18 @@ Today. The session installs them (`--install-tapp`) beside native Notes
   note "New note" made, by the id a read takes.
 - **idle**: each app left untouched for 10 s, native Notes among them, and the
   tilolang host that runs the apps' instances: every thread of them sleeps, and
-  the check fails on a single context switch, naming the threads that woke.
-  Nothing animates here — each app's workspace is one this device holds, so no
-  app waits for anything to arrive — and a session reports no per-window frame
-  count (`foreign_frames` went with the old shell), so a thread that woke woke
-  for work nobody asked for.
+  the check fails on one context switch, naming the threads that woke. Nothing
+  animates here (each app's workspace is one this device holds) and a session
+  reports no per-window frame count (`foreign_frames` went with the old shell),
+  so one that woke woke for work nobody asked for.
 - **routes**: a second start of the same session installs the collaboration
-  probe in place of Today and Tasks. Today's surface declares that it reads
-  Notes' kinds; Tasks' declares no read. The probe runs as each app's own
-  launched process (its entrypoint names the probe's runtime, not tilolang's),
-  with that app's launch custody. Tasks' join is refused as it declares no
-  read; Today's is refused before its declared read is read, because this
-  session's broker keeps what it admits and an app's route is held by the
-  tilolang host that runs its instances. The check reports that refusal.
+  probe in place of Today (whose surface declares that it reads Notes' kinds)
+  and Tasks (which declares no read). The probe runs as each app's own launched
+  process (its entrypoint names the probe's runtime, not tilolang's), with that
+  app's launch custody. Tasks' join is refused as it declares no read; Today's
+  is refused before its declared read is read, because this session's broker
+  keeps what it admits and a tilolang host holds an app's route. The check
+  reports that refusal.
 
 Each app opens once in the session's own workspace; the checks above open it there.
 
