@@ -147,11 +147,13 @@ in a field, the page's own `submit()` or `requestSubmit()` — any navigation or
 page or a frame of it, a download, and what a payment flow sends. The page
 stays as it was filled and nothing leaves: the request is paused, not dropped,
 so the person who allows it sends exactly what was filled in. The page action
-whose run reached the hold answers that it needs the person, naming the method
-and where it goes (and, for a download, the file it would save), and their
-allow releases that one request — the invocation
-does not run the page action again — while a denial or a question nobody
-answers drops it and leaves the page as it was. Such a hold is the
+whose run reached the hold answers that it needs the person and states the
+departure it holds — the page it leaves from, what it does, the method, where
+it goes and the picture of the filled page — so the question the host puts to
+them names what leaves, as it does for a departure the page started on its
+own. Their allow releases that one request — the invocation does not run the
+page action again — while a denial or a question nobody answers drops it and
+leaves the page as it was. Such a hold is the
 invocation's, and the window publishes no second way to answer it, so nobody
 is asked about one departure twice.
 

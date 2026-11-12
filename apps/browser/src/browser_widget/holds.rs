@@ -386,7 +386,7 @@ fn departure_facets(facts: &[(&'static str, String)]) -> Vec<ui::tilo_actions::A
     facts
         .iter()
         .map(|(name, value)| {
-            ui::tilo_actions::remote::browser::departure_facet(*name, value.clone())
+            ui::tilo_actions::remote::browser::departure_facet(name, value.clone())
         })
         .collect()
 }

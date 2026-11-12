@@ -1646,6 +1646,52 @@ mod tests {
         );
     }
 
+    /// A run that reached something only the person may allow is refused for
+    /// want of their answer, and that refusal carries what the run stated
+    /// about it: the page departure it holds, as it travels to the host that
+    /// asks them.
+    #[test]
+    fn a_refusal_for_want_of_the_person_carries_the_departure_the_run_stated() {
+        let departure = vec![
+            browser::departure_facet("page", "https://visa.example/apply"),
+            browser::departure_facet("kind", "submit"),
+            browser::departure_facet("method", "POST"),
+            browser::departure_facet("destination", "https://visa.example"),
+            browser::departure_facet("picture", "tilo.content:5f2b"),
+        ];
+        let invocation = InvocationId::new();
+        let state = InvocationState::new(
+            invocation,
+            InvocationUpdate::Failed {
+                invocation,
+                error: ActionFailure {
+                    code: CONFIRMATION_REQUIRED_CODE.into(),
+                    message: "the person has to allow this".into(),
+                    details: serde_json::to_value(&departure).ok(),
+                    retryable: false,
+                },
+            },
+        );
+        let receipt = state.receipt();
+        let ReceiptStatus::Rejected {
+            error: ActionHostError::ConfirmationRequired { departure: stated },
+        } = &receipt.status
+        else {
+            panic!("a run waiting on the person is a refusal: {receipt:?}");
+        };
+        assert_eq!(*stated, departure);
+        // The refusal travels with it, so a host in another process asks the
+        // person about what leaves and not about a name for it.
+        let error = ActionHostError::ConfirmationRequired {
+            departure: stated.clone(),
+        };
+        let wire = serde_json::to_value(&error).unwrap();
+        assert_eq!(
+            serde_json::from_value::<ActionHostError>(wire).unwrap(),
+            error
+        );
+    }
+
     #[test]
     fn a_bot_is_its_own_principal_acting_for_its_installer() {
         let installer = [7u8; 32];

@@ -1083,7 +1083,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
         !matches!(
             ran.status,
             ReceiptStatus::Rejected {
-                error: ActionHostError::confirmation_required()
+                error: ActionHostError::ConfirmationRequired { .. }
             }
         ),
         "a refused invocation is forgotten, so the confirmed retry under its id is admitted: {ran:?}"
