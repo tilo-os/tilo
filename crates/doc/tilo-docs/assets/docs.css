@@ -258,6 +258,8 @@ th { text-align: left; font-weight: 640; color: var(--ink); border-bottom: 1px s
 th, td { padding: 0.55rem 1rem 0.55rem 0; vertical-align: top; }
 td { border-bottom: 1px solid var(--rule); color: var(--ink-2); }
 th:last-child, td:last-child { padding-right: 0; }
+/* A name in a table breaks only at its spaces; a longer one scrolls the table. */
+td code, th code { overflow-wrap: normal; }
 
 /* Callouts */
 
