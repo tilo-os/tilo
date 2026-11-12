@@ -66,7 +66,6 @@ pub const FIRST_PARTY_PACKAGES: &[&str] = &[
     "so.tilo.video-editor",
     "so.tilo.video-player",
     "so.tilo.weather",
-    "so.tilo.web-search",
     "so.tilo.windows",
     "so.tilo.word-processor",
 ];

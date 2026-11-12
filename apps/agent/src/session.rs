@@ -174,9 +174,6 @@ pub struct Config {
     /// The agent's content store, created once when it starts: content an
     /// operation produced is read from here by the operation consuming it.
     pub content: ui::content::ContentStore,
-    /// Applications started beside the agent whose actions its first run
-    /// waits for (`Session::await_companions`).
-    pub companions: Vec<String>,
     /// The model the desktop chose for this agent, when it launched it with
     /// one; otherwise the Settings default this process can read, if any.
     pub provider: Option<crate::providers::ProviderSelection>,
@@ -203,9 +200,6 @@ pub struct Session {
     /// task loop surveys.
     broker_catalogue: ui::collaboration::ActionCatalogue,
     next_broker_request: u64,
-    /// The companions not yet seen in the catalogue, until the first run
-    /// waited for them; empty afterwards.
-    awaiting_companions: Vec<String>,
     /// Bumped whenever the broker republishes its catalogue.
     broker_revision: u64,
     /// The task catalogue survey for [`Self::broker_revision`], shared by
@@ -219,6 +213,10 @@ pub struct Session {
     record: Option<conversation::Record>,
     /// What the run in progress may spend today, as its keeper counted it.
     spending: Option<agent_loop::Spending>,
+    /// The agent's own web tools, with the client and the engines' backoff
+    /// they keep from one call to the next; set up on the first call that
+    /// needs them.
+    web: Option<crate::tools::web::Web>,
 }
 
 /// Ask the broker to select one current holder of this exact route. Safe to
@@ -276,7 +274,6 @@ impl Session {
             "joined the workspace; waiting for the document"
         );
         let is_managed = managed.is_some();
-        let cfg_companions = cfg.companions.clone();
         let chooser = match managed {
             Some(selection) => {
                 let chooser = Chooser::with_provider(true, cfg.model_timeout, selection);
@@ -301,14 +298,22 @@ impl Session {
             native_task: None,
             broker_catalogue: ui::collaboration::ActionCatalogue::default(),
             next_broker_request: 1,
-            awaiting_companions: cfg_companions,
             broker_revision: 0,
             catalogue_cache: None,
             turn: None,
             outstanding: outstanding::Outstanding::default(),
             record: None,
             spending: None,
+            web: None,
         })
+    }
+
+    /// The agent's web tools, ready to run a search or read a page: their
+    /// client, runtime and engines' backoff are made once and kept.
+    fn web(&mut self) -> &mut crate::tools::web::Web {
+        let content = self.cfg.content.clone();
+        self.web
+            .get_or_insert_with(|| crate::tools::web::Web::new(content))
     }
 
     /// Answer the turns the broker delivers: an unattended run may invoke

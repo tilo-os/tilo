@@ -216,6 +216,34 @@ impl Session {
         self.push_step(run, resource, &label, outcome, why.as_deref())
     }
 
+    /// Add one web search or page the run did to the reply's step list: what
+    /// it asked for or read, and what came of it.
+    pub(super) fn record_web(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        call: &crate::tools::web::Call,
+        report: &crate::tools::InvokeReport,
+    ) -> Result<()> {
+        // The same vocabulary the person is told the step in, so the record
+        // and the note say the same thing.
+        let (resource, label) = match call {
+            crate::tools::web::Call::Search { query, .. } => (
+                "web.search",
+                tilo_actions::task_step::TaskStep::Searching(query.clone()).note(),
+            ),
+            crate::tools::web::Call::Page { url, .. } => (
+                "web.page",
+                tilo_actions::task_step::TaskStep::Reading(url.clone()).note(),
+            ),
+        };
+        let (outcome, why) = if report.succeeded {
+            ("applied", None)
+        } else {
+            ("refused", report.error.as_deref())
+        };
+        self.push_step(run, resource, &label, outcome, why)
+    }
+
     /// Record one step of the turn, keyed by the place it takes in the list.
     fn push_step(
         &mut self,

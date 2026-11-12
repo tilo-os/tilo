@@ -920,6 +920,16 @@ inputs = ["crates/agent/provider-config/tests/fixtures/openrouter-models.json"]
 readers = ["crates/sdk/provider-settings-ui/src/app_tests.rs"]
 
 [[cargo]]
+package = "agent"
+# The web tools' tests serve the engine answers the search library records, so
+# a changed fixture reruns them.
+inputs = ["crates/platform/tilo-web-search/tests/fixtures/"]
+readers = [
+  "apps/agent/src/tools/web.rs",
+  "apps/agent/src/session/agent_loop/tests/web.rs",
+]
+
+[[cargo]]
 package = "mail"
 # The engine test mirrors the end mark the mail writes.
 inputs = ["apps/browser/chromium/tests/resize_frames.py"]

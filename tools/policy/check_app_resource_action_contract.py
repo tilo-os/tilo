@@ -597,14 +597,12 @@ LEGACY_API_BANS = {
 }
 # The apps that act on other apps' published actions or publish their own to
 # the broker as data, not through a resource of their own: the agent plans and
-# invokes whatever the catalogue offers, Shortcuts stores and runs steps of
-# it, and the web search service publishes its two actions straight to the
-# broker. An address is their data, so they build one; every other old API is
+# invokes whatever the catalogue offers, and Shortcuts stores and runs steps of
+# it. An address is their data, so they build one; every other old API is
 # refused for them as for any app.
 PROTOCOL_ENDPOINTS: dict[str, str] = {
     "agent": "plans and invokes the actions the broker's catalogue offers",
     "shortcuts": "stores and runs steps that name other apps' published actions",
-    "web-search": "a headless service that publishes its actions to the broker",
 }
 # Which matches of a legacy rule are the old API, given the file's code and
 # its raw text (same offsets): a `put` on a content store, a secret store or a

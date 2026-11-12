@@ -343,53 +343,9 @@ const CHAT_RECORD_PEER: u64 = 29;
 const DESKTOP_PEER: u64 = 9;
 const SECOND_PEER: u64 = 10;
 const BROWSER_PEER: u64 = 11;
-const SEARCH_PEER: u64 = 12;
 /// The Browser tab the fixture's Browser publishes its page actions on.
 const BROWSER_TAB: &str = "browser.tab:1";
 const DOC: &str = "word-processor.document";
-
-/// The first run waits for a companion until it has published actions:
-/// a surface of the companion's app holding none (still starting) does
-/// not count, and other apps' surfaces never stand in for it.
-#[test]
-fn a_companion_counts_once_it_has_published_actions() {
-    let companions = vec!["so.tilo.web-search".to_owned()];
-    let surface = |app: &str, actions: Vec<ExportedAction>| BrokerActionSurface {
-        peer_id: PEER,
-        provider: None,
-        app_id: app.into(),
-        cluster_id: Uuid::from_u128(1).to_string(),
-        record_id: String::new(),
-        live: true,
-        actions,
-    };
-    let search = || {
-        descriptor(
-            "search",
-            "Search the web",
-            tilo_actions::OperationKind::Effect,
-            vec![],
-            Availability::Available,
-            vec![],
-        )
-    };
-    assert_eq!(missing_companions(&companions, &[]), companions);
-    assert_eq!(
-        missing_companions(&companions, &[surface("so.tilo.notes", vec![search()])]),
-        companions
-    );
-    assert_eq!(
-        missing_companions(&companions, &[surface("so.tilo.web-search", vec![])]),
-        companions
-    );
-    assert!(
-        missing_companions(
-            &companions,
-            &[surface("so.tilo.web-search", vec![search()])]
-        )
-        .is_empty()
-    );
-}
 
 fn descriptor(
     action: &str,
@@ -512,9 +468,8 @@ struct World {
     /// read whole by `read-letter` (a host-owned read, which no view
     /// settles after); zero publishes none.
     letters: usize,
-    /// A Browser and the web search beside it are published, and a capture
-    /// of the page answers with this content address; `None` publishes
-    /// neither.
+    /// A Browser is published, and a capture of the page answers with this
+    /// content address; `None` publishes neither.
     browser: Option<String>,
     /// The workspace also runs tilolang Board and Views, whose hosts take programs,
     /// and the conversation's reply lists the run's steps.
@@ -707,27 +662,6 @@ impl World {
                     tab("read-page", "Read the page", vec![]),
                     tab("capture-page", "Capture the page", vec![]),
                 ],
-            });
-            surfaces.push(BrokerActionSurface {
-                peer_id: SEARCH_PEER,
-                provider: None,
-                app_id: "so.tilo.web-search".into(),
-                cluster_id: Uuid::from_u128(1).to_string(),
-                record_id: String::new(),
-                live: true,
-                actions: vec![ExportedAction {
-                    resource: "web.search:default".into(),
-                    resource_kind: "web.search".into(),
-                    resource_label: "Web search".into(),
-                    ..descriptor(
-                        "fetch",
-                        "Fetch a page's text",
-                        tilo_actions::OperationKind::Effect,
-                        vec![ActionParam::required("url", ParamType::Text, "The address")],
-                        Availability::Available,
-                        vec![],
-                    )
-                }],
             });
         }
         if self.tilolang {
@@ -1643,7 +1577,6 @@ fn execution_fixture(
                 ui::permissions::KindSet::READ_UNDOABLE,
             ),
             content: ui::content::ContentStore::memory(),
-            companions: Vec::new(),
             provider: None,
             identity: None,
         },
@@ -1658,13 +1591,13 @@ fn execution_fixture(
         native_task: None,
         broker_catalogue: catalogue_of(&surfaces),
         next_broker_request: 1,
-        awaiting_companions: Vec::new(),
         record: None,
         broker_revision: 0,
         catalogue_cache: None,
         turn: None,
         outstanding: crate::session::outstanding::Outstanding::default(),
         spending: None,
+        web: None,
     };
     Fixture {
         session,
@@ -1724,6 +1657,8 @@ mod programs;
 mod spending;
 #[path = "agent_loop/tests/turn_records.rs"]
 mod turn_records;
+#[path = "agent_loop/tests/web.rs"]
+mod web;
 #[path = "agent_loop/tests/web_pages.rs"]
 mod web_pages;
 
@@ -2031,6 +1966,8 @@ fn making_the_second_paragraph_bold_selects_it_then_toggles_the_mark() {
                 "describe_operation",
                 "invoke",
                 "read_result",
+                "search_web",
+                "read_page",
                 "tilo",
                 "plan"
             ],

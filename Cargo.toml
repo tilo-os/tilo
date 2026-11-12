@@ -163,7 +163,6 @@ members = [
     "apps/video-editor",
     "apps/video-player",
     "apps/weather",
-    "apps/web-search",
     "apps/windows",
     "apps/word-processor",
 

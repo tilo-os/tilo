@@ -351,10 +351,13 @@ dependencies = [
  "tilo-automation",
  "tilo-identity-client",
  "tilo-model-client",
+ "tilo-net",
  "tilo-paths",
+ "tilo-rt",
  "tilo-selector",
  "tilo-test-env",
  "tilo-user-identity",
+ "tilo-web-search",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -25732,28 +25735,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "web-search"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "runtime-dylib",
- "serde",
- "serde_json",
- "tilo-app",
- "tilo-files",
- "tilo-net",
- "tilo-paths",
- "tilo-rt",
- "tilo-web-search",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
 name = "web-sys"
 version = "0.3.85"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -28819,7 +28800,6 @@ dependencies = [
  "wayland-sys",
  "weather",
  "web-async",
- "web-search",
  "web-time",
  "web-transport-proto",
  "web-transport-quinn",

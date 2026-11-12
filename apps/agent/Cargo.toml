@@ -40,6 +40,14 @@ tilo-paths = { path = "../../crates/platform/tilo-paths" }
 tilo-action-policy = { path = "../../crates/collab/action-policy" }
 # The transform action names shortcuts lower their `Ai` steps to.
 tilo-automation = { path = "../../crates/collab/automation" }
+# The agent's own web tools: several public search engines asked at once and
+# merged, and one page reduced to readable text, with every download bounded
+# and every destination checked.
+tilo-web-search = { path = "../../crates/platform/tilo-web-search" }
+# Those tools reach the network on their own runtime, and hand a page they
+# fetched to whoever reads it as tilo.content.
+tilo-rt = { path = "../../crates/platform/tilo-rt" }
+tilo-net = { path = "../../crates/platform/tilo-net", features = ["http"] }
 # The runner reads the same provider profile Settings writes. Resolving the
 # profile's vault reference remains a desktop-secret-broker operation; no key
 # is linked into this binary through configuration.
@@ -65,6 +73,9 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
+# The web tools' tests ask a server on this machine instead of the engines,
+# and read from it, where the shipped paths refuse its addresses.
+tilo-web-search = { path = "../../crates/platform/tilo-web-search", features = ["fixture-servers"] }
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 runtime-identity = { package = "tilo-identity-client", path = "../../crates/runtime/tilo-identity-client" }
 ed25519-dalek.workspace = true

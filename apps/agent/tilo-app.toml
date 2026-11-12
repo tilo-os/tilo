@@ -42,20 +42,27 @@ signature = ""
 
 [sandbox]
 # Hosted provider egress and credentials live only in model-gateway. The
-# agent itself has no outbound network namespace.
+# agent's own outbound network is what its web tools need: public search
+# engines and the public pages it is asked to read.
 namespaces = [
     "user",
     "pid",
     "uts",
     "ipc",
     "mount",
+    "net",
 ]
 seccomp    = "tilo-default"
 landlock   = "strict"
 
 [sandbox.net]
-# The agent has no direct egress; model-gateway owns the provider allowlist.
-mode = "off"
+# The search engines are a fixed list, but `read_page` opens whatever public
+# page a result or the request names, so no host allowlist can describe it.
+# The read refuses loopback, private, link-local and local-name destinations
+# itself, on every redirect hop, before a request leaves
+# (crates/platform/tilo-web-search, `guard`); a person's network grants can
+# still narrow it.
+mode = "host"
 
 [sandbox.portals]
 

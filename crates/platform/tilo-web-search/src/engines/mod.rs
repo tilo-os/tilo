@@ -188,6 +188,23 @@ pub struct EngineRequest {
 }
 
 impl EngineRequest {
+    /// Ask `base` instead of the engine, with the same query pairs and form
+    /// fields: what a fixture search does to stand a server on this machine
+    /// in for an engine.
+    #[cfg(feature = "fixture-servers")]
+    pub(crate) fn point_at(&mut self, base: &str) {
+        let Ok(mut url) = Url::parse(base) else {
+            return;
+        };
+        let pairs: Vec<(String, String)> = self
+            .url
+            .query_pairs()
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect();
+        url.query_pairs_mut().extend_pairs(pairs);
+        self.url = url;
+    }
+
     /// `GET base?params`. Every base is a constant `https` URL, so `None`
     /// is a typo the request tests catch, never a runtime condition.
     fn get(base: &str, params: &[(&str, &str)]) -> Option<Self> {
