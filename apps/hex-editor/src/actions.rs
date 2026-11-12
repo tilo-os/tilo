@@ -65,7 +65,7 @@ mod tests {
     use crate::buffer::Hex;
     use crate::model::BufferEdit;
     use ui::tilo_actions::OperationKind;
-    use ui::tilo_resource::effect::{Effect as _, EffectDecl};
+    use ui::tilo_resource::effect::EffectDecl;
 
     /// The words of one of the window's actions and one of its effects, as a
     /// palette or an agent publishes them: read from the app's catalogue in
