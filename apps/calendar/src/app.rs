@@ -4001,6 +4001,13 @@ impl CalendarApp {
                 self.dirty = true;
                 true
             }
+            // The window lost the pointer with the button still down: nothing
+            // is being dragged any more, and the next press starts afresh.
+            WindowEvent::CursorLeft { .. } | WindowEvent::Focused(false) => {
+                self.chip_drag = None;
+                self.dirty = true;
+                true
+            }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
