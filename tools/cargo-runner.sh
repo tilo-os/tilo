@@ -24,7 +24,7 @@ case $1 in
         # The build directory's tmp (CARGO_TARGET_TMPDIR), which tests write
         # into, is the test user's too: cargo made it as whoever built.
         dir=$(dirname -- "$1")
-        while [ "$dir" != / ] && [ "$dir" != . ] && [ ! -e "$dir/CACHEDIR.TAG" ]; do dir=$(dirname -- "$dir"); done
+        while [ "$dir" != / ] && [ "$dir" != . ] && [ ! -e "$dir/.rustc_info.json" ]; do dir=$(dirname -- "$dir"); done
         [ ! -d "$dir/tmp" ] || bash "$tools/as-test-user.sh" --own "$dir/tmp"
         exec bash "$tools/with-test-environment.sh" bash "$tools/as-test-user.sh" "$@"
         ;;

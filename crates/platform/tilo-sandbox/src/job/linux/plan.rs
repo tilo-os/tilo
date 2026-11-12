@@ -44,7 +44,8 @@ pub enum Op {
         set: u64,
         recursive: bool,
     },
-    /// Attach an idmapped tree the worker made ([`Plan::trees`], by index).
+    /// Attach a tree the worker opened, idmapped where it could be
+    /// ([`Plan::trees`], by index).
     Attach {
         tree: usize,
         dst: CString,
@@ -88,7 +89,7 @@ impl Op {
                 None => format!("binding {}", inside(dst)),
             },
             Op::SetAttr { path, .. } => format!("making {} read-only", inside(path)),
-            Op::Attach { dst, .. } => format!("binding {} (idmapped)", inside(dst)),
+            Op::Attach { dst, .. } => format!("binding {}", inside(dst)),
             Op::Write { path, .. } => format!("writing {}", inside(path)),
         }
     }
@@ -301,7 +302,7 @@ impl Builder {
             Owners::System => &self.system_userns,
         };
         if let (Some(userns), Some((uid, gid))) = (userns, self.job_ids) {
-            if socket {
+            let tree = if socket {
                 // A socket the caller made for this job (a VM step's passt): it becomes the
                 // job's, which connecting to it takes, wherever it lives. Never idmapped: it
                 // often sits on a filesystem that can't be (a container's /tmp).
@@ -310,20 +311,25 @@ impl Builder {
                 {
                     self.unmapped.push(real.to_path_buf());
                 }
+                super::idmap::tree(real, None)
             } else {
-                match super::idmap::tree(real, userns.as_fd()) {
-                    Ok(tree) => {
-                        self.ops.push(Op::Attach {
-                            tree: self.trees.len(),
-                            dst,
-                        });
-                        self.trees.push(tree);
-                        return Ok(());
-                    }
+                super::idmap::tree(real, Some(userns.as_fd())).or_else(|_| {
                     // Bound as it is: the job still starts, and the caller says which.
-                    Err(_) if idmap == Idmap::Required => self.unmapped.push(real.to_path_buf()),
-                    Err(_) => {}
-                }
+                    if idmap == Idmap::Required {
+                        self.unmapped.push(real.to_path_buf());
+                    }
+                    super::idmap::tree(real, None)
+                })
+            };
+            // Opened here, not by the job's init: the block's ids may not be able to reach
+            // it, as a directory only its owner may enter stops them.
+            if let Ok(tree) = tree {
+                self.ops.push(Op::Attach {
+                    tree: self.trees.len(),
+                    dst,
+                });
+                self.trees.push(tree);
+                return Ok(());
             }
         }
         self.ops.push(Op::Mount {
