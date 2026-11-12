@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
@@ -24,6 +25,23 @@ def effective_overrides(config: dict, profile_name: str) -> list[dict]:
 
 
 class NextestPolicyTests(unittest.TestCase):
+    def test_every_named_test_binary_exists(self) -> None:
+        # nextest refuses a whole config whose filter names a binary no package
+        # builds, so one test binary merged into another stops every run.
+        metadata = subprocess.run(
+            ["cargo", "metadata", "--format-version", "1", "--no-deps", "--offline", "--locked"],
+            cwd=REPO, check=True, capture_output=True, text=True).stdout
+        targets = {
+            package["name"]: {target["name"] for target in package["targets"]}
+            for package in json.loads(metadata)["packages"]
+        }
+        for config in (NEXTEST, FILTERS):
+            text = config.read_text(encoding="utf-8")
+            for package, binary in re.findall(r"package\(([\w-]+)\) and binary\((\w+)\)", text):
+                with self.subTest(config=config.name, package=package, binary=binary):
+                    self.assertIn(package, targets)
+                    self.assertIn(binary, targets[package])
+
     def test_ci_does_not_retry(self) -> None:
         ci = tomllib.loads(NEXTEST.read_text(encoding="utf-8"))["profile"]["ci"]
         self.assertEqual(ci.get("retries", 0), 0)
