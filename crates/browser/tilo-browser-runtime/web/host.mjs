@@ -555,6 +555,9 @@ export async function mountDesktop(target,options={}) {
   }
   let closeWrites=[];
   let forgetCrashed;
+  // Whether the module is in: its exports are filled by init, so a mount that
+  // stopped before that has nothing to flush and nothing to ask.
+  let moduleLoaded=false;
   const cleanup=recoverableClose({
     begin(){
       capture.close();semanticPresentation.close();
@@ -568,7 +571,11 @@ export async function mountDesktop(target,options={}) {
       // An explicit close waits for every persist outstanding, then saves
       // whatever the mount's own close wrote.
       while(persisting)await persisting.catch(()=>{});
-      await runtime.flush_files();
+      // A mount that stopped before the module arrived (no WebGPU, a disposed
+      // mount) says why through its own error: asking the unloaded module to
+      // flush would replace that message with a TypeError about a missing
+      // export, which tells the person nothing about the browser they are in.
+      if(moduleLoaded)await runtime.flush_files();
       if(storage&&closeWrites.length){await storage.commit(closeWrites);closeWrites=[];}
       if(storage){await storage.release();storage=undefined;}
       recoveryJobs.delete(cleanup);closures.delete(cleanup);
@@ -593,6 +600,7 @@ export async function mountDesktop(target,options={}) {
     }
     const startupFonts=fonts();void startupFonts.catch(()=>{});
     await ready();if(!registry.current(token))throw Error('mount disposed');
+    moduleLoaded=true;
     mark('wasm-ready');
     const acquired=await durableHost.open(config.profile,config.device,{settings:options.settings??browserSettings()});
     mark('storage');

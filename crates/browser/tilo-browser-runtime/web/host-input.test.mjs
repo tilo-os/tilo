@@ -35,16 +35,16 @@ const tick=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
 // What the desk answers to `desktop_input_ownership`: the semantics tree's keyboard owner path, who
 // that is, and the field an input method is helping.
 const holding=(holder,{purpose='Text',ime=true,field='field'}={})=>({owner:`/${holder}/${field}[0]`,holder,ime:ime?{x:0,y:0,width:2,height:20,purpose}:null});
-async function fixture({standalone=false,models,providerManagement,app,files}={}){
+async function fixture({standalone=false,models,providerManagement,app,files,dom=true,gpu=true,flushFiles}={}){
  const document=new Node('document');document.body=new Node('body');document.append(document.body);document.activeElement=document.body;document.createElement=tag=>new Node(tag);globalThis.document=document;
- Object.defineProperty(globalThis,'navigator',{configurable:true,value:{gpu:{},platform:'Mac'}});
+ Object.defineProperty(globalThis,'navigator',{configurable:true,value:{...(gpu?{gpu:{}}:{}),platform:'Mac'}});
  globalThis.KeyboardEvent=DomEvent;globalThis.FocusEvent=DomEvent;globalThis.WheelEvent=class extends DomEvent{constructor(type,init){super(type,{deltaX:0,deltaY:0,deltaMode:0,...init});}};globalThis.PointerEvent=class extends DomEvent{constructor(type,init){super(type,{clientX:0,clientY:0,pointerId:1,pointerType:'mouse',buttons:0,...init});}};globalThis.fetch=async url=>{
   if(String(url).endsWith('fonts.json'))return {ok:true,json:async()=>({schema:1,catalog:'host-input-fixture',assets:[{name:'NotoSans[wght].ttf',bytes:1,sha256:'4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a',startup:true}]})};
   return {ok:true,arrayBuffer:async()=>new Uint8Array([1]).buffer};
  };
  let allocated=false,ownershipReads=0;let state=holding('writer');const delivered=[],windowFocus=[];let update;
  // Winit's web backend reports the canvas's own focus and blur as the window's.
- const runtime=runtimeFake({provide_startup_font(){},mount(canvas,_config,_entries,callback){this.config=JSON.parse(_config);update=callback;for(const type of ['focus','blur'])canvas.addEventListener(type,()=>windowFocus.push(type));setTimeout(()=>{allocated=true;callback(JSON.stringify({phase:'gpu-pending'}));queueMicrotask(()=>callback(JSON.stringify({phase:'presented',frames:1})));},0);return 1;},close:()=>[],refresh_storage_lease(){},load_storage(){},mirror_files:async()=>files,load_application:async()=>true,flush_files:async()=>{},storage_write_hook(){},provide_settings:()=>false,drain_storage:()=>[],retry_storage:()=>0,acknowledge_storage(){},pending_writes:()=>[],asset_requests:()=> '[]',modifiers(){},ime:(...args)=>delivered.push(args.slice(1)),clipboard_event:(_id,kind)=>{delivered.push([kind]);return true;},
+ const runtime=runtimeFake({provide_startup_font(){},mount(canvas,_config,_entries,callback){this.config=JSON.parse(_config);update=callback;for(const type of ['focus','blur'])canvas.addEventListener(type,()=>windowFocus.push(type));setTimeout(()=>{allocated=true;callback(JSON.stringify({phase:'gpu-pending'}));queueMicrotask(()=>callback(JSON.stringify({phase:'presented',frames:1})));},0);return 1;},close:()=>[],refresh_storage_lease(){},load_storage(){},mirror_files:async()=>files,load_application:async()=>true,flush_files:async()=>{if(flushFiles==='unloaded')throw new TypeError("undefined is not an object (evaluating 'wasm.flush_files')");},storage_write_hook(){},provide_settings:()=>false,drain_storage:()=>[],retry_storage:()=>0,acknowledge_storage(){},pending_writes:()=>[],asset_requests:()=> '[]',modifiers(){},ime:(...args)=>delivered.push(args.slice(1)),clipboard_event:(_id,kind)=>{delivered.push([kind]);return true;},
 
   // The desk's live answer: who holds the keyboard, and the field an input method is helping.
   desktop_input_ownership:()=>{ownershipReads++;if(!allocated)throw Error('Desktop closed');return standalone?undefined:JSON.stringify(state);},
@@ -59,7 +59,7 @@ async function fixture({standalone=false,models,providerManagement,app,files}={}
   .replace("import {acquireStorage} from './storage.mjs';","const acquireStorage=async()=>globalThis.__hostFixture.storage;")
   .replace(/from '(\.\/[^']+)'/g,(_all,path)=>`from '${new URL(path,import.meta.url).href}'`);
  const {mountDesktop}=await import(`data:text/javascript;base64,${Buffer.from(`${source}\n// ${Math.random()}`).toString('base64')}`);
- const target=new Node('div');document.body.append(target);const statuses=[];const host=await mountDesktop(target,{app:app??(standalone?'writer':'desktop'),models,providerManagement,onStatus:status=>statuses.push(status)});await tick();
+ const target=new Node('div');document.body.append(target);const statuses=[];const host=await mountDesktop(target,{app:app??(standalone?'writer':'desktop'),models,providerManagement,...(dom===false?{dom:false}:{}),onStatus:status=>statuses.push(status)});await tick();
  // A status's `ime` is the presented frame's field, which the desk's own answer reports from then on.
  const updateStatus=status=>{if('ime' in status)state={...state,ime:status.ime??null};return update(JSON.stringify(status));};
  return {host,runtime,document,delivered,windowFocus,statuses,disposeRuntime(){allocated=false;},get state(){return state;},set state(value){state=value;},get ownershipReads(){return ownershipReads;},update:updateStatus};
@@ -75,6 +75,13 @@ test('model bootstrap stays mount scoped and forwards only its transport binding
  const unbound=await fixture();
  assert.equal(unbound.runtime.config.models,undefined);
  await unbound.host.cleanup();
+});
+test('a mount that stopped before the module arrived says why, not that an export is missing',async()=>{
+ // A browser without WebGPU refuses the canvas mount before init, so the
+ // module's exports are never filled: closing that mount must not ask the
+ // module to flush, or the person is told an export is undefined instead of
+ // why their browser cannot draw.
+ await assert.rejects(fixture({dom:false,gpu:false,flushFiles:'unloaded'}),/WebGPU is required/);
 });
 test('a browser that keeps no app files still mounts, and the page is told why',async()=>{
  // A private window, or one whose site data is off, refuses the whole file
