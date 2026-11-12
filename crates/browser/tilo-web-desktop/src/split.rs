@@ -146,10 +146,12 @@ macro_rules! lazy_exports {
 
 // The way into a workspace: the certified peer (the crypto, the transport
 // and the workspaces' replication behind it), the person's root identity,
-// links, the workspaces this page entered, the accounts this browser keeps
-// and the answers a workspace's host gives a window's catalogue requests. The page loads it once the
+// links, the workspaces this page entered, the accounts this browser keeps,
+// the invitation a site shelves for a link and the answers a workspace's host
+// gives a window's catalogue requests. The page loads it once the
 // start module is in, and every door into a workspace waits for it
-// (`loadRuntime` of `web/host.mjs`).
+// (`loadRuntime` of `web/host.mjs`): the entry reads and shelves a link, and
+// drops a workspace its host says is gone, only with the runtime in hand.
 lazy_exports!("peer":
     "hostRefusal", "hostInfo", "certifyDevice", "channelVault", "issueDeviceCert",
     "redeemInvitation", "inspectInvitation", "reconnectCertificate",
@@ -161,5 +163,6 @@ lazy_exports!("peer":
     "root_*", "__wbg_root_*", "signInAnswer", "wayIn", "wayInAfter", "admittedAsAsked",
     "parseLink", "formatLink", "formatInviteLink", "nativeLink", "qrSvg",
     "rememberEntered", "nameEntered", "markEnteredUnavailable", "forgetGoneWorkspaces",
-    "settleFailedWorkspace", "component_catalogue_response", "project_browser_accounts",
+    "settleFailedWorkspace", "sealedInvitationLink", "workspaceDeleted",
+    "forgetDeletedWorkspace", "component_catalogue_response", "project_browser_accounts",
 );
