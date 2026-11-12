@@ -15,9 +15,8 @@ use super::route_keys::Arrived;
 use super::{
     ActionDirectoryRequest, Backend, CatalogueChange, CollabEvent, CollabRequest, CollabTransport,
     CollaborationManager, Collaborator, DocumentMutation, DocumentPublicationError,
-    DocumentPublicationReceipt, ExportedAction, ExportedInput, PresenceKey, PresencePayload,
-    PrimaryRouteState, RouteSpec, SignedOp, TransportCommand, TransportError, TransportStatus,
-    Uuid, auto_hello_env, mpsc,
+    DocumentPublicationReceipt, PresenceKey, PresencePayload, PrimaryRouteState, RouteSpec,
+    SignedOp, TransportCommand, TransportError, TransportStatus, Uuid, auto_hello_env, mpsc,
 };
 use runtime_collab::OpAdmission;
 use tilo_sort::CompactSort as _;
@@ -12413,7 +12412,7 @@ mod tests {
             "operation_kind": tilo_actions::OperationKind::View,
             "params": [tilo_actions::ActionParam::required("page", tilo_actions::ParamType::Resource, "The page to open")],
             "contract": tilo_actions::ActionContract::view(),
-            "input": ExportedInput::None
+            "input": crate::ExportedInput::None
         })
     }
 

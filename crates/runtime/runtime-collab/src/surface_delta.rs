@@ -8,8 +8,9 @@
 //! megabytes. A [`SurfaceDelta`] sends
 //!
 //! * each distinct action catalogue entry once, a *shape*: an
-//!   [`ExportedAction`] with nothing of the resource it is offered on, named
-//!   by a content hash;
+//!   [`ExportedAction::shape`], with nothing of the resource it is offered
+//!   on (its label in the words marked, so "Focus Chat" and "Focus Notes" are
+//!   one), named by a content hash;
 //! * each distinct ordered set of shapes once, a *template*, named by a hash
 //!   of its shapes' ids;
 //! * each resource once, with the fields that are its own and the template of
@@ -210,17 +211,32 @@ impl SurfaceTable {
                 let Some(shape) = self.shapes.get(member) else {
                     continue;
                 };
-                actions.push(ExportedAction {
-                    state: tilo_actions::ActionState::default(),
-                    resource: resource.resource.clone(),
-                    semantic_identity: resource.fields.semantic_identity.clone(),
-                    resource_kind: resource.fields.resource_kind.clone(),
-                    resource_label: resource.fields.resource_label.clone(),
-                    ..shape.clone()
-                });
+                actions.push(shape.on_resource(&resource.resource, &resource.fields));
             }
         }
         actions
+    }
+
+    /// Whether it holds the shape `id`.
+    #[must_use]
+    pub fn holds(&self, id: &ShapeId) -> bool {
+        self.shapes.contains_key(id)
+    }
+
+    /// Whether it holds the template `id`.
+    #[must_use]
+    pub fn holds_template(&self, id: &ShapeId) -> bool {
+        self.templates.contains_key(id)
+    }
+
+    /// The templates held, by id.
+    pub fn templates(&self) -> impl Iterator<Item = (&ShapeId, &Vec<ShapeId>)> {
+        self.templates.iter()
+    }
+
+    /// The shapes held, by id.
+    pub fn shapes(&self) -> impl Iterator<Item = (&ShapeId, &ExportedAction)> {
+        self.shapes.iter()
     }
 
     /// Number of resources held.
@@ -391,6 +407,11 @@ impl SurfacePublication {
                 templates,
             },
         )
+    }
+
+    /// The templates the published resources name.
+    pub fn templates(&self) -> impl Iterator<Item = (&ShapeId, &Vec<ShapeId>)> {
+        self.templates.iter()
     }
 
     /// Where the actions of the published resource `resource` sit in the descriptors this

@@ -5,10 +5,7 @@
 
 use super::super::handoff::HandoffRequest;
 use super::DocumentMutation;
-use super::{
-    CollabEvent, CollabRequest, Collaborator, ExportedAction, ExportedInput, PresencePayload,
-    SdkCommand, SignedOp,
-};
+use super::{CollabEvent, CollabRequest, Collaborator, PresencePayload, SdkCommand, SignedOp};
 
 #[derive(Default)]
 pub(crate) struct ByteMeter(Option<usize>);
@@ -74,32 +71,6 @@ pub(super) fn serialized_bytes<T: serde::Serialize>(value: &T, meter: &mut ByteM
     match runtime_collab::wire_json_len(value) {
         usize::MAX => meter.0 = None,
         bytes => meter.add(bytes),
-    }
-}
-
-fn exported_action_bytes(action: &ExportedAction, meter: &mut ByteMeter) {
-    meter.string_capacity(&action.resource);
-    if let Some(identity) = &action.semantic_identity {
-        meter.string_capacity(&identity.kind);
-        meter.string_capacity(&identity.key);
-    }
-    meter.string_capacity(&action.action);
-    meter.string_capacity(&action.resource_kind);
-    meter.string_capacity(&action.resource_label);
-    meter.string_capacity(&action.action_label);
-    if let Some(description) = &action.description {
-        meter.string_capacity(description);
-    }
-    serialized_bytes(&action.params, meter);
-    serialized_bytes(&action.contract, meter);
-    if let ExportedInput::Text {
-        prompt,
-        placeholder,
-        ..
-    } = &action.input
-    {
-        meter.string_capacity(prompt);
-        meter.string_capacity(placeholder);
     }
 }
 
@@ -172,7 +143,7 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             meter.bytes(bytes);
         }
         CollabRequest::WantContent { hash } => meter.string_capacity(hash),
-        CollabRequest::PublishActionSurface { delta } => surface_delta_bytes(delta, &mut meter),
+        CollabRequest::PublishActionSurface { delta } => serialized_bytes(delta, &mut meter),
         CollabRequest::ReportContinuation { metadata, .. } => {
             meter.bytes(metadata);
         }
@@ -428,63 +399,6 @@ pub(super) async fn remote_action_round_trip(
     })
 }
 
-fn surface_delta_bytes(delta: &runtime_collab::SurfaceDelta, meter: &mut ByteMeter) {
-    meter.add_product(
-        delta.shapes.capacity(),
-        std::mem::size_of::<(runtime_collab::ShapeId, ExportedAction)>(),
-    );
-    for (_, shape) in &delta.shapes {
-        exported_action_bytes(shape, meter);
-    }
-    meter.add_product(
-        delta.templates.capacity(),
-        std::mem::size_of::<(runtime_collab::ShapeId, Vec<runtime_collab::ShapeId>)>(),
-    );
-    for (_, members) in &delta.templates {
-        meter.add_product(members.capacity(), runtime_collab::SHAPE_ID_BYTES);
-    }
-    meter.add_product(
-        delta.resources.capacity(),
-        std::mem::size_of::<runtime_collab::SurfaceResource>(),
-    );
-    for resource in &delta.resources {
-        meter.string_capacity(&resource.resource);
-        meter.string_capacity(&resource.fields.resource_kind);
-        meter.string_capacity(&resource.fields.resource_label);
-        serialized_bytes(&resource.fields.semantic_identity, meter);
-    }
-    meter.add_product(delta.removed.capacity(), std::mem::size_of::<String>());
-    for resource in &delta.removed {
-        meter.string_capacity(resource);
-    }
-}
-
-fn catalogue_change_bytes(change: &runtime_collab::CatalogueChange, meter: &mut ByteMeter) {
-    let id_bytes = |id: &runtime_collab::CatalogueSurfaceId, meter: &mut ByteMeter| {
-        if let Some(provider) = &id.provider {
-            meter.string_capacity(provider);
-        }
-        meter.string_capacity(&id.app_id);
-        meter.string_capacity(&id.cluster_id);
-        meter.string_capacity(&id.record_id);
-    };
-    meter.add_product(
-        change.removed.capacity(),
-        std::mem::size_of::<runtime_collab::CatalogueSurfaceId>(),
-    );
-    for id in &change.removed {
-        id_bytes(id, meter);
-    }
-    meter.add_product(
-        change.surfaces.capacity(),
-        std::mem::size_of::<runtime_collab::CatalogueSurfaceChange>(),
-    );
-    for surface in &change.surfaces {
-        id_bytes(&surface.surface, meter);
-        surface_delta_bytes(&surface.delta, meter);
-    }
-}
-
 fn scrollback_batch_bytes(
     ops: &[Box<SignedOp>],
     op_capacity: usize,
@@ -653,7 +567,7 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             "RemoteAction"
         }
         CollabEvent::ActionCatalogue { change } => {
-            catalogue_change_bytes(change, &mut meter);
+            serialized_bytes(change, &mut meter);
             "ActionCatalogue"
         }
         CollabEvent::LocalDocumentActionReported { result, .. } => {

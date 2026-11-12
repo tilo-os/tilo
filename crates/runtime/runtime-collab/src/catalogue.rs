@@ -3,14 +3,19 @@
 //! The catalogue (every surface the broker lets one follower invoke) changes
 //! with nearly every publication, while each change touches one surface and
 //! a few of its resources. A [`CatalogueChange`] carries only that: per
-//! surface a [`SurfaceDelta`], and the surfaces added or gone. The broker
+//! surface a [`SurfaceDelta`], and the surfaces added or gone. Its shapes
+//! and templates travel once for the whole catalogue: a second window of an
+//! app offers what the first one did, so it costs its resources alone. The broker
 //! keeps a [`CataloguePublication`] per follower, which applies each change
 //! to its [`ActionCatalogue`].
 
-use std::collections::HashMap;
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::{BrokerActionSurface, ExportedAction, SurfaceDelta, SurfacePublication, SurfaceTable};
+use crate::{
+    BrokerActionSurface, ExportedAction, ShapeId, SurfaceDelta, SurfacePublication, SurfaceTable,
+};
 
 /// One surface of the catalogue: everything about it but its actions.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -42,6 +47,12 @@ pub struct CatalogueChange {
     pub reset: bool,
     /// Surfaces no longer offered, applied before `surfaces`.
     pub removed: Vec<CatalogueSurfaceId>,
+    /// The shapes and templates `surfaces` name that the follower holds in
+    /// none of its surfaces; their own deltas carry none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shapes: Vec<(ShapeId, ExportedAction)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub templates: Vec<(ShapeId, Vec<ShapeId>)>,
     pub surfaces: Vec<CatalogueSurfaceChange>,
 }
 
@@ -69,6 +80,22 @@ impl CatalogueChange {
         if newer.reset {
             return newer;
         }
+        // A shape stays whatever becomes of the surface it came with: a
+        // later surface may name it as held.
+        let held: HashSet<ShapeId> = self.shapes.iter().map(|(id, _)| *id).collect();
+        self.shapes.extend(
+            newer
+                .shapes
+                .into_iter()
+                .filter(|(id, _)| !held.contains(id)),
+        );
+        let held: HashSet<ShapeId> = self.templates.iter().map(|(id, _)| *id).collect();
+        self.templates.extend(
+            newer
+                .templates
+                .into_iter()
+                .filter(|(id, _)| !held.contains(id)),
+        );
         for gone in newer.removed {
             self.surfaces.retain(|change| change.surface != gone);
             if !self.reset && !self.removed.contains(&gone) {
@@ -111,6 +138,19 @@ impl CataloguePublication {
         surfaces: &[(CatalogueSurfaceId, Arc<[ExportedAction]>)],
     ) -> CatalogueChange {
         let reset = self.revision == 0;
+        let held_templates: HashMap<ShapeId, &[ShapeId]> = self
+            .held
+            .values()
+            .flat_map(|held| held.publication.templates())
+            .map(|(id, members)| (*id, members.as_slice()))
+            .collect();
+        let held_shapes: HashSet<ShapeId> = held_templates
+            .values()
+            .flat_map(|members| members.iter())
+            .copied()
+            .collect();
+        let held_templates: HashSet<ShapeId> = held_templates.into_keys().collect();
+        let (mut sent_shapes, mut sent_templates) = (HashSet::new(), HashSet::new());
         let mut change = CatalogueChange {
             since: self.revision,
             revision: self.revision.saturating_add(1),
@@ -132,6 +172,17 @@ impl CataloguePublication {
                 }
                 None => SurfacePublication::next(None, actions),
             };
+            let mut delta = delta;
+            for (id, shape) in std::mem::take(&mut delta.shapes) {
+                if !held_shapes.contains(&id) && sent_shapes.insert(id) {
+                    change.shapes.push((id, shape));
+                }
+            }
+            for (id, members) in std::mem::take(&mut delta.templates) {
+                if !held_templates.contains(&id) && sent_templates.insert(id) {
+                    change.templates.push((id, members));
+                }
+            }
             if !delta.is_empty() {
                 change.surfaces.push(CatalogueSurfaceChange {
                     surface: id.clone(),
@@ -156,6 +207,60 @@ impl CataloguePublication {
     }
 }
 
+/// Shapes and templates a follower holds or a change brings, by id.
+#[derive(Default)]
+struct Pool<'a> {
+    shapes: HashMap<&'a ShapeId, &'a ExportedAction>,
+    templates: HashMap<&'a ShapeId, &'a Vec<ShapeId>>,
+}
+
+/// `delta` with the templates its resources name and the shapes those name
+/// from `pool`, when neither it nor the surface's table `own` holds them.
+fn filled<'a>(
+    delta: &'a SurfaceDelta,
+    own: Option<&SurfaceTable>,
+    pool: &Pool<'_>,
+) -> Cow<'a, SurfaceDelta> {
+    let mut templates: Vec<(ShapeId, Vec<ShapeId>)> = Vec::new();
+    for resource in &delta.resources {
+        let id = &resource.template;
+        if own.is_some_and(|own| own.holds_template(id))
+            || delta
+                .templates
+                .iter()
+                .chain(&templates)
+                .any(|(held, _)| held == id)
+        {
+            continue;
+        }
+        if let Some(members) = pool.templates.get(id) {
+            templates.push((*id, (*members).clone()));
+        }
+    }
+    let mut carried: HashSet<&ShapeId> = delta.shapes.iter().map(|(id, _)| id).collect();
+    let mut shapes: Vec<(ShapeId, ExportedAction)> = Vec::new();
+    for member in delta
+        .templates
+        .iter()
+        .chain(&templates)
+        .flat_map(|(_, members)| members)
+    {
+        if !own.is_some_and(|own| own.holds(member))
+            && carried.insert(member)
+            && let Some(shape) = pool.shapes.get(member)
+        {
+            shapes.push((*member, (*shape).clone()));
+        }
+    }
+    if templates.is_empty() && shapes.is_empty() {
+        return Cow::Borrowed(delta);
+    }
+    let mut delta = delta.clone();
+    delta.templates.extend(templates);
+    delta.shapes.extend(shapes);
+    Cow::Owned(delta)
+}
+
 /// The catalogue as a follower holds it, kept by applying each change.
 #[derive(Clone, Debug, Default)]
 pub struct ActionCatalogue {
@@ -176,6 +281,32 @@ impl ActionCatalogue {
     }
 
     fn try_apply(&mut self, change: &CatalogueChange) -> Result<(), String> {
+        // Each surface's delta with the templates and shapes it names that
+        // came with the change or that another surface held before it.
+        let deltas: Vec<Cow<'_, SurfaceDelta>> = {
+            let mut pool = Pool::default();
+            if !change.reset {
+                for table in &self.tables {
+                    pool.shapes.extend(table.shapes());
+                    pool.templates.extend(table.templates());
+                }
+            }
+            pool.shapes
+                .extend(change.shapes.iter().map(|(id, shape)| (id, shape)));
+            pool.templates
+                .extend(change.templates.iter().map(|(id, members)| (id, members)));
+            change
+                .surfaces
+                .iter()
+                .map(|surface| {
+                    let own = self
+                        .position(&surface.surface)
+                        .and_then(|index| self.tables.get(index))
+                        .filter(|_| !change.reset && !surface.delta.reset);
+                    filled(&surface.delta, own, &pool)
+                })
+                .collect()
+        };
         if change.reset {
             self.tables.clear();
             self.surfaces.clear();
@@ -191,7 +322,7 @@ impl ActionCatalogue {
                 self.surfaces.remove(index);
             }
         }
-        for surface in &change.surfaces {
+        for (surface, delta) in change.surfaces.iter().zip(&deltas) {
             let index = match self.position(&surface.surface) {
                 Some(index) => index,
                 None if surface.delta.reset => {
@@ -212,7 +343,7 @@ impl ActionCatalogue {
             else {
                 continue;
             };
-            table.apply(&surface.delta)?;
+            table.apply(delta)?;
             held.actions = table.actions();
             if table.is_empty() {
                 self.tables.remove(index);
@@ -339,6 +470,53 @@ mod tests {
             "a change that does not follow"
         );
         assert!(stepwise.surfaces().is_empty(), "leaves nothing held");
+    }
+
+    /// A second window of an app offers the shapes the first one does: it
+    /// costs its resources alone, also when the surface that brought the
+    /// shapes is gone before the follower reads the changes.
+    #[test]
+    fn a_second_window_costs_its_resources_alone() {
+        let mut publication = CataloguePublication::default();
+        let mut held = ActionCatalogue::default();
+        held.apply(&publication.next(&rows(&[window(1, 3, 0)])))
+            .unwrap();
+        let second = publication.next(&rows(&[window(1, 3, 0), window(2, 3, 0)]));
+        assert!(second.shapes.is_empty() && second.templates.is_empty());
+        assert!(second.surfaces.iter().all(|surface| {
+            surface.delta.shapes.is_empty() && surface.delta.templates.is_empty()
+        }));
+        let first_gone = publication.next(&rows(&[window(2, 3, 0)]));
+        let third = publication.next(&rows(&[window(3, 2, 0)]));
+        held.apply(&second.then(first_gone).then(third)).unwrap();
+        assert_eq!(held.surfaces(), [window(3, 2, 0)]);
+
+        let mut publication = CataloguePublication::default();
+        let mut held = ActionCatalogue::default();
+        held.apply(&publication.next(&[])).unwrap();
+        let brought = publication.next(&rows(&[window(1, 3, 0)]));
+        let replaced = publication.next(&rows(&[window(2, 3, 0)]));
+        held.apply(&brought.then(replaced)).unwrap();
+        assert_eq!(held.surfaces(), [window(2, 3, 0)]);
+    }
+
+    /// Actions whose words name the resource they are on share one shape,
+    /// and read back as they were published.
+    #[test]
+    fn words_naming_the_resource_share_one_shape() {
+        let named = |messages| {
+            let mut surface = window(1, messages, 0);
+            for action in &mut surface.actions {
+                action.action_label = format!("{} {}", action.action, action.resource_label);
+                action.description = Some(format!("\u{1}L {}\u{1}", action.resource_label));
+            }
+            surface
+        };
+        let change = CataloguePublication::default().next(&rows(&[named(5)]));
+        assert_eq!(change.shapes.len(), 4);
+        let mut held = ActionCatalogue::default();
+        held.apply(&change).unwrap();
+        assert_eq!(held.surfaces(), [named(5)]);
     }
 
     /// A whole catalogue is sent once, each action shape in it once; a
