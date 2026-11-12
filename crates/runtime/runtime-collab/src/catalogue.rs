@@ -270,17 +270,13 @@ pub struct ActionCatalogue {
 }
 
 impl ActionCatalogue {
-    /// Apply `change`. One that does not follow what is held (a bug on either
-    /// side) leaves the catalogue empty rather than wrong.
+    /// Apply `change`, or change nothing and say why it does not apply.
+    ///
+    /// A follower whose change does not apply has missed one it needs (the
+    /// revisions do not join, or it names a shape it was never sent): what it
+    /// held before is still the best it has, so it keeps that and asks for the
+    /// whole catalogue again, which arrives as a reset.
     pub fn apply(&mut self, change: &CatalogueChange) -> Result<(), String> {
-        let applied = self.try_apply(change);
-        if applied.is_err() {
-            *self = Self::default();
-        }
-        applied
-    }
-
-    fn try_apply(&mut self, change: &CatalogueChange) -> Result<(), String> {
         // Each surface's delta with the templates and shapes it names that
         // came with the change or that another surface held before it.
         let deltas: Vec<Cow<'_, SurfaceDelta>> = {
@@ -299,22 +295,41 @@ impl ActionCatalogue {
                 .surfaces
                 .iter()
                 .map(|surface| {
-                    let own = self
-                        .position(&surface.surface)
-                        .and_then(|index| self.tables.get(index))
-                        .filter(|_| !change.reset && !surface.delta.reset);
+                    let own = self.held_table(&surface.surface, change.reset);
+                    let own = own.filter(|_| !surface.delta.reset);
                     filled(&surface.delta, own, &pool)
                 })
                 .collect()
         };
-        if change.reset {
-            self.tables.clear();
-            self.surfaces.clear();
-        } else if change.since != self.revision {
+        if !change.reset && change.since != self.revision {
             return Err(format!(
                 "catalogue change from revision {} does not follow revision {}",
                 change.since, self.revision
             ));
+        }
+        // Every delta must apply before any does: one that does not is asked
+        // for again whole, never half applied and never emptied.
+        {
+            let empty = SurfaceTable::default();
+            for (surface, delta) in change.surfaces.iter().zip(&deltas) {
+                let held = self
+                    .held_table(&surface.surface, change.reset)
+                    .filter(|_| !change.removed.contains(&surface.surface));
+                match (held, surface.delta.reset) {
+                    (Some(table), _) => table.validate(delta)?,
+                    (None, true) => empty.validate(delta)?,
+                    (None, false) => {
+                        return Err(format!(
+                            "catalogue change names surface {:?} not held",
+                            surface.surface
+                        ));
+                    }
+                }
+            }
+        }
+        if change.reset {
+            self.tables.clear();
+            self.surfaces.clear();
         }
         for gone in &change.removed {
             if let Some(index) = self.position(gone) {
@@ -356,6 +371,14 @@ impl ActionCatalogue {
 
     fn position(&self, id: &CatalogueSurfaceId) -> Option<usize> {
         self.surfaces.iter().position(|surface| surface.id() == *id)
+    }
+
+    /// What is held of `id`, unless the change that asks discards everything.
+    fn held_table(&self, id: &CatalogueSurfaceId, discarding: bool) -> Option<&SurfaceTable> {
+        if discarding {
+            return None;
+        }
+        self.position(id).and_then(|index| self.tables.get(index))
     }
 
     /// Every surface held, in the order each was first offered.
@@ -462,6 +485,7 @@ mod tests {
         }
         composed.apply(&pending).unwrap();
         assert_eq!(composed.surfaces(), stepwise.surfaces());
+        let before_the_gap = stepwise.surfaces().to_vec();
 
         let _skipped = publication.next(&rows(&[window(1, 2, 0)]));
         let next = publication.next(&rows(&[window(1, 3, 0)]));
@@ -469,7 +493,40 @@ mod tests {
             stepwise.apply(&next).is_err(),
             "a change that does not follow"
         );
-        assert!(stepwise.surfaces().is_empty(), "leaves nothing held");
+        assert_eq!(
+            stepwise.surfaces(),
+            before_the_gap,
+            "a change that does not apply leaves the last good catalogue"
+        );
+    }
+
+    /// A follower that cannot apply a change keeps what it held and asks for
+    /// the whole catalogue, which arrives as a reset and replaces it.
+    #[test]
+    fn a_change_that_does_not_apply_keeps_the_last_good_catalogue() {
+        let mut publication = CataloguePublication::default();
+        let mut held = ActionCatalogue::default();
+        held.apply(&publication.next(&rows(&[window(1, 3, 0)])))
+            .unwrap();
+        let last_good = held.surfaces().to_vec();
+
+        let _skipped = publication.next(&rows(&[window(1, 4, 0)]));
+        let gap = publication.next(&rows(&[window(1, 5, 0)]));
+        assert!(held.apply(&gap).is_err(), "the revision gap");
+        assert_eq!(held.surfaces(), last_good, "no empty window");
+
+        let mut unknown = CatalogueChange::snapshot(&[window(2, 2, 0)]);
+        unknown.templates.clear();
+        assert!(
+            held.apply(&unknown).is_err(),
+            "a template it was never sent"
+        );
+        assert_eq!(held.surfaces(), last_good, "no empty window");
+
+        let fresh = CatalogueChange::snapshot(&[window(2, 2, 0)]);
+        assert!(fresh.reset, "the whole catalogue is asked for as a reset");
+        held.apply(&fresh).unwrap();
+        assert_eq!(held.surfaces(), [window(2, 2, 0)], "restored whole");
     }
 
     /// A second window of an app offers the shapes the first one does: it

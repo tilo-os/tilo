@@ -125,8 +125,9 @@ impl SurfaceTable {
         *self = Self::default();
     }
 
-    /// Apply `delta`, or change nothing and say why it does not apply.
-    pub fn apply(&mut self, delta: &SurfaceDelta) -> Result<(), String> {
+    /// Whether `delta` applies to what is held, changing nothing: a catalogue
+    /// checks every delta of a change before it applies any.
+    pub fn validate(&self, delta: &SurfaceDelta) -> Result<(), String> {
         for (_, shape) in &delta.shapes {
             if !shape.resource.is_empty()
                 || !shape.resource_kind.is_empty()
@@ -164,6 +165,12 @@ impl SurfaceTable {
                 ));
             }
         }
+        Ok(())
+    }
+
+    /// Apply `delta`, or change nothing and say why it does not apply.
+    pub fn apply(&mut self, delta: &SurfaceDelta) -> Result<(), String> {
+        self.validate(delta)?;
         if delta.reset {
             self.clear();
         }

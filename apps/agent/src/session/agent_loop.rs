@@ -829,10 +829,15 @@ impl Session {
     }
 
     /// Apply a change to the broker catalogue and invalidate the cached
-    /// survey.
+    /// survey. A change that does not apply leaves the catalogue as it was:
+    /// the connection asks the broker for the whole catalogue, whose answer
+    /// comes as a reset.
     pub(super) fn apply_broker_catalogue(&mut self, change: &ui::collaboration::CatalogueChange) {
         if let Err(error) = self.broker_catalogue.apply(change) {
-            tracing::error!(%error, "the broker's catalogue change did not apply");
+            tracing::warn!(
+                %error,
+                "the broker's catalogue change did not apply; keeping the catalogue held"
+            );
         }
         self.broker_revision = self.broker_revision.wrapping_add(1);
     }

@@ -13,10 +13,11 @@
 use super::channel_key;
 use super::route_keys::Arrived;
 use super::{
-    ActionDirectoryRequest, Backend, CatalogueChange, CollabEvent, CollabRequest, CollabTransport,
-    CollaborationManager, Collaborator, DocumentMutation, DocumentPublicationError,
-    DocumentPublicationReceipt, PresenceKey, PresencePayload, PrimaryRouteState, RouteSpec,
-    SignedOp, TransportCommand, TransportError, TransportStatus, Uuid, auto_hello_env, mpsc,
+    ActionCatalogue, ActionDirectoryRequest, Backend, CatalogueChange, CollabEvent, CollabRequest,
+    CollabTransport, CollaborationManager, Collaborator, DocumentMutation,
+    DocumentPublicationError, DocumentPublicationReceipt, PresenceKey, PresencePayload,
+    PrimaryRouteState, RouteSpec, SignedOp, TransportCommand, TransportError, TransportStatus,
+    Uuid, auto_hello_env, mpsc,
 };
 use runtime_collab::OpAdmission;
 use tilo_sort::CompactSort as _;
@@ -5244,8 +5245,10 @@ async fn spawn_action_catalogue_stream(
     admit_initial_action_catalogue(&initial, inbound_tx, Some(turn))?;
 
     let tx = inbound_tx.clone();
+    let channel = channel.clone();
     tokio::task::spawn_local(async move {
-        forward_action_catalogues(async || stream.read().await.map_err(|_| ()), &tx, turns).await;
+        let source = BrokerCatalogue { channel, stream };
+        forward_action_catalogues(source, initial, &tx, turns).await;
     });
     Ok(())
 }
@@ -5267,30 +5270,106 @@ fn admit_initial_action_catalogue(
     Ok(())
 }
 
-/// Forward catalogue changes from `read` until it or the bridge fails. At
-/// most one change is queued at a time: the next read waits until the owner
-/// has dequeued the previous one, and the broker composes what changed
-/// meanwhile into the next.
+/// Where a follower's catalogue changes come from: the stream it reads, and
+/// the whole catalogue asked for again when a change does not apply.
+trait CatalogueSource {
+    /// The next change, as the broker sent it; `Err` once the stream ended.
+    async fn read(&mut self) -> Result<String, ()>;
+    /// Ask the broker for the whole catalogue: its next change is a reset,
+    /// not a delta.
+    async fn restart(&mut self) -> Result<(), ()>;
+}
+
+/// One connection's catalogue stream, replaced by a fresh subscription when a
+/// change does not apply to what the follower holds.
+struct BrokerCatalogue {
+    channel: runtime_collab::ChannelHandle,
+    stream: runtime_collab::ActionCatalogueStream,
+}
+
+impl CatalogueSource for BrokerCatalogue {
+    async fn read(&mut self) -> Result<String, ()> {
+        self.stream.read().await.map_err(|_| ())
+    }
+
+    async fn restart(&mut self) -> Result<(), ()> {
+        self.stream = self
+            .channel
+            .subscribe_action_catalogue()
+            .await
+            .map_err(|_| ())?;
+        Ok(())
+    }
+}
+
+/// Follow the catalogue after `initial` (whose admission the caller does),
+/// forwarding each change once it applies to a shadow of what the follower
+/// holds. At most one change is queued at a time: the next read waits until
+/// the owner has dequeued the previous one, and the broker composes what
+/// changed meanwhile into the next.
+///
+/// A change that does not apply — the revisions do not join, it names a shape
+/// the follower was never sent, or its bytes do not decode — asks the broker
+/// for the whole catalogue at once, and that answer is forwarded as the next
+/// change. The follower is never sent a change it cannot apply, and never left
+/// with an empty catalogue: it keeps the last one that did until the reset
+/// arrives.
 async fn forward_action_catalogues(
-    mut read: impl AsyncFnMut() -> Result<String, ()>,
+    mut source: impl CatalogueSource,
+    initial: String,
     tx: &InboundBridge,
     turns: Arc<tokio::sync::Semaphore>,
 ) {
+    let mut held = ActionCatalogue::default();
+    let admitted = match serde_json::from_str::<CatalogueChange>(&initial) {
+        Ok(change) => match held.apply(&change) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "collab: the initial action catalogue does not apply; asking for the whole catalogue"
+                );
+                false
+            }
+        },
+        Err(error) => {
+            tracing::warn!(%error, "collab: invalid initial action catalogue change");
+            false
+        }
+    };
+    if !admitted && source.restart().await.is_err() {
+        return;
+    }
     loop {
         let Ok(turn) = turns.clone().acquire_owned().await else {
             break;
         };
-        let Ok(change) = read().await else {
+        let Ok(text) = source.read().await else {
             break;
         };
-        // A change cannot be skipped: every later one builds on it.
-        let decoded = match serde_json::from_str::<CatalogueChange>(&change) {
+        let decoded = match serde_json::from_str::<CatalogueChange>(&text) {
             Ok(decoded) => decoded,
             Err(error) => {
-                tracing::error!(%error, "collab: invalid broker action catalogue change");
-                break;
+                tracing::error!(
+                    %error,
+                    "collab: invalid broker action catalogue change; asking for the whole catalogue"
+                );
+                if source.restart().await.is_err() {
+                    break;
+                }
+                continue;
             }
         };
+        if let Err(error) = held.apply(&decoded) {
+            tracing::warn!(
+                %error,
+                "collab: the broker's action catalogue change does not apply; asking for the whole catalogue"
+            );
+            if source.restart().await.is_err() {
+                break;
+            }
+            continue;
+        }
         if !tx
             .send_durable_turn(
                 CollabEvent::ActionCatalogue { change: decoded },
@@ -6854,6 +6933,7 @@ mod tests {
         clippy::unreachable,
         clippy::string_slice,
         clippy::disallowed_methods,
+        clippy::future_not_send,
         reason = "the tests and the fixtures they share with the toolkit's tests are test code"
     )]
     use super::*;
@@ -12428,6 +12508,53 @@ mod tests {
         assert!(!state.is_healthy());
     }
 
+    /// A catalogue source that answers each read with the whole catalogue of
+    /// connection `reads + 1`: `initial` is connection 1, so a read ahead of
+    /// the owner would be visible in the connection it names.
+    struct NextWindow {
+        reads: std::rc::Rc<std::cell::Cell<u64>>,
+    }
+
+    impl CatalogueSource for NextWindow {
+        async fn read(&mut self) -> Result<String, ()> {
+            let next = self.reads.get() + 1;
+            self.reads.set(next);
+            Ok(notebook_action_catalogue_fixture(
+                Uuid::nil(),
+                1,
+                next,
+                "notebook",
+            ))
+        }
+
+        async fn restart(&mut self) -> Result<(), ()> {
+            Err(())
+        }
+    }
+
+    /// A catalogue source a test scripts: what each read answers, and the
+    /// whole catalogue each restart asks for.
+    struct ScriptedCatalogue {
+        changes: std::collections::VecDeque<Result<String, ()>>,
+        snapshots: std::collections::VecDeque<String>,
+        restarts: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+
+    impl CatalogueSource for ScriptedCatalogue {
+        async fn read(&mut self) -> Result<String, ()> {
+            self.changes.pop_front().unwrap_or(Err(()))
+        }
+
+        async fn restart(&mut self) -> Result<(), ()> {
+            self.restarts.set(self.restarts.get() + 1);
+            let Some(snapshot) = self.snapshots.pop_front() else {
+                return Err(());
+            };
+            self.changes.push_front(Ok(snapshot));
+            Ok(())
+        }
+    }
+
     /// A headless worker is drained only between pumps. Catalogue changes
     /// (one per host publication) must not pile up in its bounded bridge:
     /// one stays queued, and the broker composes the rest into the next.
@@ -12440,23 +12567,15 @@ mod tests {
         let (tx, mut rx) = tokio_mpsc::channel(SDK_EVENT_QUEUE);
         let state = BridgeState::new();
         let inbound = InboundBridge::new(tx, state.clone());
-        let published = std::rc::Rc::new(std::cell::Cell::new(0u64));
-        let reads = published.clone();
+        let reads = std::rc::Rc::new(std::cell::Cell::new(0u64));
+        let counted = reads.clone();
         let local = tokio::task::LocalSet::new();
         local.block_on(&runtime, async move {
             let forwarder = inbound.clone();
             tokio::task::spawn_local(async move {
                 forward_action_catalogues(
-                    async || {
-                        let next = reads.get() + 1;
-                        reads.set(next);
-                        Ok(notebook_action_catalogue_fixture(
-                            Uuid::nil(),
-                            1,
-                            next,
-                            "notebook",
-                        ))
-                    },
+                    NextWindow { reads: counted },
+                    notebook_action_catalogue_fixture(Uuid::nil(), 1, 1, "notebook"),
                     &forwarder,
                     Arc::new(tokio::sync::Semaphore::new(1)),
                 )
@@ -12484,7 +12603,77 @@ mod tests {
             ));
             assert!(state.is_healthy());
         });
-        assert_eq!(published.get(), 2, "no read while a catalogue is queued");
+        assert_eq!(reads.get(), 2, "no read while a catalogue is queued");
+    }
+
+    /// A change the follower cannot apply — the revisions do not join, a shape
+    /// it was never sent, bytes that do not decode — asks the broker for the
+    /// whole catalogue: the follower keeps the last one it applied, and the
+    /// answer is forwarded as a reset. It is never left with an empty one.
+    #[test]
+    fn a_catalogue_change_that_does_not_apply_asks_for_the_whole_catalogue() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (tx, mut rx) = tokio_mpsc::channel(SDK_EVENT_QUEUE);
+        let state = BridgeState::new();
+        let inbound = InboundBridge::new(tx, state.clone());
+        let initial = notebook_action_catalogue_fixture(Uuid::nil(), 1, 1, "notebook");
+        let mut gap: CatalogueChange = serde_json::from_str(&initial).unwrap();
+        gap.reset = false;
+        gap.since = 5;
+        let restarts = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let counted = restarts.clone();
+        let source = ScriptedCatalogue {
+            changes: std::collections::VecDeque::from([
+                Ok(serde_json::to_string(&gap).unwrap()),
+                Ok("{not a catalogue".to_string()),
+            ]),
+            snapshots: std::collections::VecDeque::from([
+                notebook_action_catalogue_fixture(Uuid::nil(), 1, 2, "notebook"),
+                notebook_action_catalogue_fixture(Uuid::nil(), 1, 3, "notebook"),
+            ]),
+            restarts: counted,
+        };
+        let local = tokio::task::LocalSet::new();
+        let admitted = initial.clone();
+        local.block_on(&runtime, async move {
+            let forwarder = inbound.clone();
+            tokio::task::spawn_local(async move {
+                forward_action_catalogues(
+                    source,
+                    initial,
+                    &forwarder,
+                    Arc::new(tokio::sync::Semaphore::new(1)),
+                )
+                .await;
+            });
+            let mut held = ActionCatalogue::default();
+            held.apply(&serde_json::from_str(&admitted).unwrap())
+                .expect("the initial catalogue");
+            for peer in [2, 3] {
+                for _ in 0..64 {
+                    tokio::task::yield_now().await;
+                }
+                let Ok(QueuedCollabEvent {
+                    event: CollabEvent::ActionCatalogue { change },
+                    ..
+                }) = rx.try_recv()
+                else {
+                    panic!("the follower is sent connection {peer}'s catalogue whole");
+                };
+                assert!(change.reset, "each answer is the whole catalogue");
+                assert_eq!(change.surfaces[0].surface.peer_id, peer);
+                held.apply(&change).unwrap();
+                assert!(
+                    !held.surfaces().is_empty(),
+                    "the follower never holds an empty catalogue"
+                );
+            }
+            assert_eq!(restarts.get(), 2, "a gap and a corrupt change are re-asked");
+            assert!(state.is_healthy());
+        });
     }
 
     fn notebook_action(index: usize) -> serde_json::Value {
