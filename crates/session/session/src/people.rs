@@ -1588,6 +1588,24 @@ impl Panel {
         pin.remeasured = false;
     }
 
+    /// Whether `event` is the pointer's away from the kept roster: neither on the panel where it
+    /// stands nor dragging it.
+    fn away_from_kept(&self, event: &WindowEvent) -> bool {
+        if !matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. }
+        ) {
+            return false;
+        }
+        let shown = self.shown.borrow();
+        let Some(pin) = shown.pinned.as_ref() else {
+            return false;
+        };
+        pin.drag.is_none() && shown.cursor.is_none_or(|point| !pin.panel.contains(point))
+    }
+
     /// What a drag of the pinned roster asks: the pointer moved, a press started on it, or it was
     /// let go at an edge.
     fn handle_pinned(&self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
@@ -1877,6 +1895,13 @@ impl Widget for Panel {
         // where it stands, and never takes the keyboard.
         let kept = self.shown.borrow().standing();
         if !self.open.get() && !kept {
+            self.handle_pinned(event, ctx);
+            return;
+        }
+        // Kept on screen, it answers only where it stands: the pointer away from it is the desk's.
+        // The layer covers the whole desk where the host has one canvas (the page), so claiming a
+        // press there would take it from the window under it, its Maximize among them.
+        if !self.open.get() && self.away_from_kept(event) {
             self.handle_pinned(event, ctx);
             return;
         }

@@ -274,3 +274,56 @@ fn labels(frame: &ui::headless::FrameHarness) -> Vec<String> {
         .filter_map(|(_, node)| node.label().map(str::to_owned))
         .collect()
 }
+
+/// Kept on screen, the roster answers only where it stands: a press or a move away from it is the
+/// desk's. A page draws the roster's layer over its whole desk, so a roster that claimed every
+/// press there took the window's own controls under it (its Maximize did nothing).
+#[test]
+fn the_kept_roster_leaves_the_desk_its_presses() {
+    let _settled = ui::motion::testing::settled();
+    let home = tempfile::tempdir().expect("a directory for the settings");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_CONFIG_HOME", home.path().join("config"))
+        .set("XDG_STATE_HOME", home.path().join("state"));
+    let (people, mut frame) = agent_here().expect("the roster places its layer");
+    people.borrow().toggle();
+    settle(&mut frame);
+    let keep = holding(&frame, "Keep on screen").expect("the open roster offers to stay");
+    frame.click_at(keep.x, keep.y);
+    settle(&mut frame);
+    assert!(
+        people.borrow().shown.borrow().standing(),
+        "the roster is kept on screen"
+    );
+    let panel = people
+        .borrow()
+        .shown
+        .borrow()
+        .pinned
+        .as_ref()
+        .map(|pin| pin.panel);
+    let panel = panel.expect("a kept roster stands somewhere");
+    let away = Point::new(40.0, 400.0);
+    assert!(!panel.contains(away), "the press is away from {panel:?}");
+
+    assert!(
+        !frame.dispatch_to_root(&ui::synthetic_input::cursor_moved(away.x, away.y)),
+        "the pointer moving over the desk is the desk's"
+    );
+    assert!(
+        !frame.dispatch_to_root(&ui::synthetic_input::mouse_press()),
+        "a press on the desk is the desk's"
+    );
+    assert!(!frame.dispatch_to_root(&ui::synthetic_input::mouse_release()));
+    settle(&mut frame);
+    assert!(
+        people.borrow().shown.borrow().standing(),
+        "and the roster stays kept"
+    );
+
+    let put = holding(&frame, "Put back in the bar").expect("its own control is still there");
+    assert!(
+        frame.dispatch_to_root(&ui::synthetic_input::cursor_moved(put.x, put.y)),
+        "the pointer over the roster is the roster's"
+    );
+}
