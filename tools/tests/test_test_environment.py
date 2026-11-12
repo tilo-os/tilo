@@ -160,8 +160,25 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds Chat and its launcher for the acceptance",
             )
+        # A branched device's vault and provider keys are read through the apps
+        # that keep them, so the run that drives it builds those two and the
+        # launcher a desktop starts them from first.
+        vault = scripts.pop("vault-siblings")
+        self.assertEqual(vault["command"], ["bash", "tools/build-sibling-binaries.sh",
+                                            "passwords:passwords", "model-providers:model-providers",
+                                            "launcher:tilo-launcher"])
+        for profile in ("default", "ci"):
+            rules = [rule for rule in config["profile"][profile]["scripts"]
+                     if rule["setup"] == "vault-siblings"]
+            self.assertEqual(
+                [(rule["filter"], rule["platform"]) for rule in rules],
+                [("package(tilo-session) and binary(it) and test(device_branch::)",
+                  {"host": 'cfg(target_os = "linux")'})],
+                f"the {profile} profile builds the vault apps the branched device's tests read",
+            )
         # A closed Tasks starts its app and the launcher the session starts it
         # through, so the run that drives it builds both first.
+
         tasks = scripts.pop("tasks-siblings")
         self.assertEqual(tasks["command"], ["bash", "tools/build-sibling-binaries.sh",
                                             "tasks:tasks", "launcher:tilo-launcher"])
@@ -216,6 +233,8 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                  "package(tilo-session) and binary(it) and (test(chat_2x2::) or "
                                  "test(device_branch::))": "chat-siblings",
                                  "package(tilo-session) and binary(it) and test(closed_tasks::)": "tasks-siblings",
+                                 "package(tilo-session) and binary(it) and test(device_branch::)":
+                                     "vault-siblings",
                                  "package(tilo-session) and binary(it) and test(lounge_e2e::)": "lounge-siblings",
                                  "package(tilo-session-client) and binary(it) and "
                                  "test(lounge_fresh_page::)":
