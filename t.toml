@@ -4581,6 +4581,45 @@ run = "python3 tools/ci/workspace_unify.py --check"
 requires = ["arch=arm64"]
 fix = "python3 tools/ci/workspace_unify.py --write"
 
+# `cargo headless --check` and `cargo desktop --check` (crates/dev/tilo-local) on the session the
+# nested-session check built: each starts the development session the way a developer does, asks
+# it something (its actions; its window, opened on a throwaway headless Tilo standing in for the
+# developer's desktop) and stops it, with listening traps where the host's session bus, system bus,
+# login bus and systemd would be. A connection to any of them fails the check: the commands must
+# never reach the session of whoever runs them.
+[[check]]
+name = "run-headless"
+run = "bash tools/test-env.sh cargo run --locked -q -p tilo-local -- headless --check --no-build --apps notes"
+needs = ["nested-session"]
+env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session" }
+requires = ["arch=x86_64"]
+isolation = "vm"
+timeout_secs = 1200
+on = ["idle"]
+
+[[check]]
+name = "run-desktop"
+run = "bash tools/test-env.sh cargo run --locked -q -p tilo-local -- desktop --check --no-build --apps notes"
+needs = ["nested-session"]
+env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session" }
+requires = ["arch=x86_64"]
+isolation = "vm"
+timeout_secs = 1200
+on = ["idle"]
+
+# `cargo web --check` on the bundle and programs the checks beside it built: the local stack brought
+# up on the shipped bundle, its page loaded back module by module down to the runtime's
+# WebAssembly, then stopped. A bundle missing a piece the page imports fails here, by name.
+[[check]]
+name = "run-web"
+run = "cargo run --locked -q -p tilo-local -- web --check --bundle /target/publish/web-desktop/bundle"
+needs = ["web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "cli-x86_64"]
+env = { TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64" }
+requires = ["arch=x86_64"]
+isolation = "nested"
+timeout_secs = 1200
+on = ["idle"]
+
 [[check]]
 name = "nested-terminal"
 run = "bash tools/test-env.sh python3 -I dist/dev/nested-terminal-check.py --out /target/nested-terminal"

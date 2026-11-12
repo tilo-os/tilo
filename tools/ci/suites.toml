@@ -912,6 +912,13 @@ readers = [
 ]
 
 [[cargo]]
+package = "tilo-local"
+# The launcher runs the development session's scripts, the web bundle's build and the local
+# hosting stack from the checkout it is built in.
+inputs = ["dist/dev/nested-session.sh", "dist/dev/nested-session-build.sh", "os/containers/tilo-sh/", "crates/browser/tilo-browser-runtime/scripts/build.sh"]
+readers = ["crates/dev/tilo-local/src/main.rs"]
+
+[[cargo]]
 package = "onboarding-walk"
 # The names test reads the onboarding app whose controls it walks.
 inputs = ["crates/session/onboarding/src/"]

@@ -181,8 +181,10 @@ linked="$target_dir/wasm32-unknown-unknown/$artifact/${package//-/_}.wasm"
 # no module to read (a wasm-bindgen that makes its output itself), so
 # such a pkg/ is never reused.
 made_from=""
-# Size and modification time, with GNU stat or the BSD stat of macOS.
-file_stamp() { stat -c '%s %Y' "$1" 2>/dev/null || stat -f '%z %m' "$1"; }
+# Its content, not its modification time: a cargo that compiles elsewhere (t,
+# rcargo) writes the module it brings back anew on every build, changed or not,
+# and a new time alone would bind and split it again (minutes) for nothing.
+file_stamp() { { sha256sum "$1" 2>/dev/null || shasum -a 256 "$1"; } | cut -d' ' -f1; }
 if [[ -f "$linked" ]]; then made_from="$(file_stamp "$linked") split=$split"; fi
 if [[ -n "$made_from" ]] && kept pkg/.made-from && [[ "$(cat "$out/pkg/.made-from")" == "$made_from" ]]; then
   echo "pkg: unchanged module, kept" >&2

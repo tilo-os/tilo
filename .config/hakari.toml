@@ -142,6 +142,8 @@ third-party = [
 #   an empty namespace (tools/ci/publish/ci-builder-canary.sh); it must stay small.
 # - onboarding-walk is standard library only; the tools that walk a session's
 #   onboarding depend on it without taking on the unified set.
+# - tilo-local (`cargo desktop`, `cargo headless`, `cargo web`) is standard
+#   library only, so those commands compile it in seconds before their build.
 workspace-members = [
     # resolves the others' features and builds nothing (tools/ci/workspace_unify.py)
     "workspace-unify",
@@ -170,6 +172,7 @@ workspace-members = [
     "tilo-advisory-lock",
     # standard library only
     "onboarding-walk",
+    "tilo-local",
     # The [patch.crates-io] replacement for rustls-native-certs sits below
     # third-party crates the hack itself depends on (rustls-platform-verifier),
     # so depending on the hack would be a cycle.

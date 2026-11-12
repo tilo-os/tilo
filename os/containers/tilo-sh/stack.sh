@@ -153,7 +153,10 @@ site_host=tilo.localhost
 site_origin=https://$site_host:$site_port
 
 state=${TILO_SH_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/tilo-sh-local}
+# The containers of the stack on these ports: a second stack on other ports
+# (cargo web --check runs one) never stops or removes the first one's.
 prefix=tilo-sh-local
+[[ $base == 24100 ]] || prefix=tilo-sh-local-$base
 commit=$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)
 
 native=$state/native   # what the native stack builds and lays out

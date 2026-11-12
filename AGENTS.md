@@ -75,6 +75,10 @@ These hold for every app, the shell and the SDK. When a doc or code disagrees, t
 
 ## Run and inspect
 
+- Run Tilo with `cargo headless` (no window; prints how to drive it, `--ready
+  FILE` for scripts), `cargo desktop` (a window on the developer's desktop) or
+  `cargo web` (the web desktop on the local stack); `--help` on each, and
+  `--check` for a smoke test that starts, asks and stops it.
 - Prefer `tilo action`/`tilo-control` resources and actions to pointer
   automation; inject input only to test input, hit-testing or painting.
 - Images come from `shots` or a disposable headless session, never the user's

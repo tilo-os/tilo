@@ -236,6 +236,7 @@ members = [
     "crates/dev/tilo-app-cli",
     "crates/dev/tilo-app-template-smoke",
     "crates/dev/tilo-device-admin",
+    "crates/dev/tilo-local",
     "crates/dev/tilo-vm",
     "crates/dev/tilo-vm-protocol",
     "crates/dev/tilo-vmd",

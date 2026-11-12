@@ -835,8 +835,11 @@ fn start_session(
         Backend::Drm => Session::drm(options, DisplayConfig::default()),
         Backend::Nested => Session::nested(
             options,
+            // In the host's logical pixels: the window looks the same size on a desktop at any
+            // scale, and the session never asks that desktop (its session bus) what scale it is.
             &NestedConfig {
                 size,
+                logical: true,
                 ..NestedConfig::default()
             },
         ),

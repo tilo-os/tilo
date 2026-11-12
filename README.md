@@ -41,8 +41,15 @@ is the full specification. The [apps directory](apps/README.md) lists the apps.
 
 There is no public release download yet. [Getting started](docs/getting-started.md)
 covers virtual machines, adding the desktop to an existing Linux system and
-installing the OS. To build and run it from source, follow
-[CONTRIBUTING.md](CONTRIBUTING.md).
+installing the OS. From a checkout, one command runs it:
+
+```sh
+cargo desktop     # the desktop in a window on your desktop
+cargo headless    # the session with no window, for agents and tests
+cargo web         # the web desktop on the local hosting stack
+```
+
+[CONTRIBUTING.md](CONTRIBUTING.md#run-it) says what each needs and does.
 
 ## Help build it
 
