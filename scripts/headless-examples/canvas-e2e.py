@@ -12,10 +12,14 @@ What it drives, as a person does:
 
   style    the desk shows the canvas: the bar's style menu, then Frames, pressed where they are
            drawn
-  windows  Board and Chat open onto the canvas and take free space on it
+  windows  Board and Chat open onto the canvas and take free space on it, and the canvas pans
+           to the one that arrives past its edge: a window a person just opened stands whole on
+           screen
   ask      a sentence typed at the canvas entry is the person's send to the workspace's agent:
-           Chat opens their conversation with it as a place on the canvas, and no Tasks window
-           opens
+           Chat opens their conversation with it as a place on the canvas, in view, and no Tasks
+           window opens
+  again    a second ask lands in the conversation the first opened: that window is raised and
+           no second window of the same conversation stands
   placed   every window stands at its own place on the workspace's canvas, none over another,
            and each presents a frame
   frames   panning, zooming and typing keep the loop inside a frame's budget, read from the
@@ -213,20 +217,33 @@ def canvas_places(session: CanvasSession) -> dict[str, dict]:
 def placed(session: CanvasSession) -> dict[str, dict]:
     """Every open window with the place it stands at on the canvas, by its app: what a person
     sees, the window and where on the canvas it is."""
-    places = canvas_places(session)
     rows = {}
-    for window in session.windows():
-        rows[window.get("app_id")] = {**window, "place": places.get(str(window.get("group")))}
+    for window in placed_rows(session):
+        rows[window.get("app_id")] = window
     return rows
+
+
+def placed_rows(session: CanvasSession) -> list[dict]:
+    """Every open window with the place it stands at, one row by window: the two windows of one
+    app — an app and the conversation an ask opened in it — are two rows, each at its own
+    place."""
+    places = canvas_places(session)
+    return [{**window, "place": places.get(str(window.get("group")))}
+            for window in session.windows()]
+
+
+def chat_windows(session: CanvasSession) -> list[dict]:
+    """The windows of Chat the desk stands: a conversation is one of them."""
+    return [row for row in session.windows() if row.get("app_id") == "so.tilo.chat"]
 
 
 def overlaps(a: list[float], b: list[float]) -> bool:
     return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
 
 
-def no_overlaps(placed_rows: dict[str, dict]) -> bool:
+def no_overlaps(rows: list[dict]) -> bool:
     """No two windows stand over one another on the canvas."""
-    at = [w["place"] for w in placed_rows.values() if w.get("place")]
+    at = [row["place"] for row in rows if row.get("place")]
     return all(not overlaps([p["x"], p["y"], p["width"], p["height"]],
                             [q["x"], q["y"], q["width"], q["height"]])
                for at_index, p in enumerate(at) for q in at[at_index + 1:])
@@ -329,6 +346,37 @@ def measure(session: CanvasSession, name: str, drive) -> dict:
 # --- the canvas, end to end ------------------------------------------------------------------
 
 ASK = "what is on my task list?"
+# The second ask lands in the conversation the first opened: one window shows it, and the
+# person's lens is on it, never a second window of the same conversation.
+ASK_AGAIN = "and what is due today?"
+
+# How long the windows must stand still for the second ask to have landed: Chat opens the
+# conversation's window as soon as the send reaches it, so a second window would show by then.
+SECOND_ASK_SETTLES = 6.0
+
+
+def screen() -> tuple[float, float]:
+    """The output the session renders, in physical pixels: headless 1280x800, or what
+    `TILO_HEADLESS_SIZE` names (`dist/dev/nested-session.sh`)."""
+    width, height = os.environ.get("TILO_HEADLESS_SIZE", "1280x800").lower().split("x")
+    return float(width), float(height)
+
+
+def on_screen(rect: list[float], view: tuple[float, float]) -> bool:
+    """Whether `rect` (`x`, `y`, `width`, `height`) stands whole inside the screen `view`: a
+    window a person just opened is where they can see it, not past the output's edge."""
+    x, y, width, height = rect
+    return x >= 0 and y >= 0 and x + width <= view[0] and y + height <= view[1]
+
+
+def standing_on_screen(rows: list[dict], apps: list[str] | None = None) -> list[dict] | None:
+    """`rows` (the windows of `apps`, or of every app) once each stands whole on the screen,
+    else `None`: a window a person just opened is where they can see it, not past the edge."""
+    view = screen()
+    windows = [row for row in rows if apps is None or row.get("app_id") in apps]
+    whole = bool(windows) and all(
+        row.get("rect") and on_screen(row["rect"], view) for row in windows)
+    return rows if whole else None
 
 
 def canvas_run(session: CanvasSession, out: Path, shots: Path) -> dict:
@@ -337,9 +385,11 @@ def canvas_run(session: CanvasSession, out: Path, shots: Path) -> dict:
     1. the desk shows the canvas: the person switches the bar's style to Frames, and the
        canvas' entry stands on it;
     2. Board and Chat open onto it, each stands at its own place on the canvas, none over
-       another, and each presents a frame (shot 1);
+       another, and each presents a frame; Chat lands past the output's edge and stands whole on
+       the screen, the canvas having panned to it (shot 1);
     3. a sentence typed at the entry asks the workspace's agent: Chat opens their conversation
-       with it as a place on the canvas, and no Tasks window opens (shot 2);
+       with it as a place on the canvas, in view, and no Tasks window opens (shot 2); a second
+       ask lands in that same window, raised, and opens no second window of the conversation;
     4. panning, zooming and typing at the entry are measured from the frame trace;
     5. a restart keeps every place (shot 3).
 
@@ -354,14 +404,20 @@ def canvas_run(session: CanvasSession, out: Path, shots: Path) -> dict:
     apps = [app_id("board"), "so.tilo.chat"]
     open_apps(session, apps)
     until("every window placed, none over another",
-          lambda: (lambda rows: rows if all(rows.get(app, {}).get("place") for app in apps)
-                   and no_overlaps(rows) else None)(placed(session)), 30)
+          lambda: (lambda rows: rows if all(row.get("place") for row in rows)
+                   and no_overlaps(rows) else None)(placed_rows(session)), 30)
     until("every window to present its own frame",
           lambda: all(row.get("frames") for row in placed(session).values()), 30)
+    # A window a person opens stands where they can see it: Chat lands beside Board, past the
+    # output's edge, and the canvas pans to it. Board keeps the place it stands at and slides
+    # with the canvas, as every place does.
+    until("the window just opened to stand whole on the screen",
+          lambda: standing_on_screen(placed_rows(session), ["so.tilo.chat"]), 30)
     time.sleep(1.5)
     session.snapshot(shots / "01-populated-canvas.png")
     before = placed(session)
-    steps["populated"] = {app: {"place": row.get("place")} for app, row in before.items()}
+    steps["populated"] = {app: {"place": row.get("place"), "rect": row.get("rect")}
+                          for app, row in before.items()}
 
     # A sentence at the entry is the person's ask: it goes to the workspace's agent, and the
     # conversation it lands in stands on the canvas beside them.
@@ -373,11 +429,44 @@ def canvas_run(session: CanvasSession, out: Path, shots: Path) -> dict:
          if row.get("app_id") == "so.tilo.chat" and row.get("group") not in conversation_before]), 90)
     stood = until("the conversation to stand on the canvas",
                   lambda: placed(session).get("so.tilo.chat", {}).get("place"), 30)
+    def the_conversation_shown() -> dict | None:
+        """The window the ask landed in, once it stands whole on the screen: the canvas pans to
+        it wherever Chat opened it."""
+        row = next((row for row in placed_rows(session)
+                    if row.get("group") == conversation.get("group")), None)
+        if row is None or not row.get("rect") or not on_screen(row["rect"], screen()):
+            return None
+        return row
+
+    shown = until("the conversation to stand whole on the screen", the_conversation_shown, 30)
     if any(row.get("app_id") == "so.tilo.tasks" for row in session.windows()):
         raise Failed("asking on the canvas opened a Tasks window")
-    steps["ask"] = {"asked": ASK, "conversation": conversation.get("title"), "place": stood}
+    steps["ask"] = {"asked": ASK, "conversation": conversation.get("title"), "place": stood,
+                    "rect": shown.get("rect")}
     time.sleep(1.5)
     session.snapshot(shots / "02-asked.png")
+
+    # A second ask lands in the same conversation: the window it already shows is raised and
+    # revealed, never a second window of the same conversation.
+    standing = {row.get("group"): row for row in chat_windows(session)}
+    type_on_canvas(session, ASK_AGAIN)
+    since = time.monotonic()
+
+    def the_same_windows():
+        now = {row.get("group"): row for row in chat_windows(session)}
+        if set(now) != set(standing):
+            raise Failed(f"the second ask opened another window of the conversation: "
+                         f"{sorted(set(now) - set(standing))}")
+        if time.monotonic() - since < SECOND_ASK_SETTLES:
+            return None
+        return now
+
+    after_ask = until("the second ask to land in the standing conversation", the_same_windows, 60)
+    raised = [row for row in after_ask.values() if row.get("active")]
+    if not raised:
+        raise Failed(f"the second ask left the conversation's window behind: {after_ask}")
+    steps["ask-again"] = {"asked": ASK_AGAIN, "windows": len(after_ask),
+                          "conversation": raised[0].get("title")}
 
     # Frames: panning (wheel), zooming (Ctrl+wheel) and typing at the entry, on the canvas.
     empty = (40.0, 700.0)
