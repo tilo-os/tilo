@@ -791,6 +791,23 @@ impl Desktop {
 }
 
 impl Mount {
+    /// What the open search stands on, as the desk shows it: the query the field holds and the rows
+    /// it offers, each as a name with what it says under it. A search the person pressed Enter on
+    /// and that is still up says here what they were pressing on — a card that stayed open over a
+    /// row that did nothing, or one that says why the row did not happen.
+    fn search_card(&self) -> Option<serde_json::Value> {
+        let desktop = self.desktop.as_ref().filter(|d| d.handle.search_open())?;
+        let (query, rows) = desktop.handle.search_rows();
+        Some(serde_json::json!({
+            "query": query,
+            "rows": rows.into_iter().take(16).map(|row| serde_json::json!({
+                "title": row.title,
+                "subtitle": row.subtitle,
+                "kind": row.kind,
+            })).collect::<Vec<_>>(),
+        }))
+    }
+
     /// An app this page showed arriving builds once the workspace sent the
     /// record its window opens, or answered it holds none of it: the component
     /// takes the place the arrival stood in, and shows the record — the
@@ -2982,6 +2999,7 @@ impl Mount {
             "record": self.checkout.as_ref().map(|checkout| checkout.id.as_str()),
             "desktopRevision": self.desktop.as_ref().map(|d| d.handle.revision()),
             "searchOpen": self.desktop.as_ref().is_some_and(|d| d.handle.search_open()),
+            "searchCard": self.search_card(),
             // Whether the open search still owes rows. A settled desk presents no
             // frame until something changes, so a page that waits for the palette's
             // answer reads this rather than counting presented frames: the answer
