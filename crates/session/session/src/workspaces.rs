@@ -158,6 +158,9 @@ pub(crate) struct Personal {
     /// Whether `kept` was handed to the hosts too: a session's broker reaches them only once it
     /// serves, so a list said before then is kept on them once it does.
     kept_on_hosts: bool,
+    /// What the files this device's fleet is read from looked like when the list was last said:
+    /// a fleet that moved since — a device this device's root just certified — is said again.
+    pub(crate) fleet: Option<tilo_identity_host::device_fleet::FleetStamps>,
 }
 
 /// The parts of a desk [`Personal::publish_local`] reads.
@@ -276,6 +279,7 @@ impl Personal {
             unreadable: false,
             kept: None,
             kept_on_hosts: false,
+            fleet: None,
         };
         let read = personal
             .store
@@ -1282,6 +1286,7 @@ impl crate::Shared {
             // here.
             personal.refresh_hosts(self.engine.as_deref());
             let mut news = personal.publish_local(&self.handle);
+            news |= self.fleet_moved(&mut personal);
             // A device shown or kept off is a change this desk's pass did
             // not write. The list is sent whole, so this asks for one now;
             // a send that does not happen carries it the next time.
@@ -1386,6 +1391,21 @@ impl crate::Shared {
                 &self.workspace_settings_feed(),
             );
         }
+    }
+
+    /// Whether the fleet this device's root certifies moved since the last pass, which says the
+    /// person's list again: the record keeps the keys with it, and a device paired here — a
+    /// certificate the helper signed into the fleet, on a thread of its own — is in no record
+    /// until the list is said. A fleet whose files stand still costs this pass two stamps.
+    fn fleet_moved(&self, personal: &mut Personal) -> bool {
+        let Some(engine) = &self.engine else {
+            return false;
+        };
+        let stamps =
+            crate::identity_admin::fleet_stamps(&engine.identity().device_cert.user_public_key);
+        let moved = stamps != personal.fleet;
+        personal.fleet = stamps;
+        moved
     }
 
     /// Keep the person's list where their keys read it, when it moved: this device's door answers

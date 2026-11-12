@@ -53,7 +53,8 @@ fn lists(listed: &[Value], label: &str) -> bool {
         .any(|device| device["label"].as_str() == Some(label))
 }
 
-/// The fleet `device` keeps under its person's root.
+/// The fleet `device` keeps under its person's root, as the helper admitting a
+/// paired device writes it.
 fn fleet_of(device: &Device, person: [u8; 32]) -> DeviceFleetStore {
     let store = DeviceFleetStore::at(
         device.directory().join("config/tilo/identity"),
@@ -120,5 +121,58 @@ fn a_browser_approved_on_the_web_is_in_the_desktop_s_settings_list() {
             .iter()
             .any(|cert| cert.device_public_key == browser.device_public_key),
         "the browser's key is the page's, and no fleet of the desktop's"
+    );
+}
+
+/// A device the desktop pairs joins the person's record even though no
+/// workspace of theirs moved: the helper signs its certificate into the
+/// desktop's fleet, and the record keeps every key their root certified.
+#[test]
+fn a_paired_device_reaches_the_record_without_the_workspace_list_moving() {
+    let ada = Person::new("Ada");
+    let site = Site::start(&ada, "Studio");
+    site.publish(WorkspaceRole::Editor);
+    let mut desktop = ada.device("Ada's desktop");
+    desktop.join(&site.admit(ada.public));
+    desktop.wait_holding(&site.workspace);
+    desktop.wait_showing(&site.workspace);
+    let mut laptop = ada.device("Ada's laptop");
+    laptop.join(&site.admit(ada.public));
+    laptop.wait_holding(&site.workspace);
+    laptop.wait_showing(&site.workspace);
+    let before = listed(&laptop);
+    assert!(
+        !lists(&before, "Ada's phone"),
+        "the phone is paired after this: {before:?}"
+    );
+    let workspaces = desktop.held();
+
+    // The desktop pairs Ada's phone: `tilo-enroll` signs its certificate into
+    // the desktop's fleet, which is the whole of what a pairing leaves here.
+    let phone = ada.device("Ada's phone");
+    fleet_of(&desktop, ada.public)
+        .remember_certificate(&hex::encode(ada.public), phone.cert.clone())
+        .expect("the phone is in the desktop's fleet");
+
+    // The laptop lists it, which it can only read from the record: the key is
+    // in no fleet of the laptop's, and no workspace moved to say so.
+    tilo_test_env::wait_until("the laptop lists the phone the desktop paired", || {
+        // A pass over the desktop's desk, as its next frame's is.
+        desktop.ask(&json!({"op": "state_dump"}));
+        lists(&listed(&laptop), "Ada's phone")
+    });
+    assert_eq!(
+        desktop.held(),
+        workspaces,
+        "the workspaces of the person's list did not move"
+    );
+    assert!(
+        !fleet_of(&laptop, ada.public)
+            .load(&hex::encode(ada.public))
+            .expect("the laptop's fleet")
+            .certificates
+            .iter()
+            .any(|cert| cert.device_public_key == phone.cert.device_public_key),
+        "the laptop holds the phone's key in no fleet of its own"
     );
 }

@@ -9,12 +9,12 @@ use tilo_user_identity::{DeviceCert, RevocationEntry, verify_device_cert_at};
 
 #[cfg(not(target_arch = "wasm32"))]
 mod store;
-#[cfg(not(target_arch = "wasm32"))]
-pub use store::DeviceFleetStore;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) use store::loads_on_this_thread;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use store::{FileStamp, FleetStamps, SETTLE};
+pub use store::{DeviceFleetStore, FleetStamps};
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use store::{FileStamp, SETTLE};
 
 pub(crate) const FLEET_SCHEMA_VERSION: u32 = 1;
 

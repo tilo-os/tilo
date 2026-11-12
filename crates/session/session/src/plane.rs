@@ -859,10 +859,12 @@ fn seams(
     // The hosts of the workspaces placed away from this device: where the person's actions on
     // those workspaces go, where their workspace list is kept, and where the devices of that
     // record are read back from.
-    let hosting = crate::hosted_workspaces::HostedWorkspaces::service(
-        engine.as_ref(),
-        tilo_rt::app().handle().clone(),
-    );
+    let hosting = engine.as_ref().and_then(|engine| {
+        crate::hosted_workspaces::HostedWorkspaces::service(
+            Some(engine),
+            tilo_rt::app().handle().clone(),
+        )
+    });
     Seams {
         // No approved-check runner is installed with this session: a check a
         // project's app asks for has nothing to run it.

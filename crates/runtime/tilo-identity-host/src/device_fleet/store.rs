@@ -568,8 +568,11 @@ impl DeviceFleetStore {
     }
 
     /// Stamps of the files [`Self::load_cached`] reads for `identity_id`, or
-    /// `None` when one can't be examined.
-    pub(crate) fn stamps(&self, identity_id: &str) -> Option<FleetStamps> {
+    /// `None` when one can't be examined: what a reader that derives something
+    /// from the fleet — the person's record keeps the keys it certifies —
+    /// compares from pass to pass, so a fleet that moved is noticed without
+    /// reading it.
+    pub fn stamps(&self, identity_id: &str) -> Option<FleetStamps> {
         self.cache_key(identity_id).stamps()
     }
 
@@ -628,7 +631,7 @@ struct CachedFleet {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct FleetStamps {
+pub struct FleetStamps {
     fleet: Option<FileStamp>,
     home_peers: Option<FileStamp>,
 }

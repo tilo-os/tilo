@@ -222,6 +222,17 @@ pub(crate) fn fleet_store() -> Result<tilo_identity_host::device_fleet::DeviceFl
     Ok(Store::from_env()?.fleets())
 }
 
+/// What the files `person`'s fleet is read from looked like, as a value the
+/// session's pass over the desk compares with the one it last saw: a pairing
+/// writes a certificate into the fleet on a thread of its own, and the
+/// person's record keeps the keys with their list, so a fleet that moved
+/// says the list again.
+pub(crate) fn fleet_stamps(
+    person: &[u8; 32],
+) -> Option<tilo_identity_host::device_fleet::FleetStamps> {
+    fleet_store().ok()?.stamps(&hex::encode(person))
+}
+
 /// The session's identity steps.
 pub(crate) struct IdentityAdmin {
     runner: Runner,
