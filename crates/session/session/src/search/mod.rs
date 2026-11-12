@@ -1167,6 +1167,7 @@ mod tests {
                         description: None,
                     })
                     .collect(),
+                named: Vec::new(),
                 host_apps: text
                     .lines()
                     .map(|name| HostAppEntry {

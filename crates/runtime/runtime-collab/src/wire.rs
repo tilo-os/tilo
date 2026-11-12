@@ -580,10 +580,16 @@ pub enum Event {
 /// One change of a channel's context.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContextUpdate {
-    /// The roster and this endpoint's permissions, replacing the last.
+    /// The roster, this endpoint's permissions, and the apps installed on
+    /// this device, replacing the last.
     Snapshot {
         collaborators: Vec<Collaborator>,
         permissions: Vec<String>,
+        /// What each installed app is called, in each language its package
+        /// names it in: a window names another app's changes by these, never
+        /// by an id. Absent on a host that names none.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        apps: Vec<collab_types::history::NamedApp>,
     },
     /// The person at this desktop started following `peer_id`, or stopped.
     FollowChanged { peer_id: Option<String> },

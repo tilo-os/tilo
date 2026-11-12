@@ -316,6 +316,7 @@ mod owner_commit_tests {
         events.borrow_mut().push(CollabEvent::Context {
             collaborators: vec![],
             permissions: vec![],
+            apps: Vec::new(),
         });
         app.pump_collab_presence();
         let resource = sent

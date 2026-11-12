@@ -215,6 +215,15 @@ impl Session {
         // apps installed here are the lists' to resolve, on their worker.
         crate::app_icons::set_wake(options.wake.handle());
         crate::app_icons::set_lists(options.lists.clone());
+        // An app installed or removed here changes what every window calls app-made changes: this
+        // session's own views read the names at once, and the broker is told, so the windows it
+        // serves are sent them again with the workspace's people.
+        options.lists.on_change(|| {
+            if let Some(lists) = crate::app_icons::app_lists() {
+                crate::app_icons::tell_names(&lists);
+            }
+            tilo_identity_host::policy_change::announce();
+        });
         let settings_watch = settings_store::watch::watch_settings(move || {
             let document = settings_store::load();
             *watched.lock_recover() =

@@ -2620,3 +2620,44 @@ fn reminder_of(hosted: &Hosted, task: &Value) -> String {
 }
 
 const TASKS: &str = "so.tilo.lang.tasks";
+
+/// A window a German person reads names another app's change by that app's own name: the names of
+/// the apps installed here arrive on the instance's connection with the workspace's people's
+/// names, and are what its history reads.
+#[test]
+fn a_hosted_window_names_another_app_as_the_names_it_was_sent() {
+    use tilolang_tilo::names::Unnamed;
+    use tilolang_tilo::runtime::{NameHost as _, Principal};
+
+    let today = Principal::new("app:so.tilo.lang.today".to_owned());
+    let (mut host, mut window, _sent, inbox, _route) = running("ada");
+    settle(&mut host, &mut window);
+    assert_eq!(
+        Unnamed.name(&today),
+        "Today",
+        "the words its id makes, before the session named it"
+    );
+    collaboration::history_source::authors::set_names_language("de-DE");
+    inbox.borrow_mut().push_back(CollabEvent::Context {
+        collaborators: Vec::new(),
+        permissions: Vec::new(),
+        apps: vec![collab_types::history::NamedApp {
+            id: "so.tilo.lang.today".to_owned(),
+            name: "Today".to_owned(),
+            names: [("de-DE".to_owned(), "Heute".to_owned())]
+                .into_iter()
+                .collect(),
+        }],
+    });
+    settle(&mut host, &mut window);
+    assert_eq!(
+        Unnamed.name(&today),
+        "Heute",
+        "the app's own name in the window's language"
+    );
+    assert_eq!(
+        Unnamed.name(&Principal::new("app:org.example.Editor".to_owned())),
+        "Editor",
+        "an app installed nowhere near this device reads as the words its id makes"
+    );
+}

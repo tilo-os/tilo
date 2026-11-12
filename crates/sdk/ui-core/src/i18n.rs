@@ -936,7 +936,7 @@ impl I18nManager {
             if let (Some(mgr), Some(lang_id)) = (m.borrow_mut().as_mut(), lang_id)
                 && mgr.current_locale != lang_id
             {
-                mgr.current_locale = lang_id;
+                mgr.current_locale = lang_id.clone();
                 mgr.parse_shown();
                 mgr.revision = mgr.revision.wrapping_add(1);
             }

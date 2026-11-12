@@ -23,8 +23,9 @@ use collaboration::history_source::authors::handle_actor_hex;
 /// id, telling a device's actors apart and the colours history paints.
 pub use collaboration::history_source::authors::{
     AGENT_NAMESPACE, APP_NAMESPACE, BOT_NAMESPACE, DeviceActors, ParticipantNames, ResolveAuthor,
-    SHORTCUT_NAMESPACE, UNKNOWN_AUTHOR_NAME, actor_handle, actor_name, app_name, app_word_key,
-    app_words, author_coloured, device_actor, name_words, short_id, stable_hue,
+    SHORTCUT_NAMESPACE, UNKNOWN_AUTHOR_NAME, actor_handle, actor_name, app_name, app_words,
+    author_coloured, device_actor, installed_app_name, name_words, set_installed_apps, short_id,
+    stable_hue,
 };
 #[cfg(test)]
 use collaboration::history_source::authors::{SHORT_LEN, rgb_to_hue};
@@ -484,7 +485,7 @@ pub fn participant_display_label(principal: &str) -> String {
     match agent_principal_name(principal) {
         Some(name) => agent_display_label(&name),
         None => match app_principal(principal) {
-            Some(app) => app_name(app, catalogue_words),
+            Some(app) => app_name(app, crate::i18n::I18nManager::window_locale().as_str()),
             None => principal.trim().to_string(),
         },
     }
@@ -503,18 +504,21 @@ fn app_principal(id: &str) -> Option<&str> {
         .filter(|app| !app.is_empty())
 }
 
-/// A word of the toolkit's own catalogue, `source` where it holds none: a package's own name is
-/// read from the catalogue of the process reading it.
-fn catalogue_words(key: &str, source: &str) -> String {
-    let said = crate::i18n::widget_format(key, &[]);
-    if said == key { source.to_owned() } else { said }
-}
-
 /// What the actor `principal` is called to the person reading, by what it is: a person by their
 /// name, an app by its own name in their language, an agent by its name. Never an id, and never
 /// part of one: a participant nobody named is [`UNKNOWN_AUTHOR_NAME`].
 pub fn participant_name(principal: &str) -> String {
     actor_name(principal, &CatalogueNames)
+}
+
+/// The names the toolkit's words give: the session's names for the apps installed here, in the
+/// window's language, and no roster of its own.
+struct CatalogueNames;
+
+impl ParticipantNames for CatalogueNames {
+    fn app(&self, app_id: &str) -> String {
+        app_name(app_id, crate::i18n::I18nManager::window_locale().as_str())
+    }
 }
 
 /// [`participant_name`] for a principal that names software (`app:`, `agent:`, `bot:`,
@@ -531,15 +535,6 @@ pub fn software_name(principal: &str) -> Option<String> {
     .iter()
     .any(|namespace| principal.starts_with(namespace))
     .then(|| participant_name(principal))
-}
-
-/// The names the toolkit's words give: its own catalogue, and no roster of its own.
-struct CatalogueNames;
-
-impl ParticipantNames for CatalogueNames {
-    fn app(&self, app_id: &str) -> String {
-        app_name(app_id, catalogue_words)
-    }
 }
 
 /// The readable name of an `agent:<id>` principal, without the kind label:

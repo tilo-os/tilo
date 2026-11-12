@@ -9,8 +9,6 @@ use super::Workspace;
 const NOTES: &str = "so.tilo.lang.notes";
 /// The app whose call names notes in Notes' notebook (`morning_cleanup`).
 const TODAY: &str = "so.tilo.lang.today";
-/// What Today calls itself in German, from its package's catalogue.
-const TODAY_IN_GERMAN: &str = include_str!("../../../../tl/today/locales/de-DE.ftl");
 
 /// Today names the note the window shows, as the broker delivers the app's call: the change is
 /// the app's, in Notes' record.
@@ -67,11 +65,17 @@ fn a_note_another_app_named_reads_as_that_app_never_as_its_id() {
 fn the_same_change_reads_as_the_app_s_own_name_in_german() {
     let mut workspace = Workspace::seeded("notes");
     today_names_the_note(&mut workspace);
-    // The window a German person reads: it speaks German, and the words of the apps this device
-    // has ride beside its own (an installed app's catalogue, `tilo_ui_host::i18n`).
+    // The window a German person reads: it speaks German, and the names of the apps this device
+    // has ride with its own people's names (the session sends both in one feed).
     ui::i18n::I18nManager::install("en-US", "de-DE", &[("en-US", ""), ("de-DE", "")])
         .expect("the window speaks German");
-    tilo_ui_host::i18n::add_catalogues(&[("de-DE".to_owned(), TODAY_IN_GERMAN.to_owned())]);
+    ui::history_source::set_installed_apps(vec![collab_types::history::NamedApp {
+        id: TODAY.to_owned(),
+        name: "Today".to_owned(),
+        names: [("de-DE".to_owned(), "Heute".to_owned())]
+            .into_iter()
+            .collect(),
+    }]);
     let names = workspace.window.names.clone();
     assert_eq!(
         names.label(&format!("app:{TODAY}")),

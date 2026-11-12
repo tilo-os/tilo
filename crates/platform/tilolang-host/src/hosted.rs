@@ -755,6 +755,9 @@ impl Hosted {
             .map(|(locale, _)| locale.as_str())
             .collect();
         let phrases = Rc::new(phrases.for_window(&shipped));
+        // The names the session sends for the apps installed here read in the language this
+        // window speaks, whatever language the workspace's people are named in.
+        collaboration::history_source::authors::set_names_language(phrases.locale());
         let mut record = record.speaking(phrases.locale());
         let used = used_apps(&spec, &bundle, &mut record);
         let platform = HostPlatform {
@@ -1361,13 +1364,18 @@ impl Hosted {
     /// Run what the broker delivered on the instance's connection. Every event that waits on an
     /// answer from the instance is answered: an invocation with its outcome, a handoff step with
     /// what the host does of it. The rest says something the instance does not keep (presence,
-    /// cursors, the workspace's context, results of requests it never makes).
+    /// cursors, results of requests it never makes), but the names it shows: the people of the
+    /// workspace and what each app installed here is called ride with the context, and are what
+    /// this window's history reads its changes as.
     fn delivered(&mut self, event: CollabEvent) -> bool {
         for used in &mut self.used {
             if let Some(moved) = used.record.take(&event, self.record.manager_mut()) {
                 used.moved |= moved;
                 return false;
             }
+        }
+        if let CollabEvent::Context { apps, .. } = &event {
+            return collaboration::history_source::authors::set_installed_apps(apps.clone());
         }
         let (id, invocation, resource, action, argument, actor, context) = match event {
             CollabEvent::Invocation {

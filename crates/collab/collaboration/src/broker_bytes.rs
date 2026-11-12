@@ -350,6 +350,7 @@ fn context_event_bytes(
     collaborator_capacity: usize,
     permissions: &[String],
     permission_capacity: usize,
+    apps: &[collab_types::history::NamedApp],
     meter: &mut ByteMeter,
 ) {
     meter.add_product(collaborator_capacity, std::mem::size_of::<Collaborator>());
@@ -360,6 +361,18 @@ fn context_event_bytes(
     meter.add_product(permission_capacity, std::mem::size_of::<String>());
     for permission in permissions {
         meter.string_capacity(permission);
+    }
+    meter.add_product(
+        apps.len(),
+        std::mem::size_of::<collab_types::history::NamedApp>(),
+    );
+    for app in apps {
+        meter.string_capacity(&app.id);
+        meter.string_capacity(&app.name);
+        for (tag, name) in &app.names {
+            meter.string_capacity(tag);
+            meter.string_capacity(name);
+        }
     }
 }
 
@@ -441,12 +454,14 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
         CollabEvent::Context {
             collaborators,
             permissions,
+            apps,
         } => {
             context_event_bytes(
                 collaborators,
                 collaborators.capacity(),
                 permissions,
                 permissions.capacity(),
+                apps,
                 &mut meter,
             );
             "Context"

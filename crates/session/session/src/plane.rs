@@ -723,6 +723,14 @@ impl WorkspaceAuthority for DeskAuthority {
     fn announces_policy_changes(&self) -> bool {
         true
     }
+
+    /// What each app installed here is called, as this session's app lists last read it: what
+    /// the windows it serves name another app's changes by.
+    fn installed_apps(&self) -> Vec<collab_types::history::NamedApp> {
+        crate::app_icons::app_lists()
+            .map(|lists| lists.named.clone())
+            .unwrap_or_default()
+    }
 }
 
 /// A workspace's people as this session's engine writes them: the change goes

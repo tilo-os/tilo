@@ -23,6 +23,9 @@ use runtime_portal::tools::{
 pub struct AppLists {
     /// The Tilo apps installed here.
     pub applications: Vec<AppEntry>,
+    /// What each of them is called, in every language its package names it in: the names a
+    /// window names another app's changes by, sent with the workspace's people's names.
+    pub named: Vec<collab_types::history::NamedApp>,
     /// The machine's own apps.
     pub host_apps: Vec<HostAppEntry>,
     /// The apps a person can get here: neither installed nor blocked.
@@ -76,6 +79,14 @@ impl AppLists {
         let icons = installed
             .iter()
             .filter_map(|app| Some((app.package_id.clone(), app.icon_path()?)))
+            .collect();
+        let named = installed
+            .iter()
+            .map(|app| collab_types::history::NamedApp {
+                id: app.package_id.clone(),
+                name: app.display_name.clone(),
+                names: app.localized_names.clone(),
+            })
             .collect();
         let declared = declared(&installed);
         // The machine's entries through the memoised scan, which this read starts on the lists'
@@ -156,6 +167,7 @@ impl AppLists {
         let tools = listed_apps(&installed, &scan.entries, &icons);
         Self {
             applications,
+            named,
             host_apps,
             catalogue,
             icons,
@@ -453,6 +465,14 @@ impl Lists {
         match &self.0 {
             Held::Fixed(lists) => Arc::clone(lists),
             Held::Followed(watched) => watched.get(),
+        }
+    }
+
+    /// Run `listener` once each time the lists are read again: an app installed or removed here
+    /// changes them, and what every window calls it. Lists that never change tell nobody.
+    pub fn on_change(&self, listener: impl Fn() + Send + Sync + 'static) {
+        if let Held::Followed(watched) = &self.0 {
+            watched.on_change(listener);
         }
     }
 }

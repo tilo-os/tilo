@@ -1939,9 +1939,11 @@ impl ContextStream {
             ContextUpdate::Snapshot {
                 collaborators,
                 permissions,
+                apps,
             } => {
                 context.collaborators = collaborators;
                 context.permissions = permissions;
+                context.apps = apps;
             }
             ContextUpdate::FollowChanged { peer_id } => context.follow_changed = Some(peer_id),
             ContextUpdate::SnapshotRequested => context.snapshot_requested = true,

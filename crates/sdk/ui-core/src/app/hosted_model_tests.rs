@@ -642,6 +642,7 @@ fn hosted_directory_equivalent_notification_before_sync_preserves_offered_revisi
     events.borrow_mut().push(CollabEvent::Context {
         collaborators: vec![],
         permissions: vec![],
+        apps: Vec::new(),
     });
     app.pump_hosted_model();
     assert!(
@@ -690,6 +691,7 @@ fn hosted_directory_permission_expiry_or_failure_inside_notification_cannot_rest
         let events = Rc::new(RefCell::new(vec![CollabEvent::Context {
             collaborators: vec![],
             permissions: vec![],
+            apps: Vec::new(),
         }]));
         app.collaboration.manager =
             CollaborationManager::with_peer_transport(HostedDirectoryNotificationTransport {
@@ -724,6 +726,7 @@ fn hosted_directory_hidden_target_change_with_notification_cannot_restore() {
     let events = Rc::new(RefCell::new(vec![CollabEvent::Context {
         collaborators: vec![],
         permissions: vec![],
+        apps: Vec::new(),
     }]));
     app.collaboration.manager =
         CollaborationManager::with_peer_transport(HostedDirectoryNotificationTransport {
@@ -765,6 +768,7 @@ fn a_later_namesake_from_the_roster_never_takes_an_earlier_number() {
             person("person:z", 5_000, false),
         ],
         permissions: vec![],
+        apps: Vec::new(),
     });
     let second = crate::permissions::UserId("person:z".into());
     assert_eq!(app.presence_ctx.self_label().as_deref(), Some("Ada (1)"));
@@ -777,6 +781,7 @@ fn a_later_namesake_from_the_roster_never_takes_an_earlier_number() {
             person("person:z", 5_000, false),
         ],
         permissions: vec![],
+        apps: Vec::new(),
     });
     let newcomer = crate::permissions::UserId("person:a".into());
     assert_eq!(app.presence_ctx.display_name(&first), "Ada (1)");
@@ -815,6 +820,7 @@ fn complete_context_replaces_certified_people_without_inferring_kind_from_ids() 
             },
         ],
         permissions: vec![],
+        apps: Vec::new(),
     });
     let opaque = crate::permissions::UserId("opaque-member".into());
     let spoof = crate::permissions::UserId("agent:spoof".into());
@@ -837,6 +843,7 @@ fn complete_context_replaces_certified_people_without_inferring_kind_from_ids() 
             joined_at: None,
         }],
         permissions: vec![],
+        apps: Vec::new(),
     });
     assert!(!app.presence_ctx.names.contains_key(&opaque));
     assert!(!app.presence_ctx.names.contains_key(&spoof));
@@ -848,6 +855,7 @@ fn complete_context_replaces_certified_people_without_inferring_kind_from_ids() 
     app.apply_collab_event_for_test(CollabEvent::Context {
         collaborators: vec![],
         permissions: vec![],
+        apps: Vec::new(),
     });
     assert!(app.presence_ctx.self_id().is_none());
 }

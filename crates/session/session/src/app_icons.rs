@@ -290,7 +290,15 @@ static LISTS: Mutex<Option<Lists>> = Mutex::new(None);
 /// Answer an app's artwork from `lists` . Before this — and in a session given lists fixed up
 /// front, which are all the artwork there is — only the icons those lists carry are named.
 pub(crate) fn set_lists(lists: Lists) {
+    tell_names(lists.latest().as_ref());
     *LISTS.lock_recover() = Some(lists);
+}
+
+/// Tell this process's own views what the apps installed here are called. The names ride with the
+/// workspace's people, so the session's surfaces name an app-made change by the same feed a
+/// window does.
+pub(crate) fn tell_names(lists: &AppLists) {
+    ui::history_source::set_installed_apps(lists.named.clone());
 }
 
 /// The app lists as last read, for the names they carry: the installed packages' own names and the

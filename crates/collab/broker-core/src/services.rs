@@ -111,6 +111,13 @@ pub trait WorkspaceAuthority: Send + Sync {
         Vec::new()
     }
 
+    /// What each app installed on this device is called, in every language its package names it
+    /// in: what a window names another app's changes by, sent with the workspace's people's
+    /// names. Presentation only; the default names none.
+    fn installed_apps(&self) -> Vec<collab_types::history::NamedApp> {
+        Vec::new()
+    }
+
     /// The device revocations `workspace`'s document records, against which who saved a shortcut
     /// is proven. `None` when this host holds no document of the workspace.
     fn workspace_revocations(

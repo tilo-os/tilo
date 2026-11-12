@@ -2538,6 +2538,9 @@ struct ContextSub {
     private_alias: bool,
     /// The workspace's verified agents this receiver was last told.
     history_agents: Vec<collab_types::history::RosterAgent>,
+    /// The apps installed here, by what each is called, this receiver was last told: it is sent
+    /// the context again when one is installed, removed, or renamed.
+    apps: Vec<collab_types::history::NamedApp>,
 }
 
 #[derive(Clone)]
@@ -6856,7 +6859,8 @@ impl AppBrokerState {
             CollabEvent::Context {
                 collaborators,
                 permissions,
-            } => Self::fanout_context(channels, except, collaborators, permissions),
+                apps,
+            } => Self::fanout_context(channels, except, collaborators, permissions, apps),
             CollabEvent::FollowChanged { peer_id } => {
                 Self::fanout_follow_changed(channels, except, peer_id.as_deref());
             }
@@ -7004,13 +7008,15 @@ impl AppBrokerState {
         except: u64,
         collaborators: &[ui::collaboration::Collaborator],
         permissions: &[String],
+        apps: &[collab_types::history::NamedApp],
     ) {
         let env = ContextUpdate::Snapshot {
             collaborators: collaborators.to_vec(),
             permissions: permissions.to_vec(),
+            apps: apps.to_vec(),
         };
         for subs in channels {
-            subs.context.retain(|s| {
+            subs.context.retain_mut(|s| {
                 if s.peer_id == except {
                     return true;
                 }
@@ -7020,7 +7026,11 @@ impl AppBrokerState {
                 if s.native.is_some() {
                     return true;
                 }
-                s.tx.send(env.clone()).is_ok()
+                if s.tx.send(env.clone()).is_err() {
+                    return false;
+                }
+                s.apps = apps.to_vec();
+                true
             });
         }
     }
@@ -7092,10 +7102,14 @@ impl AppBrokerState {
         native: Option<NativeContext>,
     ) -> mpsc::UnboundedReceiver<ContextUpdate> {
         let (tx, rx) = mpsc::unbounded_channel();
+        // What each app installed here is called, with the people's names: what this window's
+        // history names another app's changes by.
+        let apps = self.installed_apps();
         if let Some(native) = native.as_ref() {
             let _ = tx.send(ContextUpdate::Snapshot {
                 collaborators: native.roster.clone(),
                 permissions: Vec::new(),
+                apps: apps.clone(),
             });
         }
         // Who the app's history names for changes an agent's own key signed.
@@ -7115,6 +7129,7 @@ impl AppBrokerState {
                     native,
                     private_alias: false,
                     history_agents,
+                    apps,
                 });
         }
         // The records of its app's trees this device already holds in the
@@ -7149,6 +7164,7 @@ impl AppBrokerState {
                     native: subscriber.native.clone(),
                     private_alias: true,
                     history_agents: subscriber.history_agents.clone(),
+                    apps: subscriber.apps.clone(),
                 });
             if let Some(subscriber) = subscriber {
                 let context = &mut channels.entry(alias.to_owned()).or_default().context;
@@ -7420,6 +7436,15 @@ impl AppBrokerState {
         }))
     }
 
+    /// What each app installed on this device is called, as the host's authority knows it: what
+    /// a window's history names another app's change by. Presentation only.
+    fn installed_apps(&self) -> Vec<collab_types::history::NamedApp> {
+        self.membership
+            .as_ref()
+            .map(|membership| membership.installed_apps())
+            .unwrap_or_default()
+    }
+
     /// The delegated agents of the workspace `channel` belongs to whose person's
     /// root signed the delegation for exactly that device, as the host's
     /// authority verified them. Presentation only: history names who wrote
@@ -7542,7 +7567,9 @@ impl AppBrokerState {
     }
 
     /// Tell one native context subscriber what its workspace's governance now
-    /// admits: the roster. Returns whether the roster changed.
+    /// admits: the roster, and the apps installed here by their names, one is
+    /// installed or removed since it was last told. Returns whether it heard
+    /// something new.
     fn tell_context_subscriber(
         &self,
         route: &CrdtRoute,
@@ -7566,6 +7593,7 @@ impl AppBrokerState {
         }
 
         let roster = self.native_membership_roster(route, current)?;
+        let apps = self.installed_apps();
         let mut channels = self
             .channels
             .lock()
@@ -7579,7 +7607,7 @@ impl AppBrokerState {
                 if subscriber.peer_id != peer_id || native.admitted != *admitted {
                     return true;
                 }
-                if same_roster(&native.roster, &roster) {
+                if same_roster(&native.roster, &roster) && subscriber.apps == apps {
                     return true;
                 }
                 changed = true;
@@ -7588,12 +7616,14 @@ impl AppBrokerState {
                     .send(ContextUpdate::Snapshot {
                         collaborators: roster.clone(),
                         permissions: Vec::new(),
+                        apps: apps.clone(),
                     })
                     .is_err()
                 {
                     return false;
                 }
                 native.roster.clone_from(&roster);
+                subscriber.apps.clone_from(&apps);
                 true
             });
         }
@@ -13318,6 +13348,7 @@ pub mod tests {
                 channels.values_mut(),
                 u64::MAX,
                 std::slice::from_ref(&forged),
+                &[],
                 &[],
             );
         }

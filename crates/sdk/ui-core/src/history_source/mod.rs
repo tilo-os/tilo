@@ -50,10 +50,10 @@ pub mod sentence;
 pub(crate) use authors::workspace_agents_revision;
 pub use authors::{
     AuthorDirectory, HistoryAgent, ParticipantNames, RosterAgent, UNKNOWN_AUTHOR_NAME,
-    actor_handle, actor_name, agent_display_label, agent_principal_name, app_name, app_word_key,
-    app_words, author_coloured, author_for_identity, local_identity_author, name_words,
-    participant_display_label, participant_name, set_workspace_agents, short_id, software_name,
-    stable_hue,
+    actor_handle, actor_name, agent_display_label, agent_principal_name, app_name, app_words,
+    author_coloured, author_for_identity, installed_app_name, local_identity_author, name_words,
+    participant_display_label, participant_name, set_installed_apps, set_workspace_agents,
+    short_id, software_name, stable_hue,
 };
 /// Undo, redo, restore and checkpoints written into the document, below
 /// the toolkit.
