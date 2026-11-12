@@ -175,4 +175,6 @@ tilo-live = { version = "0.1.0", path = "../../collab/tilo-live" }
 # The input a person gives another device's window, as the wire encodes it.
 neighbour-wire = { version = "0.1.0", path = "../../collab/neighbour-wire" }
 postcard = { workspace = true, features = ["use-std"] }
+# The device list's keys as text, as the page's own module writes them.
+hex.workspace = true
 

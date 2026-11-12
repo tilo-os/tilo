@@ -446,7 +446,7 @@ pub(crate) fn devices(store: &Store, identity: &IdentityProfile) -> Answer {
 pub(crate) fn devices_with_record(
     store: &Store,
     identity: &IdentityProfile,
-    record: Vec<(tilo_user_identity::DeviceCert, bool, Option<String>)>,
+    record: tilo_identity_host::device_admin::Record,
 ) -> Answer {
     let listed =
         tilo_identity_host::device_admin::with_record(fleet_devices(store, identity)?, record);

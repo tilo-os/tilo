@@ -475,3 +475,233 @@ async fn a_pages_browser_names_its_tab_devices_and_the_list_groups_them() {
     );
     relay.shutdown().await;
 }
+
+/// One key of the person's as their record lists it.
+fn listed_device<'a>(
+    list: &'a PersonalList,
+    cert: &DeviceCert,
+) -> &'a tilo_relay_session::workspaces::PersonalDevice {
+    list.devices
+        .iter()
+        .find(|device| device.cert.device_public_key == cert.device_public_key)
+        .unwrap_or_else(|| panic!("{} is in the record", cert.device_label))
+}
+
+/// A session of a person's key with this host says in their record that the
+/// key is here now, and when it was last: a session that ends says when it
+/// left, and the record keeps it across the host opening its files again.
+#[tokio::test]
+async fn a_keys_sessions_say_when_it_was_here_and_whether_it_is_now() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    let root = SigningKey::from_bytes(&rand::random());
+    let laptop = key_of(&root, "laptop", DeviceCapabilities::member());
+    // The record holds the key: a device of theirs kept their list here.
+    workspaces.keep_issued_device(&laptop);
+
+    workspaces.session_opened_at(&laptop, 1_000);
+    let listed = workspaces.personal(&laptop, &[]);
+    let device = listed_device(&listed, &laptop);
+    assert!(device.online, "a session of the key is open here now");
+    assert_eq!(device.last_active_ms, Some(1_000));
+    assert_eq!(device.agent, None);
+
+    workspaces.session_ended_at(&laptop, 5_000);
+    let listed = workspaces.personal(&laptop, &[]);
+    let device = listed_device(&listed, &laptop);
+    assert!(!device.online, "no session of the key is open");
+    assert_eq!(device.last_active_ms, Some(5_000));
+
+    // The host opens its files again: the record still says when the key was
+    // here last.
+    relay.shutdown().await;
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let listed = relay.workspaces().personal(&laptop, &[]);
+    assert_eq!(listed_device(&listed, &laptop).last_active_ms, Some(5_000));
+    relay.shutdown().await;
+}
+
+/// A session opening writes when a key was here at most once a minute, since a
+/// host serves many sessions, and one ending always writes: a device that
+/// came and left within the minute is listed as having left when it did, and a
+/// key the person's record does not hold writes nothing at all.
+#[tokio::test]
+async fn an_opening_is_written_once_a_minute_and_an_ending_always() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    let root = SigningKey::from_bytes(&rand::random());
+    let laptop = key_of(&root, "laptop", DeviceCapabilities::member());
+    let stranger = key_of(&root, "never kept", DeviceCapabilities::member());
+    workspaces.keep_issued_device(&laptop);
+    let record = dir.path().join("rooms").join("personal-lists");
+    let kept_bytes = || {
+        std::fs::read(record.join(format!(
+            "{}.json",
+            hex::encode(root.verifying_key().to_bytes())
+        )))
+        .unwrap()
+    };
+
+    workspaces.session_opened_at(&laptop, 1_000);
+    let opened = kept_bytes();
+    workspaces.session_opened_at(&laptop, 30_000);
+    assert_eq!(
+        kept_bytes(),
+        opened,
+        "a second session within the minute does not write the record again"
+    );
+    assert_eq!(
+        workspaces
+            .personal(&laptop, &[])
+            .devices
+            .iter()
+            .find(|device| device.cert.device_public_key == laptop.device_public_key)
+            .and_then(|device| device.last_active_ms),
+        Some(1_000)
+    );
+
+    workspaces.session_ended_at(&laptop, 31_000);
+    assert_eq!(
+        workspaces
+            .personal(&laptop, &[])
+            .devices
+            .iter()
+            .find(|device| device.cert.device_public_key == laptop.device_public_key)
+            .and_then(|device| device.last_active_ms),
+        Some(31_000),
+        "the session that ended a moment after one opened is still kept"
+    );
+
+    let before = kept_bytes();
+    workspaces.session_opened_at(&stranger, 40_000);
+    assert_eq!(
+        kept_bytes(),
+        before,
+        "a key the person kept no record of writes nothing"
+    );
+    relay.shutdown().await;
+}
+
+/// A key whose session says it runs an agent is listed with the agent, for a
+/// person this host is not the own of, and joins their record even when none
+/// of their devices kept a list here: the root that certified it is on no
+/// page of this host's.
+#[tokio::test]
+async fn a_keys_session_says_which_agent_it_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    let root = SigningKey::from_bytes(&rand::random());
+    let computer = key_of(&root, "Claude Code on laptop", DeviceCapabilities::member());
+    let stop = std::sync::Arc::new(tokio::sync::Notify::new());
+
+    workspaces.note_agent(&computer, "Claude Code", &stop);
+    let listed = workspaces.personal(&computer, &[]);
+    let device = listed_device(&listed, &computer);
+    assert_eq!(device.agent.as_deref(), Some("Claude Code"));
+    assert!(!device.online, "an agent's name is no session open now");
+
+    // Another of their keys reads the same record, and the name stays.
+    let phone = key_of(&root, "phone", DeviceCapabilities::member());
+    workspaces.keep_issued_device(&phone);
+    workspaces.note_agent(&computer, "Claude Code", &stop);
+    let listed = workspaces.personal(&phone, &[]);
+    assert_eq!(
+        listed_device(&listed, &computer).agent.as_deref(),
+        Some("Claude Code")
+    );
+    relay.shutdown().await;
+}
+
+/// A session of a member's device — a person this host is not the own of —
+/// says so in their record as it starts, from the session itself and not from
+/// the record's own door.
+#[tokio::test]
+async fn a_members_session_marks_its_key_online_as_it_starts() {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::Mutex as AsyncMutex;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    let root = SigningKey::from_bytes(&rand::random());
+    let laptop_key = SigningKey::from_bytes(&rand::random());
+    let mut laptop = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: laptop_key.verifying_key().to_bytes(),
+        device_label: "Claude Code on laptop".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: tilo_clock::unix_now_ns(),
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    sign_device_cert(&mut laptop, &root).unwrap();
+    workspaces.keep_issued_device(&laptop);
+    let online = || listed_device(&workspaces.personal(&laptop, &[]), &laptop).online;
+    assert!(!online(), "no session of the key is open yet");
+
+    let hello = crate::auth::Hello::new(laptop.clone(), [2; 32]);
+    let peer = crate::auth::accept_hello(
+        &hello,
+        &owner.user_public_key,
+        &crate::policy::TrustPolicy::AllowAny,
+        &tilo_user_identity::RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .unwrap();
+    let registry: crate::peer::WorkspaceRegistry = Arc::new(AsyncMutex::new(HashMap::new()));
+    let context = crate::peer::PeerContext {
+        workspaces: registry,
+        autobind: None,
+        revocations: Arc::new(std::sync::RwLock::new(
+            tilo_user_identity::RevocationList::new(),
+        )),
+        trust_policy: Arc::new(std::sync::RwLock::new(crate::policy::TrustPolicy::AllowAny)),
+        own_user_public_key: owner.user_public_key,
+        own_device_cert: owner.clone(),
+        own_device_public_key: owner.device_public_key,
+        app_serving: None,
+        metrics: Arc::new(crate::metrics::Metrics::default()),
+        carried_calls: None,
+        admin: Some(Arc::new(workspaces.clone())),
+        fetch: None,
+        agents: crate::peer::AgentRegistry::default(),
+        environments: crate::environment::EnvironmentRegistry::default(),
+        positions: None,
+        compactor: None,
+        member_limits: None,
+    };
+    let (_client, server) = tokio::io::duplex(65_536);
+    let (read, write) = tokio::io::split(server);
+    let session = tokio::spawn(crate::peer::run_peer_until(
+        peer,
+        std::future::pending::<()>(),
+        read,
+        write,
+        context,
+    ));
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while !online() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the session says in the record that the key is here");
+    assert!(
+        listed_device(&workspaces.personal(&laptop, &[]), &laptop)
+            .last_active_ms
+            .is_some(),
+        "and when it was here"
+    );
+
+    session.abort();
+    relay.shutdown().await;
+}

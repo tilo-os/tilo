@@ -1534,6 +1534,11 @@ impl crate::Shared {
                 cert,
                 revoked: false,
                 browser: None,
+                // What the keys' sessions on a host said of them is that
+                // host's to keep, not this list's.
+                agent: None,
+                last_active_ms: None,
+                online: false,
             })
             .collect();
         }

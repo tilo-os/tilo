@@ -235,6 +235,18 @@ pub struct PersonalDevice {
     /// together: one entry, taken back as one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<String>,
+    /// The agent this key runs, as the sessions it opened on this host named
+    /// it ("Claude Code"): a computer set up with `tilo login` is a device of
+    /// the person's that an agent works on, and says so when it starts one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// When a session of this key with this host last opened or ended, ms
+    /// since the epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_active_ms: Option<i64>,
+    /// A session of this key is open with this host now.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub online: bool,
 }
 
 /// The most tab keys one browser profile names ([`PersonalBrowser`]).

@@ -33,7 +33,9 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use tilo_lock::MutexRecover as _;
 use tilo_relay_session::workspaces::{
     MAX_BROWSER_DEVICES, MAX_PERSONAL_DEVICES, PersonalBrowser, PersonalDevice, PersonalList,
     PersonalWorkspace, WorkspaceHostAddress,
@@ -45,8 +47,9 @@ use super::Workspaces;
 /// The directory beside the workspaces' records the lists are kept in.
 const DIR: &str = "personal-lists";
 
-/// What is kept of one person's list: the list, and the device that kept it.
-#[derive(serde::Serialize, serde::Deserialize)]
+/// What is kept of one person's list: the list, the device that kept it, and
+/// what the sessions of their keys said of them.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
 struct Kept {
     /// The device that kept it, hex.
     by: String,
@@ -62,6 +65,37 @@ struct Kept {
     /// last named them, each one of `devices`, each in one browser at most.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     browsers: BTreeMap<String, Vec<String>>,
+    /// The agent each key runs, hex, as the sessions it opened here named it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    agents: BTreeMap<String, String>,
+    /// When each key was last here, hex, ms since the epoch: the last session
+    /// of it that opened or ended on this host.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    seen: BTreeMap<String, i64>,
+}
+
+/// What one person's record on this host holds, as their keys read it.
+#[derive(Default)]
+struct Record {
+    /// The workspaces their devices kept.
+    list: PersonalList,
+    /// Every key their root certified that was added here.
+    devices: Vec<DeviceCert>,
+    /// The browser each tab key is of, its id, by the key's hex.
+    browser_of: BTreeMap<String, String>,
+    /// The agent each key runs, by its hex.
+    agents: BTreeMap<String, String>,
+    /// When each key was last here, by its hex.
+    seen: BTreeMap<String, i64>,
+}
+
+/// How often a session opening writes when a key was last here: a host serves
+/// many sessions, and the record is read back rather than streamed.
+const SEEN_WRITE_INTERVAL_MS: i64 = 60_000;
+
+/// Now, ms since the epoch, as a record keeps it.
+fn now_ms() -> i64 {
+    i64::try_from(tilo_clock::unix_now_ns() / 1_000_000).unwrap_or(i64::MAX)
 }
 
 /// The lists people's devices kept on this host.
@@ -90,13 +124,7 @@ impl PersonalLists {
         let person = device.user_public_key;
         let carried: Vec<DeviceCert> = list.devices.drain(..).map(|one| one.cert).collect();
         let _writing = self.lock();
-        let mut kept = self.read(&person).unwrap_or_else(|| Kept {
-            by: String::new(),
-            at_ns: 0,
-            list: PersonalList::default(),
-            devices: Vec::new(),
-            browsers: BTreeMap::new(),
-        });
+        let mut kept = self.read(&person).unwrap_or_default();
         kept.by = hex::encode(device.device_public_key);
         kept.at_ns = now;
         kept.list = list;
@@ -108,13 +136,7 @@ impl PersonalLists {
     /// whatever else it holds.
     fn add_devices(&self, person: &[u8; 32], certs: Vec<DeviceCert>) -> Result<(), String> {
         let _writing = self.lock();
-        let mut kept = self.read(person).unwrap_or_else(|| Kept {
-            by: String::new(),
-            at_ns: 0,
-            list: PersonalList::default(),
-            devices: Vec::new(),
-            browsers: BTreeMap::new(),
-        });
+        let mut kept = self.read(person).unwrap_or_default();
         if !add(&mut kept.devices, person, certs) {
             return Ok(());
         }
@@ -138,13 +160,7 @@ impl PersonalLists {
             .filter(|cert| cert.capabilities.agent.is_none() && !cert.capabilities.stand_in)
             .collect();
         let _writing = self.lock();
-        let mut kept = self.read(person).unwrap_or_else(|| Kept {
-            by: String::new(),
-            at_ns: 0,
-            list: PersonalList::default(),
-            devices: Vec::new(),
-            browsers: BTreeMap::new(),
-        });
+        let mut kept = self.read(person).unwrap_or_default();
         let added = add(&mut kept.devices, person, certs.clone());
         // Only keys the record holds, which `add` verified as the person's.
         let mut keys: Vec<String> = Vec::new();
@@ -206,19 +222,78 @@ impl PersonalLists {
         }
     }
 
-    /// The list `person`'s devices kept here last, their devices, and which
-    /// browser each tab key is of; empty when none did.
-    fn of(&self, person: &[u8; 32]) -> (PersonalList, Vec<DeviceCert>, BTreeMap<String, String>) {
-        self.read(person)
-            .map(|kept| {
-                let browser_of = kept
-                    .browsers
-                    .into_iter()
-                    .flat_map(|(id, keys)| keys.into_iter().map(move |key| (key, id.clone())))
-                    .collect();
-                (kept.list, kept.devices, browser_of)
-            })
-            .unwrap_or_default()
+    /// What `person`'s record here holds: the list their devices kept last,
+    /// their devices, which browser each tab key is of, the agent each key
+    /// runs and when each was last here; empty when they kept no list.
+    fn of(&self, person: &[u8; 32]) -> Record {
+        let Some(kept) = self.read(person) else {
+            return Record::default();
+        };
+        Record {
+            list: kept.list,
+            devices: kept.devices,
+            browser_of: kept
+                .browsers
+                .into_iter()
+                .flat_map(|(id, keys)| keys.into_iter().map(move |key| (key, id.clone())))
+                .collect(),
+            agents: kept.agents,
+            seen: kept.seen,
+        }
+    }
+
+    /// Say that `cert`, a key of `person`'s, was here at `at_ms`, a session of
+    /// it opening (`opening`) or ending. Only a record that holds the key says
+    /// it: this writes one key's time, never a session's worth of state, and a
+    /// key that has no record here was never one of the person's they kept.
+    /// An opening is written at most once a minute; an ending always is, so
+    /// the record keeps when the device left even right after it came.
+    fn note_seen(&self, person: &[u8; 32], cert: &DeviceCert, at_ms: i64, opening: bool) {
+        let _writing = self.lock();
+        let Some(mut kept) = self.read(person) else {
+            return;
+        };
+        if !kept
+            .devices
+            .iter()
+            .any(|known| known.device_public_key == cert.device_public_key)
+        {
+            return;
+        }
+        let key = hex::encode(cert.device_public_key);
+        if opening
+            && kept
+                .seen
+                .get(&key)
+                .is_some_and(|seen| at_ms.saturating_sub(*seen) < SEEN_WRITE_INTERVAL_MS)
+        {
+            return;
+        }
+        if kept.seen.get(&key) == Some(&at_ms) {
+            return;
+        }
+        kept.seen.insert(key, at_ms);
+        if let Err(error) = self.write(person, &kept) {
+            tracing::debug!(%error, "a key's session is not in the person's record");
+        }
+    }
+
+    /// Say that `cert`, a key of `person`'s, runs the agent `name`. The key is
+    /// added to their record when it is not there yet (`add` checks that their
+    /// root signed it), so a computer set up with `tilo login` on any host of
+    /// theirs is listed with the agent it runs.
+    fn note_agent(&self, person: &[u8; 32], cert: &DeviceCert, name: &str) {
+        let _writing = self.lock();
+        let mut kept = self.read(person).unwrap_or_default();
+        add(&mut kept.devices, person, vec![cert.clone()]);
+        let key = hex::encode(cert.device_public_key);
+        if kept.agents.get(&key) == Some(&name.to_owned()) {
+            return;
+        }
+        kept.agents.insert(key, name.to_owned());
+        if let Err(error) = self.write(person, &kept) {
+            tracing::debug!(%error, "the agent a key runs is not in the person's record");
+        }
     }
 }
 
@@ -297,7 +372,13 @@ impl Workspaces {
                 .agent
                 .is_none_or(|scope| scope.reaches(workspace))
         };
-        let (list, certs, browser_of) = self.inner.personal.of(&device.user_public_key);
+        let Record {
+            list,
+            devices: certs,
+            browser_of,
+            agents,
+            seen,
+        } = self.inner.personal.of(&device.user_public_key);
         let mut workspaces: Vec<PersonalWorkspace> = Vec::new();
         for kept in list.workspaces {
             if !reaches(&kept.workspace)
@@ -319,14 +400,19 @@ impl Workspaces {
             Vec::new()
         } else {
             let revocations = self.revocations();
+            let online = self.inner.online.lock_recover();
             certs
                 .into_iter()
-                .map(|cert| PersonalDevice {
-                    revoked: revocations.refuses(&cert),
-                    browser: browser_of
-                        .get(&hex::encode(cert.device_public_key))
-                        .cloned(),
-                    cert,
+                .map(|cert| {
+                    let key = hex::encode(cert.device_public_key);
+                    PersonalDevice {
+                        revoked: revocations.refuses(&cert),
+                        browser: browser_of.get(&key).cloned(),
+                        agent: agents.get(&key).cloned(),
+                        last_active_ms: seen.get(&key).copied(),
+                        online: online.get(&cert.device_public_key).copied().unwrap_or(0) > 0,
+                        cert,
+                    }
                 })
                 .collect()
         };
@@ -377,6 +463,63 @@ impl Workspaces {
             .add_devices(&cert.user_public_key, vec![cert.clone()])
         {
             tracing::warn!(%error, "a key the person's root certified here is not in their record");
+        }
+    }
+
+    /// A session of `cert`'s device opened here: their record says the key is
+    /// here now, and when it was last.
+    pub(crate) fn session_opened(&self, cert: &DeviceCert) {
+        self.session_opened_at(cert, now_ms());
+    }
+
+    /// The session of `cert`'s device that was open here has ended: their
+    /// record says when it was here last.
+    pub(crate) fn session_ended(&self, cert: &DeviceCert) {
+        self.session_ended_at(cert, now_ms());
+    }
+
+    /// [`Self::session_opened`] at `at_ms`, for tests that say when.
+    pub(crate) fn session_opened_at(&self, cert: &DeviceCert, at_ms: i64) {
+        let mut online = self.inner.online.lock_recover();
+        let count = online.entry(cert.device_public_key).or_default();
+        *count = count.saturating_add(1);
+        drop(online);
+        self.inner
+            .personal
+            .note_seen(&cert.user_public_key, cert, at_ms, true);
+    }
+
+    /// [`Self::session_ended`] at `at_ms`, for tests that say when.
+    pub(crate) fn session_ended_at(&self, cert: &DeviceCert, at_ms: i64) {
+        if let Some(count) = self
+            .inner
+            .online
+            .lock_recover()
+            .get_mut(&cert.device_public_key)
+        {
+            *count = count.saturating_sub(1);
+        }
+        self.inner
+            .personal
+            .note_seen(&cert.user_public_key, cert, at_ms, false);
+    }
+
+    /// Say that `cert`, a key of its person's, runs the agent `name`: their
+    /// record keeps it for every person's host, and the host's own person's
+    /// agent door lists the run.
+    pub(crate) fn note_agent(
+        &self,
+        cert: &DeviceCert,
+        name: &str,
+        stop: &Arc<tokio::sync::Notify>,
+    ) {
+        self.inner
+            .personal
+            .note_agent(&cert.user_public_key, cert, name);
+        if cert.user_public_key == self.inner.host.cert.user_public_key
+            && cert.device_public_key != self.inner.host.cert.device_public_key
+        {
+            self.inner.agent_door.note(cert, name, stop);
         }
     }
 

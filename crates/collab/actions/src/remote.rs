@@ -310,6 +310,10 @@ pub mod identity_admin {
     }
 
     /// One device trusted under an identity, as [`DEVICES`] answers it.
+    #[expect(
+        clippy::struct_excessive_bools,
+        reason = "each flag says a different thing about the key: whether it is this device, refused, may host, and here now"
+    )]
     #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
     pub struct FleetDevice {
         /// The name the device was enrolled with.
@@ -332,6 +336,29 @@ pub mod identity_admin {
         /// back all of one browser's keys as one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub browser: Option<String>,
+        /// The agent this key runs, as the sessions it opened on a host named
+        /// it ("Claude Code"): a computer set up with `tilo login` is a
+        /// device of the person's that an agent works on.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub agent: Option<String>,
+        /// When its certificate was issued, ms since the epoch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub issued_ms: Option<i64>,
+        /// When it expires, ms since the epoch; `None` for one that does not.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub expires_ms: Option<i64>,
+        /// When a session of this key with one of the person's hosts last
+        /// opened or ended, ms since the epoch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub last_active_ms: Option<i64>,
+        /// A session of this key is open with one of their hosts now.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        pub online: bool,
+        /// The one workspace an agent's grant reaches, by its name where the
+        /// person's record names it, else its id. `None` every workspace of
+        /// theirs: a device of theirs, and an agent with the whole account.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub workspace: Option<String>,
     }
 
     /// What a key the person's root certified is.

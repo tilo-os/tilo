@@ -200,21 +200,6 @@ impl AgentDoor {
 }
 
 impl super::Workspaces {
-    /// The device of `cert`, on the session `stop` ends, runs the agent
-    /// `name`: kept for a device of the host's own person only.
-    pub(crate) fn note_agent(
-        &self,
-        cert: &DeviceCert,
-        name: &str,
-        stop: &Arc<tokio::sync::Notify>,
-    ) {
-        if cert.user_public_key == self.inner.host.cert.user_public_key
-            && cert.device_public_key != self.inner.host.cert.device_public_key
-        {
-            self.inner.agent_door.note(cert, name, stop);
-        }
-    }
-
     /// Whether `device` still runs the person's agent: a stop that leaves it so is the person
     /// stopping a run, and one that does not is the device being revoked.
     pub(crate) fn runs_agent(&self, device: &[u8; 32]) -> bool {

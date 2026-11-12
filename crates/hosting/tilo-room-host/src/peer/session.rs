@@ -212,6 +212,12 @@ where
         presence: Some(&presence),
     };
 
+    // The person's record says this key of theirs is here now, and when it
+    // was last: a device of theirs reading their devices sees it online.
+    if let Some(admin) = &admin {
+        admin.session_opened(&peer.cert);
+    }
+
     let grant = FetchGrant::open(&session, &peer, &tx);
     // A clean EOF is only one of the ways this ends: a write to a
     // connection the peer has already closed, a frame that will not
@@ -261,6 +267,7 @@ where
     execution.close();
     if let Some(admin) = &admin {
         admin.agent_session_ended(&peer.device_public_key, &stop);
+        admin.session_ended(&peer.cert);
     }
 
     connection_live.end();
