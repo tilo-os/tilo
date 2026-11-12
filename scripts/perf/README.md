@@ -12,7 +12,21 @@ executable stand-alone; the higher-level flow is described below.
   or a native Chat launch whose window never draws a first frame (`frames` in
   the session's `windows` rows). It consumes an already-built `tilo-session`
   (a development build, so its test-control socket opens) and an existing app
-  store, so it does not build an RPM or image.
+  store, so it does not build an RPM or image. `--load windowed|fullscreen`
+  runs `tilo-loadclient` (`crates/dev/click-test-client`, built with `cargo
+  build --release -p click-test-client --bin tilo-loadclient`) beside it: a
+  window that draws a frame for every frame shown. `--load-client PATH` names
+  another one.
+
+- `headless_key_latency.py` — key-to-present latency of typing on the
+  tree's headless desktop, from the session's own `KEY-LATENCY` lines
+  (key -> client commit -> compositor submit -> the vblank that shows it).
+  It types into the synthetic client that answers each key with one commit
+  (`crates/session/session/examples/latency_client.rs`), or into an installed
+  app with `--app so.tilo.notes` / a tilolang app's id, opens the session
+  through `scripts/headless-examples/real_apps.py`, and reports p50/p90/p99
+  per leg. It leaves out the kernel input stack and the panel, so it measures
+  the compositor, the client and the GPU.
 
 - `device_latency_bench.py` — the weekly, report-only latency run on a
   reference machine (kernel input event to KMS presentation, through
