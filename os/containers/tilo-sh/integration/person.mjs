@@ -12,9 +12,13 @@
 //   --root FILE     they are a person another program can hold: the page
 //                   makes a recovery key for them (its own "save a recovery
 //                   key") and FILE gets what opens them elsewhere, the
-//                   envelope and that key, as `tilo-approve person` reads it.
+//                   envelope and that key, as `tilo-approve person` reads it;
+//   --passkey       they keep themselves with a passkey (a virtual
+//                   authenticator, as a platform one answers), the browser
+//                   then forgets the site, and they sign in again with that
+//                   passkey: the same person comes back.
 //
-// usage: node person.mjs SITE RELAY OUT_DIR [--follow LINK] [--key NAME --tilo BIN --door DOOR [--no-pages]] [--root FILE]
+// usage: node person.mjs SITE RELAY OUT_DIR [--follow LINK] [--key NAME --tilo BIN --door DOOR [--no-pages]] [--root FILE] [--passkey]
 //
 // Prints one JSON line: {arrivedMs, joinedMs, room, followed, key, entered}.
 // `arrivedMs` is a fresh visitor's entry: from navigating to the site to the
@@ -41,6 +45,7 @@ const follow = option('--follow');
 const keyName = option('--key');
 const rootFile = option('--root');
 const noPages = rest.includes('--no-pages');
+const passkey = rest.includes('--passkey');
 const tiloBin = option('--tilo');
 const door = option('--door');
 mkdirSync(out, {recursive: true});
@@ -98,6 +103,11 @@ const capture = async name => {
   }
   await tab.send('Emulation.setEmulatedMedia', {features: []}).catch(() => {});
 };
+// The page's identity module, the very one the page holds its person in: the
+// page's modules live under the build's own version directory (/v/<hash>/),
+// which its preload hints name.
+const identityModule = `await import(new URL('identity.mjs', new URL('.', (document.querySelector('link[rel="modulepreload"][href], script[type="module"][src]').href
+  || document.querySelector('script[type="module"][src]').src))).href)`;
 const memberships = `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')`;
 const entered = `JSON.parse(globalThis.localStorage.getItem('tilo-entered-workspaces') ?? '[]')`;
 
@@ -142,6 +152,46 @@ if (rootFile) {
   report.person = kept.person;
   report.root = rootFile;
   console.error(`ok: the person ${kept.person} can be held from ${rootFile}`);
+}
+
+if (passkey) {
+  // A platform authenticator that answers with PRF, which is what lets a
+  // passkey open a Tilo person; resident, so signing in needs no name.
+  await tab.send('WebAuthn.enable', {enableUI: false});
+  const added = await tab.send('WebAuthn.addVirtualAuthenticator', {options: {protocol: 'ctap2', transport: 'internal',
+    hasResidentKey: true, hasUserVerification: true, isUserVerified: true, hasPrf: true}});
+  if (added.error) await finish(1, `no virtual authenticator: ${added.error.message}`);
+  // Kept with a passkey for this site's name, then kept at the Lounge's host,
+  // as the page's "Keep me" does.
+  const kept = await tab.evaluate(`(async () => {
+    const id = ${identityModule};
+    const person = await id.browserIdentity();
+    try {
+      await person.keepWithPasskey({userName: 'local passkey check'});
+      await id.publishEnvelope({origin: ${JSON.stringify(new URL(relay).origin)}, identity: person});
+    } catch (error) { return JSON.stringify({error: String(error?.message ?? error), code: error?.code ?? error?.name}); }
+    return JSON.stringify({person: person.userPublicKey, rpIds: person.envelope.wraps.filter(wrap => wrap.kind === 'passkey').map(wrap => wrap.rp_id)});
+  })()`).then(JSON.parse);
+  if (kept.error) await finish(1, `the passkey was not registered on ${new URL(site).hostname}: ${kept.error} (${kept.code})`);
+  console.error(`ok: ${kept.person} kept themselves with a passkey for ${kept.rpIds.join(', ')}`);
+  // The browser forgets the site: a fresh visitor, the authenticator alone
+  // remembering them.
+  await tab.send('Storage.clearDataForOrigin', {origin: new URL(site).origin, storageTypes: 'all'});
+  await tab.navigate(site);
+  await until(`document.documentElement.dataset.arrival === 'done'`, 'the page arriving again');
+  const back = await tab.evaluate(`(async () => {
+    const id = ${identityModule};
+    const before = id.currentIdentity()?.userPublicKey ?? null;
+    try {
+      const person = await id.signInWithPasskey({fetchEnvelope: root => id.fetchEnvelope(root, [${JSON.stringify(new URL(relay).origin)}])});
+      return JSON.stringify({before, person: person.userPublicKey});
+    } catch (error) { return JSON.stringify({error: String(error?.message ?? error), code: error?.code ?? error?.name}); }
+  })()`).then(JSON.parse);
+  if (back.error) await finish(1, `signing in with the passkey failed: ${back.error} (${back.code})`);
+  if (back.before === kept.person) await finish(1, 'the browser still held the person after it forgot the site');
+  if (back.person !== kept.person) await finish(1, `the passkey signed in ${back.person}, not ${kept.person}`);
+  report.passkey = {person: kept.person, rpIds: kept.rpIds};
+  console.error(`ok: after the browser forgot the site, the passkey signed ${back.person} in again`);
 }
 
 if (follow) {

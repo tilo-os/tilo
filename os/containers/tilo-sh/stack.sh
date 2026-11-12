@@ -62,7 +62,7 @@ What runs, all on 127.0.0.1 (ports from TILO_SH_PORT_BASE, default 24100):
   web       the web entry (its entrypoint and Caddyfile serving the desktop
             bundle): the site, /sign-in, /install.sh, /releases, on
             127.0.0.1:BASE+21 behind tls, which serves it as Cloudflare
-            serves tilo.sh (HTTPS, HTTP/2): https://127.0.0.1:BASE+20
+            serves tilo.sh (HTTPS, HTTP/2): https://tilo.localhost:BASE+20
   vm-host   the VM host image (Firecracker): a workspace's Linux programs and
             its Browser run in its VM here, and the relay places it on this
             host. It is privileged, so it runs as root over its own state
@@ -123,10 +123,14 @@ live_origin=https://127.0.0.1:$live_port
 door_origin=http://localhost:$door_port
 # HTTPS, as tilo.sh is: a browser speaks HTTP/2 only over TLS, and over
 # HTTP/1.1's six connections the page's modules arrive far later than they do
-# from production. An address, not localhost: the site's HSTS header, which a
-# browser trusting the local CA would keep for localhost, would then turn the
-# door's plain http://localhost into an https:// one it does not answer.
-site_origin=https://127.0.0.1:$site_port
+# from production. A name of its own under localhost, not localhost: the
+# site's HSTS header, which a browser trusting the local CA keeps per host
+# name, would on localhost turn the door's plain http://localhost into an
+# https:// one it does not answer. Not an address either: a passkey's relying
+# party is the page's host name, and a browser refuses one on an address.
+# Browsers, curl and glibc resolve any *.localhost name to loopback.
+site_host=tilo.localhost
+site_origin=https://$site_host:$site_port
 
 state=${TILO_SH_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/tilo-sh-local}
 prefix=tilo-sh-local
@@ -221,12 +225,15 @@ caddy_image=docker.io/library/caddy@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79b
 
 # start NAME ARGS…: one service's container, replacing any stopped one of the
 # same name. Every container is this stack's own (named tilo-sh-local-*).
+# Each resolves the site's name as production's resolve tilo.sh: the
+# images' own resolvers know nothing of *.localhost, and the door keeps the
+# invitations it hands over on the site's shelf, at that name.
 start() {
   local name=$1
   shift
   podman_ rm -f "$prefix-$name" >/dev/null 2>&1 || true
   podman_ run -d --name "$prefix-$name" --label tilo-sh-local=1 --log-driver k8s-file \
-    --log-opt "path=$state/logs/$name.log" "$@" >/dev/null \
+    --add-host "$site_host:127.0.0.1" --log-opt "path=$state/logs/$name.log" "$@" >/dev/null \
     || die "$name did not start: podman run $*"
 }
 

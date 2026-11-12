@@ -5,7 +5,7 @@
 # Production's names become loopback ports (stack.sh sets them):
 #   eu1.tilo.sh       https://127.0.0.1:{$TILO_SH_RELAY_PORT}
 #   live-eu1.tilo.sh  https://127.0.0.1:{$TILO_SH_LIVE_PORT}
-#   tilo.sh           https://127.0.0.1:{$TILO_SH_SITE_PORT}
+#   tilo.sh           https://tilo.localhost:{$TILO_SH_SITE_PORT}
 # and Cloudflare's certificate becomes Caddy's own local CA, whose root
 # stack.sh puts in the bundle the containers trust, as production's roots are.
 #
@@ -47,7 +47,13 @@ https://127.0.0.1:{$TILO_SH_LIVE_PORT} {
 # over one connection as they do from tilo.sh, rather than over HTTP/1.1's
 # six. A browser reaching it trusts this CA (stack.sh env, local-ca.pem) or,
 # headless and measuring, runs with --ignore-certificate-errors.
-https://127.0.0.1:{$TILO_SH_SITE_PORT} {
+#
+# It is a name under localhost, which a browser resolves to loopback itself
+# and treats as a secure context: a passkey's relying party is the page's
+# host name, which an address cannot be. A browser keeps the site's HSTS
+# header for tilo.localhost alone, so the door's plain http://localhost
+# stays plain.
+https://tilo.localhost:{$TILO_SH_SITE_PORT} {
 	tls internal
 	reverse_proxy 127.0.0.1:{$TILO_SH_WEB_PORT}
 }

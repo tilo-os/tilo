@@ -67,7 +67,7 @@ base=${TILO_SH_PORT_BASE:-24100}
 work=${1:-$state/check}
 mkdir -p "$work"
 find "$work" -mindepth 1 -delete
-site=https://127.0.0.1:$((base + 20))
+site=https://tilo.localhost:$((base + 20))
 relay=https://127.0.0.1:$base
 door=http://localhost:$((base + 10))
 began=$SECONDS
@@ -288,6 +288,12 @@ if runs_step 7; then
     entries+=("$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["joinedMs"])' "$work/visitor-$visit.json")")
   done
 fi
+
+step '7b. a visitor keeps themselves with a passkey and signs in with it again'
+# The site's name is the passkey's relying party, as tilo.sh is on tilo.sh: a
+# browser registers none for an address, which the local site was once.
+node "$here/integration/person.mjs" "$site" "$relay" "$work/passkey" --passkey > "$work/passkey.json" \
+  || fail "the passkey did not register or sign in (see $work/passkey)"
 
 python3 - "$report" "$bring_up" "$visa_seconds" "${TILO_SH_SEED:-0}" "${entries[@]}" <<'EOF'
 import json, os, statistics, sys
