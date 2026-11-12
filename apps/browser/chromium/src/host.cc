@@ -902,6 +902,35 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
     browser_=browser;
+    // A popup comes from its opener with a live frame and its page on the
+    // way. A tab the host opened has neither yet: CreateTab starts it.
+    if(opener_) SetUp();
+  }
+  // A tab the host opened holds no page until its first address: nothing is
+  // loaded into it, so its session history is the engine's initial entry
+  // alone, which the first navigation replaces as it commits. The first page
+  // is therefore the history's first entry from its first script on:
+  // history.length is 1 and nothing is behind it, for the page or the person.
+  // Nothing is taken out of the history afterwards, so no script can run
+  // before that happened.
+  //
+  // Loading nothing would leave the frame without a renderer, and the
+  // renderer answers the DevTools commands a first navigation waits for (the
+  // document-start scripts). So the frame is brought to life here, on the
+  // engine's empty first document: the engine starts the renderer of a tab
+  // that has loaded nothing to run a javascript: address in it
+  // (NavigationControllerImpl::HandleRendererDebugURL), and running one is
+  // no navigation. It comes before SetUp attaches DevTools, whose agent
+  // learns that a frame it met without a renderer has one only from a
+  // navigation, and after OnAfterCreated, where CEF defers every load.
+  void Start() {
+    if(!browser_) return;
+    browser_->GetMainFrame()->LoadURL("javascript:void(0)");
+    bootstrap_settled_=true;navigation_busy_=false;
+    SetUp();
+  }
+  void SetUp() {
+    auto browser=browser_;
     if(id_==1 && tilo::StartupDiagnostics::Enabled()){startup_diagnostics_=new tilo::StartupDiagnostics(browser);startup_diagnostics_->Attach();}
     request_filter->Begin(browser->GetIdentifier(),"about:blank");
     site_clear_=new tilo::SiteClear(browser,[this](int request,const std::string& origin,uint64_t generation,bool success,const std::string& message){SiteResult(request,origin,generation,"clear",success,message);});site_clear_->Attach();
@@ -1083,7 +1112,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     auto loaded=CefDictionaryValue::Create();loaded->SetString("url",uri);loaded->SetInt("status",status);Event("loaded",loaded);
   }
   void OnLoadingStateChange(CefRefPtr<CefBrowser> browser,bool loading,bool back,bool forward) override {
-    auto d=CefDictionaryValue::Create();d->SetBool("back",back && !tilo::OnlyBootstrapBehind(browser));d->SetBool("forward",forward);Event("history",d);
+    auto d=CefDictionaryValue::Create();d->SetBool("back",back);d->SetBool("forward",forward);Event("history",d);
     if(extension_tabs) {auto change=CefDictionaryValue::Create();change->SetString("status",loading?"loading":"complete");extension_tabs->Updated(id_,change);}
     if(loading) { navigation_busy_=true; main_navigation_finished_=false; failed_main_navigation_.reset(); return; }
     // OnLoadEnd excludes same-document history; overall loading settles it.
@@ -1100,9 +1129,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       ScheduleNavigation();
     }
   }
-  void OnLoadStart(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,TransitionType) override {
+  void OnLoadStart(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,TransitionType) override {
     if(!frame->IsMain()) return;
-    tilo::ForgetBootstrap(browser);
     // A new document: what the page before it was held from sending has no
     // page to leave from any more. Each such hold ends, and the tab's record
     // names the page it was held on.
@@ -1331,7 +1359,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     std::string op=scoped?command->GetString("command").ToString():command->GetString("op").ToString();
     auto frame=browser_->GetMainFrame();
     if(op=="navigate") {navigation_target_=command->GetString("url");CefURLParts parts;if(CefParseURL(navigation_target_,parts))navigation_target_=CefString(&parts.spec).ToString();TraceGeometry("navigate-load-url",id_);frame->LoadURL(command->GetString("url"));}
-    else if(op=="back" && browser_->CanGoBack() && !tilo::OnlyBootstrapBehind(browser_))browser_->GoBack();
+    else if(op=="back" && browser_->CanGoBack())browser_->GoBack();
     else if(op=="forward" && browser_->CanGoForward())browser_->GoForward();
     else if(op=="reload")browser_->Reload();
     else if(op=="site_action" && SiteCommand(command)) {}
@@ -2290,6 +2318,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   bool credential_generation_exhausted_=false;
   std::string credential_committed_origin_;
   bool main_navigation_finished_=false;
+  // bootstrap_settled_: the load the browser began with is over. A popup
+  // begins with the page its opener gave it; a tab the host opened begins
+  // with none (Start).
   bool bootstrap_settled_=false,navigation_busy_=true,navigation_dispatched_=false,navigation_started_=false,navigation_aborting_=false;
   std::string navigation_target_;
   std::optional<int> navigation_owner_;
@@ -2382,7 +2413,9 @@ void CreateTab(int id) {
   // A sealed document runs no script, whatever the document says.
   if(sealed_documents) settings.javascript=STATE_DISABLED;
   TraceGeometry("create-begin",id);
-  if(!CefBrowserHost::CreateBrowserSync(window,client,"about:blank",settings,nullptr,shared_context)) {clients.erase(id);CloseHost();}
+  // No first address: the tab holds no page until it is sent to one (Client::Start).
+  if(!CefBrowserHost::CreateBrowserSync(window,client,"",settings,nullptr,shared_context)) {clients.erase(id);CloseHost();}
+  else client->Start();
   TraceGeometry("create-return",id);
 }
 void Dispatch(CefRefPtr<CefDictionaryValue> d) {

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Back, forward and leaving a page go where a person expects.
 
-- A tab's first page has nothing behind it. The engine opens every tab on a
-  blank page before its first address; that page is no step back: the back
-  button is off on the first page, going back from it does nothing, and the
-  back list never offers it. Nor can the page take its tab there: its own
+- A tab's first page has nothing behind it. The host loads no page into a
+  tab before its first address, so there is no blank page to step back to:
+  the back button is off on the first page, going back from it does nothing,
+  and the back list is empty. Nor can the page leave its tab: its own
   `history.back()` on the first page does nothing, and the session history
   it sees holds only itself.
 - A page that asks to be kept open (a `beforeunload` handler, armed by a click
@@ -215,8 +215,8 @@ with tempfile.TemporaryDirectory(prefix='tilo-cef-navigation-') as profile:
             settled(tab, BASE + '/a')
             assert history[tab] == (False, True), (tab, history[tab])
 
-        # The page's own history.back() on its first page stays on it: the
-        # blank page is not in the session history the page can walk.
+        # The page's own history.back() on its first page stays on it: no
+        # blank page is in the session history the page can walk.
         send(op='create_tab', tab=4)
         until('a fresh tab', on(4, 'tab_ready'))
         send(op='navigate', tab=4, url=BASE + '/self-back')

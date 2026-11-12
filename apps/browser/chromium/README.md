@@ -191,12 +191,23 @@ requests. Navigation waits for document-start script registration and the prior
 native lifecycle, and replacements stop the prior load without crediting its
 callbacks to a new action.
 
-Every tab starts on `about:blank` before its first address. That first entry is
-no page the person visited: `history` reports no `back` while it is all that is
-behind the page, `back` does not go to it, and `navigation_history` leaves it
-out. Once the first page commits, the session history forgets it
-(`Page.resetNavigationHistory`), so the page's own `history.back()` cannot reach
-it either and `history.length` starts at the page.
+A tab holds no page until its first address. The host loads nothing into it
+(no `about:blank`), so its session history is the engine's initial entry alone,
+which the first navigation replaces as it commits. The first page is therefore
+the history's first entry from its first script on: `history.length` is 1, the
+page's own `history.back()` goes nowhere, `history` reports no `back`, `back`
+does nothing and `navigation_history` has nothing behind the page. Nothing is
+removed from the history after a page committed, so there is no moment at
+which a script could see more. A tab's first events are those of its first
+address: no `uri`, `loaded` or `history` comes for a blank page before it.
+
+Loading nothing would leave the tab's frame without a renderer, and the
+renderer answers the DevTools commands a first navigation waits for. The host
+therefore starts the frame on the engine's empty first document before it
+attaches DevTools: it has the tab run `javascript:void(0)`, for which the
+engine starts the renderer of a tab that has loaded nothing, and which is no
+navigation. A popup needs none of this: it comes from its opener with a live
+frame, and its first navigation replaces its initial entry in the same way.
 
 A page's own questions (`alert`, `confirm`, `prompt`, and "leave this page?"
 from a `beforeunload` handler) are the embedder's to show. `ready` /
