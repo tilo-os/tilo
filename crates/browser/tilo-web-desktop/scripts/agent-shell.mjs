@@ -299,8 +299,10 @@ async function afterFrames(tab, frames = 1, ms = 30000) {
   await until(async () => ((await presentedFrames(tab)) ?? first) - first >= frames || undefined, ms, 150);
 }
 /** Shoot `name` once two screenshots in a row are the same while `up()` still holds: what moves
- * on the clock is at rest then. The last screenshot taken while it held otherwise, said so. */
-async function restingShot(tab, combo, name, up, ms = 15000) {
+ * on the clock is at rest then. Something else on the page may keep changing (a frame for another
+ * part of the desk), so by `settledMs` the screenshot then is kept, as the notice stands at rest
+ * long before it starts to leave; the last one taken before it left would be on its way out. */
+async function restingShot(tab, combo, name, up, ms = 15000, settledMs = 2000) {
   const began = Date.now();
   let previous = null;
   let kept = null;
@@ -311,6 +313,11 @@ async function restingShot(tab, combo, name, up, ms = 15000) {
       if (previous && png.equals(previous)) {
         writeFileSync(join(shotsDir, `${combo}-${name}.png`), png);
         log(`${combo}: shot ${name} at rest, ${Date.now() - began} ms in`);
+        return;
+      }
+      if (Date.now() - began >= settledMs) {
+        writeFileSync(join(shotsDir, `${combo}-${name}.png`), png);
+        log(`${combo}: shot ${name} ${Date.now() - began} ms in, with the page still changing around it`);
         return;
       }
       kept = png;
@@ -2035,6 +2042,13 @@ try {
         // builder draws a frame in seconds: it is shot once two screenshots in a row are the same
         // while it is still up, which is the notice at rest, neither part way in nor on its way out.
         // Taken as it is: closing what covers the desk first would close the notice too.
+        // A person reading it rests the pointer on it, which holds it where it stands (a held
+        // banner does not age): the builder takes seconds per screenshot, longer than the notice
+        // stands untouched.
+        if (finished?.rect) {
+          const x = (finished.rect.x0 + finished.rect.x1) / 2, y = (finished.rect.y0 + finished.rect.y1) / 2;
+          for (const dx of [0, 1, 0]) await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x: x + dx, y});
+        }
         await restingShot(tab, combo, 'agent-finished', async () => (await semantics(tab)).some(finishedNotice));
 
         const exceptions = tab.log.filter(line => line.startsWith('EXC') || /panic/i.test(line));
