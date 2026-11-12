@@ -215,7 +215,9 @@ pub async fn search(
     safe: SafeMode,
     limits: &SearchLimits,
 ) -> Result<SearchResponse, SearchError> {
-    search_asking(client, state, query, engines, None, safe, limits).await
+    let query = checked_query(query)?;
+    let (asked, reports) = requests_of(state, query, engines, safe);
+    answer(client, state, asked, reports, false, safe, limits).await
 }
 
 /// [`search`] against a server on this machine, which [`search`] would ask
@@ -237,19 +239,15 @@ pub async fn search_fixture(
     safe: SafeMode,
     limits: &SearchLimits,
 ) -> Result<SearchResponse, SearchError> {
+    let query = checked_query(query)?;
     let engines: Vec<Engine> = routes.iter().map(|(engine, _)| *engine).collect();
-    search_asking(client, state, query, &engines, Some(routes), safe, limits).await
+    let (asked, reports) = requests_of(state, query, &engines, safe);
+    let (asked, reports) = pointing_at(asked, reports, routes);
+    answer(client, state, asked, reports, true, safe, limits).await
 }
 
-async fn search_asking(
-    client: &tilo_net::Client,
-    state: &SearchState,
-    query: &str,
-    engines: &[Engine],
-    routes: Option<&[(Engine, String)]>,
-    safe: SafeMode,
-    limits: &SearchLimits,
-) -> Result<SearchResponse, SearchError> {
+/// `query` trimmed of the space around it, or why it cannot be asked.
+fn checked_query(query: &str) -> Result<&str, SearchError> {
     let query = query.trim();
     if query.is_empty() {
         return Err(SearchError::EmptyQuery);
@@ -257,7 +255,46 @@ async fn search_asking(
     if query.chars().count() > MAX_QUERY_CHARS {
         return Err(SearchError::QueryTooLong);
     }
-    let (asked, mut reports) = requests_of(state, query, engines, routes, safe);
+    Ok(query)
+}
+
+/// Each request pointed at the server `routes` names for its engine, and each
+/// engine without one reported as failed, since nothing else can be asked in
+/// its place.
+#[cfg(feature = "fixture-servers")]
+fn pointing_at(
+    asked: Vec<(Engine, EngineRequest)>,
+    mut reports: Vec<EngineReport>,
+    routes: &[(Engine, String)],
+) -> (Vec<(Engine, EngineRequest)>, Vec<EngineReport>) {
+    let mut pointed = Vec::with_capacity(asked.len());
+    for (engine, mut request) in asked {
+        match routes.iter().find(|(route, _)| *route == engine) {
+            Some((_, base)) => {
+                request.point_at(base);
+                pointed.push((engine, request));
+            }
+            None => reports.push(EngineReport {
+                engine,
+                status: EngineStatus::Failed,
+                results: 0,
+                detail: Some("asked no fixture server".into()),
+            }),
+        }
+    }
+    (pointed, reports)
+}
+
+/// Ask the engines `asked` names at once and merge their results.
+async fn answer(
+    client: &tilo_net::Client,
+    state: &SearchState,
+    asked: Vec<(Engine, EngineRequest)>,
+    mut reports: Vec<EngineReport>,
+    fixtures: bool,
+    safe: SafeMode,
+    limits: &SearchLimits,
+) -> Result<SearchResponse, SearchError> {
     if asked.is_empty() {
         if reports.iter().any(|r| r.status != EngineStatus::Skipped) {
             return Err(SearchError::AllFailed(reports));
@@ -272,7 +309,7 @@ async fn search_asking(
     let answers = join_all(asked.into_iter().map(|(engine, request)| async move {
         let answer = tokio::time::timeout(
             limits.engine_timeout,
-            ask(client, state, engine, request, limits, routes.is_some()),
+            ask(client, state, engine, request, limits, fixtures),
         )
         .await
         .unwrap_or_else(|_| Err(Failure::Failed("timed out".into())));
@@ -314,7 +351,6 @@ fn requests_of(
     state: &SearchState,
     query: &str,
     engines: &[Engine],
-    routes: Option<&[(Engine, String)]>,
     safe: SafeMode,
 ) -> (Vec<(Engine, EngineRequest)>, Vec<EngineReport>) {
     let mut asked = Vec::new();
@@ -347,14 +383,7 @@ fn requests_of(
             });
             continue;
         }
-        #[cfg_attr(
-            not(feature = "fixture-servers"),
-            expect(
-                unused_mut,
-                reason = "only a fixture build points the request elsewhere"
-            )
-        )]
-        let Some(mut request) = engine.request(query, safe) else {
+        let Some(request) = engine.request(query, safe) else {
             reports.push(EngineReport {
                 engine,
                 status: EngineStatus::Skipped,
@@ -363,24 +392,6 @@ fn requests_of(
             });
             continue;
         };
-        // Pointing a request at a server this machine stands up is what only
-        // a build that serves fixtures can do: elsewhere `routes` is never
-        // handed a route, and the method is not there to call.
-        #[cfg(feature = "fixture-servers")]
-        if let Some(routes) = routes {
-            let Some((_, base)) = routes.iter().find(|(route, _)| *route == engine) else {
-                reports.push(EngineReport {
-                    engine,
-                    status: EngineStatus::Failed,
-                    results: 0,
-                    detail: Some("asked no fixture server".into()),
-                });
-                continue;
-            };
-            request.point_at(base);
-        }
-        #[cfg(not(feature = "fixture-servers"))]
-        let _ = routes;
         asked.push((engine, request));
     }
     (asked, reports)
