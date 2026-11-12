@@ -11,6 +11,7 @@
 # repository host.
 
 base = "/docs/developers/"
+origin = "https://tilo.so"
 repository = "https://code.tilo.so/tilo/tilo"
 related_manifests = ["docs/development/pages.toml"]
 
