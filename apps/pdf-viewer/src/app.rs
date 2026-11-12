@@ -8786,6 +8786,42 @@ pub(crate) mod tests {
         }
     }
 
+    /// A day a signature record stores is read as the window reads dates, in
+    /// the panel and in what assistive technology hears — never as the
+    /// record's own `YYYY-MM-DD`.
+    #[test]
+    fn the_signatures_panel_reads_stored_days_in_the_windows_language() {
+        let (mut app, mut st) = app_with_state();
+        app.place_signature(&mut Edits::lend(&mut st.doc), 1, (200.0, 300.0));
+        let placed = app
+            .signatures
+            .first()
+            .cloned()
+            .expect("a signature landed on the page");
+        app.focus_sidebar(SidebarTab::Signatures, placed.id.clone());
+
+        let tree = Widget::accessibility(&app).expect("reader semantics");
+        let heard = std::cell::RefCell::new(Vec::new());
+        any_access_node(&tree, &|node: &ui::a11y::AccessNode| {
+            let mut heard = heard.borrow_mut();
+            heard.extend(node.name.clone());
+            heard.extend(node.description.clone());
+            false
+        });
+        let heard = heard.borrow().join("\n");
+        assert!(
+            heard.contains(&format!(
+                "Signed {} on page",
+                crate::dates::shown(&placed.date)
+            )),
+            "the panel reads {placed:?} as the window reads dates"
+        );
+        assert!(
+            !heard.contains(&format!("Signed {} on page", placed.date)),
+            "the panel never speaks the record's ISO spelling"
+        );
+    }
+
     // ----------------------------------------------------------------
     // Real-PDF (pdfium raster) tests: text layer + save-back.
     //
