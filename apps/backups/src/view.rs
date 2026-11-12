@@ -546,7 +546,7 @@ fn progress(job: &Job) -> Section {
                         .dimmed(),
                 )),
         ),
-        Box::new(ProgressBar::indeterminate().with_label(&i18n::t(job.kind.message()))),
+        Box::new(ProgressBar::indeterminate().with_label(i18n::t(job.kind.message()))),
     ])
 }
 

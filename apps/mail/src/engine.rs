@@ -422,7 +422,7 @@ impl MailEngine for StubEngine {
                                 "folder",
                                 ui::i18n::ArgValue::Text(crate::i18n::t(folder.message())),
                             ),
-                            ("account", ui::i18n::ArgValue::Text(account.email.clone())),
+                            ("account", ui::i18n::ArgValue::Text(account.email)),
                         ],
                     ),
                 });

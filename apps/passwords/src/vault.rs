@@ -311,7 +311,7 @@ pub(crate) fn summary(item: &SecretItem) -> String {
     if let Some(origin) = item.origins.iter().next() {
         return host_of(origin).to_owned();
     }
-    kind_label(item.kind).to_owned()
+    kind_label(item.kind)
 }
 
 /// `bank.example` for `https://bank.example`.

@@ -99,8 +99,16 @@ impl Proposal {
         crate::locales::CATALOG.t_args(
             "shortcuts-evidence",
             &[
-                ("steps", ui::i18n::ArgValue::Number(self.steps.len() as f64)),
-                ("times", ui::i18n::ArgValue::Number(self.times as f64)),
+                (
+                    "steps",
+                    ui::i18n::ArgValue::Number(
+                        u32::try_from(self.steps.len()).map_or(0.0, f64::from),
+                    ),
+                ),
+                (
+                    "times",
+                    ui::i18n::ArgValue::Number(u32::try_from(self.times).map_or(0.0, f64::from)),
+                ),
             ],
         )
     }

@@ -261,7 +261,7 @@ impl PasswordsWindow {
     fn with_core(core: Core) -> Self {
         let core: Shared = Rc::new(RefCell::new(core));
         let requests: Requests = Rc::default();
-        let title = core.borrow().filter.label().to_owned();
+        let title = core.borrow().filter.label();
         // Maximized, the header lives in the window's bar.
         let shell = NavShell::new()
             .content_kind(ui::widget::ContentKind::Page)
@@ -367,7 +367,7 @@ impl PasswordsWindow {
                 core.page_revision,
                 core.list_revision,
                 core.screen,
-                core.filter.label().to_owned(),
+                core.filter.label(),
                 core.show_pane.take(),
                 core.toast.take(),
                 core.saved.take(),

@@ -896,7 +896,7 @@ fn last_run_text(door: &DoorState, shortcut: &str) -> String {
     let Some(run) = door.last_run(shortcut) else {
         return CATALOG.t("shortcuts-not-run-yet");
     };
-    let time = || ui::i18n::ArgValue::Text(run.started.to_string());
+    let time = || ui::i18n::ArgValue::Text(run.started.clone());
     match &run.status {
         RunStatus::Running => CATALOG.t_args("shortcuts-running-since", &[("time", time())]),
         RunStatus::Completed {

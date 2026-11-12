@@ -376,13 +376,9 @@ impl Store {
         };
         let readiness = connection_readiness(saved);
         if !readiness.can_connect() {
-            let reason = if readiness == TransportReadiness::InvalidProfile {
-                saved
-                    .profile_issue()
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| CATALOG.t(readiness.detail_message(saved.kind)))
-            } else {
-                CATALOG.t(readiness.detail_message(saved.kind))
+            let reason = match saved.profile_issue() {
+                Some(issue) if readiness == TransportReadiness::InvalidProfile => issue.to_owned(),
+                _ => CATALOG.t(readiness.detail_message(saved.kind)),
             };
             return Err(reason);
         }

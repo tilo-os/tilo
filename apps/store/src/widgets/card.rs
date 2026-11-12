@@ -163,7 +163,7 @@ pub fn provenance(item: &StoreItem) -> String {
     }
     let version = visible_version(item);
     if version.is_empty() {
-        kind.to_string()
+        kind
     } else {
         format!("{kind}, version {version}")
     }

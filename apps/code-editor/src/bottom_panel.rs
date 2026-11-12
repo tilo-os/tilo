@@ -630,7 +630,7 @@ impl Widget for BottomPanel {
 
 impl BottomPanel {
     /// What the search found and whether it is still going or stopped at its
-    /// limit: "3 results in 2 files — 410 files scanned".
+    /// limit: "3 results in 2 files, 410 files scanned".
     fn search_summary(&self) -> String {
         let search = &self.search;
         if search.query.is_empty() {
@@ -736,7 +736,7 @@ mod tests {
         panel.set_search(search.clone());
         assert_eq!(
             panel.search_summary(),
-            "3 results in 2 files \u{2014} 40 files scanned"
+            "3 results in 2 files, 40 files scanned"
         );
 
         search.truncated = true;
