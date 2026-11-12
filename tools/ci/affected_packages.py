@@ -17,7 +17,10 @@ direct dependants (within one shard's cost) and contract suites; --full
 qualifies both native architectures.
 The hermetic suites outside Cargo declared in tools/ci/suites.toml are selected
 by the paths they read, as are the packages it declares to read repository files
-outside their own directory.
+outside their own directory. A workspace path that no Cargo package owns is
+attributed by those reader declarations, so a change to sources shipped without
+a package of their own (the tilolang apps under apps/tl) selects the packages
+that read them; only a path no package reads keeps the complete workspace.
 The emitted matrix is consumed directly by Forgejo Actions.
 """
 
@@ -1259,10 +1262,18 @@ def make_plan(
         for path in changes
     )
     workspace_source_roots = ("apps/", "crates/")
-    unmapped_workspace_change = any(
-        path.startswith(workspace_source_roots) and owner_for(path, by_dir) is None
-        for path in changes
-    )
+    # A workspace path no Cargo package owns is still accounted for when the
+    # suite manifest declares a package that reads it from outside its own
+    # directory: those are the readers selected below, and their tests or build
+    # compile the file. Only a path no package reads keeps the complete
+    # workspace.
+    declared = (path_suites.read_paths(suite_manifest, changes)
+                if suite_manifest is not None else set())
+    unowned = sorted(
+        path for path in changes
+        if path.startswith(workspace_source_roots) and owner_for(path, by_dir) is None
+        and path not in declared)
+    unmapped_workspace_change = bool(unowned)
     # Only audited developer/CI and design prose is non-compiling. Other docs can contain
     # generated contracts, fixtures or embedded Rust inputs and retain coverage.
     def prose(path: str) -> bool:
@@ -1333,7 +1344,9 @@ def make_plan(
     elif force_full or global_change or unmapped_workspace_change:
         selected = set(packages)
         reason = ("full workspace explicitly requested" if force_full else
-                  "repository-wide build input changed" if global_change else "workspace path has no package owner")
+                  "repository-wide build input changed" if global_change else
+                  "workspace path has no package owner and no declared reader: "
+                  + ", ".join(unowned[:3]) + (f" and {len(unowned) - 3} more" if len(unowned) > 3 else ""))
         full = True
     else:
         # Normal/build edges propagate; a dev edge adds one dependant whose
@@ -1352,7 +1365,7 @@ def make_plan(
     # Ordinary feedback type-checks the entire reverse-dependency closure once
     # on x86, but links tests only for changed crates, the crates that read the
     # changed files, their direct dependants within REVERSE_TEST_COST_BUDGET and
-    # the existing contract suites. Global/unowned workspace inputs retain
+    # the existing contract suites. Global or undeclared workspace inputs retain
     # complete test coverage.
     deferred_dependants: list[str] = []
     if full:

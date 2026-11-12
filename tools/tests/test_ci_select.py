@@ -385,6 +385,42 @@ class SelectorTests(unittest.TestCase):
                     self.assertFalse(plan["rust_required"])
                     self.assertFalse(plan["security_required"])
 
+    def test_a_workspace_path_no_package_owns_is_planned_through_its_readers(self):
+        # The tilolang apps ship as sources under apps/tl with no Cargo package
+        # of their own. The packages that read them are declared in the suite
+        # manifest, and those declarations attribute a change to them: the plan
+        # is the readers and their tests, not the complete workspace.
+        manifest = ci_select.path_suites.parse(
+            '[[group]]\nname = "apps"\ninputs = ["apps/tl/"]\nsuites = ["tools/tests/test_apps.py"]\n'
+            '[[cargo]]\npackage = "middle"\ninputs = ["apps/tl/"]\nreaders = ["middle/tests/apps.rs"]\n')
+        declared = ci_select.make_plan(self.metadata, self.root, ["apps/tl/notes/app.tl"], 2,
+                                       suite_manifest=manifest)
+        self.assertFalse(declared["full"])
+        self.assertEqual(declared["suites"], ["tools/tests/test_apps.py"])
+        self.assertIn("middle", declared["selected"])
+        self.assertIn("middle", declared["tested"])
+        # A reader's own code did not change, so its dependencies are not selected.
+        self.assertNotIn("base", declared["selected"])
+        self.assertIn("read the changed files", declared["reason"])
+        # A suite alone does not attribute a path: it runs a script, not the
+        # checks that compiling the file would run.
+        suite_only = ci_select.make_plan(self.metadata, self.root, ["apps/notes/app.tl"], 2,
+                                         suite_manifest=manifest)
+        self.assertTrue(suite_only["full"])
+        # A workspace path no suite and no reader declares keeps the complete
+        # workspace, and the plan names what was unaccounted for.
+        for changes in (["apps/elsewhere/app.tl"], ["apps/tl/notes/app.tl", "crates/loose/x.rs"]):
+            with self.subTest(changes=changes):
+                plan = ci_select.make_plan(self.metadata, self.root, changes, 2,
+                                           suite_manifest=manifest)
+                self.assertTrue(plan["full"])
+                self.assertEqual(plan["selected_count"], plan["workspace_count"])
+                self.assertIn([path for path in changes if path != "apps/tl/notes/app.tl"][0],
+                              plan["reason"])
+        # Without a manifest nothing is declared, so the same path is unattributed.
+        self.assertTrue(ci_select.make_plan(
+            self.metadata, self.root, ["apps/tl/notes/app.tl"], 2)["full"])
+
     def test_android_lane_follows_selected_apps_with_an_android_example(self):
         self.setUp()
         for package in self.metadata["packages"]:
@@ -2527,6 +2563,35 @@ class MapHygieneTests(unittest.TestCase):
                  for path in (REPO_ROOT / ci_select.CONFIG_DIRECTORY).iterdir() if path.is_file()}
         self.assertEqual(files - set(ci_select.FILTER_CONFIG_FILES) - {ci_select.FEATURE_CONFIG_FILE},
                          set())
+
+    def test_every_app_path_without_a_package_is_read_by_one(self):
+        """An app path no package owns and no package reads plans the whole workspace.
+
+        The tilolang apps under `apps/tl` ship as sources with no Cargo package,
+        so the reader declarations in the suite manifest are what attribute a
+        change there. Every tracked app path outside a package directory must
+        match one, and so must every tilolang app directory's `app.tl`, or
+        adding an app reaches nobody and its change falls back to every package.
+        """
+        manifest = ci_select.path_suites.load(REPO_ROOT)
+        tracked = subprocess.run(["git", "ls-files", "apps"], cwd=REPO_ROOT, text=True,
+                                 capture_output=True, check=True).stdout.split()
+        self.assertTrue(tracked)
+
+        def owned(path: str) -> bool:
+            # The root manifest owns the workspace, not a path outside a member.
+            directory = Path(path).parent
+            return any((REPO_ROOT / candidate / "Cargo.toml").is_file()
+                       for candidate in (directory, *directory.parents) if candidate != Path("."))
+
+        unowned = [path for path in tracked if not owned(path)]
+        self.assertEqual([path for path in unowned
+                          if not ci_select.path_suites.read_paths(manifest, [path])], [])
+        apps = sorted({path.split("/")[2] for path in unowned if path.startswith("apps/tl/")})
+        self.assertTrue(apps)
+        self.assertEqual([app for app in apps
+                          if not ci_select.path_suites.read_paths(manifest, [f"apps/tl/{app}/app.tl"])],
+                         [])
 
 
 if __name__ == "__main__":

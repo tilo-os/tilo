@@ -4,9 +4,10 @@
 tools/ci/suites.toml declares each suite with the repository paths it reads.
 CI runs each group's suites when the group's inputs change. The same manifest declares
 the Cargo packages whose code reads repository files outside the package, so
-a change to those files selects the package's checks and tests. `check` is the
-repository policy that keeps every test-shaped file and every cross-package
-read accounted for.
+a change to those files selects the package's checks and tests, and a path no
+package owns (the tilolang apps under apps/tl) is attributed to the packages
+that read it. `check` is the repository policy that keeps every test-shaped
+file and every cross-package read accounted for.
 """
 
 from __future__ import annotations
@@ -255,6 +256,19 @@ def select_package_scopes(manifest: Manifest, changes: list[str]) -> dict[str, R
         else:
             selected[entry.package] = None
     return dict(sorted(selected.items()))
+
+
+def read_paths(manifest: Manifest, changes: list[str]) -> set[str]:
+    """The changed paths a declared package reads from outside its own directory.
+
+    A reader declaration says a package compiles or tests the path, which is
+    what a plan needs to run instead of the complete workspace when no Cargo
+    package owns the path. A suite's own inputs do not: they say only which
+    script runs, so a broad input (`apps/`) cannot stand in for the checks that
+    compiling the file would run.
+    """
+    patterns = [pattern for entry in manifest.cargo for pattern in entry.inputs]
+    return {path for path in changes if any(matches(path, pattern) for pattern in patterns)}
 
 
 def command(suite: str) -> list[str]:
