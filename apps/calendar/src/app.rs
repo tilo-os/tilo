@@ -165,9 +165,37 @@ enum Action {
     DiscardDraft(Id),
     /// Delete a task (and its subtasks) from the model + CRDT.
     DeleteTask(Id),
+    /// Move the occurrence drawn on a day to another day of the month grid,
+    /// keeping its time of day and its length: what a drag from one day to
+    /// another means.
+    MoveEventToDay {
+        id: Id,
+        /// The day the occurrence is drawn on, which a repeating event's
+        /// override is keyed by.
+        original: NaiveDate,
+        day: NaiveDate,
+    },
     /// Absorb a click without acting on it — the modal card's own backing, so a
     /// press on the card padding doesn't fall through to the dismiss scrim.
     Noop,
+}
+
+/// How far a press on a month chip travels before it is a drag of the event
+/// rather than a click on it: the slop a press's hand wobbles within.
+const CHIP_DRAG_SLOP: f64 = 4.0;
+
+/// An event's chip pressed in the month grid: which event, where the press
+/// landed, the day it is drawn on, and — once the pointer has moved far
+/// enough — the day it would be dropped on.
+#[derive(Clone, Debug)]
+struct ChipDrag {
+    id: Id,
+    from: Point,
+    original: NaiveDate,
+    /// Whether the pointer travelled far enough for this to be a drag.
+    moved: bool,
+    /// The day cell the pointer is over now.
+    over: Option<NaiveDate>,
 }
 
 /// The two keyboard-focusable text fields in the form. Tab cycles between them
@@ -374,6 +402,10 @@ pub struct CalendarApp {
     /// any event field or adds notes. Back/Escape may discard *only* this exact
     /// pristine object; every other event follows normal autosave semantics.
     fresh_draft: Option<Event>,
+    /// An event's chip pressed in the month grid and not yet let go: moved far
+    /// enough to be a drag, it moves the event to the day it is dropped on;
+    /// let go where it was pressed, it opens the event as a click always did.
+    chip_drag: Option<ChipDrag>,
     dirty: bool,
     /// What the view painted, this frame and as the last presented frame
     /// showed it: the frame damages the view's box only when it painted
@@ -545,6 +577,7 @@ impl CalendarApp {
             status: status::Status::default(),
             status_actions: status::StatusActions::default(),
             fresh_draft: None,
+            chip_drag: None,
             dirty: true,
             own: ui::own_paint::OwnPaint::default(),
             faces: ui::widget::FaceMotions::default(),
@@ -1775,6 +1808,50 @@ impl CalendarApp {
         self.dirty = true;
     }
 
+    /// Move the occurrence drawn on `original` to `day`, keeping the local
+    /// time of day and the length it shows: a chip dragged from one day of
+    /// the month grid to another. The write is the same published reschedule
+    /// the timeline's drag makes, so History undoes it in one step.
+    fn move_event_to_day(
+        &mut self,
+        id: Id,
+        original: NaiveDate,
+        day: NaiveDate,
+        doc: &mut ui::widget::Edits<'_>,
+    ) {
+        if day == original {
+            return;
+        }
+        let Some(before) = self.model.event(id).cloned() else {
+            return;
+        };
+        let (start, end) = crate::shown::wall_interval(&before, original);
+        if !before.all_day {
+            // A timed event keeps its time of day, which the timeline's own
+            // move already knows how to place on another day.
+            let minutes = i64::from(start.time().hour()) * 60 + i64::from(start.time().minute());
+            self.move_event(id, original, (day, minutes), doc);
+            return;
+        }
+        // An all-day event is whole days on the viewer's clock: its span moves
+        // by however many days the chip was dragged over.
+        let days = (day - original).num_days();
+        let (start, end) = (start + Duration::days(days), end + Duration::days(days));
+        if self
+            .try_submit(
+                doc,
+                Calendar::RESCHEDULE.with((crate::model::key(id), start, end)),
+            )
+            .is_ok()
+            && let Some(event) = self.model.event_mut(id)
+        {
+            event.start = start;
+            event.end = end;
+            event.end_later_fold = false;
+            self.dirty = true;
+        }
+    }
+
     /// Reschedule an occurrence to a new day and start on the viewer's clock,
     /// keeping its length: the timeline's drag-to-move. A one-off event moves;
     /// of a repeating one only the occurrence dragged moves, the person's
@@ -2945,6 +3022,9 @@ impl CalendarApp {
                 self.status.dismiss();
             }
             Action::DeleteTask(id) => self.delete_task(id, doc),
+            Action::MoveEventToDay { id, original, day } => {
+                self.move_event_to_day(id, original, day, doc);
+            }
             Action::Noop => {}
         }
         // Discrete actions are worth an immediate save; if the action didn't
@@ -3198,6 +3278,12 @@ impl CalendarApp {
             Action::DeleteTask(id) => (
                 format!("{}:delete", crate::actions::task_resource_id(*id)),
                 crate::resource::t("calendar-a11y-delete-task"),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::MoveEventToDay { id, day, .. } => (
+                format!("calendar.event:move-to:{id}:{day}"),
+                format!("Move event to {}", date::fmt_day_long(*day)),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
@@ -3866,11 +3952,94 @@ impl CalendarApp {
             self.invite_input.set_focus(false);
             self.tasks.set_entry_focus(false);
             self.notes_editor.set_focus(false);
+            // An event's chip in the month grid is held rather than acted on at
+            // once: let go where it was pressed it opens the event, and dragged
+            // to another day it moves there.
+            if let Action::OpenEvent(id) = a
+                && let Some(day) = self.month_day_at(p)
+            {
+                self.chip_drag = Some(ChipDrag {
+                    id,
+                    from: p,
+                    original: day,
+                    moved: false,
+                    over: None,
+                });
+                *input.handled = true;
+                self.dirty = true;
+                return true;
+            }
             self.apply_action(a, &mut input.state);
             *input.handled = true;
             return true;
         }
         false
+    }
+
+    /// Follow a chip held in the month grid: a move far enough to be a drag
+    /// marks the day it is over, and the release either moves the event there
+    /// or opens it where it was pressed. Whether the event was this drag's.
+    fn handle_chip_drag(&mut self, event: &WindowEvent, state: &mut ui::widget::Edits<'_>) -> bool {
+        if self.chip_drag.is_none() {
+            return false;
+        }
+        match event {
+            WindowEvent::CursorMoved { .. } => {
+                let day = self.month_day_at(self.last_mouse);
+                let Some(drag) = self.chip_drag.as_mut() else {
+                    return false;
+                };
+                let (dx, dy) = (
+                    self.last_mouse.x - drag.from.x,
+                    self.last_mouse.y - drag.from.y,
+                );
+                if !drag.moved && dx.hypot(dy) < CHIP_DRAG_SLOP {
+                    return false;
+                }
+                drag.moved = true;
+                drag.over = day;
+                self.dirty = true;
+                true
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let Some(drag) = self.chip_drag.take() else {
+                    return false;
+                };
+                self.apply_action(
+                    match (drag.moved, drag.over) {
+                        (true, Some(day)) => Action::MoveEventToDay {
+                            id: drag.id,
+                            original: drag.original,
+                            day,
+                        },
+                        // Let go where it was pressed, or off the grid: a click.
+                        _ => Action::OpenEvent(drag.id),
+                    },
+                    state,
+                );
+                self.dirty = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The day of the month grid whose cell holds `p`, while the month shows.
+    fn month_day_at(&self, p: Point) -> Option<NaiveDate> {
+        if self.view != View::Month {
+            return None;
+        }
+        self.hits
+            .iter()
+            .rev()
+            .find_map(|(rect, action)| match action {
+                Action::PickDate(day) if rect.contains(p) => Some(*day),
+                _ => None,
+            })
     }
 
     /// Forward typing (and other events) to a focused form text field so
@@ -4141,6 +4310,13 @@ impl Widget for CalendarApp {
         if let WindowEvent::Touch(touch) = event
             && self.swipe(touch, ctx)
         {
+            return;
+        }
+
+        // An event's chip held in the month grid takes the pointer until it is
+        // let go: dragging it moves the event to the day it is dropped on.
+        if self.handle_chip_drag(event, &mut ctx.state) {
+            *ctx.handled = true;
             return;
         }
 
