@@ -687,6 +687,12 @@ fn start(
         admin_control,
         ..device_options(machine, config)
     };
+    // A session in another desktop's window serves no agent door of its own, unless the person
+    // started it naming a program they admit to act as them there (`--admit-repl`): that program
+    // reaches it only through a door, and the window's private runtime directory holds it.
+    if options.agent_door.is_none() && !options.admit_repl.is_empty() {
+        options.agent_door = tilo_session::agent_door::path();
+    }
     // The person's files: the login's files daemon serves them as the Files app's windowless
     // endpoint, so the session records its process before the daemon's connections to the broker
     // arrive. A session in another desktop's window serves no files daemon of its own.
