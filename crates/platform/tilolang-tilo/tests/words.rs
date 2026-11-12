@@ -319,3 +319,48 @@ fn a_packages_words_are_published_without_a_record() {
         "and every action it offers without a record says what it does"
     );
 }
+
+/// A German desktop's palette lists a native app's actions and a tilolang app's in German: each
+/// declares its label as a key of its own catalogue, read in the person's language when it is
+/// published.
+#[test]
+fn the_palette_reads_native_and_tilolang_actions_in_german() {
+    use tilo_desktop_search::model::Source as _;
+    use tilo_desktop_search::providers::{Published, PublishedActions};
+    use tilo_resource::effect::{Effect as _, EffectDecl};
+
+    let (host, package) = notes("de-DE");
+    let notebook = notebook(&host, &package);
+    let calculator = calculator::actions::CalculatorEffect::declarations()
+        .iter()
+        .map(EffectDecl::spec_of::<calculator::actions::CalculatorEffect>)
+        .fold(
+            tilo_actions::ResourceSpec::new("calculator", "calculator.effect", "Rechner"),
+            tilo_actions::ResourceSpec::with_action,
+        );
+    let palette = Published(vec![
+        PublishedActions::of("so.tilo.calculator", "workspace", &[calculator]),
+        PublishedActions::of(NOTES, "workspace", &[notebook]),
+    ]);
+    let rows = |query: &str| -> Vec<String> {
+        palette
+            .query(query)
+            .into_iter()
+            .map(|hit| hit.title)
+            .collect()
+    };
+    let native = rows("Bogenmaß");
+    assert!(
+        native.iter().any(|title| title == "Bogenmaß verwenden"),
+        "the calculator's action reads in German: {native:?}"
+    );
+    let notes = rows("Notiz");
+    assert!(
+        notes.iter().any(|title| title == "Neue Notiz"),
+        "the notes app's action reads in German: {notes:?}"
+    );
+    assert!(
+        rows("radians").is_empty() && rows("new note").is_empty(),
+        "and neither reads in English"
+    );
+}

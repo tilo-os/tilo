@@ -34,7 +34,7 @@ pub(crate) fn kept_type<K: Hash + Eq, V: Clone>(
     key: K,
     build: impl FnOnce() -> V,
 ) -> V {
-    let epoch = crate::resource::type_epoch();
+    let epoch = crate::resource::words_epoch();
     let found = kept.with(|kept| {
         let kept = kept.borrow();
         if kept.epoch == epoch {

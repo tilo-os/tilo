@@ -119,3 +119,23 @@ calculator-key-subtract = Subtract
 calculator-key-pi = Pi
 calculator-key-euler = Euler's number
 calculator-key-other = Calculator key { $key }
+
+## Actions
+
+calculator-effect-show-calculator = Show calculator
+calculator-effect-show-graph2d = Show 2D graph
+calculator-effect-show-graph3d = Show 3D graph
+calculator-effect-show-convert = Show unit conversion
+calculator-effect-use-degrees = Use degrees
+calculator-effect-use-radians = Use radians
+calculator-effect-toggle-panel = Show or hide formulas
+calculator-effect-open = Recall calculation
+calculator-effect-recall = Use calculation
+calculator-document = Calculator
+calculator-document-commit-history = Add to history
+calculator-document-delete-history-entry = Remove from history
+calculator-document-clear-history = Clear history
+calculator-document-add-function = Add curve
+calculator-document-add-surface = Add surface
+calculator-document-delete-function = Remove curve
+calculator-document-delete-surface = Remove surface

@@ -113,11 +113,15 @@ struct EnumOptions {
     operation: String,
     /// The app its typed references name their effects by.
     app: Option<String>,
+    /// The directory of the catalogue its labels are keys of (`catalogue =
+    /// "tests/locales"`), relative to the crate: `locales` by default.
+    catalogue: Option<String>,
 }
 
 fn enum_options(input: &DeriveInput) -> syn::Result<EnumOptions> {
     let mut operation = None;
     let mut app = None;
+    let mut catalogue = None;
     for attr in input
         .attrs
         .iter()
@@ -130,8 +134,13 @@ fn enum_options(input: &DeriveInput) -> syn::Result<EnumOptions> {
             } else if meta.path.is_ident("app") {
                 app = Some(meta.value()?.parse::<syn::LitStr>()?.value());
                 Ok(())
+            } else if meta.path.is_ident("catalogue") {
+                catalogue = Some(meta.value()?.parse::<syn::LitStr>()?.value());
+                Ok(())
             } else {
-                Err(meta.error("expected `operation = \"...\"` or `app = \"...\"`"))
+                Err(meta.error(
+                    "expected `operation = \"...\"`, `app = \"...\"` or `catalogue = \"dir\"`",
+                ))
             }
         })?;
     }
@@ -141,7 +150,11 @@ fn enum_options(input: &DeriveInput) -> syn::Result<EnumOptions> {
             "name the effects' operation type: `#[effect(operation = \"app.effects\")]`",
         )
     })?;
-    Ok(EnumOptions { operation, app })
+    Ok(EnumOptions {
+        operation,
+        app,
+        catalogue,
+    })
 }
 
 #[derive(Default)]
@@ -377,7 +390,13 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             "an effect vocabulary names at least one effect",
         ));
     }
-    let EnumOptions { operation, app } = enum_options(input)?;
+    let EnumOptions {
+        operation,
+        app,
+        catalogue,
+    } = enum_options(input)?;
+    let catalogue =
+        crate::words::Catalogue::read(catalogue.as_deref().unwrap_or(crate::words::LOCALES));
     let any_arguments = data
         .variants
         .iter()
@@ -394,12 +413,18 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         let ident = &variant.ident;
         let id = snake_case(&ident.to_string()).replace('_', "-");
         let docs = doc_lines(&variant.attrs);
-        let label = options.label.clone().unwrap_or_else(|| {
-            docs.first()
-                .map(|line| line.trim_end_matches('.').to_owned())
-                .filter(|line| !line.is_empty())
-                .unwrap_or_else(|| humanize(&snake_case(&ident.to_string())))
-        });
+        let written = docs
+            .first()
+            .map(|line| line.trim_end_matches('.').to_owned())
+            .filter(|line| !line.is_empty())
+            .unwrap_or_else(|| humanize(&snake_case(&ident.to_string())));
+        let (label_word, label) = catalogue.declared(
+            &krate,
+            variant.span(),
+            options.label.as_deref(),
+            &crate::words::key(&operation, &id),
+            &written,
+        )?;
         let description = docs
             .iter()
             .filter(|line| !line.is_empty())
@@ -710,7 +735,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         decls.push(quote! {
             #krate::effect::EffectRow {
                 id: #id,
-                label: #label,
+                label: #label_word,
                 keywords: &[#(#keywords),*],
                 icon: #icon,
                 description: #description,

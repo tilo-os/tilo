@@ -323,7 +323,7 @@ pub mod __private {
     )]
     pub struct VerbDecl {
         pub id: &'static str,
-        pub label: &'static str,
+        pub label: crate::label::Word,
         /// The other words people use for it (`keywords = "…"`).
         pub keywords: &'static [&'static str],
         /// Its own picture (`icon = "…"`), by its Lucide name.
@@ -475,10 +475,11 @@ pub mod __private {
         let mut decl = crate::Declaration::new(
             vocabulary,
             verb.id,
-            verb.label.to_owned(),
+            verb.label.source.to_owned(),
             params_of(verb.params),
             build,
         );
+        decl.word = Some(verb.label);
         decl.param_types = verb
             .params
             .iter()
@@ -497,7 +498,7 @@ pub mod __private {
         // What the description says beyond its first line, the label.
         let description = verb
             .description
-            .strip_prefix(verb.label)
+            .strip_prefix(verb.label.source)
             .map_or(verb.description, |rest| {
                 rest.trim_start_matches('.').trim_start()
             });

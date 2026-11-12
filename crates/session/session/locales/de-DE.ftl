@@ -419,3 +419,19 @@ session-resource-diagnostics = Sitzungsdiagnose
 session-resource-window-menu = Fenstermenü
 session-resource-surfaces = Oberflächen
 session-resource-keyboard-focus = Tastaturfokus
+
+## Actions
+
+so-tilo-session-desk-switch-workspace = Zum Arbeitsbereich wechseln
+so-tilo-session-desk-invitations = Einladungen auflisten
+so-tilo-session-desk-issue-invitation = Einladungslink erstellen
+so-tilo-session-desk-show-invite = Personen einladen
+so-tilo-session-desk-cancel-invitation = Einladung zurückziehen
+so-tilo-session-desk-show-surface = Bereich ein- oder ausblenden
+so-tilo-session-desk-close-surface = Bereich schließen
+so-tilo-session-desk-clear-notices = Mitteilungen löschen
+so-tilo-session-desk-dismiss-notice = Mitteilung verwerfen
+so-tilo-session-desk-act-on-notice = Auf Mitteilung antworten
+so-tilo-session-desk-walk-switcher = Fenster wechseln
+so-tilo-session-desk-select-switcher = Fenster im Umschalter wählen
+so-tilo-session-desk-commit-switcher = Zum gewählten Fenster wechseln

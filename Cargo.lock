@@ -23053,6 +23053,7 @@ name = "tilolang-tilo"
 version = "0.1.0"
 dependencies = [
  "bounded-zip",
+ "calculator",
  "chrono",
  "collab-types",
  "collaboration",
@@ -23068,6 +23069,7 @@ dependencies = [
  "tilo-app-state",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-desktop-search",
  "tilo-doc",
  "tilo-document",
  "tilo-history",

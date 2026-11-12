@@ -128,8 +128,10 @@ mod schema;
 /// `#[effect(operation = "app.effects")]` names the vocabulary's operation
 /// type. Each variant is unit or has named fields (the effect's typed
 /// parameters, `#[param("…")]` describing one); its id is the variant name in
-/// kebab case and its label the first doc line. Variant options:
-/// `#[effect(label = "...", view, row, job, cancellable, returns,
+/// kebab case and its label the crate's catalogue message
+/// `<operation>-<id>` (separators as dashes), or the key `label = "..."`
+/// names. `#[effect(catalogue = "dir")]` on the enum reads another catalogue
+/// than `locales/`. Variant options: `#[effect(label = "key", view, row, job, cancellable, returns,
 /// destructive, privileged, idempotent, own_device, attended, audience = "agents", untrusted, opens_path, member, risk = "path", kind = "read",
 /// host_render, tag = some::TAG)]`. `host_render` marks an effect a host
 /// answers in a render service of its own rather than the record's app
@@ -155,6 +157,7 @@ pub fn derive_effect(input: TokenStream) -> TokenStream {
 }
 
 mod effect;
+mod words;
 
 #[derive(Default)]
 #[allow(

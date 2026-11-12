@@ -21,7 +21,6 @@ use tilo_session_core::shell::DESK_RESOURCE;
 use tilo_session_core::shell::{self, DeskReading};
 
 use crate::desk_windows::{reaching, windows};
-use crate::i18n::t;
 use crate::notifications::NoticeSignals;
 
 /// What the desk's reading is made from ([`Desk::key`]): equal when the shell's views need not run
@@ -76,14 +75,14 @@ pub(crate) enum DeskEffect {
         workspace: String,
     },
     /// Answer the question waiting on the person's avatar
-    #[effect(row, label = "Answer")]
+    #[effect(row, label = "session-desk-answer-ask")]
     AnswerAsk,
     /// Put the question waiting on the person's avatar off for now
-    #[effect(row, label = "Ask me later")]
+    #[effect(row, label = "session-desk-ask-later")]
     PutOffAsk,
     /// Open or close the running application's tray item `key`: its window, or its menu when the
     /// item is one
-    #[effect(row, label = "Open")]
+    #[effect(row, label = "session-desk-open")]
     OpenTrayItem { key: String },
     /// The invitations this device's person made into a workspace that can still be
     /// redeemed, in the words the workspace's host lists them by
@@ -143,7 +142,7 @@ pub(crate) enum DeskEffect {
     },
     /// End the agent `agent`'s work here: the connection the person admitted closes and its
     /// presence leaves the bar
-    #[effect(label = "Stop")]
+    #[effect(label = "session-desk-stop-agent")]
     StopAgent {
         #[param("The agent, by the key its presence names it")]
         agent: String,
@@ -961,20 +960,7 @@ impl Desk {
 /// The desk's resource, named `label`: what it publishes, and what the session's package describes
 /// of it ([`crate::session_package`]).
 pub(crate) fn desk_spec(label: String) -> ResourceSpec {
-    let mut resource = offer::<DeskEffect>(ResourceSpec::new(DESK_RESOURCE, DESK_KIND, label));
-    // The desk answers in the person's language: the question on their avatar, the tray item, and
-    // stopping an agent.
-    for spec in &mut resource.actions {
-        let label = match spec.id.as_str() {
-            "answer-ask" => t("session-desk-answer-ask"),
-            "put-off-ask" => t("session-desk-ask-later"),
-            "open-tray-item" => t("session-desk-open"),
-            "stop-agent" => t("session-desk-stop-agent"),
-            _ => continue,
-        };
-        spec.type_mut().label = label;
-    }
-    resource
+    offer::<DeskEffect>(ResourceSpec::new(DESK_RESOURCE, DESK_KIND, label))
 }
 
 impl Service for Desk {

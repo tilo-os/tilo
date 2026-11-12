@@ -66,7 +66,7 @@ fn returns_of(
 fn verb_of(decl: &Declaration, types: &mut TypeSet) -> VerbSurface {
     VerbSurface {
         id: decl.id.to_owned(),
-        label: decl.label.clone(),
+        label: decl.shown_label(),
         description: decl.description.clone(),
         kind: decl.kind,
         destructive: decl.destructive,
@@ -210,7 +210,7 @@ pub fn reading_surface<R: crate::JsonSchema, E: crate::Effect>(kind: &str, label
 pub fn effect_verb(decl: &crate::EffectDecl, types: &mut TypeSet) -> VerbSurface {
     VerbSurface {
         id: decl.id.to_owned(),
-        label: decl.label.to_owned(),
+        label: decl.label.read(),
         description: (!decl.description.is_empty()).then(|| decl.description.to_owned()),
         kind: decl.action_kind,
         destructive: decl.risk == tilo_actions::RiskLevel::Destructive,

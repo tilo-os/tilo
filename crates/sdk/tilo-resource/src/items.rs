@@ -955,10 +955,11 @@ fn bound_type(decl: &Declaration, values: &[(String, serde_json::Value)]) -> Arc
     let params = unbound_params(&decl.params, values);
     let all = decl.params.clone();
     let build = Arc::clone(&decl.build);
+    let label = decl.shown_label();
     let spec = ActionSpec::typed_on(
         decl.id,
-        decl.label.clone(),
-        decl.label.clone(),
+        label.clone(),
+        label,
         ExecutionLocus::ClientLocal,
         params,
         move |target, args| {

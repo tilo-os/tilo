@@ -68,7 +68,7 @@ impl Calculator {
     }
 }
 
-#[resource(kind = "calculator.document", label = "Calculator")]
+#[resource(kind = "calculator.document")]
 impl Calculator {
     /// Add an evaluated calculation to the front of the history, keeping the
     /// newest [`HISTORY_CAP`].

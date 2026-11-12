@@ -76,6 +76,9 @@ tilo-test-env = { path = "../../dev/test-env" }
 # The toolkit's words, as the session's hosts read them: what the tests' published
 # types are labelled in.
 tilo-ui-host = { version = "0.1.0", path = "../tilo-ui-host" }
+# The palette, and a native app whose actions it lists beside a tilolang app's.
+tilo-desktop-search = { path = "../../session/desktop-search" }
+calculator = { path = "../../../apps/calculator" }
 
 [[test]]
 name = "it"
