@@ -279,6 +279,14 @@ PY
   [[ ! -d $wasm_from/data ]] || cp -R "$wasm_from/data" "$out/data"
   [[ ! -f $wasm_from/apps.json ]] || cp "$wasm_from/apps.json" "$out/apps.json"
 fi
+# The module the page loads first, whole: a pkg/ without it is a page that
+# never starts, so the build stops here rather than reporting a bundle. It goes
+# missing when something else writes into OUTPUT_DIR while this build runs.
+for file in tilo_browser_runtime.js tilo_browser_runtime_bg.wasm; do
+  [[ -s "$out/pkg/$file" ]] || {
+    echo "$out/pkg has no $file: did another build write into $out meanwhile?" >&2; exit 1;
+  }
+done
 if [[ $module_only == 1 ]]; then
   # Only what Cargo compiles and wasm-bindgen writes: what a test that drives
   # the runtime's exports serves beside the page's modules.
