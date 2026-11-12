@@ -256,7 +256,13 @@ wait_for() { # WHAT URL SECONDS [CURL ARGS…]
   shift 3
   local deadline=$((SECONDS + seconds))
   until curl -fsS --max-time 2 "$@" "$url" >/dev/null 2>&1; do
-    ((SECONDS < deadline)) || die "$what did not answer at $url within ${seconds}s; stack.sh logs ${what%% *}"
+    if ((SECONDS >= deadline)); then
+      # What the step that did not answer said: a bring-up that stops here
+      # says why in the same breath, not a log away.
+      local log=$state/logs/${what%% *}.log
+      [[ ! -f $log ]] || { printf -- '--- %s, its last lines:\n' "$log" >&2; tail -20 "$log" >&2; }
+      die "$what did not answer at $url within ${seconds}s; stack.sh logs ${what%% *}"
+    fi
     sleep 0.5
   done
 }
@@ -692,6 +698,7 @@ build_bundle() {
 # serves, laid out and precompressed once, not per bring-up.
 lay_out_web() {
   local container=$repo/crates/browser/tilo-browser-runtime/container
+  mkdir -p "$native/web"
   if [[ -n ${TILO_SH_SITE:-} ]]; then
     web_site=$TILO_SH_SITE/site
     web_install=$TILO_SH_SITE

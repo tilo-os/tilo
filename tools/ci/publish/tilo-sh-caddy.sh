@@ -24,7 +24,9 @@ curl -fsSL -o "$work/$archive" \
   || die "could not fetch $archive"
 printf '%s  %s\n' "$CADDY_SHA512" "$work/$archive" | sha512sum -c --quiet - \
   || die "$archive is not release $CADDY_VERSION's"
-tar -xzf "$work/$archive" -C "$out" caddy
+# The archive's entries are Caddy's release user's (uid 1001), which a job's
+# root in a user namespace cannot become: the file's own mode is what matters.
+tar --no-same-owner -xzf "$work/$archive" -C "$out" caddy
 rm -rf "$work"
 "$out/caddy" version | grep -q "v$CADDY_VERSION" || die "$out/caddy is not $CADDY_VERSION"
 echo "caddy $CADDY_VERSION: $out/caddy"

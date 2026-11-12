@@ -4972,6 +4972,9 @@ setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx &
 env = { TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64", TILO_SH_STATE = "/target/tilo-sh-local-state", TILO_SH_FRESH = "1" }
 requires = ["arch=x86_64"]
 isolation = "nested"
+# What a failure keeps of why: each service's log, and the pages and the
+# reports the steps made.
+evidence = ["/target/tilo-sh-local-state/logs/**", "/target/tilo-sh-local/**"]
 outputs = ["/target/tilo-sh-local/**"]
 timeout_secs = 3600
 default = false
