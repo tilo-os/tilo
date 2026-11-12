@@ -433,7 +433,10 @@ fn draw_signature(
         &name,
     );
     let date = TextStyle::content(7.5 * scale as f32);
-    let stamp = crate::t_args("pdf-drawn-signed", &[("date", s.date.clone().into())]);
+    let stamp = crate::t_args(
+        "pdf-drawn-signed",
+        &[("date", crate::dates::shown(&s.date).into())],
+    );
     tr.draw_style(
         scene,
         &stamp,

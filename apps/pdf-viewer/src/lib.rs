@@ -44,6 +44,7 @@
 pub mod actions;
 pub mod adopt;
 pub mod app;
+pub mod dates;
 pub mod markup;
 pub mod model;
 pub use tilo_page_raster::images as page_images;

@@ -1142,8 +1142,12 @@ pub struct BooksApp {
     shot_drawers: Option<(bool, bool)>,
     shelf_focus_visible: bool,
     /// A book dropped anywhere on the window opens like one chosen; one
-    /// dragged over it lights the shelf's add tile.
+    /// dragged over it lights the shelf's add tile. Only a device with a
+    /// pointer can drag one in, so a phone is never told to.
     file_open: ui::widget::FileOpenSurface,
+    /// How the person reaches the window, as the host reports it: what the
+    /// drop hint and the touch-sized targets read.
+    interaction: ui::interaction::InteractionEnvironment,
 
     // --- layout cache ------------------------------------------------------
     layout: Option<ChapterLayout>,
@@ -1383,6 +1387,7 @@ impl BooksApp {
             shot_drawers: None,
             shelf_focus_visible: false,
             file_open: ui::widget::FileOpenSurface::default(),
+            interaction: ui::interaction::InteractionEnvironment::default(),
             layout: None,
             layouts: chapter_layouts::ChapterLayouts::default(),
             flow_complete: false,
@@ -4989,6 +4994,16 @@ impl Widget for BooksApp {
         self.hover_tooltip.as_deref().map(Into::into)
     }
 
+    fn set_interaction_environment(
+        &mut self,
+        environment: ui::interaction::InteractionEnvironment,
+    ) {
+        self.interaction = environment;
+        for child in self.children_mut() {
+            child.set_interaction_environment(environment);
+        }
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "the retained accessibility tree is intentionally assembled in one place so modal visibility and semantic routing remain auditable"
@@ -7024,7 +7039,7 @@ impl BooksApp {
         };
         if let Some(action) = self
             .file_open
-            .paint(ctx, body, &content, self.cursor, false)
+            .paint(ctx, body, &content, self.cursor, false, self.interaction)
             .action
         {
             self.push_hit(action, Action::OpenViaPortal);

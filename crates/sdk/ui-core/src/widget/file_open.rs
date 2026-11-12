@@ -6,7 +6,9 @@
 //! [`FileOpenSurface::paint`]. A drop opens wherever it lands: it does not
 //! depend on the pointer position or on a preceding hover (Wayland may
 //! deliver the path only when the transfer finishes). While a file hovers the
-//! window, the empty state becomes a lit [`DropZoneFace`].
+//! window, the empty state becomes a lit [`DropZoneFace`]; the drop hint that
+//! names the gesture is painted only where a file can be dragged in
+//! ([`InteractionEnvironment::drags_files`]).
 //!
 //! Opening stays the app's: a dropped path goes to the same importer as its
 //! Open action and file chooser, which reports a file it cannot read. The
@@ -18,6 +20,7 @@ use std::path::PathBuf;
 use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
+use crate::interaction::InteractionEnvironment;
 use crate::paint::PaintCtx;
 use crate::widget::{DropZoneFace, EmptyState, EmptyStateContent};
 
@@ -72,6 +75,11 @@ impl FileOpenSurface {
     /// Returns the action's rectangle and the documents' rows, as
     /// [`EmptyState::paint_focused_with_documents`] does. A state without an
     /// action (loading) is painted as it is.
+    ///
+    /// `environment` is how the person reaches the window: the drop hint is for
+    /// a device a file can be dragged onto ([`InteractionEnvironment::drags_files`]),
+    /// so a touch-only phone is shown the way in it has rather than a gesture it
+    /// cannot make.
     pub fn paint(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -79,8 +87,9 @@ impl FileOpenSurface {
         content: &EmptyStateContent<'_>,
         cursor: Point,
         focused: bool,
+        environment: InteractionEnvironment,
     ) -> crate::widget::PaintedStack {
-        if content.action_label.is_none() {
+        if content.action_label.is_none() || !environment.drags_files() {
             let (action, documents) =
                 EmptyState::paint_focused_with_documents(ctx, bounds, content, cursor, focused);
             return crate::widget::PaintedStack { action, documents };
@@ -168,7 +177,14 @@ mod tests {
         let alone = EmptyState::paint_focused(&mut ctx, bounds, &content, Point::ZERO, false)
             .expect("the action");
         let hinted = FileOpenSurface::default()
-            .paint(&mut ctx, bounds, &content, Point::ZERO, false)
+            .paint(
+                &mut ctx,
+                bounds,
+                &content,
+                Point::ZERO,
+                false,
+                InteractionEnvironment::default(),
+            )
             .action
             .expect("the action");
         // The stack is centred, so a line under the action moves the action
@@ -184,6 +200,35 @@ mod tests {
         );
     }
 
+    /// A phone has no pointer to drag a file in with, so its empty state
+    /// invites the one way in it has and never names a gesture it cannot make.
+    #[test]
+    fn a_touch_only_device_is_not_told_to_drop_a_file() {
+        let bounds = Rect::new(0.0, 0.0, 390.0, 700.0);
+        let theme = Theme::dark();
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
+        let content = EmptyStateContent {
+            action_label: Some("Open a file"),
+            ..EmptyStateContent::new("No file open")
+        };
+        let alone = EmptyState::paint_focused(&mut ctx, bounds, &content, Point::ZERO, false)
+            .expect("the action");
+        let phone = FileOpenSurface::default()
+            .paint(
+                &mut ctx,
+                bounds,
+                &content,
+                Point::ZERO,
+                false,
+                InteractionEnvironment::TOUCH,
+            )
+            .action
+            .expect("the action");
+        assert_eq!(phone, alone, "the phone keeps the button where it was");
+    }
+
     #[test]
     fn the_open_action_stays_reachable_and_returns_after_a_cancelled_drag() {
         let bounds = Rect::new(0.0, 0.0, 320.0, 240.0);
@@ -197,7 +242,14 @@ mod tests {
                 ..EmptyStateContent::new("No file open")
             };
             let button = surface
-                .paint(&mut ctx, bounds, &content, Point::ZERO, true)
+                .paint(
+                    &mut ctx,
+                    bounds,
+                    &content,
+                    Point::ZERO,
+                    true,
+                    InteractionEnvironment::default(),
+                )
                 .action
                 .expect("the open action");
             assert_eq!(button.intersect(bounds), button);
@@ -205,14 +257,28 @@ mod tests {
             surface.handle_event(&WindowEvent::HoveredFile(PathBuf::from("/workspace/file")));
             assert!(
                 surface
-                    .paint(&mut ctx, bounds, &content, Point::ZERO, false)
+                    .paint(
+                        &mut ctx,
+                        bounds,
+                        &content,
+                        Point::ZERO,
+                        false,
+                        InteractionEnvironment::default()
+                    )
                     .action
                     .is_none()
             );
             surface.handle_event(&WindowEvent::HoveredFileCancelled);
             assert_eq!(
                 surface
-                    .paint(&mut ctx, bounds, &content, Point::ZERO, false)
+                    .paint(
+                        &mut ctx,
+                        bounds,
+                        &content,
+                        Point::ZERO,
+                        false,
+                        InteractionEnvironment::default()
+                    )
                     .action,
                 Some(button)
             );
