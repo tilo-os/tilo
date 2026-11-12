@@ -172,11 +172,13 @@ pub(crate) fn stand_ins_dir(state_root: &std::path::Path) -> std::path::PathBuf 
 
 /// Make this host the stand-in approver of `root`'s person, with a certificate
 /// their root signs: what a host that places browser sessions certifies them
-/// with.
+/// with. Placing sessions is the agents feature's, which is the only thing
+/// that keeps one.
 ///
 /// # Errors
 ///
 /// The state directory cannot be read or written, or the root would not sign.
+#[cfg(feature = "agents")]
 pub(crate) fn keep_stand_in(
     state_root: &std::path::Path,
     root: &ed25519_dalek::SigningKey,

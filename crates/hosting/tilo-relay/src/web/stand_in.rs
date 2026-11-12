@@ -118,9 +118,13 @@ fn root_signed(
 /// session joins as a device of theirs, which only a stand-in certifies. A
 /// stand-in already live in `dir` is left as it is.
 ///
+/// What keeps one is a host that places browser sessions, which is the agents
+/// feature's; the test below keeps one without it.
+///
 /// # Errors
 ///
 /// The directory cannot be read or written, or the root would not sign it.
+#[cfg(any(test, feature = "agents"))]
 pub(crate) fn keep(dir: &std::path::Path, root: &SigningKey) -> Result<(), String> {
     let stands = StandIns::new(dir.to_path_buf());
     let user = root.verifying_key().to_bytes();
