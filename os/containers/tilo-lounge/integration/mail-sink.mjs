@@ -4,7 +4,7 @@
 //
 // usage: node mail-sink.mjs OUT_DIR PORT
 // Prints {"url": "http://127.0.0.1:<port>"} once it listens.
-import {mkdirSync, writeFileSync} from 'node:fs';
+import {mkdirSync, readdirSync, writeFileSync} from 'node:fs';
 import {createServer} from 'node:http';
 import {join} from 'node:path';
 
@@ -14,7 +14,8 @@ if (!out || !port) {
   process.exit(2);
 }
 mkdirSync(out, {recursive: true});
-let taken = 0;
+// Numbered after what an earlier run kept there, so a restart overwrites none.
+let taken = readdirSync(out).filter(name => /^\d+\.json$/.test(name)).length;
 
 const server = createServer((request, response) => {
   if (request.method !== 'POST' || request.url !== '/emails') {

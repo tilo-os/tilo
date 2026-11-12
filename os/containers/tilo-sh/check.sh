@@ -254,7 +254,9 @@ step 'bring the stack up'
 up_args=()
 [[ ${TILO_SH_FRESH:-} == 1 ]] && up_args+=(--fresh)
 [[ ${TILO_SH_SEED:-} == 1 ]] && up_args+=(--seed)
-bash "$here/stack.sh" up "${up_args[@]}" || fail 'the stack did not come up'
+# Its visitors arrive as strangers and enter the Lounge as guests: the door
+# open to anyone, not production's, which takes people by invitation.
+TILO_SH_ADMISSION=${TILO_SH_ADMISSION:-open} bash "$here/stack.sh" up "${up_args[@]}" || fail 'the stack did not come up'
 bring_up=$(cat "$state/bring-up-seconds")
 
 # The stack's addresses and helpers (find_tilo, sdk_python).

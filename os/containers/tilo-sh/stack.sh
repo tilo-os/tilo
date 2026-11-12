@@ -43,7 +43,13 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
       then tilo keys create "My backend", the Python SDK (Tilo()), the TS SDK
       (new Tilo()) and an agent's MCP client all reach the local door.
   stack.sh status        what runs, at which address, and whether it answers
-  stack.sh logs NAME     a service's log (relay, tls, door, web, discord, releases)
+  stack.sh logs NAME     a service's log (relay, tls, door, web, discord, releases, mail)
+  stack.sh mail          the mail the door sent (wait-list confirmations,
+                         invitations), with the links in each
+  stack.sh owner KEY     declare the person with user public key KEY an owner
+                         of the Lounge (its roles file): the door, which takes
+                         people by invitation as production's does, lets
+                         them in, and they invite the others
   stack.sh browser       a Chromium on a fresh profile, opened on the local site
   stack.sh check
                          bring the stack up and run the end-to-end check on it
@@ -70,6 +76,8 @@ What runs, all on 127.0.0.1 (ports from TILO_SH_PORT_BASE, default 24100):
             skipped, with the reason, where /dev/kvm or root is missing. It
             always runs from its image; natively it starts with the rest when
             TILO_SH_VM_HOST=1 names it
+  mail      the mail sink the door's mail goes to (production: Resend),
+            http://127.0.0.1:BASE+23; stack.sh mail lists what it kept
   discord   with --discord, the fake Discord (crates/dev/fake-discord)
 
 Natively: the programs are t's lounge-gate build (the release's code and
@@ -125,6 +133,7 @@ door_port=$((base + 10))       # the front door (mcp.tilo.sh)
 site_port=$((base + 20))       # Caddy: the site's public origin (tilo.sh, Cloudflare's edge)
 web_port=$((base + 21))        # the web entry's own plain listener (8080), behind it
 releases_port=$((base + 22))   # this checkout's tilo command, as the site's /releases serves it
+mail_port=$((base + 23))       # the mail sink the door's mail goes to instead of Resend
 discord_rest_port=$((base + 40))
 discord_gateway_port=$((base + 41))
 discord_control_port=$((base + 42))
@@ -177,6 +186,17 @@ use_mode() {
 use_mode "$(cat "$state/mode" 2>/dev/null || echo native)"
 
 podman_() { podman "$@"; }
+
+# One command at a time over one state: two bring-ups over the same
+# directories build into, swap and start each other's files. A second stack
+# beside this one takes its own TILO_SH_STATE and TILO_SH_PORT_BASE. The lock
+# is fd 9, which every long-running process this starts closes.
+lock_state() {
+  mkdir -p "$state"
+  exec 9>"$state/lock"
+  flock -n 9 || die "another stack.sh is working on $state (its pid: $(cat "$state/lock.pid" 2>/dev/null || echo unknown)); wait for it, or give this one its own TILO_SH_STATE and TILO_SH_PORT_BASE"
+  echo $$ > "$state/lock.pid"
+}
 running() {
   if [[ $mode == native ]]; then
     [[ -f $runs/$1.pid ]] && kill -0 "$(cat "$runs/$1.pid")" 2>/dev/null
@@ -288,6 +308,12 @@ relay_env() {
     # write in the stack's secrets.
     "TILO_ROOMS_ROLES_FILE=$secrets_path/roles.json"
     TILO_ROOMS_FEEDBACK_CHANNEL=feedback
+    # Its mail goes to this stack's mail sink (stack.sh mail reads it) where
+    # production's goes to Resend.
+    TILO_ROOMS_CONTACT=hello@tilo.localhost
+    "TILO_ROOMS_MAIL_FROM=Tilo <hello@tilo.localhost>"
+    "TILO_ROOMS_RESEND_KEY_FILE=$secrets_path/resend-key"
+    "TILO_ROOMS_RESEND_URL=http://127.0.0.1:$mail_port/emails"
     # Production's listeners, which its pod binds on all addresses, here on
     # loopback only.
     "TILO_ROOMS_RELAY_PLAIN=127.0.0.1:$plain_port"
@@ -296,6 +322,15 @@ relay_env() {
     "TILO_ROOMS_LINK=127.0.0.1:$link_port"
     "TILO_ROOMS_LINK_ORIGIN=https://127.0.0.1:$link_port"
   )
+  # Production's door: only people invited, or declared in the roles file
+  # (stack.sh owner), join, and a stranger leaves an address on its wait
+  # list. TILO_SH_ADMISSION=open lets anyone in as a guest instead, for the
+  # checks whose visitors arrive as strangers.
+  case ${TILO_SH_ADMISSION:-invite} in
+    invite) env+=(TILO_ROOMS_ADMISSION=invite TILO_ROOMS_WAIT_LIST_MAX=500) ;;
+    open) env+=(TILO_ROOMS_ADMISSION=open) ;;
+    *) die "TILO_SH_ADMISSION is invite (production's) or open, not $TILO_SH_ADMISSION" ;;
+  esac
   # Not here: the moderation and summary model keys (no model is asked
   # locally), and the Discord bridge's real server unless --discord.
   if [[ -n ${discord_api:-} ]]; then
@@ -383,6 +418,63 @@ trust_bundle() {
   cp "$root" "$state/trust-bundle.pem"
 }
 
+# The mail service the door posts to, here a sink that keeps each mail as a
+# file under the state (stack.sh mail lists them) and sends nothing. Started
+# before the relay, whose door mails as soon as someone leaves an address.
+start_mail() {
+  local log=$state/logs/mail.log
+  [[ -f $state/mail.pid ]] && kill "$(cat "$state/mail.pid")" 2>/dev/null || true
+  : > "$log"
+  node "$repo/os/containers/tilo-lounge/integration/mail-sink.mjs" "$state/mail" "$mail_port" \
+    >> "$log" 2>&1 < /dev/null 9>&- &
+  echo $! > "$state/mail.pid"
+  local deadline=$((SECONDS + 10))
+  until grep -q '"url"' "$log" 2>/dev/null; do
+    ((SECONDS < deadline)) || die "the mail sink did not start: $(cat "$log")"
+    sleep 0.1
+  done
+}
+
+# owner KEY: declare the person whose user public key (hex) is KEY an owner of
+# the Lounge, as production's operator does in its roles file: the door lets
+# them in without an invitation, and the workspace makes them an owner once in.
+# On a fresh stack nobody is a member yet, so this is how the first person
+# gets in to invite the others. The relay takes the file in within seconds.
+declare_owner() {
+  local key=${1:-}
+  [[ $key =~ ^[0-9a-f]{64}$ ]] || die 'owner KEY: the person'"'"'s user public key, 64 hex characters (a tab keeps it in localStorage tilo-identity)'
+  [[ -f $state/secrets/roles.json ]] || die 'the stack has not run here yet: stack.sh up'
+  python3 -I - "$state/secrets/roles.json" "$key" <<'PY'
+import json, os, sys
+path, key = sys.argv[1:]
+roles = json.load(open(path))
+if key not in roles.setdefault('owners', []):
+    roles['owners'].append(key)
+tmp = path + '.next'
+with open(tmp, 'w') as out:
+    json.dump(roles, out)
+    out.write('\n')
+os.replace(tmp, path)
+PY
+  say "$key is declared an owner of the Lounge ($state/secrets/roles.json)"
+}
+
+# The mails the door sent, oldest first: who to, the subject and the links in
+# each, which a person would follow.
+list_mail() {
+  [[ -d $state/mail ]] || die 'no mail yet (the stack keeps it in '"$state"'/mail)'
+  python3 -I - "$state/mail" <<'PY'
+import json, pathlib, re, sys
+for path in sorted(pathlib.Path(sys.argv[1]).glob('*.json')):
+    mail = json.loads(path.read_text())
+    to = mail.get('to')
+    to = ', '.join(to) if isinstance(to, list) else to
+    print(f"{path.name}  to {to}: {mail.get('subject')}")
+    for link in dict.fromkeys(re.findall(r'https?://[^\s"<>]+', mail.get('text') or mail.get('html') or '')):
+        print(f'    {link}')
+PY
+}
+
 # The site's /releases: this checkout's tilo command, where the release
 # tooling would publish it (<base>/<version>/<file>), as `latest`. Fetched
 # from t in the background, so bring-up never waits on that build: until it
@@ -399,12 +491,12 @@ start_releases() {
     ( rm -rf "$outputs" && mkdir -p "$outputs" \
       && t outputs cli-x86_64 --to "$outputs" && touch "$outputs/.complete" \
       && find "$outputs" -type f -name 'tilo-*' -exec cp {} "$dir/" \; ) \
-      >> "$state/logs/releases.log" 2>&1 < /dev/null &
+      >> "$state/logs/releases.log" 2>&1 < /dev/null 9>&- &
     disown
   fi
   [[ -f $state/releases.pid ]] && kill "$(cat "$state/releases.pid")" 2>/dev/null || true
   python3 -m http.server --bind 127.0.0.1 --directory "$state/releases" "$releases_port" \
-    >> "$state/logs/releases.log" 2>&1 < /dev/null &
+    >> "$state/logs/releases.log" 2>&1 < /dev/null 9>&- &
   echo $! > "$state/releases.pid"
 }
 
@@ -468,7 +560,7 @@ vm_host() {
     "TILO_SH_TRUST_BUNDLE=$state/trust-bundle.pem" \
     "TILO_SH_BROWSER_FREE_ACTIONS=${TILO_SH_BROWSER_FREE_ACTIONS:-}" \
     "TILO_SH_HOSTED_VM_SIZE=${TILO_SH_HOSTED_VM_SIZE:-}" \
-    bash "$here/vm-host.sh" "$@"
+    bash "$here/vm-host.sh" "$@" 9>&-
 }
 
 # tilo-enroll, which makes the VM host's member device: this checkout's.
@@ -692,20 +784,29 @@ lay_out_lounge() {
 
 # The desktop bundle the web entry serves (build.sh --bundle desktop, the
 # web-desktop-bundle check's build), its compile on t; TILO_SH_BUNDLE names a
-# built one instead. Built into a new directory and swapped in.
+# built one instead. Built into a directory of its own and swapped in, so a
+# build that stops halfway, or another one, never leaves a half bundle served.
 # TILO_SH_BUNDLE_NAMES=1 builds it with its function names kept (build.sh
 # --names), for profiling the page: otherwise the bundle that ships.
 build_bundle() {
   if [[ -n ${TILO_SH_BUNDLE:-} || -n ${TILO_SH_SITE:-} ]]; then return; fi
-  local began=$SECONDS next=${native:?}/bundle.next names=()
+  local began=$SECONDS next names=()
   [[ ${TILO_SH_BUNDLE_NAMES:-0} != 1 ]] || names=(--names)
   say "building the desktop bundle (build.sh --bundle desktop ${names[*]}, compiled by ${TILO_SH_CARGO:-t})"
-  rm -rf "${next:?}"
+  mkdir -p "${native:?}"
+  rm -rf "$native"/bundle.next.*
+  next=$(mktemp -d "$native/bundle.next.XXXXXX")
   CARGO=$here/cargo.sh "$repo/crates/browser/tilo-browser-runtime/scripts/build.sh" "$next" --bundle desktop "${names[@]}" >&2 \
-    || die 'the desktop bundle did not build (above)'
+    || { rm -rf "$next"; die 'the desktop bundle did not build (above)'; }
   rm -rf "${native:?}/bundle"
   mv "$next" "$native/bundle"
   say "bundle built ($((SECONDS - began))s)"
+}
+
+# Whether DIR holds a finished desktop bundle with the module the page starts
+# from.
+bundle_whole() {
+  [[ -f $1/build.json && -s $1/pkg/tilo_browser_runtime.js && -s $1/pkg/tilo_browser_runtime_bg.wasm ]]
 }
 
 # The site as the image holds it: laid out by layout.py, precompressed by
@@ -725,7 +826,7 @@ lay_out_web() {
     return
   fi
   local bundle=${TILO_SH_BUNDLE:-$native/bundle}
-  [[ -f $bundle/build.json ]] || die "no desktop bundle at $bundle"
+  bundle_whole "$bundle" || die "no whole desktop bundle at $bundle (build.json and pkg/tilo_browser_runtime{.js,_bg.wasm}); stack.sh restart web builds one"
   local stamp
   stamp=$(sha256sum "$bundle/build.json" | cut -c1-16)
   if [[ $(cat "$native/web/stamp" 2>/dev/null) != "$stamp" ]]; then
@@ -742,7 +843,12 @@ lay_out_web() {
     printf '%s\n' "$stamp" > "$native/web/stamp"
   fi
   mkdir -p "$native/web/install"
-  cp "$repo/dist/install/tilo.sh" "$native/web/install/install.sh"
+  # The installer downloads from the site that serves it, as tilo.sh's does
+  # from tilo.sh: here this site's /releases, which serve this checkout's
+  # tilo command, never the one published on tilo.sh.
+  grep -q 'https://tilo.sh/releases' "$repo/dist/install/tilo.sh" \
+    || die 'dist/install/tilo.sh no longer names https://tilo.sh/releases; say here where it downloads from'
+  sed "s#https://tilo.sh/releases#$site_origin/releases#" "$repo/dist/install/tilo.sh" > "$native/web/install/install.sh"
   web_site=$native/web/site
   web_install=$native/web/install
 }
@@ -759,6 +865,24 @@ lay_out_releases() {
     bash "$repo/tools/ci/publish/cli-release.sh" pack "$programs/tilo" "$dir/tilo-linux-x86_64.tar.gz" \
       || die 'could not pack the tilo command'
   fi
+  sign_releases "$dir"
+}
+
+# DIR's archives listed in SHA256SUMS and that signed, as a release is
+# (cli-release.sh sums, sign), so the site's installer takes them: with this
+# stack's own throwaway key, not Tilo's release key, which an installer here
+# reads from TILO_RELEASE_KEY (stack.sh env exports it).
+sign_releases() {
+  local dir=$1 key=$state/secrets/release-signing.pem
+  if [[ ! -s $key ]]; then
+    chmod u+w "$state/secrets"
+    (umask 077 && openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$key" 2>/dev/null) \
+      || die 'could not make the local release key (openssl)'
+  fi
+  openssl pkey -in "$key" -pubout -out "$state/release.pub" 2>/dev/null || die 'could not read the local release key'
+  (cd "$dir" && LC_ALL=C sha256sum tilo-*.tar.gz > SHA256SUMS) || die "no tilo archive in $dir"
+  openssl dgst -sha256 -sign "$key" -out "$dir/SHA256SUMS.sig" "$dir/SHA256SUMS" \
+    || die 'could not sign the local release'
 }
 
 # private_env NAME PATH: a home, runtime, config, data, state, cache and
@@ -793,7 +917,7 @@ run_native() {
   mapfile -t envs < "$runs/$name.env"
   setsid env -i "${envs[@]}" \
     bwrap --dev-bind / / --ro-bind "$state/trust-bundle.pem" "$ca_path" --chdir "$dir" -- "$@" \
-    >> "$state/logs/$name.log" 2>&1 < /dev/null &
+    >> "$state/logs/$name.log" 2>&1 < /dev/null 9>&- &
   echo $! > "$runs/$name.pid"
 }
 
@@ -947,7 +1071,7 @@ up_native() {
   # The bundle compiles on t beside the programs; only its first build, or
   # `restart web`, waits for it.
   local bundle_pid=
-  if [[ -z ${TILO_SH_BUNDLE:-} && -z ${TILO_SH_SITE:-} && ! -f $native/bundle/build.json ]]; then
+  if [[ -z ${TILO_SH_BUNDLE:-} && -z ${TILO_SH_SITE:-} ]] && ! bundle_whole "$native/bundle"; then
     build_bundle > "$state/logs/bundle.log" 2>&1 &
     bundle_pid=$!
   fi
@@ -968,6 +1092,7 @@ up_native() {
   # authority that signed it — which this makes. The host starts before the
   # relay, which reads where to place a workspace once, when it starts.
   [[ -z $discord ]] || start_native_discord
+  start_mail
   start_native_tls
   trust_bundle
   say "tls up ($((SECONDS - phase))s)"
@@ -1049,6 +1174,11 @@ make_secrets() {
     od -An -tx1 -N32 /dev/urandom | tr -d ' \n' > "$state/secrets/room-root-lounge"
     printf 'local-fake-discord-secret' > "$state/secrets/discord-client-secret"
     chmod 0400 "$state/secrets"/*
+  fi
+  if [[ ! -s $state/secrets/resend-key ]]; then
+    chmod u+w "$state/secrets"
+    printf 're_local_mail_sink' > "$state/secrets/resend-key"
+    chmod 0444 "$state/secrets/resend-key"
   fi
   [[ -s $state/secrets/roles.json ]] \
     || printf '{"owners":[],"moderators":[]}\n' > "$state/secrets/roles.json"
@@ -1140,6 +1270,7 @@ up_images() {
   if [[ -n $discord ]]; then
     start_discord
   fi
+  start_mail
 
   # The relay's TLS, first: the door trusts its CA.
   cp "$here/Caddyfile" "$state/tls/Caddyfile"
@@ -1213,7 +1344,7 @@ start_discord() {
   fi
   [[ -f $state/discord.pid ]] && kill "$(cat "$state/discord.pid")" 2>/dev/null || true
   "$bin" --rest "127.0.0.1:$discord_rest_port" --gateway "127.0.0.1:$discord_gateway_port" \
-    --control "127.0.0.1:$discord_control_port" > "$state/logs/discord.log" 2>&1 &
+    --control "127.0.0.1:$discord_control_port" > "$state/logs/discord.log" 2>&1 9>&- &
   echo $! > "$state/discord.pid"
   local deadline=$((SECONDS + 10))
   until grep -q '^DISCORD_API_BASE=' "$state/logs/discord.log" 2>/dev/null; do
@@ -1241,14 +1372,14 @@ down() {
       podman_ rm -f -t 10 "$prefix-$name" >/dev/null 2>&1 || true
     done
   fi
-  for pid in releases discord; do
+  for pid in releases discord mail; do
     [[ -f $state/$pid.pid ]] && { kill "$(cat "$state/$pid.pid")" 2>/dev/null || true; rm -f "$state/$pid.pid"; }
   done
   if [[ -n $wipe ]]; then
     # The volumes belong to the containers' users (10001, 65532) inside this
     # account's user namespace: only that namespace removes them.
-    podman_ unshare rm -rf "$state/relay" "$state/door" "$state/tls" "$state/secrets" "$state/seed" 2>/dev/null \
-      || rm -rf "$state/relay" "$state/door" "$state/tls" "$state/secrets" "$state/seed"
+    podman_ unshare rm -rf "$state/relay" "$state/door" "$state/tls" "$state/secrets" "$state/seed" "$state/mail" 2>/dev/null \
+      || rm -rf "$state/relay" "$state/door" "$state/tls" "$state/secrets" "$state/seed" "$state/mail"
     rm -rf "${runs:?}" "$state/trust-bundle.pem" "$state/local-ca.pem" "$state/mode"
     say "stopped, and its state is gone (builds kept in $native, images in $state/images)"
   else
@@ -1303,6 +1434,9 @@ export TILO_SITE=$site_origin
 export TILO_TEST_CA_FILE=$state/local-ca.pem
 export NODE_EXTRA_CA_CERTS=$state/local-ca.pem
 export SSL_CERT_FILE=$state/trust-bundle.pem
+# The installer (curl -fsSL $site_origin | sh) checks this stack's releases
+# against its own key, not Tilo's release key.
+export TILO_RELEASE_KEY=$state/release.pub
 # An agent's MCP client, e.g. Claude Code:
 #   claude mcp add --transport http tilo-local $door_origin/mcp
 # a one-workspace key's MCP: $door_origin/w/<workspace>/mcp with
@@ -1327,12 +1461,17 @@ browser() {
 cmd=${1:-help}
 shift || true
 case $cmd in
+  up|down|restart) lock_state ;;
+esac
+case $cmd in
   up) up "$@" ;;
   down) down "$@" ;;
   status) status ;;
   env) print_env ;;
   restart) restart "$@" ;;
-  logs) [[ -n ${1:-} ]] || die 'logs NAME: relay, tls, door, web, discord, releases, bundle'; cat "$state/logs/$1.log" ;;
+  logs) [[ -n ${1:-} ]] || die 'logs NAME: relay, tls, door, web, discord, releases, mail, bundle'; cat "$state/logs/$1.log" ;;
+  mail) list_mail ;;
+  owner) declare_owner "$@" ;;
   browser) browser "$@" ;;
   check)
     exec bash "$here/check.sh" "$@" ;;
