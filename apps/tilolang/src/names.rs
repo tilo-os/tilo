@@ -59,7 +59,7 @@ impl Names {
         if &*self.me == id {
             return own_name();
         }
-        ui::history_source::actor_name(id, self)
+        tilolang_tilo::names::named(id, self)
     }
 }
 
@@ -120,7 +120,7 @@ mod tests {
     #[test]
     fn a_participant_is_named_by_what_they_are_never_by_part_of_their_id() {
         let names = Names::new("me-id");
-        assert_eq!(names.label("agent:planner"), "Planner");
+        assert_eq!(names.label("agent:planner"), "Planner (agent)");
         assert_eq!(
             names.label("0123456789abcdef0123456789abcdef"),
             "Unknown participant",
@@ -128,6 +128,7 @@ mod tests {
         );
         assert_eq!(names.label("tomas"), "Unknown participant");
         assert_eq!(names.label("scenario:Mia"), "Mia");
+        assert_eq!(names.label("trigger:so.tilo.lang.today"), "Today");
     }
 
     #[test]

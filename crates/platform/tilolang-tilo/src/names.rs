@@ -24,18 +24,25 @@ use crate::runtime::{NameHost, Principal};
 /// their key.
 #[must_use]
 pub fn unnamed(id: &str) -> String {
+    named(id, &Unnamed)
+}
+
+/// The name of the participant `id` to a reader who calls people, apps and agents as `names`
+/// does: a sample person a scenario named by that name, a package acting on its own records (one
+/// of its own actions, or an update to a later build) as the app itself, and anyone else by
+/// [`actor_name`].
+#[must_use]
+pub fn named(id: &str, names: &dyn ParticipantNames) -> String {
     if let Some(name) = id.strip_prefix("scenario:") {
         return name.to_owned();
     }
-    // A package working on its own records, running one of its own actions or updating them to a
-    // later build: the app itself, named as the app it is.
     if let Some(app) = crate::authority::trigger_of(id) {
-        return Unnamed.app(app);
+        return names.app(app);
     }
     if let Some((app, _)) = crate::authority::migration_of(id) {
-        return Unnamed.app(app);
+        return names.app(app);
     }
-    actor_name(id, &Unnamed)
+    actor_name(id, names)
 }
 
 /// What a participant reads as when the reader's own process knows no name for them.
