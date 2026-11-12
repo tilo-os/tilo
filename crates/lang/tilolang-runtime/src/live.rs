@@ -765,6 +765,10 @@ impl Live {
         filtered: bool,
         reach: &mut Reach,
     ) {
+        // Every row of a list reads the same listing: it is read once for all of them, not once
+        // a row.
+        let mut listings: Vec<(Rc<crate::value::CollRef>, Option<Rc<crate::store::Listing>>)> =
+            Vec::new();
         for (id, coll) in self.index.coll_readers(resource, field) {
             let Some(b) = self.bound(id) else {
                 continue;
@@ -774,7 +778,21 @@ impl Live {
                 .iter()
                 .filter(|seen| seen.resource == resource && seen.coll.field == coll)
                 .filter(|seen| !filtered || seen.coll.derived())
-                .any(|seen| !seen.holds_now(core));
+                .any(|seen| {
+                    let at = listings
+                        .iter()
+                        .position(|(held, _)| seen.is_of(held))
+                        .unwrap_or_else(|| {
+                            let listing =
+                                crate::colls::listing_of(&**core.store.borrow(), &seen.coll);
+                            listings.push((Rc::clone(&seen.coll), listing.ok()));
+                            listings.len().saturating_sub(1)
+                        });
+                    !listings
+                        .get(at)
+                        .and_then(|(_, listing)| listing.as_ref())
+                        .is_some_and(|listing| seen.holds(listing))
+                });
             if stale {
                 reach.hit.push(id);
             }

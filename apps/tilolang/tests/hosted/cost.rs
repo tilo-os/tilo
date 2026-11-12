@@ -466,7 +466,7 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 16_000,
             eval_layout_us: 16_000,
             held: Held {
-                optimized_us: 110_000,
+                optimized_us: 100_000,
                 development_us: 500_000,
             },
         },
@@ -477,7 +477,7 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 16_000,
             eval_layout_us: 16_000,
             held: Held {
-                optimized_us: 96_000,
+                optimized_us: 84_000,
                 development_us: 500_000,
             },
         },
@@ -488,7 +488,7 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 16_000,
             eval_layout_us: 16_000,
             held: Held {
-                optimized_us: 90_000,
+                optimized_us: 60_000,
                 development_us: 340_000,
             },
         },

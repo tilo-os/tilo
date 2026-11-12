@@ -2,7 +2,7 @@
 //! writes added and removed, read page by page as the list it stands for.
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 
 use tilolang_runtime::store::PagedItems;
@@ -327,6 +327,9 @@ pub struct Filtered {
     most: usize,
     /// The entries checked so far, from the run's first in order, each kept or not.
     scanned: RefCell<Vec<Scanned>>,
+    /// Where each item checked so far has its first entry among them: what finds a row the
+    /// listing already read without reading where its item is.
+    first: RefCell<HashMap<Rc<str>, usize>>,
     /// How many it keeps, when the index's counts answer it before the run is read: a run
     /// narrowed to the items open, whose count the column's counts keep.
     known: Option<usize>,
@@ -363,6 +366,7 @@ impl Filtered {
             keep,
             known: None,
             scanned: RefCell::new(Vec::new()),
+            first: RefCell::new(HashMap::new()),
             at: Cell::new(0),
             kept: Cell::new(0),
             locate: None,
@@ -397,12 +401,17 @@ impl Filtered {
         };
         let most = base.len();
         let at = out.len();
+        let mut first = HashMap::with_capacity(out.len());
+        for (place, entry) in out.iter().enumerate() {
+            first.entry(Rc::clone(&entry.id)).or_insert(place);
+        }
         Ok(Self {
             most,
             base,
             keep,
             known: None,
             scanned: RefCell::new(out),
+            first: RefCell::new(first),
             at: Cell::new(at),
             kept: Cell::new(held),
             locate: None,
@@ -530,6 +539,7 @@ impl Filtered {
             if kept {
                 self.kept.set(self.kept.get().saturating_add(1));
             }
+            self.first.borrow_mut().entry(Rc::clone(&id)).or_insert(at);
             scanned.push(Scanned { id, kept });
             self.at.set(at.saturating_add(1));
         }
@@ -572,6 +582,16 @@ impl Filtered {
     )]
     fn position_of(&self, id: &str) -> Option<Option<usize>> {
         let locate = self.locate.as_ref()?;
+        // A row already read is where its first entry was checked kept: no entry of the item
+        // stands before the first one.
+        if let Some(at) = self.first.borrow().get(id).copied() {
+            let scanned = self.scanned.borrow();
+            if scanned.get(at).is_some_and(|entry| entry.kept) {
+                return Some(Some(
+                    scanned.iter().take(at).filter(|entry| entry.kept).count(),
+                ));
+            }
+        }
         let entries = locate(id)?;
         if entries.is_empty() {
             return Some(None);
@@ -594,23 +614,44 @@ impl Filtered {
                 }
                 continue;
             }
-            // Check the run up to and with the entry, then count the ones kept before it: an
-            // entry the item is not kept at has no place, which its own check says without
-            // reading the run before it.
-            if !(self.keep)(&id) {
-                continue;
-            }
-            self.scan_to(at.saturating_add(1));
-            let scanned = self.scanned.borrow();
-            let Some(entry) = scanned.get(at) else {
+            let Some(before) = self.place_among_kept(at, &id) else {
                 continue;
             };
-            if entry.kept {
-                let before = scanned.iter().take(at).filter(|e| e.kept).count();
-                best = Some(best.map_or(before, |held| held.min(before)));
-            }
+            best = Some(best.map_or(before, |held| held.min(before)));
         }
         Some(best)
+    }
+
+    /// Where the entry at `at` of the run, of the item `id`, stands among the kept entries:
+    /// `None` when it is not kept.
+    ///
+    /// An entry already checked keeps its check, and its place is the kept entries before it.
+    /// One within a page past the checked ones is checked with those before it. One further on
+    /// is checked alone, and stands where it would if every unchecked entry before it were kept,
+    /// as the listing's length counts them ([`PagedItems::len`]) until the run is read that far:
+    /// an item a change put at the end of a long run is placed by its own check, not by checking
+    /// the whole run before it, and where it stands is read once a list's pages reach it.
+    fn place_among_kept(&self, at: usize, id: &str) -> Option<usize> {
+        let checked = self.at.get();
+        if at >= checked.saturating_add(PAGE) && self.known.is_none() {
+            if !(self.keep)(id) {
+                return None;
+            }
+            let estimate = self.kept.get().saturating_add(at.saturating_sub(checked));
+            return Some(estimate.min(self.most.saturating_sub(1)));
+        }
+        // An entry the item is not kept at has no place, which its own check says without
+        // reading the run before it.
+        if at >= checked && !(self.keep)(id) {
+            return None;
+        }
+        self.scan_to(at.saturating_add(1));
+        let scanned = self.scanned.borrow();
+        let entry = scanned.get(at)?;
+        if !entry.kept {
+            return None;
+        }
+        Some(scanned.iter().take(at).filter(|e| e.kept).count())
     }
 
     /// Whether it keeps the item `id`: the check of its own entries of the run, never the ones
@@ -843,6 +884,36 @@ mod tests {
             "odd ones are dropped"
         );
         assert_eq!(filtered.position("0009"), Some(None));
+    }
+
+    #[test]
+    fn an_entry_far_past_the_checked_ones_is_placed_by_its_own_check() {
+        let locate: Locate = Box::new(|id: &str| Some(vec![(id.to_owned(), id.to_owned())]));
+        let checks = Rc::new(std::cell::Cell::new(0_usize));
+        let counted = Rc::clone(&checks);
+        let keep: Keep = Box::new(move |id: &str| {
+            counted.set(counted.get().saturating_add(1));
+            even(id)
+        });
+        let filtered = Filtered::new(numbered(1000), keep).locating(locate);
+        assert_eq!(
+            filtered.position("0998"),
+            Some(Some(998)),
+            "it stands where it would if every entry before it were kept, as the length counts them"
+        );
+        assert_eq!(checks.get(), 1, "only its own entry is checked");
+        assert_eq!(
+            filtered.position("0999"),
+            Some(None),
+            "a dropped one has no place"
+        );
+        assert!(!filtered.len_is_exact());
+        assert_eq!(filtered.get(1).as_deref(), Some("0002"));
+        assert_eq!(
+            filtered.position("0002"),
+            Some(Some(1)),
+            "a checked one keeps its check and its place"
+        );
     }
 
     #[test]
