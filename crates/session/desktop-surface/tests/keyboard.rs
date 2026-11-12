@@ -21,7 +21,7 @@ use tilo_desktop_model::{
     DesktopTree, IdMinter, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
 };
 use tilo_desktop_surface::{
-    DesktopHandle, DesktopSurface, SearchHost, SearchHostFeed, TileSource, seed_tree,
+    DesktopHandle, DesktopSurface, HostAction, SearchHost, SearchHostFeed, TileSource, seed_tree,
 };
 use ui::application::{
     AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
@@ -1157,6 +1157,49 @@ fn the_open_search_takes_every_key_from_the_window_under_it() {
         desk.handle.search_rows().0,
         "Notes",
         "the search still holds the query it was given"
+    );
+}
+
+/// A host's own verb — the page's "Invite people", or anything only the page can do — is a row of
+/// the search over everything, and Enter on it hands the id back and closes the search: the card
+/// does not stay up over the sheet the host opens.
+#[test]
+fn a_host_verbs_row_hands_its_id_back_and_closes_the_search() {
+    let mut desk = Desk::new(1, 450);
+    desk.handle.set_host_actions(vec![HostAction {
+        id: "invite-people".into(),
+        title: "Invite people".into(),
+        subtitle: Some("Bring someone into this workspace".into()),
+        icon: None,
+        destructive: false,
+        unasked: true,
+        source: None,
+    }]);
+    desk.handle.open_search(Scope::Workspace, None);
+    desk.settle();
+    desk.type_search("invite people");
+    let (_, rows) = desk.handle.search_rows();
+    assert!(
+        rows.iter().any(|row| row.title == "Invite people"),
+        "the host's verb is a row: {rows:?}"
+    );
+    let choosable = rows
+        .iter()
+        .position(|row| row.title == "Invite people")
+        .expect("the row stands");
+    for _ in 0..choosable {
+        desk.key_search(NamedKey::ArrowDown);
+    }
+    desk.key_search(NamedKey::Enter);
+    desk.settle();
+    assert_eq!(
+        desk.handle.take_host_choices(),
+        ["invite-people"],
+        "the host is asked to perform it"
+    );
+    assert!(
+        !desk.handle.search_open(),
+        "and the search closes over what the host opens"
     );
 }
 
