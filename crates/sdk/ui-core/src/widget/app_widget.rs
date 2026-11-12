@@ -354,6 +354,11 @@ mod component_adapter {
         /// The size the root was last laid out at: a new size is input its
         /// next sync takes up.
         laid_out: Option<vello::kurbo::Size>,
+        /// What the root's updates read since its last sync: a view built
+        /// from what moved is input the sync it precedes takes up, and a
+        /// build that loads the words it shows proves nothing
+        /// ([`crate::component_inputs`]).
+        update_reads: Option<crate::component_inputs::Reads>,
     }
 
     impl BoundAppWidget {
@@ -366,6 +371,7 @@ mod component_adapter {
                 owes_sync: true,
                 owes_settle: true,
                 laid_out: None,
+                update_reads: None,
             }
         }
 
@@ -577,6 +583,12 @@ mod component_adapter {
                 return;
             }
             let now = self.inputs_now(outer);
+            // What the updates since the last sync read, as they read it: a
+            // view built from what moved is input this pass takes up.
+            let reads = match self.update_reads.take() {
+                Some(update) => reads.join(update),
+                None => reads,
+            };
             let reads = match self.witness.take() {
                 // A settle after its sync: what both read.
                 Some(previous) if self.owes_settle => previous.reads.join(reads),
@@ -1219,10 +1231,19 @@ mod component_adapter {
                     .unwrap_or(false)
             };
             let component = &mut self.component;
-            let changed = crate::presence::frame::frame(|presence| {
-                presence.with_permissions(permissions.clone(), || update(component))
-            })
-            .unwrap_or_else(|| update(component));
+            // The build runs as the component's pass reading: what the view
+            // derived from, and the words it loaded to write it, are what the
+            // next sync takes up.
+            let (changed, reads) = crate::component_inputs::reading(&binding.lifetime, || {
+                crate::presence::frame::frame(|presence| {
+                    presence.with_permissions(permissions.clone(), || update(component))
+                })
+                .unwrap_or_else(|| update(component))
+            });
+            self.update_reads = Some(match self.update_reads.take() {
+                Some(earlier) => earlier.join(reads),
+                None => reads,
+            });
             // A change of the root's own is what its next sync shows, and
             // what anything published from it follows.
             if changed {
