@@ -97,6 +97,9 @@ pub struct RosterRow {
     /// called here. Software has no screen to mirror, so its row shows this instead, and pressing it
     /// brings that window forward.
     pub working_in: Option<(u64, String)>,
+    /// The app that window runs, as its person reads it ("Notes"): the place software works in,
+    /// said beside its line without naming the app it already sits in.
+    pub working_app: Option<String>,
     /// Short participant intention, marked by its [`LineSource`] so model-suggested words cannot be mistaken for a direct quote.
     pub status: Option<RosterStatus>,
     /// What they changed recently in this workspace, newest first: a row with none does not open.
@@ -130,6 +133,7 @@ impl RosterRow {
             invited: false,
             activity: None,
             working_in: None,
+            working_app: None,
             status: status.filter(|status| !status.text.trim().is_empty()),
             recent: Vec::new(),
             followable: false,

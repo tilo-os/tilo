@@ -1708,6 +1708,9 @@ struct SeatAt {
     /// The app each provider it was offered is of, by provider: what names the app a step of its
     /// is in.
     apps: std::sync::Mutex<HashMap<String, String>>,
+    /// What the catalogue calls each action it was offered, by provider and action: the words
+    /// the person reads the step by ("Replace text at a place").
+    named: std::sync::Mutex<HashMap<(String, String), String>>,
 }
 
 impl SeatAt {
@@ -1719,26 +1722,47 @@ impl SeatAt {
         let mut apps = self.apps.lock_recover();
         if apps.len() > Self::APPS {
             apps.clear();
+            self.named.lock_recover().clear();
         }
-        for row in rows.iter().filter(|row| !row.app_id.is_empty()) {
-            apps.insert(row.provider.clone(), row.app_id.clone());
+        let mut named = self.named.lock_recover();
+        for row in rows {
+            if !row.app_id.is_empty() {
+                apps.insert(row.provider.clone(), row.app_id.clone());
+            }
+            if let Some(action) = &row.action {
+                let words = [
+                    action.action_label.trim(),
+                    action.description.as_deref().unwrap_or_default().trim(),
+                ]
+                .into_iter()
+                .find(|words| !words.is_empty());
+                if let Some(words) = words {
+                    named.insert(
+                        (row.provider.clone(), action.address.action.clone()),
+                        words.to_owned(),
+                    );
+                }
+            }
         }
     }
 
     /// The agent takes the step `request` names: everyone in its workspace reads it beside its
-    /// face.
+    /// face, in the catalogue's own words for the step and on the record it acts in.
     fn acting(&self, request: &InvokeRequest) {
-        let app = self
-            .apps
+        let provider = &request.target.provider;
+        let app = self.apps.lock_recover().get(provider).cloned();
+        let action = self
+            .named
             .lock_recover()
-            .get(&request.target.provider)
-            .cloned();
-        let line = tilo_session_client::narration::lines::doing(
-            app.as_deref().unwrap_or_default(),
-            &request.target.address.action,
-            None,
-        );
-        if self.seats.acting(self.seat, line, app) {
+            .get(&(provider.clone(), request.target.address.action.clone()))
+            .cloned()
+            .unwrap_or_else(|| {
+                tilo_session_client::narration::action_label(&request.target.address.action)
+            });
+        if self
+            .seats
+            .acting(self.seat, crate::agent_door::seats::Doing { action, app })
+        {
             (self.wake)();
         }
     }
@@ -1826,6 +1850,7 @@ impl Host {
             seat,
             wake: Arc::clone(wake),
             apps: std::sync::Mutex::default(),
+            named: std::sync::Mutex::default(),
         }));
         self
     }
@@ -2743,6 +2768,14 @@ mod tests {
         assert_eq!(readings[0].name, "Claude Code");
         assert_eq!(readings[0].doing, "Studio");
         assert!(readings[0].seat, "a seat, not a run's agent");
+        // What its step is, as the catalogue names it and the app it acts in: said once.
+        let doing = super::seats::Doing {
+            action: "Replace text at a place".into(),
+            app: Some("so.tilo.notes".into()),
+        };
+        assert!(seats.acting(asked, doing.clone()), "its step is news");
+        assert!(!seats.acting(asked, doing.clone()), "the same step, once");
+        assert_eq!(seats.here()[0].doing.as_ref(), Some(&doing));
         // One agent, two connections: the bar shows one presence, and the person's Stop ends both.
         let (second_served, second_client) = UnixStream::pair().unwrap();
         let other = seats.joining(None);

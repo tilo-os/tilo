@@ -1487,7 +1487,7 @@ activities-layer = Aktivitäten
 activity-collapse = Weglegen
 activity-close = Schließen
 
-profile-agent-card = Karte öffnen
+profile-agent-card = Arbeit ansehen
 profile-agent-stop = Anhalten
 profile-agent-undo-run = Lauf rückgängig machen
 profile-agent-take-over = Übernehmen

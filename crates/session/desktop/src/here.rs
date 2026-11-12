@@ -888,7 +888,8 @@ impl HereState {
     /// The colour someone claims for themselves is the one they wear: it is the colour they chose
     /// in their own card, or the one their identity derives, as their shell publishes it — the same
     /// colour their apps paint them in. Whoever else's identity names it steps to a free entry, so
-    /// two people who chose alike still read apart.
+    /// two people who chose alike still read apart; this page's own person is honoured first, so
+    /// nobody here is ever drawn in their colour.
     ///
     /// A person's device is in the live layer before its certificate pairs it with its person. Until they do it has no entry here, and takes no part in the
     /// settlement, so they are drawn neutral ([`ui::presence::UNSETTLED_RGB`]) rather than in a
@@ -917,17 +918,35 @@ impl HereState {
             .filter_map(|(_, key, claimed)| claimed.map(|rgb| ((*key).to_owned(), rgb)))
             .collect();
         let keys: Vec<&str> = present.iter().map(|(_, key, _)| *key).collect();
-        let settled = ui::presence::settle_colors(&keys, &chosen);
+        // This page's own person is settled first: their colour is theirs, and nobody here is
+        // drawn in it.
+        let own = self
+            .own_id()
+            .and_then(|own| present.iter().find(|(id, _, _)| *id == own))
+            .map(|(_, key, _)| *key);
+        let settled = ui::presence::settle_colors_around(&keys, &chosen, own);
         let mut colors: HashMap<String, (u8, u8, u8)> = present
             .into_iter()
             .filter_map(|(id, key, _)| settled.get(key).map(|rgb| (id.to_owned(), *rgb)))
             .collect();
+        let own_rgb = own.and_then(|own| settled.get(own)).copied();
         // An agent wears its client's hue, so Claude Code reads as Claude Code on every face and
-        // caret of it; one this build does not know keeps the hue it settled on.
-        for member in self.members.iter().flatten().filter(|m| m.kind == "agent") {
-            if let Some(hue) = ui::tokens::PresenceHue::of_agent_client(&member.label) {
-                colors.insert(member.publisher.clone(), ui::presence::identity_rgb(hue));
+        // caret of it; one this build does not know keeps the hue it settled on. A client hue the
+        // person themselves wears is not worn by the agent: they stay apart.
+        for agent in self
+            .members
+            .iter()
+            .flatten()
+            .filter(|member| member.kind == "agent")
+        {
+            let Some(hue) = ui::tokens::PresenceHue::of_agent_client(&agent.label) else {
+                continue;
+            };
+            let rgb = ui::presence::identity_rgb(hue);
+            if own_rgb == Some(rgb) {
+                continue;
             }
+            colors.insert(agent.publisher.clone(), rgb);
         }
         colors
     }
@@ -1797,6 +1816,55 @@ mod tests {
         let tree = DesktopTree::default();
         let shown = first.people(&tree, &[], &|_| None);
         assert_eq!(shown[0].rgb, second.own_rgb().expect("own colour"));
+    }
+
+    /// An agent that announces the colour the person themselves wears does not wear it: the
+    /// person keeps their own colour, on their own ring and everywhere else, and the agent reads
+    /// apart from them.
+    #[test]
+    fn an_agent_never_wears_the_persons_own_colour() {
+        let mine = ui::presence::user_color("me-root");
+        let hex = format!("#{:02x}{:02x}{:02x}", mine.0, mine.1, mine.2);
+        let claiming = |member: &mut LiveMember| {
+            member.colour.clone_from(&hex);
+            member.clone()
+        };
+        let person = claiming(&mut LiveMember {
+            user: Some("me-root".into()),
+            ..member("me", "person", "Pat")
+        });
+        // The agent's face names no client this build knows, so it wears what it was given.
+        let agent = claiming(&mut member("helper", "agent", "Helper #1"));
+        let mut here = HereState::default();
+        here.set_members(Some(person), Some(vec![agent]));
+        assert_eq!(
+            here.own_rgb(),
+            Some(mine),
+            "the person wears their own colour"
+        );
+        assert_ne!(
+            here.colors().get("helper").copied(),
+            Some(mine),
+            "no member is drawn in the person's own colour"
+        );
+        // A client hue the person themselves wears is not worn by its agent either.
+        let orange = ui::presence::identity_rgb(ui::tokens::PresenceHue::Orange);
+        let orange_hex = format!("#{:02x}{:02x}{:02x}", orange.0, orange.1, orange.2);
+        let mut here = HereState::default();
+        here.set_members(
+            Some(LiveMember {
+                user: Some("me-root".into()),
+                colour: orange_hex,
+                ..member("me", "person", "Pat")
+            }),
+            Some(vec![member("claude", "agent", "Claude Code #1")]),
+        );
+        assert_ne!(
+            here.colors().get("claude").copied(),
+            Some(orange),
+            "the agent steps aside from the colour the person wears"
+        );
+        assert_eq!(here.own_rgb(), Some(orange));
     }
 
     /// The colour someone chose in their own card is the colour they wear here,

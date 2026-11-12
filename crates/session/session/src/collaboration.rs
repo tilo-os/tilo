@@ -91,18 +91,30 @@ impl Session {
     /// works in: a member of its own there, listed beside everyone else for everyone there, in its
     /// own colour, saying what it is doing and the window of the app it does it in.
     fn say_agents_here(&self, sync: &crate::sync::Client) {
+        use tilo_session_client::narration::lines;
         let seated = self.shared.seats.here();
         let records = self.shared.notes.records();
         let runs: Vec<(String, String, ShellPresence)> = self.shared.handle.read(|tree| {
             seated
                 .into_iter()
                 .map(|seated| {
-                    let (line, app) = seated.doing.unwrap_or_else(|| {
-                        (tilo_session_client::narration::lines::waiting(), None)
-                    });
-                    let focus = app
-                        .as_deref()
-                        .and_then(|app| app_window(tree, &records, &seated.workspace, app));
+                    let (line, focus) = match &seated.doing {
+                        // The window of the app it acts in, and what that window is called: the
+                        // note, the sheet, the meeting. What it does is said on that record, as
+                        // the window's own activity cards say it.
+                        Some(doing) => {
+                            let window = doing
+                                .app
+                                .as_deref()
+                                .and_then(|app| app_window(tree, &records, &seated.workspace, app));
+                            let line = lines::acting(
+                                &doing.action,
+                                window.as_ref().map(|(_, title)| title.as_str()),
+                            );
+                            (line, window.map(|(record, _)| record))
+                        }
+                        None => (lines::waiting(), None),
+                    };
                     let (r, g, b) = collab_types::presence::agent_rgb(&seated.agent);
                     let face = tilo_session_client::presence::view(
                         0,
@@ -121,21 +133,23 @@ impl Session {
     }
 }
 
-/// The record a window of `app` shows in `workspace`, by its id: where an agent at work in that app
-/// is placed.
+/// The window of `app` in `workspace` an agent at work there is placed in, by the record it shows,
+/// and what the window is called (the note's title, the sheet's name): where an agent at work in
+/// that app is, and the record it says it works in.
 fn app_window(
     tree: &tilo_desktop_model::DesktopTree,
     records: &std::collections::BTreeMap<tilo_desktop_model::TabId, String>,
     workspace: &str,
     app: &str,
-) -> Option<tilo_relay_protocol::live::LiveRecord> {
+) -> Option<(tilo_relay_protocol::live::LiveRecord, String)> {
     let held = tree
         .workspaces
         .iter()
         .find(|held| held.id().to_string() == workspace)?;
-    held.tabs()
-        .filter_map(|tab| live_record(tree, tab.id, records.get(&tab.id)?))
-        .find(|record| record.app == app)
+    held.tabs().find_map(|tab| {
+        let record = live_record(tree, tab.id, records.get(&tab.id)?)?;
+        (record.app == app).then(|| (record, tab.title.trim().to_owned()))
+    })
 }
 
 /// What the shell says about the person and the screen it is of, beside the desk itself.
@@ -298,6 +312,29 @@ mod tests {
             },
         )
         .expect("the desk has a screen to place its windows on")
+    }
+
+    /// An agent's place is the window of the app it acts in, named as that window is: a page here
+    /// following it opens the record and reads the same title beside its face.
+    #[test]
+    fn an_agents_place_names_the_record_its_window_shows() {
+        let tree = desk();
+        let records = BTreeMap::from([(NOTES, RECORD.to_owned())]);
+        let (record, title) = super::app_window(&tree, &records, WORKSPACE, NOTES_APP)
+            .expect("the Notes window is there");
+        assert_eq!(record.app, NOTES_APP);
+        assert_eq!(record.record, RECORD);
+        assert_eq!(title, "Notes", "what the window is called");
+        assert_eq!(
+            super::app_window(&tree, &records, WORKSPACE, "so.tilo.sheets"),
+            None,
+            "no window of an app that shows none"
+        );
+        // Without the window's record, nothing names where it works: never a wrong window.
+        assert_eq!(
+            super::app_window(&tree, &BTreeMap::new(), WORKSPACE, NOTES_APP),
+            None
+        );
     }
 
     /// A desk says where this person is: the app and the record the window they work in shows, so

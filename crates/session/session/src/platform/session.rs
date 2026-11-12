@@ -2458,7 +2458,23 @@ impl Session {
         let Some(broker) = plane.action_broker() else {
             return;
         };
-        self.shared.notes.read(&broker.state().window_records());
+        // The app each window runs: a record of another app it holds is not what its window
+        // shows.
+        let apps: std::collections::BTreeMap<u64, String> = self.shared.handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .flat_map(|workspace| workspace.tabs())
+                .filter_map(|tab| {
+                    let app = tilo_desktop_surface::host::records::app_of(tree, tab.id)?;
+                    Some((tab.id, app.to_owned()))
+                })
+                .collect()
+        });
+        self.shared
+            .notes
+            .read(&broker.state().window_records(), &|instance| {
+                apps.get(&instance).cloned()
+            });
     }
 
     /// Hand every agent following the catalogue the session's own actions again when what it

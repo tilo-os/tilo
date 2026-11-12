@@ -62,6 +62,10 @@ pub(crate) struct Showing {
     pub(crate) record: String,
 }
 
+thread_local! {
+    static DIAGNOSTIC: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
 /// What the windows this session runs show, by the tab each runs in.
 #[derive(Default)]
 pub(crate) struct Continuations {
@@ -78,9 +82,30 @@ impl Continuations {
     /// A window notes the record it holds when it holds one: an app launched
     /// for a window speaks to the session on the route its instance names,
     /// which is not a record it shows, and a window holding several records
-    /// shows one of them that nothing here can tell apart — it notes none
-    /// rather than naming the wrong one.
-    pub(crate) fn read(&self, held: &[(u64, CrdtRoute)]) {
+    /// of its own app shows one of them that nothing here can tell apart — it
+    /// notes none rather than naming the wrong one.
+    ///
+    /// `app_of` names the app each window runs: the records of any other app it
+    /// holds (the desk's, a service's) are not what its window shows.
+    pub(crate) fn read(&self, held: &[(u64, CrdtRoute)], app_of: &dyn Fn(u64) -> Option<String>) {
+        let described = crate::continuations::DIAGNOSTIC.with(|last| {
+            let asked = format!(
+                "{} {:?}",
+                held.len(),
+                held.iter()
+                    .map(|(instance, route)| format!("{instance}:{}", route.channel_key()))
+                    .collect::<Vec<_>>()
+            );
+            let mut last = last.borrow_mut();
+            if *last == asked {
+                return None;
+            }
+            *last = asked.clone();
+            Some(asked)
+        });
+        if let Some(described) = described {
+            tracing::error!("DIAGNOSTIC window records read {described}");
+        }
         let mut windows: BTreeMap<u64, Vec<&CrdtRoute>> = BTreeMap::new();
         for (instance, route) in held {
             windows.entry(*instance).or_default().push(route);
@@ -88,6 +113,7 @@ impl Continuations {
         let mut shown = self.shown.lock_recover();
         shown.clear();
         for (instance, routes) in windows {
+            let app = app_of(instance);
             let mut records = routes.into_iter().filter(|route| {
                 // The route a window's app speaks to the session on names the window's instance,
                 // not a record the window shows.
@@ -96,14 +122,32 @@ impl Continuations {
                         .record_id
                         .strip_prefix("continuation:")
                         .is_none_or(|named| named != instance.to_string())
+                    // A window shows the record of the app it runs; another app's record it holds
+                    // is not its own.
+                    && app
+                        .as_deref()
+                        .is_none_or(|app| route.app_id == app)
             });
             let Some(record) = records.next() else {
                 continue;
             };
-            if records.next().is_some() {
+            if let Some(second) = records.next() {
+                tracing::error!(
+                    instance,
+                    first = %record.channel_key(),
+                    second = %second.channel_key(),
+                    held = held.len(),
+                    "DIAGNOSTIC a window holds several records"
+                );
                 continue;
             }
             let Some(workspace) = WorkspaceId::parse(&record.cluster_id) else {
+                tracing::error!(
+                    instance,
+                    cluster = %record.cluster_id,
+                    record = %record.record_id,
+                    "DIAGNOSTIC a window's record names no workspace"
+                );
                 continue;
             };
             shown.insert(
@@ -226,6 +270,11 @@ mod tests {
     use super::*;
 
     /// A window's app holding `records` , in `workspace` .
+    /// The app every window in these tests runs.
+    fn notes_app(_: u64) -> Option<String> {
+        Some("so.tilo.notes".to_owned())
+    }
+
     fn held(workspace: WorkspaceId, instance: u64, records: &[&str]) -> Vec<(u64, CrdtRoute)> {
         records
             .iter()
@@ -245,7 +294,7 @@ mod tests {
         let other = WorkspaceId::new();
         let mut routes = held(room, 12, &["plan"]);
         routes.extend(held(other, 30, &["budget"]));
-        notes.read(&routes);
+        notes.read(&routes, &notes_app);
 
         assert_eq!(
             notes.window_record(12),
@@ -268,14 +317,14 @@ mod tests {
             12,
             CrdtRoute::record("so.tilo.notes", room.to_string(), "continuation:12"),
         ));
-        notes.read(&routes);
+        notes.read(&routes, &notes_app);
         assert_eq!(
             notes.of_workspace(room),
             [(12, "plan".to_owned())],
             "the route its app speaks the session on is no record"
         );
 
-        notes.read(&held(room, 12, &["continuation:12"]));
+        notes.read(&held(room, 12, &["continuation:12"]), &notes_app);
         assert!(
             notes.of_workspace(room).is_empty(),
             "a window holding only that route shows no record"
@@ -286,12 +335,12 @@ mod tests {
     fn a_window_holding_several_records_notes_none() {
         let notes = Continuations::default();
         let room = WorkspaceId::new();
-        notes.read(&held(room, 12, &["plan", "index"]));
+        notes.read(&held(room, 12, &["plan", "index"]), &notes_app);
         assert!(
             notes.of_workspace(room).is_empty(),
             "which of them it shows is not something the broker says"
         );
-        notes.read(&held(room, 12, &["index"]));
+        notes.read(&held(room, 12, &["index"]), &notes_app);
         assert_eq!(
             notes.window_record(12),
             Some(("index".to_owned(), String::new())),
@@ -299,16 +348,42 @@ mod tests {
         );
     }
 
+    /// A window holds the desk's records too (the workspace's layout, a service's): only the
+    /// record of the app it runs is what it shows, so its place and the person's are still named.
+    #[test]
+    fn a_window_notes_its_own_apps_record_and_no_other_apps() {
+        let notes = Continuations::default();
+        let room = WorkspaceId::new();
+        let mut routes = held(room, 12, &["plan"]);
+        routes.push((
+            12,
+            CrdtRoute::record("so.tilo.desktop", room.to_string(), "desk"),
+        ));
+        notes.read(&routes, &notes_app);
+        assert_eq!(
+            notes.window_record(12),
+            Some(("plan".to_owned(), String::new())),
+            "the record of the app its window runs"
+        );
+        // Two records of its own app still name none: nothing tells which it shows.
+        routes.push((
+            12,
+            CrdtRoute::record("so.tilo.notes", room.to_string(), "index"),
+        ));
+        notes.read(&routes, &notes_app);
+        assert_eq!(notes.window_record(12), None);
+    }
+
     #[test]
     fn a_window_that_closed_leaves_no_note() {
         let notes = Continuations::default();
         let room = WorkspaceId::new();
-        notes.read(&held(room, 12, &["plan"]));
+        notes.read(&held(room, 12, &["plan"]), &notes_app);
         assert_eq!(
             notes.window_record(12),
             Some(("plan".to_owned(), String::new()))
         );
-        notes.read(&[]);
+        notes.read(&[], &notes_app);
         assert_eq!(notes.window_record(12), None);
         assert!(notes.of_workspace(room).is_empty());
     }
@@ -319,7 +394,7 @@ mod tests {
         let room = WorkspaceId::new();
         let person = "abababababababababababababababababababababababababababababababab";
         let record = tilo_action_policy::member_record_id(person, "tilo.note");
-        notes.read(&held(room, 12, &[&record]));
+        notes.read(&held(room, 12, &[&record]), &notes_app);
         assert_eq!(
             notes.window_record(12),
             Some((record, "tilo.note".to_owned())),

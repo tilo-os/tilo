@@ -809,7 +809,15 @@ impl Panel {
             other: Some(OtherPerson {
                 id: row.id.clone(),
                 status: row.status.clone(),
-                place: row.activity.clone(),
+                // A person's card says which record they look at; an agent's, the app it works
+                // in beside the record its line names.
+                place: if row.is_agent {
+                    row.working_app
+                        .as_deref()
+                        .map(tilo_desktop::collaborators::in_app)
+                } else {
+                    row.activity.clone()
+                },
                 presence: (!row.is_agent).then_some(row.availability),
                 following: sync.own().following.as_deref() == Some(row.id.as_str()),
                 can_follow: row.followable,

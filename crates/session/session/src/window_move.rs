@@ -1309,10 +1309,13 @@ mod tests {
             records.try_flush().expect("the record is written");
             // The session notes what a window shows as its app holds it: this one holds the record
             // it was launched on.
-            self.session.shared.notes.read(&[(
-                self.tab,
-                CrdtRoute::record(PROBE, self.from.clone(), checkout.id.as_str()),
-            )]);
+            self.session.shared.notes.read(
+                &[(
+                    self.tab,
+                    CrdtRoute::record(PROBE, self.from.clone(), checkout.id.as_str()),
+                )],
+                &|_| Some(PROBE.to_owned()),
+            );
             checkout
         }
 

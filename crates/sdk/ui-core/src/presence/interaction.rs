@@ -868,12 +868,10 @@ impl PresenceCtx {
             &style.clone().with_weight(TextWeight::Medium),
         );
 
-        // What it is doing and where; the phase is the mark's fade, not words.
-        let mut detail = format!(
-            "{} · {}",
-            doing_phrase(&interaction.action.label),
-            interaction.resource.label
-        );
+        // What it is doing, in the words presence says beside its face: the
+        // record is the window this card stands in, never named twice. The
+        // phase is the mark's fade, not words.
+        let mut detail = tilo_actions::wording::step_line(&interaction.action.label, None);
         if placement.additional > 0 {
             use std::fmt::Write as _;
             let _ = write!(detail, " · +{} more", placement.additional);
@@ -1052,52 +1050,14 @@ const fn phase_priority(phase: &InteractionPhase) -> u8 {
 
 /// What an actor is doing, in the app's own words: its action's label as a
 /// present-tense verb — "checking off", "writing" — because a mark reads as
-/// something happening now, not as a state printed beside a name.
+/// something happening now, not as a state printed beside a name. The words
+/// are [`tilo_actions::wording`]'s, the same line presence says beside the
+/// actor's face.
 fn doing_phrase(label: &str) -> String {
-    let mut words = label.split_whitespace();
-    let Some(first) = words.next() else {
-        return crate::i18n::widget_format("interaction-working", &[]);
-    };
-    // "New note" names what the action makes, not a verb: the actor is creating it, never
-    // "newing" it.
-    let start = participle(if first.eq_ignore_ascii_case("new") {
-        "create"
-    } else {
-        first
-    });
-    words.fold(start, |mut phrase, word| {
-        phrase.push(' ');
-        phrase.push_str(word);
-        phrase
-    })
-}
-
-/// The -ing form of a verb as an app words it. Verbs that double their last
-/// consonant are listed: no rule derives "setting" from "set" without also
-/// turning "visit" into "visitting".
-fn participle(verb: &str) -> String {
-    const DOUBLING: &[&str] = &[
-        "begin", "commit", "cut", "drop", "embed", "fit", "forget", "get", "hit", "log", "map",
-        "permit", "pin", "plan", "prefer", "put", "quit", "refer", "run", "scan", "set", "ship",
-        "shop", "sit", "skip", "stop", "submit", "tag", "trim", "wrap",
-    ];
-    let verb = verb.trim_end_matches(['.', ',', ':', ';', '!', '?']);
-    let lower = verb.to_lowercase();
-    if let Some(stem) = lower.strip_suffix("ie") {
-        return format!("{stem}ying");
-    }
-    if let Some(stem) = lower.strip_suffix('e')
-        && !stem.is_empty()
-        && !stem.ends_with(['e', 'y', 'o'])
-    {
-        return format!("{stem}ing");
-    }
-    if let Some(last) = lower.chars().last()
-        && DOUBLING.contains(&lower.as_str())
-    {
-        return format!("{lower}{last}ing");
-    }
-    format!("{lower}ing")
+    tilo_actions::wording::doing_phrase(
+        label,
+        &crate::i18n::widget_format("interaction-working", &[]),
+    )
 }
 
 fn phase_label(phase: &InteractionPhase) -> String {
@@ -1131,10 +1091,12 @@ fn phase_label(phase: &InteractionPhase) -> String {
 fn phase_color(phase: &InteractionPhase, theme: &Theme, actor: Color) -> Color {
     match phase {
         InteractionPhase::Waiting { .. } => theme.tokens.colors.semantic.warning,
-        InteractionPhase::Committed => theme.tokens.colors.semantic.success,
         InteractionPhase::Failed { .. } => theme.tokens.colors.semantic.danger,
         InteractionPhase::Cancelled { .. } => theme.tokens.colors.text_dim,
-        InteractionPhase::Locating
+        // A step that went through wears the actor's own colour: the card reads
+        // as whoever took it, never in a second colour beside their face.
+        InteractionPhase::Committed
+        | InteractionPhase::Locating
         | InteractionPhase::Applying
         | InteractionPhase::Progress { .. } => actor,
     }

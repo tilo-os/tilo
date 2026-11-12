@@ -111,12 +111,27 @@ pub fn presence_colour((red, green, blue): (u8, u8, u8)) -> vello::peniko::Color
 /// somebody already wears it, walked over sorted ids so every host settles a
 /// room alike ([`assign_peer_colors`]).
 ///
+/// A colour two here announced is worn by `mine` — the reader themselves —
+/// and the other steps to a free entry: nobody here is ever drawn in the
+/// reader's own colour. Without `mine`, the first id in sorted order keeps it.
+///
 /// One settlement for the desk's faces, its roster and its cursors, so one
 /// person is one colour on every surface of a workspace.
 #[must_use]
 pub fn settle_colors<S: std::hash::BuildHasher>(
     ids: &[&str],
     chosen: &HashMap<String, (u8, u8, u8), S>,
+) -> HashMap<String, (u8, u8, u8)> {
+    settle_colors_around(ids, chosen, None)
+}
+
+/// [`settle_colors`], with `mine` the reader themselves: their announced
+/// colour is worn by them, and no other id here takes it.
+#[must_use]
+pub fn settle_colors_around<S: std::hash::BuildHasher>(
+    ids: &[&str],
+    chosen: &HashMap<String, (u8, u8, u8), S>,
+    mine: Option<&str>,
 ) -> HashMap<String, (u8, u8, u8)> {
     let mut settled: Vec<&str> = ids
         .iter()
@@ -125,8 +140,36 @@ pub fn settle_colors<S: std::hash::BuildHasher>(
         .collect();
     settled.compact_sort();
     settled.dedup();
-    let mut assigned = assign_peer_colors(&settled, &chosen.values().copied().collect::<Vec<_>>());
-    assigned.extend(chosen.iter().map(|(id, rgb)| (id.clone(), *rgb)));
+    // The colours here spoken for, in the order they are honoured: the
+    // reader's own first, then the ids in sorted order, so every host that
+    // sees the same claims settles them alike.
+    let mut claimants: Vec<&str> = ids
+        .iter()
+        .copied()
+        .filter(|id| chosen.contains_key(*id))
+        .filter(|id| Some(*id) != mine)
+        .collect();
+    claimants.compact_sort();
+    claimants.dedup();
+    if let Some(mine) = mine.filter(|mine| chosen.contains_key(*mine)) {
+        claimants.insert(0, mine);
+    }
+    let mut worn: Vec<(u8, u8, u8)> = Vec::new();
+    let mut claimed: HashMap<String, (u8, u8, u8)> = HashMap::new();
+    for id in claimants {
+        let Some(rgb) = chosen.get(id).copied() else {
+            continue;
+        };
+        if worn.contains(&rgb) {
+            // Someone here already wears it: this one takes a free entry.
+            settled.push(id);
+            continue;
+        }
+        worn.push(rgb);
+        claimed.insert(id.to_owned(), rgb);
+    }
+    let mut assigned = assign_peer_colors(&settled, &worn);
+    assigned.extend(claimed);
     assigned
 }
 
@@ -156,6 +199,26 @@ pub fn color_distance(a: (u8, u8, u8), b: (u8, u8, u8)) -> f32 {
 #[cfg(test)]
 mod color_tests {
     use super::*;
+
+    /// A colour two people here announced is worn by the reader themselves: the other takes a
+    /// free entry, so nobody here is ever drawn in the reader's own colour.
+    #[test]
+    fn a_colour_two_here_announced_is_the_readers_own() {
+        let teal = identity_rgb(crate::tokens::PresenceHue::Teal);
+        let chosen: HashMap<String, (u8, u8, u8)> =
+            HashMap::from([("me".to_owned(), teal), ("helper".to_owned(), teal)]);
+        let settled = settle_colors_around(&["helper", "me"], &chosen, Some("me"));
+        assert_eq!(settled["me"], teal, "the reader wears what they announced");
+        assert_ne!(settled["helper"], teal, "nobody else wears it");
+        // Another reader settles the same claims with themselves first: the colour is theirs.
+        let theirs = settle_colors_around(&["helper", "me"], &chosen, Some("helper"));
+        assert_eq!(theirs["helper"], teal);
+        assert_ne!(theirs["me"], teal);
+        // Without a reader, the ids in sorted order decide who keeps it, so hosts agree.
+        let nobody = settle_colors_around(&["helper", "me"], &chosen, None);
+        assert_eq!(nobody["helper"], teal, "the first in sorted order keeps it");
+        assert_ne!(nobody["me"], teal);
+    }
 
     #[test]
     fn user_colours_are_pinned_or_hashed_onto_a_distinct_ring() {

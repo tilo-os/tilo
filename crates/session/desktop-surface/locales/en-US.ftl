@@ -1474,7 +1474,7 @@ activities-layer = Activities
 activity-collapse = Put away
 activity-close = Close
 
-profile-agent-card = Open card
+profile-agent-card = See its work
 profile-agent-stop = Stop
 profile-agent-undo-run = Undo run
 profile-agent-take-over = Take over
