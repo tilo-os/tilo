@@ -1719,8 +1719,9 @@ function offerWaitList({workspace, contact, mail, messages}) {
 /**
  * Signing in at the door with an identity the person already has: their
  * passkey opens it (its envelope from the hosts that keep it), and the page
- * loads again to join as them. A member gets in; anyone else is told this
- * identity is not in `named` yet, with the wait list still there.
+ * loads again to join as them, opening a workspace of their own rather than
+ * the home workspace's shared desktop. A member gets in; anyone else is told
+ * this identity is not in `named` yet, with the wait list still there.
  */
 function offerSignIn({workspace, named, messages}) {
   const say = (key, english, args) => localized(messages, key, english, args);
@@ -1754,6 +1755,11 @@ function offerSignIn({workspace, named, messages}) {
         ...listedWorkspaces({home: workspace}).map(listed => listed.host.origin)].filter(Boolean))];
       const identity = await signInWithPasskey({fetchEnvelope: root => fetchEnvelope(root, origins)});
       try { sessionStorage.setItem(DOOR_SIGNED_IN, identity.userPublicKey); } catch { /* Said less, nothing lost. */ }
+      // Signed in at the door of the site's own workspace, the person comes
+      // back to a workspace of their own, as a tab their agent signed in
+      // does: the home workspace's shared desktop is where people meet, not
+      // where someone starts.
+      try { globalThis.sessionStorage?.setItem(OPEN_OWN, '1'); } catch { /* Then the home workspace stays in front. */ }
       location.reload();
     } catch (error) {
       console.warn('signing in at the door:', error);
