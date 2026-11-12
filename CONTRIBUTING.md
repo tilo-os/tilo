@@ -76,7 +76,7 @@ For an app, `cargo run --locked -p notes` opens it in its own window (replace
 `notes` with the package name of the app you changed). Append a test name to
 `cargo test` to run only that test.
 
-Some packages are large (the compositor, `shell`, is the largest); check them
+Some packages are large (`tilo-session` pulls the whole desktop in); check them
 with `cargo check --locked -p tilo-session --tests` while you iterate and run their
 tests once before you send the change.
 
