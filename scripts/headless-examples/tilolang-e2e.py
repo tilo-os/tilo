@@ -35,6 +35,10 @@ app gets on a real system:
              from its row's menu, pressed by name as a tool presses it, and Today's "Morning
              cleanup", pressed by name, runs on them and asks the person before changing Tasks
              and Notes
+  places     a window grouped beside another, too narrow for Tasks' sidebar, still reaches its
+             places through its own toggle, pressed by name as a tool presses a control, though
+             another window goes by that name too: Inbox chosen there, the tabs read Today and
+             Inbox (places-*.png)
   reopened   a task Tasks holds before the session stops shows in Today's card after it starts
              again and Today opens: Today reads what Tasks' record already held, not only what
              arrives while it is open (today-reopened.png)
@@ -455,6 +459,18 @@ def check_titles(session: Session, out: Path) -> dict:
             "page": "Today", "app_name": "Tasks"}
 
 
+def press_in(session: Session, window: dict, name: str) -> None:
+    """Press the control `name` `window` draws, by name, as a tool or an agent presses a control:
+    the press reaches the window in front, and never another window's control of that name."""
+    focus(session, window)
+    until(f"window {window['tab']} in front", lambda: any(
+        shown.get("tab") == window["tab"] and shown.get("active")
+        for shown in session.windows()), 30)
+    until(f"{name!r} among the controls of window {window['tab']}",
+          lambda: name in window_controls(session, window), 30)
+    session.click_named(name)
+
+
 def tasks_titles(session: Session) -> list[str]:
     """What the tabs of Tasks' windows read, in the strip's order."""
     return sorted(w.get("title") for w in session.windows() if w.get("app_id") == app_id("tasks"))
@@ -503,6 +519,24 @@ def check_record_open(session: Session, out: Path) -> dict:
     return {"in_place": {"tab": shown["tab"], "title": shown.get("title")},
             "beside": {"tab": beside["tab"], "title": beside.get("title")},
             "titles": tasks_titles(session)}
+
+
+def check_places(session: Session, out: Path) -> dict:
+    """A window grouped beside another is too narrow for Tasks' sidebar, and still reaches its
+    places: its own sidebar toggle shows them — pressed by name, as a tool presses a control, even
+    though another window goes by that name too — and Inbox chosen there takes the window to the
+    Inbox, so the two tabs read Today and Inbox."""
+    tasks = app_id("tasks")
+    window = next(w for w in session.windows() if w.get("app_id") == tasks)
+    press_in(session, window, "Show sidebar")
+    time.sleep(1.0)
+    session.control_cmd("snapshot", str(out / "places-sidebar.png"))
+    press_in(session, window, "Inbox")
+    titles = until("the tabs to read Today and Inbox",
+                   lambda: (read := tasks_titles(session)) == ["Inbox", "Today"] and read, 30)
+    time.sleep(1.0)
+    session.control_cmd("snapshot", str(out / "places-inbox.png"))
+    return {"titles": titles}
 
 
 def window_controls(session: Session, window: dict) -> list[str]:
@@ -981,6 +1015,7 @@ def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
         ("today", lambda: check_today(session, out, today_before[0])),
         ("record-open", lambda: check_record_open(session, out)),
         ("kept", lambda: keep_task(session)),
+        ("places", lambda: check_places(session, out)),
     ])
     stop_session(proc)
     running["proc"] = None
