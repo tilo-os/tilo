@@ -116,3 +116,49 @@ if kill -0 "$session_pid" 2>/dev/null; then
 fi
 wait "$session_pid" 2>/dev/null || true
 echo 'session: ends on SIGTERM'
+
+# ---- The Linux apps session ---------------------------------------------------
+# The same session, as the tenant, through the script the guest agent runs for a
+# workspace's Linux apps: it serves a display, and a Wayland program of this
+# root filesystem connects to it and draws. Nothing it made is kept.
+apps_home=/home/tilo
+apps_runtime=$work/apps-runtime
+install -d -m 0700 -o tilo -g tilo "$apps_runtime"
+printf 'TILO_SESSION_ARGS=\nTILO_SESSION_RUNTIME_DIR=%s\n' "$apps_runtime" > "$work/apps.env"
+chown tilo:tilo "$work/apps.env"
+setpriv --reuid=tilo --regid=tilo --init-groups env HOME="$apps_home" \
+    /usr/libexec/tilo/apps-session "$work/apps.env" > "$work/session.log" 2>&1 &
+apps_pid=$!
+tries=600
+display=
+while [ "$tries" -gt 0 ] && [ -z "$display" ]; do
+    if ! kill -0 "$apps_pid" 2>/dev/null; then
+        echo 'the browser smoke: the apps session stopped before it served a display' >&2
+        exit 1
+    fi
+    display=$(find "$apps_runtime" -maxdepth 1 -name 'wayland-*' ! -name '*.lock' -print -quit 2>/dev/null || true)
+    tries=$((tries - 1))
+    [ -n "$display" ] || sleep 0.2
+done
+[ -n "$display" ] || { echo 'the browser smoke: the apps session never served a display' >&2; exit 1; }
+printf 'apps: the tenant'"'"'s session serves %s\n' "$display"
+if ! setpriv --reuid=tilo --regid=tilo --init-groups env HOME="$apps_home" \
+    XDG_RUNTIME_DIR="$apps_runtime" WAYLAND_DISPLAY="${display##*/}" \
+    timeout 60 foot --override=shell=/bin/true > "$work/foot.log" 2>&1; then
+    sed -e 's/^/  /' "$work/foot.log" >&2
+    echo 'the browser smoke: a Wayland program did not run in the apps session' >&2
+    exit 1
+fi
+echo 'apps: a Wayland program ran in it'
+kill -TERM "$apps_pid" 2>/dev/null || true
+tries=50
+while [ "$tries" -gt 0 ] && kill -0 "$apps_pid" 2>/dev/null; do
+    tries=$((tries - 1))
+    sleep 0.2
+done
+kill -0 "$apps_pid" 2>/dev/null && { echo 'the browser smoke: the apps session did not end within 10 s of SIGTERM' >&2; exit 1; }
+wait "$apps_pid" 2>/dev/null || true
+# The tenant's home keeps nothing of the session: no identity is in the image.
+rm -rf "$apps_home/.config/tilo" "$apps_home/.local/share/tilo" "$apps_home/.local/state/tilo" \
+    "$apps_home/.cache/tilo"
+echo 'apps: ends on SIGTERM'

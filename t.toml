@@ -4932,8 +4932,10 @@ default = false
 # action runs; the workspace's Terminal makes, lists and reads a file in the VM and its run is a
 # structured record and a step of History named after the key that ran it; a key scoped to that one
 # workspace runs a command through the `tilo` command; the Linux session runs as the tenant, not as
-# the Browser's account, and neither reads the other's files; and a Linux GUI app has no window to
-# open in a workspace yet, which that step says.
+# the Browser's account, and neither reads the other's files; and a Linux GUI app opens in the same
+# VM: the agent opens the guest's X11 terminal, a person invited into the workspace sees its window on
+# their desk in their own browser and types a command into it, and the file it wrote is read back,
+# with the app running as the tenant and its memory measured.
 # What it found stays in /target/tilo-sh-local-vm.
 #
 # A workspace's VM runs at `default`, the size production places (4 vCPU, 8 GiB,

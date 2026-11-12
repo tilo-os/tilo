@@ -66,6 +66,54 @@ use super::network::Endpoint;
 /// The browser session's entry, as the guest image ships it.
 pub const SESSION: &str = "/usr/libexec/tilo/browser-session";
 
+/// The Linux apps session's entry, as the guest image ships it: the same
+/// headless session, run as the workspace's tenant with Xwayland, holding the
+/// windows of the Linux apps the workspace opened
+/// ([`tilo_actions::remote::linux_apps`]).
+pub const APPS_SESSION: &str = "/usr/libexec/tilo/apps-session";
+
+/// Which session of a workspace's VM: the one holding its Browser, or the
+/// one holding its Linux apps' windows. Both are a headless Tilo session that
+/// joins the workspace as a device, started and followed the same way; they
+/// run as different accounts and are never the same process.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Kind {
+    /// Browser, as the image's unprivileged browser user.
+    Browser,
+    /// The workspace's Linux apps, as its tenant: each later line of the
+    /// session's input is one app to start.
+    Apps,
+}
+
+impl Kind {
+    /// The guest image's entry for this session.
+    #[must_use]
+    pub const fn entry(self) -> &'static str {
+        match self {
+            Self::Browser => SESSION,
+            Self::Apps => APPS_SESSION,
+        }
+    }
+
+    /// The mark set in its environment, which tells the session what it holds.
+    #[must_use]
+    pub const fn mark(self) -> &'static str {
+        match self {
+            Self::Browser => MARK,
+            Self::Apps => tilo_actions::remote::linux_apps::MARK,
+        }
+    }
+
+    /// What its log is named, beside the VM's state.
+    #[must_use]
+    pub const fn log(self) -> &'static str {
+        match self {
+            Self::Browser => "browser.log",
+            Self::Apps => "apps.log",
+        }
+    }
+}
+
 /// Names, in the session's environment, the folder it keeps its profile in.
 pub const STORE: &str = "TILO_BROWSER_STORE";
 
@@ -357,6 +405,8 @@ impl Life {
 pub struct Session {
     /// Its process, to end it.
     signals: Option<LaunchSignals<AgentStream>>,
+    /// Its standard input, a line at a time: the material went first.
+    input: Option<mpsc::Sender<String>>,
     ended: Arc<AtomicBool>,
 }
 
@@ -366,6 +416,7 @@ impl Session {
     /// `clock`: the material is the first thing its standard input is told.
     pub fn start(
         link: &AgentLink,
+        kind: Kind,
         material: &str,
         store: Option<&std::path::Path>,
         life: Arc<Life>,
@@ -373,12 +424,12 @@ impl Session {
         clock: super::vm::Clock,
     ) -> Result<Self, SessionError> {
         let stream = link.connect(AGENT_PORT)?;
-        let mut env = vec![(MARK.to_owned(), "1".to_owned())];
+        let mut env = vec![(kind.mark().to_owned(), "1".to_owned())];
         if let Some(store) = store {
             env.push((STORE.to_owned(), store.display().to_string()));
         }
         let launch = Launch {
-            argv: vec![SESSION.to_owned()],
+            argv: vec![kind.entry().to_owned()],
             cwd: None,
             env,
             stdio: Stdio::Relay,
@@ -419,8 +470,17 @@ impl Session {
             .map_err(|_| SessionError::Silent(READY_PATIENCE))?;
         Ok(Self {
             signals: Some(signals),
+            input: Some(input),
             ended,
         })
+    }
+
+    /// Tell the session `line` on its standard input.
+    fn tell(&self, line: &str) -> Result<(), String> {
+        self.input
+            .as_ref()
+            .and_then(|input| input.send(line.trim_end().to_owned()).ok())
+            .ok_or_else(|| "the session reads no more input".to_owned())
     }
 
     /// Send the session in the guest `signal`.
@@ -570,6 +630,7 @@ pub trait Starts: Send + Sync {
 /// The session started through the guest agent of the workspace's VM.
 pub struct Launcher {
     link: AgentLink,
+    kind: Kind,
     /// Where the session keeps its profile, when the workspace keeps one.
     store: Option<PathBuf>,
     life: Arc<Life>,
@@ -581,6 +642,7 @@ impl Launcher {
     #[must_use]
     pub fn new(
         link: AgentLink,
+        kind: Kind,
         store: Option<PathBuf>,
         life: Arc<Life>,
         log: PathBuf,
@@ -588,6 +650,7 @@ impl Launcher {
     ) -> Self {
         Self {
             link,
+            kind,
             store,
             life,
             log,
@@ -600,6 +663,7 @@ impl Starts for Launcher {
     fn start(&self, material: &str) -> Result<Session, SessionError> {
         Session::start(
             &self.link,
+            self.kind,
             material,
             self.store.as_deref(),
             Arc::clone(&self.life),
@@ -683,6 +747,19 @@ impl Browser {
         Ok(Some(
             u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         ))
+    }
+
+    /// Tell the running session `line` on its standard input: what a Linux
+    /// apps session is asked to start, after it was handed its workspace.
+    ///
+    /// # Errors
+    ///
+    /// No session runs, or it reads no more input.
+    pub fn tell(&self, line: &str) -> Result<(), String> {
+        lock(&self.session)
+            .as_ref()
+            .ok_or_else(|| "the workspace's VM runs no such session".to_owned())?
+            .tell(line)
     }
 
     /// End the session in the guest: asked with `SIGTERM`, so Chromium
@@ -798,6 +875,8 @@ mod tests {
     /// so.
     struct FakeGuest {
         told: Mutex<Option<mpsc::Sender<String>>>,
+        /// Where what it is told after the material goes.
+        input: Option<mpsc::Sender<String>>,
         life: Arc<Life>,
         up: bool,
     }
@@ -823,6 +902,7 @@ mod tests {
             }
             Ok(Session {
                 signals: None,
+                input: self.input.clone(),
                 ended: Arc::new(AtomicBool::new(false)),
             })
         }
@@ -836,6 +916,7 @@ mod tests {
             Arc::clone(&life),
             Box::new(FakeGuest {
                 told: Mutex::new(Some(told)),
+                input: None,
                 life: Arc::clone(&life),
                 up: true,
             }),
@@ -879,6 +960,47 @@ mod tests {
         assert_eq!(browser.life().expired(3_100, LIMITS), None);
     }
 
+    /// A Linux apps session is handed its workspace once, and each app after
+    /// that is a line of its input, to the session already running.
+    #[test]
+    fn an_apps_session_is_told_each_app_after_its_material() {
+        let life = Arc::new(Life::new(1_000));
+        let (told, handed) = mpsc::channel();
+        let (input, lines) = mpsc::channel();
+        let apps = Browser::booted(
+            Arc::clone(&life),
+            Box::new(FakeGuest {
+                told: Mutex::new(Some(told)),
+                input: Some(input),
+                life: Arc::clone(&life),
+                up: true,
+            }),
+        );
+        assert!(
+            apps.tell("{}").is_err(),
+            "nothing is told a session that was never started"
+        );
+        assert!(
+            apps.open("{\"workspace\":\"ws1\"}", UP_PATIENCE)
+                .unwrap()
+                .is_some()
+        );
+        apps.tell("{\"desktop_id\":\"xterm\"}\n").unwrap();
+        apps.tell("{\"desktop_id\":\"org.gnome.TextEditor\"}")
+            .unwrap();
+        assert_eq!(handed.try_recv().unwrap(), "{\"workspace\":\"ws1\"}");
+        assert_eq!(
+            lines.try_iter().collect::<Vec<_>>(),
+            [
+                "{\"desktop_id\":\"xterm\"}",
+                "{\"desktop_id\":\"org.gnome.TextEditor\"}"
+            ],
+            "each app is one line, after the material"
+        );
+        assert_eq!(Kind::Apps.entry(), APPS_SESSION);
+        assert_ne!(Kind::Apps.mark(), Kind::Browser.mark());
+    }
+
     /// A session that never comes up is at its end, so the next open starts
     /// a fresh one instead of waiting for a wedged one.
     #[test]
@@ -888,6 +1010,7 @@ mod tests {
             Arc::clone(&life),
             Box::new(FakeGuest {
                 told: Mutex::new(None),
+                input: None,
                 life: Arc::clone(&life),
                 up: false,
             }),

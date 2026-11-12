@@ -53,8 +53,52 @@ on the workspace's Browser record, so the window is live, published and
 subscribed like a Browser window on anyone's computer, and its page actions
 (`browser@<window>/page#read-page`, …) are the ones Browser already has.
 
+## Linux apps
+
+The same VM runs the workspace's Linux programs with windows: a Fedora
+package such as gnome-text-editor, LibreOffice or GIMP, installed with `dnf
+install` like on any Fedora machine. The guest carries Xwayland and two small
+terminals (foot for Wayland, xterm for X11), so there is a windowed program to
+open before anything is installed.
+
+- **Opening one** is `app.so.tilo.linux#open` naming the app's desktop file
+  (`linux#open app=org.gnome.TextEditor`), from the desk or an agent's key.
+  The relay places it as it places Browser: the open makes the workspace's
+  `so.tilo.linux` record, the relay asks the placer for the workspace's VM
+  host and that host's member device to start the app
+  (`tilo_actions::remote::linux_apps`), and the member asks its hosted-VM
+  service (`Request::OpenApp`).
+- **The apps session.** The first app starts a second headless Tilo session
+  in the VM, `/usr/libexec/tilo/apps-session`, beside Browser's and never the
+  same process: it runs **as the tenant** (uid 1000), with Xwayland for X11
+  programs, and its compositor is the app's display. It is handed the same
+  material Browser's session is (a fresh device of the workspace, confined to
+  the `so.tilo.linux` record and the workspace's own document) and reads every
+  later line of its input as one app to start. Nothing of it is in the warm
+  template: it starts on demand, after the clone woke.
+- **Its windows are the workspace's.** Each window the app maps is a tab on
+  the session's desk in the workspace, shared with the workspace's members the
+  moment it opens, as a person shares a window: the members see it on their
+  desks, in the desktop app and on the web page, and those the workspace lets
+  edit drive it with their keyboard and pointer. Its frames travel the
+  workspace's live plane, the same MoQ path a call's pictures take, through
+  the relay; keys, pointer, scroll, text and clipboard go back to the window
+  the same way.
+- **It ends** when its last window closed and the idle limit passed, at the
+  device certificate's two hours, or when the VM sleeps.
+
+A Linux app is a **Linux action**: an account without a card is refused the
+open with `no_payment_method` and the step that adds one, before anything
+wakes or starts; with a card the VM's time is billed from then on, as for a
+command.
+
 ## Isolation
 
+- **The tenant's apps are not Browser's.** The Linux apps session and its
+  apps run as the tenant; Browser's session runs as `tilo-browser`, whose home
+  (the profile) the tenant's programs cannot read. The apps session's device
+  reaches the `so.tilo.linux` record and the workspace's document, not
+  Browser's record or page.
 - **One VM per workspace.** No workspace or account shares a VM, a disk, a
   profile, a device or a process with another. A page that gets out of
   Chromium's sandbox lands in an unprivileged account inside a jailed

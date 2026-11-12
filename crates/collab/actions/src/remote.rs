@@ -40,6 +40,7 @@ pub mod agent_runs;
 mod application;
 pub mod browser;
 mod caller;
+pub mod linux_apps;
 pub use caller::Caller;
 mod catalogue;
 mod confirmation;

@@ -59,6 +59,24 @@ pub struct OpenBrowser {
     pub material: String,
 }
 
+/// A Linux app to start in a workspace's VM: in its apps session, started
+/// with `material` when none runs yet, as the workspace's tenant. A Linux app
+/// is a Linux action: it needs the account's plan, and a card on a host that
+/// sells its VMs.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OpenApp {
+    pub workspace: String,
+    /// Whose the workspace's VM is, as the relay knows the account.
+    pub account: String,
+    /// The size the workspace's VM runs at, as its shells ask for it.
+    pub size: VmSize,
+    /// What its session joins the workspace with, opaque here: the first
+    /// line of the session's input.
+    pub material: String,
+    /// The app to start: one later line of the session's input.
+    pub launch: tilo_actions::remote::linux_apps::AppLaunch,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Request {
     /// Wake the VM (starting it on first use) with `shares` mounted.
@@ -98,6 +116,15 @@ pub enum Request {
     /// End the browser session in `workspace`'s VM now; the VM sleeps like
     /// any idle VM.
     StopBrowser {
+        workspace: String,
+    },
+    /// Start a Linux app in `workspace`'s VM, waking the VM if it sleeps and
+    /// starting its apps session first when none runs.
+    OpenApp {
+        app: OpenApp,
+    },
+    /// End the apps session in `workspace`'s VM now, and every app in it.
+    StopApps {
         workspace: String,
     },
 }

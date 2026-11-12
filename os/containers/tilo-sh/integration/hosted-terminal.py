@@ -23,9 +23,13 @@ printed and who ran it. History keeps it as that person's or agent's run.
   --isolated  the Linux session runs as the VM's tenant, not as the
               unprivileged account its Browser session runs as, and neither
               reads the other's files;
-  --gui       what a Linux GUI app would take. A hosted workspace's VM runs
-              no display server, so there is none to open yet, and this says
-              so instead of faking one.
+  --gui       a Linux GUI app in the workspace's VM: the agent opens the
+              guest's X11 terminal (`linux#open`, xterm), a person invited
+              into the workspace sees its window appear on their desk in
+              their own browser and types a command into it, and the file
+              the command wrote is read back from the VM; the app runs as
+              the tenant, never as Browser's account, and what it costs in
+              the VM's memory is measured.
 
 usage: hosted-terminal.py DOOR SERVER_KEY OUT_DIR [--refused|--card|--terminal|--agent|--isolated|--gui]
 
@@ -122,11 +126,33 @@ ISOLATION_COMMAND = (
     " ; ls /home/tilo-browser"
     f" ; sudo -n -u {BROWSER_USER} -- cat {REFUSED_MARKER}.tenant"
 )
-# What a Linux GUI app would need: a display server to draw on.
-DISPLAY_COMMAND = (
-    "ls /tmp/.X11-unix /run/user/1000/wayland-0"
-    " ; ps -eo comm | grep -v grep | grep -Ei '^(xorg|xwayland|weston|wayfire|sway)$'"
+# The Linux GUI app the check opens: the X11 terminal the guest image carries,
+# by its desktop file, so the window comes through Xwayland and the typing
+# into it is a command whose effect is a file.
+GUI_APP = "xterm"
+# The window's name on the person's desk: its title, which xterm starts as
+# its own name and the tenant's shell sets to `user@host:dir`.
+GUI_WINDOW = r"xterm|tilo@"
+# What the person types into its window: a command that writes a file, with
+# the guest's clock in milliseconds when it ran, so the file says the keys
+# reached the app and when.
+GUI_FILE = "typed-on-the-desk.txt"
+GUI_TYPED = f"echo typed-on-the-desk $(date +%s%3N) > {GUI_FILE}"
+# What the VM holds and runs, before and after the app opens: its memory in
+# use, and the apps session's processes with the account each runs as.
+GUI_MEMORY_COMMAND = (
+    "awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{print \"used_kib\", t-a}' /proc/meminfo"
+    " ; ps -eo user=,rss=,comm= | awk '$3 ~ /^(tilo-session|Xwayland|xterm|dbus-daemon)$/'"
 )
+# Who runs the app, and whether it may read Browser's profile.
+GUI_ISOLATION_COMMAND = (
+    "ps -o user=,comm= -C xterm ; ps -o user=,comm= -C Xwayland"
+    " ; ls /home/tilo-browser >/dev/null 2>&1 && echo browser-home-readable || echo browser-home-closed"
+)
+# The person in their own browser: the site, and the relay it enters through.
+SITE = os.environ.get("HOSTED_TERMINAL_SITE", "")
+SITE_RELAY = os.environ.get("HOSTED_TERMINAL_SITE_RELAY", "")
+PERSON_PAGE = Path(__file__).with_name("person.mjs")
 
 
 def say(step: str, detail: str = "") -> None:
@@ -287,7 +313,24 @@ async def refused() -> dict[str, object]:
         # was asked and that it did not run.
         path, recorded = await find_run(aws, str(answer.get("run")))
         check(recorded.get("exit") != 0, f"the session records the refused run ({path})")
-        write_json("refused.json", {"answer": answer, "record": recorded})
+        # A Linux app is a Linux action too: opening one is refused the same
+        # way, before anything starts in the VM.
+        say("the agent opens a Linux app in the workspace, without a card")
+        try:
+            app = await outcome(aws.do("linux#open", app=GUI_APP))
+        except Refused as error:
+            app = {"refused": f"{error.code}: {error.message}", "next": error.next_steps}
+        say("answered", json.dumps(app, default=str)[:400])
+        app_said = json.dumps(app, default=str)
+        check(
+            isinstance(app, dict) and "refused" in app,
+            f"a Linux app without a card is refused ({app_said[:300]})",
+        )
+        check(
+            "card" in app_said.lower() and "add_payment_method" in app_said,
+            f"in words that say a card lets it through, and where ({app_said[:300]})",
+        )
+        write_json("refused.json", {"answer": answer, "record": recorded, "app": app})
         return {
             "seconds": round(seconds, 2),
             "reason": refusal.get("reason"),
@@ -574,40 +617,116 @@ async def isolated() -> dict[str, object]:
         await person_client.aclose()
 
 
+async def vm_memory(ows: object, one: Person, what: str) -> dict[str, object]:
+    """What the VM holds in memory now, and the apps session's processes."""
+    answer, _ = await asked(one, outcome(ows.do("terminal#run", command=GUI_MEMORY_COMMAND)))  # type: ignore[attr-defined]
+    output = str((answer or {}).get("output") or "")
+    used = next(
+        (int(line.split()[1]) for line in output.splitlines() if line.startswith("used_kib ")),
+        None,
+    )
+    processes = [line.split() for line in output.splitlines() if not line.startswith("used_kib")]
+    rss = {
+        name: sum(int(fields[1]) for fields in processes if len(fields) == 3 and fields[2] == name)
+        for name in {fields[2] for fields in processes if len(fields) == 3}
+    }
+    say(f"memory {what}", f"{(used or 0) // 1024} MiB in use, processes {rss}")
+    return {"used_mib": (used or 0) // 1024, "rss_kib": rss}
+
+
+def type_on_the_desk(link: str) -> dict[str, object]:
+    """A person invited into the workspace, in their own browser: they follow
+    the link, find the Linux app's window on their desk and type into it."""
+    check(SITE and SITE_RELAY, "the check names the site and the relay a person enters through")
+    out = Path(OUT) / "gui-person"
+    ran = subprocess.run(
+        ["node", str(PERSON_PAGE), SITE, SITE_RELAY, str(out), "--follow", link,
+         "--window", GUI_WINDOW, "--type", GUI_TYPED],
+        capture_output=True, text=True, timeout=900,
+    )
+    sys.stderr.write(ran.stderr[-4000:])
+    check(
+        ran.returncode == 0,
+        f"the person saw the window on their desk and typed into it (see {out}: "
+        f"{ran.stderr.strip().splitlines()[-1] if ran.stderr.strip() else ran.returncode})",
+    )
+    return json.loads(ran.stdout.strip().splitlines()[-1])
+
+
 async def gui() -> dict[str, object]:
-    """Whether a hosted workspace has a Linux GUI app to open at all."""
+    """A Linux GUI app in the workspace's VM, on a person's desk."""
     kept = await state()
     workspace = str(kept["workspace"])
     person_client = client(SERVER_KEY)
+    agent = client(str(kept["key"]))
     try:
         ows = person_client.workspace(workspace)
-        answer, questions = await asked(
-            person(), outcome(ows.do("terminal#run", command=DISPLAY_COMMAND))
+        aws = agent.workspace(workspace)
+        one = person()
+        before = await vm_memory(ows, one, "before the app")
+        say("the agent opens the guest's X11 terminal in the workspace", GUI_APP)
+        began = time.perf_counter()
+        opened = await outcome(aws.do("linux#open", app=GUI_APP))
+        open_seconds = time.perf_counter() - began
+        say("opened", f"{open_seconds:.2f} s: {json.dumps(opened, default=str)[:300]}")
+        check(
+            not (isinstance(opened, dict) and "refused" in opened),
+            f"the account with a card opens a Linux app ({opened})",
+        )
+        say("a person is invited into the workspace, to see it on their desk")
+        invitation = await ows.members.invite(role="editor", email="gui-person@example.invalid")
+        began = time.perf_counter()
+        person_said = await asyncio.to_thread(type_on_the_desk, invitation.link)
+        window = person_said.get("window") or {}
+        check(window.get("name"), f"the window appeared on the person's desk ({window})")
+        say("on the desk", f"{window.get('name')!r} after {window.get('appearedMs')} ms, typed in {window.get('typedMs')} ms")
+        # The keys reached the app: the command it ran wrote its file.
+        written = ""
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            answer, _ = await asked(one, outcome(ows.do("terminal#run", command=f"cat {GUI_FILE}")))
+            written = str((answer or {}).get("output") or "")
+            if "typed-on-the-desk" in written:
+                break
+            await asyncio.sleep(1)
+        check(
+            "typed-on-the-desk" in written,
+            f"what the person typed into the window ran in the VM and wrote {GUI_FILE} ({written.strip()[:200]!r})",
+        )
+        ran_ms = next((int(word) for word in written.split() if word.isdigit()), None)
+        typed_at = window.get("typedAt")
+        # The guest's clock and this machine's: the same within the VM's
+        # clock source, so this is the keys' way to the app, roughly.
+        keys_ms = ran_ms - int(typed_at) if ran_ms and typed_at else None
+        say("the typing took effect", f"{written.strip()!r}, the Enter key ran it {keys_ms} ms after the first key went")
+        isolation, _ = await asked(one, outcome(ows.do("terminal#run", command=GUI_ISOLATION_COMMAND)))
+        said = str((isolation or {}).get("output") or "")
+        check(
+            any(line.split() == ["tilo", "xterm"] for line in said.splitlines()),
+            f"the app runs as the tenant ({said.strip()!r})",
         )
         check(
-            len(questions) == 1,
-            f"the person was asked once before the command ran ({questions})",
+            not any(line.split()[:1] == [BROWSER_USER] for line in said.splitlines() if line.strip()),
+            f"nothing of it runs as Browser's account ({said.strip()!r})",
         )
-        output = str((answer or {}).get("output") or "")
-        say("answered", output.strip()[:400])
-        servers = [
-            line
-            for line in output.splitlines()
-            if line.strip()
-            and "No such file" not in line
-            and "cannot access" not in line
-        ]
-        check(
-            not servers,
-            "the workspace's VM runs no display server, so no Linux app's window can be "
-            f"opened there yet ({servers}). A hosted workspace has Browser's window and no "
-            "other: whichever brings a Linux desktop into a workspace brings its windows to "
-            "the desk, and this step opens one and holds its window to appearing and closing.",
-        )
-        write_json("gui.json", {"answer": answer, "display_servers": servers})
-        return {"display_servers": servers}
+        check("browser-home-closed" in said, f"the app's account cannot read Browser's profile ({said.strip()!r})")
+        after = await vm_memory(ows, one, "with the app open")
+        report = {
+            "app": GUI_APP,
+            "open_seconds": round(open_seconds, 2),
+            "window": window,
+            "desk_seconds": round(time.perf_counter() - began, 2),
+            "written": written.strip(),
+            "keys_to_app_ms": keys_ms,
+            "memory_before": before,
+            "memory_after": after,
+            "memory_added_mib": int(after["used_mib"]) - int(before["used_mib"]),
+        }
+        write_json("gui.json", report)
+        return report
     finally:
         await person_client.aclose()
+        await agent.aclose()
 
 
 async def main() -> int:

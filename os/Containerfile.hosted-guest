@@ -286,6 +286,21 @@ RUN dnf install -y --setopt=install_weak_deps=False \
 RUN printf 'tilo ALL=(ALL:ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/tilo \
  && chmod 0440 /etc/sudoers.d/tilo
 
+# Linux apps with windows: the VM's headless session hosts them as their
+# compositor, and Xwayland serves the X11 ones, started when one connects. Two
+# small terminals come with it, one Wayland (foot) and one X11 (xterm), so a
+# workspace has a windowed program to open before the tenant installs any; the
+# rest are `dnf install`, like on their own machine (GIMP, LibreOffice, ...).
+RUN dnf install -y --setopt=install_weak_deps=False \
+      foot \
+      xorg-x11-server-Xwayland \
+      xterm \
+ && dnf clean all \
+ && rm -rf /var/cache/dnf /var/cache/libdnf5 \
+ && test -x /usr/bin/Xwayland \
+ && test -s /usr/share/applications/xterm.desktop \
+ && test -s /usr/share/applications/foot.desktop
+
 # node: fnm manages the versions, this build places the one that ships. The
 # tarball is checksum-pinned in os/external-assets/github-assets.tsv and put
 # where fnm keeps a version's installation (node-versions/v<version>/installation),
@@ -344,7 +359,9 @@ COPY --from=browser-payload /usr/lib/tilo-runtime/ /usr/lib/tilo-runtime/
 COPY --from=browser-payload /usr/share/tilo-apps/ /usr/share/tilo-apps/
 COPY --from=browser-payload /signatures/usr/share/tilo-apps/ /usr/share/tilo-apps/
 COPY --from=browser-payload /etc/tilo/runtime-bundle-trusted-publishers.txt /etc/tilo/runtime-bundle-trusted-publishers.txt
+COPY --chmod=0755 os/hosted-guest/headless-session /usr/libexec/tilo/headless-session
 COPY --chmod=0755 os/hosted-guest/browser-session /usr/libexec/tilo/browser-session
+COPY --chmod=0755 os/hosted-guest/apps-session /usr/libexec/tilo/apps-session
 COPY --chmod=0755 os/hosted-guest/browser-smoke.sh /usr/libexec/tilo/browser-smoke
 # The session's own user: no sudo, no shell, and none of the tenant's files, so
 # a page that gets out of Chromium's sandbox lands in an account that can do

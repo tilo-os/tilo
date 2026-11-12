@@ -76,6 +76,7 @@ use crate::certification::CertificationProtocol;
 use ed25519_dalek::SigningKey;
 use iroh::EndpointAddr;
 use tilo_actions::remote::host_account::{NextStep, NextStepKind, Reason, Refusal};
+use tilo_actions::remote::linux_apps::{self, AppLaunch};
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, Caller, Completer,
     Confirmation, ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending,
@@ -105,6 +106,21 @@ pub fn placed_app() -> tilo_agent_participant::PlacedApp {
         title: TITLE,
     }
 }
+
+/// A workspace's Linux apps as a host that places them lists them: a
+/// workspace opens `app.so.tilo.linux` naming the app's desktop file, and the
+/// app starts in the workspace's VM, in the apps session there
+/// ([`tilo_actions::remote::linux_apps`]). This host mounts nothing of it.
+#[must_use]
+pub fn placed_linux_apps() -> tilo_agent_participant::PlacedApp {
+    tilo_agent_participant::PlacedApp {
+        app_id: linux_apps::APP,
+        title: linux_apps::TITLE,
+    }
+}
+
+/// The label the workspace shows a Linux apps session's device under.
+pub const APPS_DEVICE_LABEL: &str = "Linux apps";
 
 /// Make this host the person's stand-in approver, from their root:
 /// a browser session joins a workspace as a device of theirs, and a stand-in
@@ -225,11 +241,51 @@ pub trait BrowserSessions: Send + Sync {
     /// forgotten and its window no longer exists.
     fn stop(&self, workspace: &str);
 
+    /// Start `launch` in the workspace's Linux apps session, starting that
+    /// session with `material` when none runs, and answer once it is up and
+    /// was told to start the app. The app's windows join the desk as they
+    /// map.
+    ///
+    /// # Errors
+    ///
+    /// The words to refuse the open with, and the plans' typed refusal when
+    /// the account may not run Linux.
+    fn start_app(&self, material: &Material, launch: &AppLaunch) -> Result<Window, AppRefusal> {
+        let _ = (material, launch);
+        Err(AppRefusal::Words(
+            "this host starts no Linux apps session".to_owned(),
+        ))
+    }
+
+    /// The workspace's Linux apps session stopped, or must.
+    fn stop_apps(&self, workspace: &str) {
+        let _ = workspace;
+    }
+
     /// Ask the hosts that run sessions as `plane`'s device, from `endpoint`:
     /// this host's own, once it runs. Sessions that need no host to ask
     /// ignore it.
     fn ask_from(&self, plane: tilo_peer_state::actions::ActionPlane, endpoint: iroh::Endpoint) {
         let _ = (plane, endpoint);
+    }
+}
+
+/// Why a workspace's Linux app did not open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AppRefusal {
+    /// The account's plan does not let it run Linux: the plans' own typed
+    /// refusal, which says what would let it through.
+    Refused(Refusal),
+    /// Anything else, in words for whoever opened it.
+    Words(String),
+}
+
+impl std::fmt::Display for AppRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused(refusal) => f.write_str(&refusal.message),
+            Self::Words(words) => f.write_str(words),
+        }
     }
 }
 
@@ -361,6 +417,9 @@ pub struct HostedBrowsers {
     account: String,
     /// The windows up now, by workspace.
     open: Mutex<BTreeMap<u64, Open>>,
+    /// The Linux apps sessions up now, by workspace: each holds the windows
+    /// of the apps it started, which it shares with the workspace itself.
+    apps: Mutex<BTreeMap<u64, Open>>,
     authority: Mutex<Option<Authority>>,
     /// The page actions handed to a window and not yet answered, by
     /// invocation: what a count is owed for once it ran, and what asks first.
@@ -396,6 +455,7 @@ impl HostedBrowsers {
             meter,
             account,
             open: Mutex::default(),
+            apps: Mutex::default(),
             authority: Mutex::default(),
             handed: Arc::default(),
             asking: Arc::default(),
@@ -1078,7 +1138,7 @@ impl HostedBrowsers {
         let (device, material) = {
             let authority = self.authority.lock_recover();
             let authority = authority.as_ref().ok_or("this host is not running yet")?;
-            let (device, secret) = certified(&authority.cert, &authority.key)?;
+            let (device, secret) = certified(&authority.cert, &authority.key, DEVICE_LABEL)?;
             let material = Material {
                 workspace: workspace.to_owned(),
                 workspace_id,
@@ -1126,6 +1186,92 @@ impl HostedBrowsers {
         Ok(window)
     }
 
+    /// Start `launch` in `workspace_id`'s Linux apps session — the workspace
+    /// whose UUID is `workspace`, opened on the record `record` — starting
+    /// that session when none runs: a device certified for it, confined to
+    /// that record and the workspace's own document (the desk its windows
+    /// stand on), and listed as a member device, as a Browser session is. A
+    /// session already up is told to start the app.
+    ///
+    /// # Errors
+    ///
+    /// What to refuse the open with: this host is not running, no device
+    /// could be certified, the account may not run Linux, or the session
+    /// would not start.
+    pub fn place_app(
+        &self,
+        workspace: &str,
+        workspace_id: u64,
+        record: &str,
+        launch: &AppLaunch,
+    ) -> Result<Window, AppRefusal> {
+        let words = AppRefusal::Words;
+        let mut apps = self.apps.lock_recover();
+        let (device, material) = {
+            let authority = self.authority.lock_recover();
+            let authority = authority
+                .as_ref()
+                .ok_or_else(|| words("this host is not running yet".to_owned()))?;
+            // A session already up keeps its device: the material only
+            // starts a session, and the VM host hands the app to the one
+            // running.
+            let (device, secret) = match apps.get(&workspace_id) {
+                Some(up) => (up.device.clone(), [0; 32]),
+                None => {
+                    certified(&authority.cert, &authority.key, APPS_DEVICE_LABEL).map_err(words)?
+                }
+            };
+            let material = Material {
+                workspace: workspace.to_owned(),
+                workspace_id,
+                record: record.to_owned(),
+                device: device.clone(),
+                secret,
+                relay: authority.relay.clone(),
+                user_public_key: authority.user_public_key,
+                account: self.account.clone(),
+            };
+            (device, material)
+        };
+        let fresh = !apps.contains_key(&workspace_id);
+        if fresh {
+            let until_ns = device
+                .expires_at_ns
+                .unwrap_or_else(|| tilo_clock::unix_now_ns().saturating_add(lifetime_ns()));
+            self.confine(
+                &device,
+                crate::environment::EnvironmentScope::for_record(
+                    workspace_id,
+                    linux_apps::APP,
+                    record,
+                ),
+                until_ns,
+            )
+            .map_err(|error| words(format!("the Linux app did not open: {error}")))?;
+        }
+        let window = match self.sessions.start_app(&material, launch) {
+            Ok(window) => window,
+            Err(refusal) => {
+                if fresh {
+                    self.forget(&device);
+                }
+                return Err(refusal);
+            }
+        };
+        if fresh {
+            self.list(workspace_id, &device, true);
+            apps.insert(
+                workspace_id,
+                Open {
+                    workspace: workspace.to_owned(),
+                    window: window.clone(),
+                    device,
+                },
+            );
+        }
+        Ok(window)
+    }
+
     /// The workspace's browser session stopped: refuse its device on every
     /// plane, end the session in the VM, forget the device and its window, and
     /// cut every connection the device has here.
@@ -1135,6 +1281,7 @@ impl HostedBrowsers {
     /// the certificate it was given expires.
     pub fn stopped(&self, workspace_id: u64) {
         let stopped = self.open.lock_recover().remove(&workspace_id);
+        let stopped_apps = self.apps.lock_recover().remove(&workspace_id);
         let devices = {
             let authority = self.authority.lock_recover();
             authority.as_ref().map_or_else(Vec::new, |authority| {
@@ -1148,6 +1295,10 @@ impl HostedBrowsers {
         );
         if let Some(stopped) = &stopped {
             self.sessions.stop(&stopped.workspace);
+            self.list(workspace_id, &stopped.device, false);
+        }
+        if let Some(stopped) = &stopped_apps {
+            self.sessions.stop_apps(&stopped.workspace);
             self.list(workspace_id, &stopped.device, false);
         }
         // Every connection the devices had here audits on this: the planes
@@ -1170,9 +1321,20 @@ impl HostedBrowsers {
                 Some(_) | None => None,
             }
         };
+        let stopped_apps = {
+            let mut apps = self.apps.lock_recover();
+            match apps.get(&workspace_id) {
+                Some(up) if up.window.device == device => apps.remove(&workspace_id),
+                Some(_) | None => None,
+            }
+        };
         self.refuse(std::iter::once((device, until_ns)));
         if let Some(stopped) = &stopped {
             self.sessions.stop(&stopped.workspace);
+            self.list(workspace_id, &stopped.device, false);
+        }
+        if let Some(stopped) = &stopped_apps {
+            self.sessions.stop_apps(&stopped.workspace);
             self.list(workspace_id, &stopped.device, false);
         }
         crate::authority_epoch::bump();
@@ -1220,12 +1382,14 @@ impl HostedBrowsers {
             {
                 return;
             }
-            let until_ns = browsers
-                .open
-                .lock_recover()
-                .get(&workspace_id)
-                .filter(|up| up.window.device == device)
-                .and_then(|up| up.device.expires_at_ns)
+            let held = |open: &Mutex<BTreeMap<u64, Open>>| {
+                open.lock_recover()
+                    .get(&workspace_id)
+                    .filter(|up| up.window.device == device)
+                    .and_then(|up| up.device.expires_at_ns)
+            };
+            let until_ns = held(&browsers.open)
+                .or_else(|| held(&browsers.apps))
                 .unwrap_or_else(|| tilo_clock::unix_now_ns().saturating_add(lifetime_ns()));
             // Stopping asks VM hosts and writes workspace membership: never on
             // a runtime thread.
@@ -1296,7 +1460,11 @@ fn lifetime_ns() -> u64 {
 /// A fresh device for a session, certified by the host's stand-in as a
 /// member device of the workspace's person, for as long as the session
 /// may run.
-fn certified(stand_in: &DeviceCert, key: &SigningKey) -> Result<(DeviceCert, [u8; 32]), String> {
+fn certified(
+    stand_in: &DeviceCert,
+    key: &SigningKey,
+    label: &str,
+) -> Result<(DeviceCert, [u8; 32]), String> {
     if !stand_in.capabilities.stand_in {
         return Err(
             "this host holds no stand-in certificate for the workspace's person, so it cannot \
@@ -1311,7 +1479,7 @@ fn certified(stand_in: &DeviceCert, key: &SigningKey) -> Result<(DeviceCert, [u8
     let mut minted = DeviceCert {
         user_public_key: stand_in.user_public_key,
         device_public_key: device.verifying_key().to_bytes(),
-        device_label: DEVICE_LABEL.to_owned(),
+        device_label: label.to_owned(),
         capabilities: DeviceCapabilities::member(),
         issued_at_ns: now,
         expires_at_ns: Some(now.saturating_add(lifetime_ns())),
@@ -1639,6 +1807,14 @@ pub fn unplaced() -> String {
         .to_owned()
 }
 
+/// What a host that places no Linux apps refuses an open of one with.
+#[must_use]
+pub fn unplaced_linux_apps() -> String {
+    "Linux apps do not open here: this host runs no VM for the workspace. Open the app on \
+     your own device instead."
+        .to_owned()
+}
+
 /// The answer to an open of Browser that ran in `workspace_id`: `message`
 /// with the window placed, or the refusal in its place.
 ///
@@ -1682,6 +1858,76 @@ pub fn opens_browser(request: &InvokeRequest) -> bool {
     provider_workspace(&request.target.provider).is_some()
         && request.target.address.resource == format!("{APPLICATION_RESOURCE_PREFIX}{APP}")
         && request.target.address.action == APPLICATION_OPEN_ACTION
+}
+
+/// The Linux app `request` opens (`app.so.tilo.linux#open`, naming its
+/// desktop file in [`linux_apps::APP_ARGUMENT`]), when it opens one: `None`
+/// for any other request, and the words to refuse it with when it names no
+/// app it could start.
+#[must_use]
+pub fn opens_linux_app(request: &InvokeRequest) -> Option<Result<AppLaunch, String>> {
+    let opens = provider_workspace(&request.target.provider).is_some()
+        && request.target.address.resource
+            == format!("{APPLICATION_RESOURCE_PREFIX}{}", linux_apps::APP)
+        && request.target.address.action == APPLICATION_OPEN_ACTION;
+    if !opens {
+        return None;
+    }
+    let named = match &request.argument {
+        tilo_actions::remote::InvokeArgument::Json(map) => map
+            .get(linux_apps::APP_ARGUMENT)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        _ => String::new(),
+    };
+    Some(AppLaunch::new(&named))
+}
+
+/// The answer to an open of a Linux app that ran in `workspace_id`:
+/// `message` with the app started in the workspace's VM, or the refusal in
+/// its place — the plans' own typed refusal when the account may not run
+/// Linux, so whoever opened it reads what would let it through.
+#[must_use]
+pub fn placed_linux_app(
+    browsers: &HostedBrowsers,
+    workspace_id: u64,
+    invocation: tilo_actions::InvocationId,
+    launch: &AppLaunch,
+    message: RemoteActionMessage,
+) -> RemoteActionMessage {
+    let Some(record) = opened_record(&message) else {
+        return message;
+    };
+    let placement = browsers
+        .workspace_name(workspace_id)
+        .ok_or_else(|| AppRefusal::Words("this host serves no such workspace".to_owned()))
+        .and_then(|workspace| browsers.place_app(&workspace, workspace_id, &record, launch));
+    match placement {
+        Ok(_) => message,
+        Err(AppRefusal::Refused(refusal)) => refused_by_plan(invocation, &refusal),
+        Err(AppRefusal::Words(reason)) => refused(
+            invocation,
+            format!("{} did not open: {reason}", launch.desktop_id),
+        ),
+    }
+}
+
+/// The answer to `invocation` refused by the account's plan: the plans' typed
+/// refusal, its words and the next step that lets it through.
+#[must_use]
+pub fn refused_by_plan(
+    invocation: tilo_actions::InvocationId,
+    refusal: &Refusal,
+) -> RemoteActionMessage {
+    RemoteActionMessage::Receipt(tilo_actions::remote::InvocationReceipt {
+        invocation,
+        status: tilo_actions::remote::ReceiptStatus::Rejected {
+            error: ActionHostError::Refused {
+                reason: refusal.to_reason(),
+            },
+        },
+    })
 }
 
 /// The record an answered [`opens_browser`] open made, when it made one: the
@@ -1756,6 +2002,67 @@ mod tests {
             "app.so.tilo.notes",
             APPLICATION_OPEN_ACTION
         )));
+    }
+
+    /// An open of the workspace's Linux apps names the app by its desktop
+    /// file; one that names none, or something that is not one, is refused
+    /// in words before anything is placed, and an open of another app is
+    /// not one at all.
+    #[test]
+    fn an_open_of_a_linux_app_names_its_desktop_file() {
+        use tilo_actions::remote::{APPLICATION_OPEN_ACTION, workspace_provider};
+        let open = |resource: &str, app: Option<&str>| InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            on_behalf_of: None,
+            target: RemoteActionTarget {
+                provider: workspace_provider("ws"),
+                address: ActionAddress::new(resource, APPLICATION_OPEN_ACTION),
+            },
+            argument: app.map_or(tilo_actions::remote::InvokeArgument::None, |app| {
+                tilo_actions::remote::InvokeArgument::Json(serde_json::Map::from_iter([(
+                    linux_apps::APP_ARGUMENT.to_owned(),
+                    app.into(),
+                )]))
+            }),
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+        };
+        assert_eq!(
+            opens_linux_app(&open("app.so.tilo.linux", Some("org.gnome.TextEditor"))),
+            Some(Ok(AppLaunch::new("org.gnome.TextEditor").unwrap()))
+        );
+        for named in [None, Some(""), Some("xterm -e sh"), Some("../xterm")] {
+            assert!(
+                matches!(
+                    opens_linux_app(&open("app.so.tilo.linux", named)),
+                    Some(Err(_))
+                ),
+                "{named:?}"
+            );
+        }
+        assert_eq!(
+            opens_linux_app(&open("app.so.tilo.browser", Some("xterm"))),
+            None
+        );
+        assert!(!opens_browser(&open("app.so.tilo.linux", Some("xterm"))));
+        // phase: a refusal by the plans travels typed, so the caller reads
+        // what lets it through
+        let refusal = no_payment_method(0);
+        let RemoteActionMessage::Receipt(receipt) =
+            refused_by_plan(tilo_actions::InvocationId::new(), &refusal)
+        else {
+            panic!("a refusal is a receipt");
+        };
+        let tilo_actions::remote::ReceiptStatus::Rejected {
+            error: ActionHostError::Refused { reason },
+        } = receipt.status
+        else {
+            panic!("refused");
+        };
+        assert_eq!(Refusal::from_reason(&reason), Some(refusal));
     }
 
     #[test]

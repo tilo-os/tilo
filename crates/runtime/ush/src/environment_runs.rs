@@ -20,13 +20,14 @@ use std::time::Duration;
 
 use tilo_actions::remote::browser::{self, OpenBrowser};
 use tilo_actions::remote::environment_runs::{self, CommandRan, RunCommand, RunOutput};
+use tilo_actions::remote::linux_apps::{self, OpenApp};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationLedger,
     InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, Reservation,
 };
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 
-use crate::environment_browsers::BrowserHost;
+use crate::environment_browsers::{AppRefused, BrowserHost};
 use crate::workspace_shell::{Payer, ShellRun, WorkspaceShells};
 
 /// Where, in a workspace's files, its Browser keeps its profile between runs.
@@ -187,6 +188,65 @@ impl Inner {
         });
     }
 
+    /// Answer `run` by starting (or ending) `workspace`'s Linux apps in its
+    /// VM on this host's hosted-VM service. A refusal by the account's plan
+    /// is answered as one, carrying the plans' typed refusal, so whoever
+    /// opened the app reads what would let it through.
+    fn start_app(
+        self: &Arc<Self>,
+        run: Run,
+        workspace: String,
+        asked: Option<OpenApp>,
+        browsers: Option<BrowserHost>,
+    ) {
+        let inner = Arc::clone(self);
+        let invocation = run.state().invocation();
+        std::thread::spawn(move || {
+            let outcome = match (asked, browsers) {
+                (Some(mut asked), Some(browsers)) => {
+                    // The workspace is the caller's, whatever the argument says.
+                    asked.workspace.clone_from(&workspace);
+                    browsers.open_app(&asked).map(Some)
+                }
+                (None, Some(browsers)) => browsers
+                    .stop_apps(&workspace)
+                    .map(|()| None)
+                    .map_err(AppRefused::Error),
+                _ => Err(AppRefused::Error(
+                    "this member runs no workspace VMs".to_owned(),
+                )),
+            };
+            let update = match outcome {
+                Ok(opened) => InvocationUpdate::Succeeded {
+                    invocation,
+                    output: ActionOutput {
+                        value: opened.and_then(|opened| serde_json::to_value(opened).ok()),
+                        resources: Vec::new(),
+                    },
+                },
+                Err(AppRefused::Refused(refusal)) => InvocationUpdate::Failed {
+                    invocation,
+                    error: ActionFailure {
+                        code: linux_apps::REFUSED.into(),
+                        message: refusal.message.clone(),
+                        details: serde_json::to_value(&refusal).ok(),
+                        retryable: false,
+                    },
+                },
+                Err(AppRefused::Error(message)) => InvocationUpdate::Failed {
+                    invocation,
+                    error: ActionFailure {
+                        code: "unavailable".into(),
+                        message,
+                        details: None,
+                        retryable: true,
+                    },
+                },
+            };
+            inner.set(&run, update);
+        });
+    }
+
     fn start(self: &Arc<Self>, run: Run, workspace: String, asked: RunCommand) {
         let inner = Arc::clone(self);
         let invocation = run.state().invocation();
@@ -325,12 +385,15 @@ impl EnvironmentRuns {
             return Err(not_served());
         }
         let action = target.address.action.as_str();
-        let browsers = self
-            .0
-            .browsers
-            .as_ref()
-            .filter(|_| action == browser::OPEN || action == browser::STOP);
-        if (action == browser::OPEN || action == browser::STOP) && browsers.is_none() {
+        let in_vm = [
+            browser::OPEN,
+            browser::STOP,
+            linux_apps::OPEN,
+            linux_apps::STOP,
+        ]
+        .contains(&action);
+        let browsers = self.0.browsers.as_ref().filter(|_| in_vm);
+        if in_vm && browsers.is_none() {
             return Err(ActionHostError::Unavailable {
                 reason: "this member runs no workspace VMs, so no Browser".into(),
             });
@@ -346,8 +409,10 @@ impl EnvironmentRuns {
             .to_owned();
         let asked = match action {
             environment_runs::RUN => Asked::Run(argument(request)?),
-            browser::OPEN => Asked::Browser(Some(open_argument(request)?)),
+            browser::OPEN => Asked::Browser(Some(open_argument(request, "Browser")?)),
             browser::STOP => Asked::Browser(None),
+            linux_apps::OPEN => Asked::App(Some(open_argument(request, "a Linux app")?)),
+            linux_apps::STOP => Asked::App(None),
             _ => return Err(not_served()),
         };
         let invocation = request.invocation;
@@ -374,6 +439,10 @@ impl EnvironmentRuns {
                         let browsers = browsers.cloned();
                         self.0.start_browser(run, workspace, asked, browsers);
                     }
+                    Asked::App(asked) => {
+                        let browsers = browsers.cloned();
+                        self.0.start_app(run, workspace, asked, browsers);
+                    }
                 }
                 Ok(receipt)
             }
@@ -387,18 +456,24 @@ enum Asked {
     Run(RunCommand),
     /// Open a workspace's Browser (`Some`), or end its session.
     Browser(Option<OpenBrowser>),
+    /// Start a Linux app in a workspace's VM (`Some`), or end its apps
+    /// session.
+    App(Option<OpenApp>),
 }
 
-/// A Browser to open, as its action's argument.
-fn open_argument(request: &InvokeRequest) -> Result<OpenBrowser, ActionHostError> {
+/// What `what` (Browser, a Linux app) opens with, as its action's argument.
+fn open_argument<T: serde::de::DeserializeOwned>(
+    request: &InvokeRequest,
+    what: &str,
+) -> Result<T, ActionHostError> {
     let InvokeArgument::Json(map) = &request.argument else {
         return Err(ActionHostError::InvalidRequest {
-            reason: "opening Browser takes its workspace as JSON".into(),
+            reason: format!("opening {what} takes its workspace as JSON"),
         });
     };
     serde_json::from_value(serde_json::Value::Object(map.clone())).map_err(|error| {
         ActionHostError::InvalidRequest {
-            reason: format!("not a Browser to open: {error}"),
+            reason: format!("not {what} to open: {error}"),
         }
     })
 }

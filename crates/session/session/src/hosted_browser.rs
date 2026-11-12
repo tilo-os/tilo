@@ -19,6 +19,13 @@
 //! puts it to the person and answers with their word: their allow runs that one request as their
 //! own, and a denial runs [`KEEP_HELD`] instead, leaving the page as it was filled.
 //!
+//! A session started for a workspace's Linux apps ([`tilo_actions::remote::linux_apps`]) is the
+//! same device in the same workspace, run as the VM's tenant: it opens no Browser window, and reads
+//! every later line of its standard input as one app to start ([`AppLaunch`], a desktop file of the
+//! guest's). Each app's windows open on its desk in the workspace, and the session shares them with
+//! the workspace's members the moment they map, so they see and drive them on their own desks. It
+//! reports [`USED`] while it holds any window, so its host keeps it while an app is open.
+//!
 //! [`READY`]: tilo_actions::remote::browser::READY
 //! [`UP`]: tilo_actions::remote::browser::UP
 //! [`USED`]: tilo_actions::remote::browser::USED
@@ -32,6 +39,7 @@ use std::time::{Duration, Instant};
 use tilo_action_broker::collab_app_broker::{AppBrokerState, ExecutionStatus};
 use tilo_action_broker::services::HostedWorkspaces;
 use tilo_actions::remote::browser::{MARK, Report, SEND_HELD};
+use tilo_actions::remote::linux_apps::{self, AppLaunch};
 use tilo_actions::remote::{
     ActionHost as _, ActionHostError, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
     InvokeArgument, InvokeRequest, RemoteActionTarget,
@@ -62,11 +70,50 @@ const ENVIRONMENT_AVATAR: [u8; 3] = [88, 101, 242];
 /// What the session reports on its standard output: the host relays every line.
 pub type Reports = Box<dyn FnMut(Report) + Send>;
 
+/// What a session in a workspace's VM holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Holds {
+    /// The workspace's Browser window, on the record it was handed.
+    Browser,
+    /// The windows of the workspace's Linux apps, started as it is told.
+    Apps,
+}
+
+impl Holds {
+    /// What this process was started to hold, by the mark its host set: `None` for a session a
+    /// person starts.
+    #[must_use]
+    pub fn marked() -> Option<Self> {
+        let set = |mark: &str| std::env::var_os(mark).is_some_and(|value| value == "1");
+        if set(linux_apps::MARK) {
+            Some(Self::Apps)
+        } else if set(MARK) {
+            Some(Self::Browser)
+        } else {
+            None
+        }
+    }
+}
+
+/// Whether this session shares its windows with its workspace the moment they open: a session
+/// in a workspace's VM runs for the workspace's members, and nobody sits at it.
+#[must_use]
+pub fn shares_by_default() -> bool {
+    Holds::marked().is_some()
+}
+
 /// The session in a workspace's VM: the identity it was handed, the join it asked of its relay,
 /// and the window it holds.
 pub struct HostedBrowser {
     /// The relay's placement record: what this session joins, opens and is.
     material: Material,
+    /// What it holds: Browser's window, or the Linux apps it is told to start.
+    holds: Holds,
+    /// The Linux apps it was told to start and has not started yet.
+    launches: Vec<AppLaunch>,
+    /// Woken when a line telling it to start an app arrives: the reader of its input has no other
+    /// way to reach the loop.
+    told_wake: std::sync::Arc<std::sync::Mutex<Option<tilo_service::Wake>>>,
     reports: Reports,
     /// What wakes the session's loop when the relay answers or the page is used.
     waking: Option<tilo_service::Wake>,
@@ -97,6 +144,8 @@ enum Arrived {
     PageAction,
     /// What the window holds for the person now, as it published it.
     Held(Vec<Held>),
+    /// Its host told it to start a Linux app.
+    Launch(AppLaunch),
     /// What the person answered about a held request: their word for it, or
     /// why they did not give one, and the invocation it answers.
     Answered {
@@ -148,12 +197,24 @@ impl HostedBrowser {
     ///
     /// The material is not the relay's, or the identity it names is not one this device may take.
     pub fn take(material: &str, reports: Reports) -> Result<Self, String> {
+        Self::take_holding(material, Holds::Browser, reports)
+    }
+
+    /// The session, as [`Self::take`], holding what `holds` says.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::take`].
+    pub fn take_holding(material: &str, holds: Holds, reports: Reports) -> Result<Self, String> {
         let material: Material = serde_json::from_str(material.trim())
             .map_err(|error| format!("the material is not the relay's: {error}"))?;
         take_identity(&material)?;
         let (sender, arrived) = std::sync::mpsc::channel();
         let mut hosted = Self {
             material,
+            holds,
+            launches: Vec::new(),
+            told_wake: std::sync::Arc::default(),
             reports,
             waking: None,
             arrived,
@@ -172,7 +233,44 @@ impl HostedBrowser {
 
     /// Wake the session's loop with `wake` when the relay answers the join or the page is used.
     pub(crate) fn waking(&mut self, wake: tilo_service::Wake) {
+        *self
+            .told_wake
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(wake.clone());
         self.waking = Some(wake);
+    }
+
+    /// Read what its host tells it on `input` from now on, a line at a time, each a Linux app
+    /// to start: on a thread of its own, since the input blocks, waking the loop for each.
+    fn read_launches(&self, input: impl std::io::BufRead + Send + 'static) {
+        let arrived = self.sender.clone();
+        let wake = std::sync::Arc::clone(&self.told_wake);
+        let spawned = std::thread::Builder::new()
+            .name("hosted-apps-input".into())
+            .spawn(move || {
+                for line in input.lines() {
+                    let Ok(line) = line else {
+                        return;
+                    };
+                    let Some(launch) = AppLaunch::parse(&line) else {
+                        tracing::warn!(%line, "the host told this session something it does not start");
+                        continue;
+                    };
+                    if arrived.send(Arrived::Launch(launch)).is_err() {
+                        return;
+                    }
+                    let wake = wake
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone();
+                    if let Some(wake) = wake {
+                        wake();
+                    }
+                }
+            });
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "this session reads no Linux apps to start");
+        }
     }
 
     /// Follow what the session's broker admits: an action on the window's page is the page in use,
@@ -224,6 +322,10 @@ impl HostedBrowser {
     pub(crate) fn follow(&mut self, shared: &Shared) {
         self.take_arrived(shared);
         self.join();
+        if self.holds == Holds::Apps {
+            self.follow_apps(shared);
+            return;
+        }
         self.open(shared);
         if let Window::Open(provider) = &self.window
             && shared.pages.borrow().viewed().contains(provider)
@@ -231,6 +333,41 @@ impl HostedBrowser {
             self.used();
         }
         self.publish(shared);
+    }
+
+    /// What an apps session does each pass: say it is up once the desk holds the workspace, start
+    /// each app it was told to, and say it is used while any window of theirs is open.
+    fn follow_apps(&mut self, shared: &Shared) {
+        if !held(shared, &self.material.workspace) {
+            return;
+        }
+        if matches!(self.window, Window::Unopened) {
+            self.window = Window::Open(0);
+            self.say(Report::Up {
+                provider: linux_apps::UP_PROVIDER.to_owned(),
+            });
+        }
+        let Some(apps) = &shared.launch else {
+            return;
+        };
+        let workspace = apps.workspace_named(&self.material.workspace);
+        for launch in std::mem::take(&mut self.launches) {
+            // What runs is what the guest's desktop file says: the same launch as an app a
+            // person opens from their own computer's applications.
+            let start = tilo_app_launch::Launch::Host {
+                desktop_id: launch.desktop_id.clone(),
+                open: None,
+            };
+            match apps.start(&start, &workspace) {
+                Ok(()) => tracing::info!(app = %launch.desktop_id, "a Linux app started"),
+                Err(error) => {
+                    tracing::warn!(%error, app = %launch.desktop_id, "a Linux app did not start");
+                }
+            }
+        }
+        if holds_windows(shared, &self.material.workspace) {
+            self.used();
+        }
     }
 
     /// Redeem what the relay answered the join with: the invitation text through the session's own
@@ -250,6 +387,7 @@ impl HostedBrowser {
                     tracing::warn!(%reason, "the relay did not let this session into the workspace");
                 }
                 Arrived::PageAction => self.used(),
+                Arrived::Launch(launch) => self.launches.push(launch),
                 Arrived::Held(held) => self.report(held),
                 Arrived::Answered {
                     mut request,
@@ -478,9 +616,9 @@ impl crate::Shared {
 ///
 /// The material was not read, or names an identity this device may not take.
 pub fn handed() -> Result<Option<HostedBrowser>, String> {
-    if std::env::var_os(MARK).is_none() {
+    let Some(holds) = Holds::marked() else {
         return Ok(None);
-    }
+    };
     let mut line = String::new();
     std::io::stdin()
         .lock()
@@ -489,7 +627,13 @@ pub fn handed() -> Result<Option<HostedBrowser>, String> {
     if line.trim().is_empty() {
         return Err("the session was handed no material".to_owned());
     }
-    HostedBrowser::take(&line, Box::new(|report| say_on_stdout(&report))).map(Some)
+    let hosted =
+        HostedBrowser::take_holding(&line, holds, Box::new(|report| say_on_stdout(&report)))?;
+    // An apps session is told each app to start as a later line of the same input.
+    if holds == Holds::Apps {
+        hosted.read_launches(std::io::BufReader::new(std::io::stdin()));
+    }
+    Ok(Some(hosted))
 }
 
 /// Every report, one line on the session's standard output: what the host that started the
@@ -679,6 +823,20 @@ fn held(shared: &Shared, workspace: &str) -> bool {
     })
 }
 
+/// Whether `workspace` holds any window of a program of this computer's own: a Linux app the
+/// session started, which keeps the session in use while it is open.
+fn holds_windows(shared: &Shared, workspace: &str) -> bool {
+    shared.handle.read(|tree| {
+        tree.workspaces
+            .iter()
+            .filter(|held| held.id().to_string() == workspace)
+            .flat_map(|held| held.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .flat_map(|group| group.tabs.iter())
+            .any(|tab| matches!(tab.tile, tilo_desktop_model::TileContent::Foreign { .. }))
+    })
+}
+
 /// The tab `app`'s window takes in `workspace`, once the desk holds one: the window's instance,
 /// which is the provider its actions are published under.
 fn tab_of(shared: &Shared, workspace: &str, app: &str) -> Option<u64> {
@@ -820,6 +978,9 @@ mod tests {
                     .push(report.line());
             }),
             waking: None,
+            holds: Holds::Browser,
+            launches: Vec::new(),
+            told_wake: Arc::default(),
             arrived,
             sender,
             broker: None,
@@ -830,6 +991,40 @@ mod tests {
             window: Window::Open(provider),
             said_used: None,
         }
+    }
+
+    /// An apps session reads each later line of its input as one app to start, wakes its loop
+    /// for each, and starts nothing for a line that names no desktop file.
+    #[test]
+    fn an_apps_session_is_told_each_app_on_its_input() {
+        let said: Arc<Mutex<Vec<String>>> = Arc::default();
+        let mut hosted = holding(0, &said);
+        hosted.holds = Holds::Apps;
+        let woke = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counting = Arc::clone(&woke);
+        hosted.waking(Arc::new(move || {
+            counting.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        let input = format!(
+            "{}\nsh -c id\n{}\n",
+            AppLaunch::new("xterm").unwrap().line(),
+            AppLaunch::new("org.gnome.TextEditor").unwrap().line()
+        );
+        hosted.read_launches(std::io::Cursor::new(input.into_bytes()));
+        let mut told = Vec::new();
+        while told.len() < 2 {
+            match hosted.arrived.recv_timeout(Duration::from_secs(10)) {
+                Ok(Arrived::Launch(launch)) => told.push(launch.desktop_id),
+                Ok(_) => {}
+                Err(error) => panic!("the apps were not read: {error}"),
+            }
+        }
+        assert_eq!(told, ["xterm", "org.gnome.TextEditor"]);
+        assert_eq!(
+            woke.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "once for each app"
+        );
     }
 
     #[test]

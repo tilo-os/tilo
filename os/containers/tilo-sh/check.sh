@@ -58,9 +58,12 @@
 #      History;
 #  17. the Linux session runs as the VM's tenant, not as the account its
 #      Browser session runs as, and neither reads the other's files;
-#  18. a Linux GUI app in a hosted workspace: the VM runs no display server,
-#      so there is no app window to open there yet, and this says so rather
-#      than pretending one opened.
+#  18. a Linux GUI app in that workspace's VM: the agent opens the guest's X11
+#      terminal, a person invited into the workspace sees its window appear on
+#      their desk in their own browser and types a command into it, and the
+#      file the command wrote is read back from the VM; the app runs as the
+#      tenant, not as Browser's account, and the VM's memory with it open is
+#      measured, in the guest and on the host.
 #
 # usage: check.sh [WORK]
 # The stack runs this checkout's programs natively (the outputs a check hands
@@ -381,6 +384,7 @@ if [[ $hosted == 1 ]]; then
       HOSTED_TERMINAL_PLANS=$plans HOSTED_TERMINAL_ACCOUNT=$vm_account \
       HOSTED_TERMINAL_APPROVER=$approve HOSTED_TERMINAL_ROOT=$work/startup/root \
       HOSTED_TERMINAL_RELAY=$relay_address \
+      HOSTED_TERMINAL_SITE=$site HOSTED_TERMINAL_SITE_RELAY=$relay \
       sdk_python "$here/integration/hosted-terminal.py" "$door" "$key" "$work/hosted" "$1"
   }
   launch=$SECONDS
@@ -413,7 +417,6 @@ if [[ $hosted == 1 ]]; then
         'ls -la --time-style=full-iso /var/lib/tilo-hosted/member/profile/identity/device-private /var/lib/tilo-hosted/member/profile/identity/device' >&2 2>/dev/null || true
       echo '--- the member, from its start:' >&2
       sudo -n podman logs tilo-sh-vm-host-0 2>&1 | grep -v 'net_report' | head -60 >&2 || true
-=======
       echo '--- the relay said:' >&2
       bash "$here/stack.sh" logs relay 2>/dev/null | tail -40 >&2 || true
       # What the host's container was given to trust, and what it mounted: a
@@ -501,9 +504,40 @@ print(found.group(1) if found else "")' "$hosted_workspace" <<<"$(vm_host status
   fi
 
   if runs_step 18; then
-    step '18. a Linux GUI app in a hosted workspace: none is wired yet'
-    hosted_terminal --gui || fail "the VM's display was not what this step holds it to (see $work/hosted/gui.json)"
-    echo "ok: the workspace has no Linux desktop ($((SECONDS - at))s to hold it to that), so it has no app window to open yet (Browser it does)"
+    step "18. a Linux GUI app opens in the workspace's VM, on a person's desk"
+    # What the workspace's VM takes of this host, as the VM host measures it,
+    # before the app and with it open: what admitting a VM counts.
+    vm_resident() {
+      vm_host status 2>/dev/null | python3 -c '
+import re, sys
+workspace = sys.argv[1]
+for line in sys.stdin.read().splitlines():
+    fields = line.split()
+    if fields and (fields[0] == workspace or fields[0].startswith(workspace + "/")):
+        found = re.search(r"(\d+) MiB", line)
+        print(found.group(1) if found else "")
+        break' "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workspace"])' "$work/hosted/open.json" 2>/dev/null)"
+    }
+    resident_before=$(vm_resident)
+    if ! hosted_terminal --gui; then
+      echo '--- the apps session in the VM said:' >&2
+      sudo -n podman exec tilo-sh-vm-host-0 sh -c \
+        'find /var /srv /mnt -name apps.log -path "*/vms/*" 2>/dev/null | while read -r log; do echo "$log:"; tail -80 "$log"; done' \
+        >&2 2>/dev/null || true
+      echo '--- the VM host said:' >&2
+      sudo -n podman logs --tail 40 tilo-sh-vm-host-0 >&2 2>/dev/null || true
+      fail "the Linux app did not open on the person's desk, or the typing did not take (see $work/hosted/gui.json and $work/hosted/gui-person)"
+    fi
+    resident_after=$(vm_resident)
+    echo "the VM on its host: ${resident_before:-?} MiB before the app, ${resident_after:-?} MiB with it open"
+    python3 - "$work/hosted/gui.json" "${resident_before:-}" "${resident_after:-}" <<'EOF_GUI'
+import json, sys
+path, before, after = sys.argv[1:]
+report = json.load(open(path))
+report["host_resident_mib"] = {"before": int(before) if before else None, "after": int(after) if after else None}
+json.dump(report, open(path, "w"), indent=2)
+EOF_GUI
+    echo "ok: a Linux app opened in the VM and on the person's desk, and took their typing, in $((SECONDS - at))s"
   fi
 fi
 

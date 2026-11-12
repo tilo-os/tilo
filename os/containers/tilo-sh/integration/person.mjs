@@ -13,6 +13,14 @@
 //                   makes a recovery key for them (its own "save a recovery
 //                   key") and FILE gets what opens them elsewhere, the
 //                   envelope and that key, as `tilo-approve person` reads it;
+//   --window NAME --type TEXT
+//                   after following the invitation, a window of the
+//                   workspace another device hosts (a Linux app in the
+//                   workspace's VM) appears on their desk, as a tile whose
+//                   accessible name matches NAME (a case-blind pattern); they
+//                   click it and type TEXT, then Enter, key by key as a
+//                   keyboard sends it. report.window says when it appeared,
+//                   and a picture of it is kept as window.png;
 //   --passkey       they keep themselves with a passkey (a virtual
 //                   authenticator, as a platform one answers), the browser
 //                   then forgets the site, and they sign in again with that
@@ -48,6 +56,8 @@ const noPages = rest.includes('--no-pages');
 const passkey = rest.includes('--passkey');
 const tiloBin = option('--tilo');
 const door = option('--door');
+const windowName = option('--window');
+const typed = option('--type');
 mkdirSync(out, {recursive: true});
 
 const report = {site, relay};
@@ -212,6 +222,75 @@ if (follow) {
     return found ? JSON.stringify(found) : '';
   })()`, `joining the workspace the invitation names (entered before: ${before})`).then(JSON.parse);
   console.error(`ok: the invitation landed them in ${JSON.stringify(report.followed)}`);
+}
+
+// The keys a keyboard sends for each character typed: its DOM code, and
+// whether Shift is held. What the page hands the hosted window is the key, not
+// the text, so each character goes as the key that makes it.
+const keyOf = char => {
+  if (/^[a-z]$/.test(char)) return {code: `Key${char.toUpperCase()}`, key: char};
+  if (/^[A-Z]$/.test(char)) return {code: `Key${char}`, key: char, shift: true};
+  if (/^[0-9]$/.test(char)) return {code: `Digit${char}`, key: char};
+  const named = {
+    ' ': {code: 'Space', key: ' '}, '-': {code: 'Minus', key: '-'}, '.': {code: 'Period', key: '.'},
+    '/': {code: 'Slash', key: '/'}, '>': {code: 'Period', key: '>', shift: true},
+    '_': {code: 'Minus', key: '_', shift: true}, '=': {code: 'Equal', key: '='},
+    '+': {code: 'Equal', key: '+', shift: true}, '$': {code: 'Digit4', key: '$', shift: true},
+    '%': {code: 'Digit5', key: '%', shift: true}, '(': {code: 'Digit9', key: '(', shift: true},
+    ')': {code: 'Digit0', key: ')', shift: true},
+  };
+  return named[char] ?? null;
+};
+const press = async ({code, key, shift = false}, text = key) => {
+  const modifiers = shift ? 8 : 0;
+  if (shift) await tab.send('Input.dispatchKeyEvent', {type: 'keyDown', code: 'ShiftLeft', key: 'Shift', windowsVirtualKeyCode: 16});
+  await tab.send('Input.dispatchKeyEvent', {type: 'keyDown', code, key, text, modifiers});
+  await tab.send('Input.dispatchKeyEvent', {type: 'keyUp', code, key, modifiers});
+  if (shift) await tab.send('Input.dispatchKeyEvent', {type: 'keyUp', code: 'ShiftLeft', key: 'Shift', windowsVirtualKeyCode: 16});
+};
+
+if (windowName) {
+  if (!follow || typed === null) await finish(2, '--window needs --follow and --type');
+  const pattern = new RegExp(windowName, 'i');
+  const waiting = Date.now();
+  // The page's semantic layer names every tile: the hosted window's is found
+  // by its name, as a screen reader finds it.
+  await tab.send('Accessibility.enable', {}).catch(() => {});
+  let found = null;
+  while (!found && Date.now() - waiting < 180_000) {
+    const {result} = await tab.send('Accessibility.getFullAXTree', {}).catch(() => ({result: {nodes: []}}));
+    found = (result?.nodes ?? []).find(node => !node.ignored && node.backendDOMNodeId
+      && pattern.test(String(node.name?.value ?? '')));
+    if (!found) await sleep(250);
+  }
+  if (!found) await finish(1, `no window named like /${windowName}/i appeared on the desk in 180 s (it reads: ${await text()})`);
+  report.window = {name: found.name?.value, role: found.role?.value, appearedMs: Date.now() - waiting};
+  console.error(`ok: the window ${JSON.stringify(report.window.name)} is on the desk after ${report.window.appearedMs} ms`);
+  const {result: box} = await tab.send('DOM.getBoxModel', {backendNodeId: found.backendDOMNodeId});
+  const quad = box?.model?.content ?? [];
+  if (quad.length < 8) await finish(1, `the window ${JSON.stringify(report.window.name)} has no box on the page to click`);
+  const x = (quad[0] + quad[4]) / 2;
+  const y = (quad[1] + quad[5]) / 2;
+  for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
+    await tab.send('Input.dispatchMouseEvent', {type, x, y, button: 'left', clickCount: 1});
+  }
+  // A picture arrives once the window's stream is decoded: what the person
+  // sees before they type.
+  await sleep(1500);
+  const before = await tab.screenshot().catch(() => null);
+  if (before) writeFileSync(join(out, 'window-before.png'), before);
+  const typing = Date.now();
+  for (const char of typed) {
+    const key = keyOf(char);
+    if (!key) await finish(2, `--type has ${JSON.stringify(char)}, which no key here types`);
+    await press(key);
+  }
+  await press({code: 'Enter', key: 'Enter'}, '\r');
+  report.window.typedAt = typing;
+  report.window.typedMs = Date.now() - typing;
+  await sleep(1500);
+  const after = await tab.screenshot().catch(() => null);
+  if (after) writeFileSync(join(out, 'window.png'), after);
 }
 
 if (keyName) {

@@ -714,10 +714,9 @@ impl Session {
         // A window another device shares is decoded on the same waker, so a
         // picture that comes out late lands without waiting for the next
         // frame the desk draws for something else.
-        // A session holding a hosted Browser runs for the workspace's members: nobody sits at it, so
-        // its windows are shared the moment they open.
-        let hosted_browser =
-            std::env::var_os("TILO_HOSTED_BROWSER").is_some_and(|mark| mark == "1");
+        // A session in a workspace's VM, holding its Browser or its Linux apps, runs for the
+        // workspace's members: nobody sits at it, so its windows are shared the moment they open.
+        let hosted_browser = crate::hosted_browser::shares_by_default();
         let window_shares = crate::window_share::WindowShares::new(
             options.wake.handle(),
             options.person.clone(),
