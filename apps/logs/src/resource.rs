@@ -1,18 +1,13 @@
-//! Logs as a resource: the journal filter follows the person and syncs to
-//! collaborators; the journal itself is this device's, shown and offered as
-//! live rows by the window's view.
-//!
-//! Refresh, live tail, export and showing an entry are effects with no
-//! document delta ([`crate::actions::JournalEffect`]), answered by the view.
+//! Logs as a resource: the journal filter follows the person and syncs to collaborators;
+//! the journal itself is this device's, shown and offered as live rows by the window's
+//! view.
 
 use ui::prelude::*;
 
 use crate::journal::{JournalLoadError, sample_entries};
 use crate::model::{Filter, LogEntry, Priority};
 
-/// The shared journal filter. Each part is edited at its path
-/// (`Logs::paths().severity.set(Priority::Err)`); a unit and a boot are
-/// picked whole, so they are written whole, while the search merges as text.
+/// The shared journal filter.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Logs {
     /// The least severe priority shown.
@@ -38,12 +33,8 @@ impl Logs {
 }
 
 impl Logs {
-    /// What the record holds: the shared journal filter: severity, unit, boot and search text.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
+    /// What the record holds: the shared journal filter: severity, unit, boot and search
+    /// text.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -66,11 +57,8 @@ impl Logs {
 
 /// What a capture shows in place of this device's journal.
 pub enum JournalFixture {
-    /// These entries, read.
     Entries(Vec<LogEntry>),
-    /// A journal that could not be read.
     Failed(JournalLoadError),
-    /// A first read still in flight.
     Loading,
 }
 

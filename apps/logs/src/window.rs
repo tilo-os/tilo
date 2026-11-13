@@ -1,12 +1,5 @@
-//! The Logs window: one [`NavShell`] whose content is the journal table
-//! with its filters (`JournalPane`) and whose inspector shows every field of
-//! the selected entry. The window bar holds the journal's commands: refresh,
-//! live tail and export.
-//!
-//! The view owns the [`Journal`] (an external, read-only render cache read
-//! off the UI thread) and answers its effects; the [`LogsWindow`] lays it
-//! out. The filters sync as document edits on [`crate::resource::Logs`];
-//! the selected entry and live tail are this window's own.
+//! The Logs window: one [`NavShell`] whose content is the journal table with its filters
+//! (`JournalPane`) and whose inspector shows every field of the selected entry.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -43,33 +36,26 @@ use ui::widget::DrawChild;
 use ui::window_toolbar::{ToolbarAction, ToolbarEvent};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
-/// The most recent journal records read.
 const JOURNAL_LIMIT: usize = 2000;
 
 /// A finished read of the journal.
 #[derive(Debug)]
 enum Read {
-    /// The most recent records, which replace what the window shows.
     Whole(Page),
-    /// What live tail found after the newest record shown.
     Tail(Page),
 }
 
 type JournalRead = Result<Read, JournalLoadError>;
 
-/// An `Instant` at least `POLL_INTERVAL` in the past, so writing it into
-/// `last_poll` makes the next poll-due check fire immediately. Falls back to
-/// `now` itself in the vanishingly rare case the process's monotonic clock
-/// has less than `POLL_INTERVAL` of history — that only delays the forced
-/// poll by at most `POLL_INTERVAL`, never panics.
+/// An `Instant` at least `POLL_INTERVAL` in the past, so writing it into `last_poll` makes
+/// the next poll-due check fire immediately. Falls back to `now` itself in the vanishingly
+/// rare case the process's monotonic clock has less than `POLL_INTERVAL` of history — that
+/// only delays the forced poll by at most `POLL_INTERVAL`, never panics.
 fn force_immediate_poll_at() -> Instant {
     let now = ui::time::now();
     now.checked_sub(POLL_INTERVAL).unwrap_or(now)
 }
 
-/// The journal's commands in the window bar: refresh, live tail and
-/// export (in its menu), each the effect it runs. Live tail is a toggle
-/// that stands on while the journal is followed.
 const WINDOW_ACTIONS: [(&str, Icon, &str); 3] = [
     ("logs.refresh", Icon::Refresh, "Refresh journal"),
     ("logs.live-tail", Icon::Play, "Live tail"),
@@ -89,24 +75,17 @@ fn window_effect(id: &str) -> Option<JournalEffect> {
 /// What the inspector currently shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Inspected {
-    /// Not built for the current state yet.
     Stale,
-    /// The "no entry selected" state.
     Nothing,
-    /// The entry with this resource id.
     Entry(String),
 }
 
-/// The journal this window shows, shared by the window and the view's
-/// effect handler: what was read, the filter the document holds, and the
-/// selection and live tail that are this window's own.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent flag (live tail, loading, reading, \
               exporting, a reveal asked for, dirtiness)"
 )]
 pub(crate) struct Journal {
-    /// Full journal — external read-only data, not CRDT state.
     entries: Vec<LogEntry>,
     /// Distinct units present, sorted (for the unit filter).
     units: Vec<String>,
@@ -114,52 +93,34 @@ pub(crate) struct Journal {
     boots: Vec<(String, String)>,
 
     filter: Filter,
-    /// Indices into `entries` that pass `filter`, in display order.
     filtered: Vec<usize>,
     /// Stored selection (absolute index into `entries`, or -1 = auto).
     sel_raw: i64,
-    /// Stable selected-entry resource id. This survives reordering within the
-    /// local journal cache; it is this window's, never a collaborator's.
+    /// This survives reordering within the local journal cache; it is this window's, never
+    /// a collaborator's.
     selected_entry: Option<String>,
     live_tail: bool,
-    /// A safe classification of the most recent local journal read failure.
     /// Never holds `journalctl` stderr or raw journal content.
     source_error: Option<crate::journal::JournalLoadError>,
-    /// Set while a resource-routed refresh is being admitted or completed.
-    /// Existing rows stay visible; an empty source shows a loading state
-    /// rather than masquerading as empty.
     source_loading: bool,
-    /// The journal read in flight off the UI thread, if any.
     reading: Option<Receiver<JournalRead>>,
-    /// Where the newest record shown sits in the journal: live tail reads
-    /// only what was written after it. `None` reads the whole page again.
     tail_cursor: Option<String>,
-    /// Whether an export's Save dialog is open. Neither the chosen path nor
-    /// log content is published through resources or collaboration state.
     exporting: bool,
-    /// Concise local outcome for the portal write, announced through an a11y
-    /// live region. It never includes a chosen path or log contents.
+    /// It never includes a chosen path or log contents.
     export_status: Option<String>,
 
     shared: Shared,
-    /// The fingerprints of the state and the rows last handed to the views.
     published: Option<u64>,
     published_rows: Option<u64>,
-    /// The selection changed since the window last showed it.
     republished: bool,
-    /// The entries changed: the inspector shows the selected one again.
     inspector_stale: bool,
-    /// Show the selected entry where the inspector is a closed sheet: it
-    /// was chosen.
     reveal: bool,
-    /// Open the inspector drawer once laid out (`--detail` captures).
     reveal_detail: bool,
 
-    /// Whether this window reads the journal: a live window, never a
-    /// capture or a past version.
+    /// Whether this window reads the journal: a live window, never a capture or a past
+    /// version.
     reads: bool,
     last_poll: Instant,
-    /// Wakes the window when a read finishes.
     waker: Option<ui::WakeHandle>,
     dirty: bool,
 }
@@ -201,8 +162,8 @@ impl Journal {
         journal
     }
 
-    /// The journal a window in `mode` shows: a live window reads this
-    /// device's, a capture shows its fixture's, a past version none.
+    /// The journal a window in `mode` shows: a live window reads this device's, a capture
+    /// shows its fixture's, a past version none.
     fn for_window(cx: &ViewCx<Logs>) -> Self {
         let mut journal = Self::with_entries(Vec::new());
         match cx.mode() {
@@ -236,7 +197,6 @@ impl Journal {
             }
         }
         units.sort();
-        // Newest boot first, named by how far back it is.
         boots.sort_by_key(|(_, latest)| std::cmp::Reverse(*latest));
         self.boots = boots
             .into_iter()
@@ -263,14 +223,13 @@ impl Journal {
             .collect();
     }
 
-    /// Resolve the effective selection to an absolute entry index that is
-    /// actually in the filtered set. Honors an explicit pick; otherwise
-    /// auto-selects the first error-or-worse (falling back to the first
-    /// visible entry).
+    /// Resolve the effective selection to an absolute entry index that is actually in the
+    /// filtered set. Honors an explicit pick; otherwise auto-selects the first
+    /// error-or-worse (falling back to the first visible entry).
     fn effective_selected(&self) -> Option<usize> {
-        // A stable resource selection is explicit even when this replica has
-        // not received that record yet; never substitute an unrelated auto
-        // selection for a collaborator's chosen entry.
+        // A stable resource selection is explicit even when this replica has not received
+        // that record yet; never substitute an unrelated auto selection for a
+        // collaborator's chosen entry.
         if self.selected_entry.is_some() {
             let selected = usize::try_from(self.sel_raw).ok()?;
             return self.filtered.contains(&selected).then_some(selected);
@@ -279,7 +238,6 @@ impl Journal {
             if self.filtered.contains(&s) {
                 return Some(s);
             }
-            // Explicitly selected but filtered out → nothing selected.
             if s < self.entries.len() {
                 return None;
             }
@@ -338,8 +296,8 @@ impl Journal {
         hasher.finish()
     }
 
-    /// A fingerprint of everything the views show, so they are refreshed
-    /// only when it changes.
+    /// A fingerprint of everything the views show, so they are refreshed only when it
+    /// changes.
     fn fingerprint(&self) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.rows_fingerprint().hash(&mut hasher);
@@ -393,8 +351,8 @@ impl Journal {
         self.dirty = true;
     }
 
-    /// Read the journal off the UI thread, unless a read is in flight or
-    /// this window does not read it.
+    /// Read the journal off the UI thread, unless a read is in flight or this window does
+    /// not read it.
     fn start_read(&mut self) {
         if !self.reads || self.reading.is_some() {
             return;
@@ -418,8 +376,8 @@ impl Journal {
         }
     }
 
-    /// The cursor the next read starts after: live tail reads only what is
-    /// new once the window shows a page, and the whole page otherwise.
+    /// The cursor the next read starts after: live tail reads only what is new once the
+    /// window shows a page, and the whole page otherwise.
     fn tail_after(&self) -> Option<String> {
         self.tail_cursor
             .clone()
@@ -499,8 +457,7 @@ impl Journal {
             .map(actions::entry_row)
     }
 
-    /// The entries an export writes: those the filter shows now. Entries
-    /// arriving while the Save dialog is open are not part of it.
+    /// The entries an export writes: those the filter shows now.
     fn export_snapshot(&self) -> Result<Vec<LogEntry>, String> {
         if self.exporting {
             return Err("an export dialog is already open".into());
@@ -517,8 +474,7 @@ impl Journal {
         Ok(entries)
     }
 
-    /// Show the entry `entry_id` names, chosen in the table, by the palette
-    /// or by an agent.
+    /// Show the entry `entry_id` names, chosen in the table, by the palette or by an agent.
     fn select(&mut self, entry_id: String) -> Result<(), String> {
         let abs = self
             .entries
@@ -528,17 +484,12 @@ impl Journal {
         self.sel_raw = i64::try_from(abs).unwrap_or(i64::MAX);
         self.selected_entry = Some(entry_id);
         self.publish();
-        // Showing an entry is navigation: reveal the detail slab on a
-        // narrow window, as a pointer selection does.
         self.reveal = true;
         Ok(())
     }
 
     fn show_entries(&mut self, entries: Vec<LogEntry>) {
         if self.entries != entries {
-            // Equal counts and endpoints do not imply equal journal contents.
-            // Show the inspector again too: metadata can change without
-            // changing the entry's resource id.
             self.published = None;
             self.published_rows = None;
             self.inspector_stale = true;
@@ -562,8 +513,8 @@ impl Journal {
         self.source_loading = false;
         match read {
             Ok(Read::Whole(page)) => {
-                // A tail read still in flight started from the page this
-                // replaces: its records would be shown twice.
+                // A tail read still in flight started from the page this replaces: its
+                // records would be shown twice.
                 self.reading = None;
                 self.tail_cursor = page.cursor;
                 self.show_entries(page.entries);
@@ -577,12 +528,8 @@ impl Journal {
             }
         }
     }
-    /// Add what live tail found to the page, keeping its newest
-    /// `JOURNAL_LIMIT` records. A quiet journal changes nothing: no rows are
-    /// rebuilt and nothing is published again.
+    /// Add what live tail found to the page, keeping its newest `JOURNAL_LIMIT` records.
     fn show_tail(&mut self, page: Page) {
-        // A full answer may have left records behind it: the next read takes
-        // the newest page whole rather than falling further behind.
         let caught_up = page.entries.len() < JOURNAL_LIMIT;
         if caught_up {
             if let Some(cursor) = page.cursor {
@@ -608,9 +555,8 @@ impl Journal {
     }
 }
 
-/// The Logs window: the journal and its filters in a [`NavShell`], the
-/// selected entry in its inspector, the journal's commands in the window
-/// bar.
+/// The Logs window: the journal and its filters in a [`NavShell`], the selected entry in
+/// its inspector, the journal's commands in the window bar.
 pub(crate) fn window(cx: &ViewCx<Logs>) -> Element {
     let journal: JournalRef = Rc::new(RefCell::new(Journal::for_window(cx)));
     let actions = cx.actions();
@@ -639,8 +585,8 @@ pub(crate) fn window(cx: &ViewCx<Logs>) -> Element {
     )
 }
 
-/// Answer the journal's effects, whoever asks: the window bar, the table,
-/// the palette, an agent.
+/// Answer the journal's effects, whoever asks: the window bar, the table, the palette, an
+/// agent.
 fn answer_effects(cx: &ViewCx<Logs>, journal: &JournalRef) {
     let (answer, status) = (Rc::clone(journal), Rc::clone(journal));
     cx.effects(move |effect: JournalEffect, cx| answer_effect(&answer, effect, cx))
@@ -700,38 +646,30 @@ fn answer_effect(
     }
 }
 
-/// The window's widget: lays the journal out and turns what the person
-/// does in it into filter edits and journal effects.
+/// The window's widget: lays the journal out and turns what the person does in it into
+/// filter edits and journal effects.
 pub(crate) struct LogsWindow {
     journal: JournalRef,
     shared: Shared,
-    /// The filter as the document holds it, shown as it changes.
     live: Live<Logs>,
     presented: Option<(u64, u64)>,
-    /// Where filter edits and journal effects go.
     dispatcher: Dispatcher<Logs>,
     actions: Actions<Logs>,
-    /// Whether the journal controls are offered: everywhere but a past
-    /// version.
     allow_live: bool,
 
     rect: Rect,
     shell: NavShell,
-    /// The spacing the inspector was laid out with.
     spacing: Spacing,
     inspected: Inspected,
     has_inspector: bool,
-    /// What the window owes the next frame.
     dirty: Dirty,
 }
 
-/// What the window owes the next frame: its controls laid out again, and its
-/// paint drawn again once.
+/// What the window owes the next frame: its controls laid out again, and its paint drawn
+/// again once.
 #[derive(Default)]
 struct Dirty {
-    /// A control the window holds changed: the layout is built again.
     layout: bool,
-    /// Input or a new document value changed what the window paints.
     paint: bool,
 }
 
@@ -782,8 +720,7 @@ impl LogsWindow {
         self.journal.borrow_mut().adopt_filter(filter);
     }
 
-    /// Bring the inspector and the layout in step with what the journal
-    /// published since.
+    /// Bring the inspector and the layout in step with what the journal published since.
     fn show_journal(&mut self) {
         let (republished, stale, reveal, reveal_detail) = {
             let mut journal = self.journal.borrow_mut();
@@ -810,8 +747,8 @@ impl LogsWindow {
         }
     }
 
-    /// The inspector follows the selection; when the journal lists nothing
-    /// it collapses, leaving the one empty state.
+    /// The inspector follows the selection; when the journal lists nothing it collapses,
+    /// leaving the one empty state.
     fn show_inspector(&mut self) {
         let journal = Rc::clone(&self.journal);
         let journal = journal.borrow();
@@ -853,8 +790,8 @@ impl LogsWindow {
         }
     }
 
-    /// Open the inspector where it is a closed sheet, so choosing an entry
-    /// on a narrow window shows it.
+    /// Open the inspector where it is a closed sheet, so choosing an entry on a narrow
+    /// window shows it.
     fn reveal_inspector(&mut self) {
         if self.shell.geometry().inspector == InspectorPlacement::Sheet
             && !self.shell.is_inspector_open()
@@ -868,14 +805,14 @@ impl LogsWindow {
         self.dispatcher.submit(edit);
     }
 
-    /// Invoke a journal effect through the same door as the palette and
-    /// agents, which checks its availability first.
+    /// Invoke a journal effect through the same door as the palette and agents, which
+    /// checks its availability first.
     fn request(&self, effect: &JournalEffect) {
         self.dispatcher.effect(effect);
     }
 
-    /// Run what the person did in the window's bar: the shell's own slots,
-    /// then the journal's commands.
+    /// Run what the person did in the window's bar: the shell's own slots, then the
+    /// journal's commands.
     fn take_window_toolbar_events(&mut self) {
         for event in ui::window_toolbar::take_events() {
             if self.shell.window_toolbar_event(&event) {
@@ -895,8 +832,8 @@ impl LogsWindow {
         self.actions.effect(effect).is_some()
     }
 
-    /// Declare the window bar's slots: the shell's own (the entry's
-    /// details) and the journal's commands.
+    /// Declare the window bar's slots: the shell's own (the entry's details) and the
+    /// journal's commands.
     fn declare_window_toolbar(&self) {
         let live_tail = self.journal.borrow().live_tail;
         let mut toolbar = self.shell.window_toolbar();
@@ -905,8 +842,6 @@ impl LogsWindow {
             let action = ToolbarAction::new(id, icon.name(), name)
                 .enabled(enabled)
                 .on(id == "logs.live-tail" && live_tail);
-            // Exporting is occasional: the bar's menu, which leaves the
-            // row to Refresh, Live tail and the details' toggle.
             if id == "logs.export" {
                 action.in_menu()
             } else {
@@ -964,8 +899,6 @@ impl Widget for LogsWindow {
     ) -> NodeId {
         self.dirty.layout = false;
         if self.spacing != theme.tokens.spacing {
-            // The inspector's content lines up with its property list in
-            // this theme's spacing.
             self.spacing = theme.tokens.spacing;
             self.inspected = Inspected::Stale;
             self.show_inspector();
@@ -1005,7 +938,6 @@ impl Widget for LogsWindow {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.dirty.paint = true;
-        // Ctrl+L follows or pauses the journal, like a terminal's `-f`.
         if let WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == ElementState::Pressed
             && ctx.modifiers.state().control_key()
@@ -1091,8 +1023,7 @@ impl Widget for LogsWindow {
         (journal.reads && journal.live_tail) || journal.reading.is_some()
     }
 
-    /// Live tail reads the journal once a `POLL_INTERVAL`: a deadline,
-    /// not a frame pump. A read and an export wake the app when they finish.
+    /// Live tail reads the journal once a `POLL_INTERVAL`: a deadline, not a frame pump.
     fn next_wake_deadline(&self) -> Option<Instant> {
         let poll = self.journal.borrow().next_poll();
         poll.into_iter()
@@ -1198,9 +1129,9 @@ mod tests {
         );
     }
 
-    /// Live tail reads only what was written after the newest record shown
-    /// and adds it to the page; a quiet journal rebuilds and republishes
-    /// nothing, and the page keeps its newest records.
+    /// Live tail reads only what was written after the newest record shown and adds it to
+    /// the page; a quiet journal rebuilds and republishes nothing, and the page keeps its
+    /// newest records.
     #[test]
     fn live_tail_adds_what_is_new_and_a_quiet_journal_changes_nothing() {
         let mut app = captured((1280, 800));
@@ -1245,8 +1176,8 @@ mod tests {
             assert_ne!(viewer.shared.borrow().rows_revision, revision);
         });
 
-        // A full answer may have left records behind: the next read is the
-        // newest page whole, and the window never holds more than a page.
+        // A full answer may have left records behind: the next read is the newest page
+        // whole, and the window never holds more than a page.
         let burst: Vec<LogEntry> = (0..JOURNAL_LIMIT as u64)
             .map(|i| {
                 let mut entry = fresh.clone();
@@ -1268,7 +1199,6 @@ mod tests {
             assert_eq!(viewer.tail_after(), None);
         });
 
-        // A failed read starts again from the whole page.
         surface(&mut app, |viewer| {
             viewer.tail_cursor = Some("s=x;i=4".into());
             viewer.show_read(Err(JournalLoadError::Failed));
@@ -1334,7 +1264,6 @@ mod tests {
         .unwrap();
         app.settle();
         assert_eq!(live_tail(), Some(true));
-        // Pressed in the bar, it stops following the journal.
         app.harness().present_in_window_bar();
         app.harness()
             .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {

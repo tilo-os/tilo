@@ -1,6 +1,5 @@
-//! Journal sources: live `journalctl -o json` parsing for the running
-//! app, plus a bundled, realistic sample journal so `--shots` renders a
-//! populated screen with no systemd access.
+//! Journal sources: live `journalctl -o json` parsing for the running app, plus a bundled,
+//! realistic sample journal so `--shots` renders a populated screen with no systemd access.
 
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
@@ -11,8 +10,6 @@ use serde_json::Value;
 
 use crate::model::{LogEntry, Priority};
 
-/// Fields the UI promotes to dedicated columns / struct members. Every
-/// other field is preserved in [`LogEntry::extra`] for the detail pane.
 const PROMOTED: &[&str] = &[
     "__REALTIME_TIMESTAMP",
     "_SYSTEMD_UNIT",
@@ -40,7 +37,6 @@ type Row = (
     &'static [(&'static str, &'static str)],
 );
 
-/// Sample rows: boot through early service startup.
 const ROWS_BOOT: &[Row] = &[
     (
         0,
@@ -160,7 +156,6 @@ const ROWS_BOOT: &[Row] = &[
     ),
 ];
 
-/// Sample rows: collaboration, filesystem, and network mid-boot activity.
 const ROWS_SERVICES: &[Row] = &[
     (
         2010,
@@ -263,7 +258,6 @@ const ROWS_SERVICES: &[Row] = &[
     ),
 ];
 
-/// Sample rows: session steady-state, warnings, and errors.
 const ROWS_SESSION: &[Row] = &[
     (
         4500,
@@ -386,17 +380,13 @@ const ROWS_SESSION: &[Row] = &[
     ),
 ];
 
-/// A deliberately non-verbatim explanation of why the local journal could
-/// not be read. `journalctl`'s stderr can contain host names, paths, and
-/// policy details, so it must never be surfaced in the shared resource tree
-/// or UI as an error string.
+/// A deliberately non-verbatim explanation of why the local journal could not be read.
+/// `journalctl`'s stderr can contain host names, paths, and policy details, so it must
+/// never be surfaced in the shared resource tree or UI as an error string.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JournalLoadError {
-    /// `journalctl` was not executable in this sandbox or on this host.
     Unavailable,
-    /// The journal command ran but the session was not authorised to read it.
     AccessDenied,
-    /// The command failed for another local, recoverable reason.
     Failed,
 }
 
@@ -411,16 +401,16 @@ impl JournalLoadError {
     }
 }
 
-/// One read of the journal: its records, oldest first, and the cursor of
-/// the last one in the journal's order, where the next tail read starts.
+/// One read of the journal: its records, oldest first, and the cursor of the last one in
+/// the journal's order, where the next tail read starts.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Page {
     pub entries: Vec<LogEntry>,
     pub cursor: Option<String>,
 }
 
-/// `journalctl`'s arguments for `limit` records: the most recent ones, or,
-/// `after` a cursor, the first ones written since it.
+/// `journalctl`'s arguments for `limit` records: the most recent ones, or, `after` a
+/// cursor, the first ones written since it.
 pub fn read_args(after: Option<&str>, limit: usize) -> Vec<String> {
     let mut args: Vec<String> = ["-o", "json", "--no-pager", "-n"]
         .into_iter()
@@ -435,25 +425,22 @@ pub fn read_args(after: Option<&str>, limit: usize) -> Vec<String> {
 
 /// Run `journalctl -o json` and parse the most recent `limit` records.
 ///
-/// The error is intentionally classified rather than returning process
-/// output: logs often contain sensitive machine context. An empty successful
-/// result remains distinct from a failed read so the UI can offer recovery.
+/// An empty successful result remains distinct from a failed read so the UI can offer
+/// recovery.
 ///
 /// # Errors
 ///
-/// Returns a safe classification when `journalctl` is unavailable, denied, or
-/// otherwise fails. It never returns the command's stderr.
+/// Returns a safe classification when `journalctl` is unavailable, denied, or otherwise
+/// fails.
 pub fn load_live(limit: usize) -> Result<Page, JournalLoadError> {
     read(None, limit)
 }
 
-/// The records written after `cursor`, at most `limit` of them: what live
-/// tail reads each second, so a quiet journal costs an empty answer rather
-/// than the whole page parsed again.
+/// The records written after `cursor`, at most `limit` of them: what live tail reads each
+/// second, so a quiet journal costs an empty answer rather than the whole page parsed
+/// again.
 ///
 /// # Errors
-///
-/// As [`load_live`].
 pub fn load_after(cursor: &str, limit: usize) -> Result<Page, JournalLoadError> {
     read(Some(cursor), limit)
 }
@@ -480,9 +467,6 @@ fn read(after: Option<&str>, limit: usize) -> Result<Page, JournalLoadError> {
         _ => JournalLoadError::Failed,
     })?;
     if !output.status.success() {
-        // Do not relay stderr. Its wording is neither stable nor safe to
-        // publish, but the common permission failure deserves a useful
-        // recovery state.
         let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
         return Err(
             if stderr.contains("permission") || stderr.contains("access denied") {
@@ -497,9 +481,7 @@ fn read(after: Option<&str>, limit: usize) -> Result<Page, JournalLoadError> {
 
 /// Export a pre-filtered local cache as JSON Lines.
 ///
-/// The caller must obtain `path` from the host Save portal. It never follows
-/// an app-owned default location, and returns only concise errors: exporting
-/// logs is sensitive and should stay fully scoped to that portal choice.
+/// The caller must obtain `path` from the host Save portal.
 pub fn export_json_lines(entries: &[&LogEntry], path: &Path) -> Result<(), String> {
     if !path.is_absolute() {
         return Err("export path must be absolute".into());
@@ -526,15 +508,14 @@ pub fn export_json_lines(entries: &[&LogEntry], path: &Path) -> Result<(), Strin
         .map_err(|_| "could not finish the requested export file".to_string())
 }
 
-/// Parse a newline-delimited `journalctl -o json` stream into entries,
-/// sorted oldest → newest. Malformed lines are skipped, not fatal.
+/// Parse a newline-delimited `journalctl -o json` stream into entries, sorted oldest →
+/// newest.
 pub fn parse_json_stream(text: &str) -> Vec<LogEntry> {
     parse_page(text).entries
 }
 
-/// Parse a `journalctl -o json` stream into a [`Page`]: its entries sorted
-/// oldest → newest, and the cursor of the last record as journalctl wrote
-/// them.
+/// Parse a `journalctl -o json` stream into a [`Page`]: its entries sorted oldest → newest,
+/// and the cursor of the last record as journalctl wrote them.
 pub fn parse_page(text: &str) -> Page {
     let mut cursor = None;
     let mut entries: Vec<LogEntry> = text
@@ -552,9 +533,8 @@ pub fn parse_page(text: &str) -> Page {
     Page { entries, cursor }
 }
 
-/// Read a journal field that may be a JSON string, an integer, or a byte
-/// array (journald encodes non-UTF8 fields as arrays). Returns `None`
-/// when absent.
+/// Read a journal field that may be a JSON string, an integer, or a byte array (journald
+/// encodes non-UTF8 fields as arrays).
 fn field(v: &Value, key: &str) -> Option<String> {
     match v.get(key)? {
         Value::String(s) => Some(s.clone()),
@@ -602,7 +582,6 @@ fn entry_from_json(v: &Value) -> Option<LogEntry> {
     let boot_id = field(v, "_BOOT_ID").unwrap_or_default();
     let transport = field(v, "_TRANSPORT").unwrap_or_default();
 
-    // Everything not already promoted, kept for the detail pane.
     let mut extra: Vec<(String, String)> = obj
         .iter()
         .filter(|(k, _)| !PROMOTED.contains(&k.as_str()))
@@ -628,16 +607,15 @@ fn entry_from_json(v: &Value) -> Option<LogEntry> {
     })
 }
 
-/// `text` without the terminal's colour and cursor sequences a program
-/// wrote for a console (`ESC [ … m`, `ESC ] … BEL`) and without other
-/// control characters, which have no glyph: the words alone.
+/// `text` without the terminal's colour and cursor sequences a program wrote for a console
+/// (`ESC [ … m`, `ESC ] … BEL`) and without other control characters, which have no glyph:
+/// the words alone.
 fn without_terminal_escapes(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
             '\u{1b}' => match chars.next() {
-                // A control sequence ends at its final byte, `@` to `~`.
                 Some('[') => {
                     for c in chars.by_ref() {
                         if ('@'..='~').contains(&c) {
@@ -645,7 +623,6 @@ fn without_terminal_escapes(text: &str) -> String {
                         }
                     }
                 }
-                // An operating-system command ends at BEL or `ESC \`.
                 Some(']') => {
                     while let Some(c) = chars.next() {
                         if c == '\u{7}' {
@@ -667,17 +644,11 @@ fn without_terminal_escapes(text: &str) -> String {
     out
 }
 
-// ===================================================================
-// Bundled sample journal
-// ===================================================================
-
-/// A realistic offline journal: a Tilo boot sequence across the shell
-/// compositor, the FUSE filesystem, the kernel, networking, audio, and a
-/// collaboration session — seeded with a scatter of warnings and errors
-/// so the severity colouring and filters have something to bite on.
+/// A realistic offline journal: a Tilo boot sequence across the shell compositor, the FUSE
+/// filesystem, the kernel, networking, audio, and a collaboration session — seeded with a
+/// scatter of warnings and errors so the severity colouring and filters have something to
+/// bite on.
 pub fn sample_entries() -> Vec<LogEntry> {
-    // The boot began a few minutes before now on the wall clock, which a
-    // capture pins, so the sample reads as this morning's journal.
     let now_us = u64::try_from(ui::clock::local_now().timestamp_micros()).unwrap_or(0);
     let base: u64 = now_us.saturating_sub(4 * 60 * 1_000_000) / 1_000_000 * 1_000_000;
     let host = "tilo-station";
@@ -697,16 +668,13 @@ pub fn sample_entries() -> Vec<LogEntry> {
 
     let mut entries = Vec::new();
 
-    // A handful of records from the previous boot, so the boot filter has
-    // two distinct boots to switch between.
+    // A handful of records from the previous boot, so the boot filter has two distinct
+    // boots to switch between.
     let prev_base = base - 9_000_000_000; // ~2.5h earlier
     for row in prev {
         entries.push(build(row, prev_base, host, boot_b));
     }
 
-    // Rows are split across three consts purely to stay under the
-    // per-function line-count limit; the boot sequence still reads as one
-    // continuous timeline (offsets are relative to the same `base`).
     let rows = ROWS_BOOT.iter().chain(ROWS_SERVICES).chain(ROWS_SESSION);
     for row in rows {
         entries.push(build(row, base, host, boot_a));
@@ -721,8 +689,8 @@ const fn very(n: u32) -> u32 {
     n
 }
 
-/// The entry a sample `row` describes, logged on `hostname` during `boot_id`
-/// at its offset from `base_us`.
+/// The entry a sample `row` describes, logged on `hostname` during `boot_id` at its offset
+/// from `base_us`.
 fn build(row: &Row, base_us: u64, hostname: &str, boot_id: &str) -> LogEntry {
     let &(offset_ms, unit, identifier, priority, pid, transport, message, extra) = row;
     LogEntry {
@@ -796,8 +764,8 @@ mod tests {
         assert_eq!(parsed[0].message, "ok");
     }
 
-    /// A tail read starts after the newest record's cursor, which a page
-    /// takes from the last record journalctl wrote.
+    /// A tail read starts after the newest record's cursor, which a page takes from the
+    /// last record journalctl wrote.
     #[test]
     fn a_page_keeps_the_last_cursor_and_a_tail_read_starts_after_it() {
         let stream = concat!(
@@ -837,7 +805,6 @@ mod tests {
     fn export_writes_json_lines_only_to_absolute_portal_targets() {
         let entries = sample_entries();
 
-        // Export requires an absolute portal target.
         assert_eq!(
             export_json_lines(&[&entries[0]], Path::new("logs.jsonl")).unwrap_err(),
             "export path must be absolute"
