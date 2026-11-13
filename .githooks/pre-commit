@@ -95,6 +95,11 @@ python3 "$root/tools/policy/check_source_file_size.py" --staged || fail=1
 # keep meaning what they meant (docs/policies.md). Judged against HEAD, so a
 # merge is charged only with what its resolution changed.
 python3 "$root/tools/policy/check_wire_enums.py" staged || fail=1
+# A type a compact format carries writes every field it declares: postcard reads
+# a struct's fields by position, so one left out shifts every field after it and
+# the frame does not decode (docs/policies.md). Judged over the whole tree, since
+# what a format carries is the interfaces' declarations, not this commit's files.
+python3 "$root/tools/policy/check_wire_attributes.py" || fail=1
 # An allowance marker is data the checks read, not prose: `// ratchet-allow(...)`
 # above a hit, `allow-breakpoint:` and `allow-socket-path:` trailing the line,
 # `/// Quiet:` above a harness entry point, a generated file's `@generated`, and

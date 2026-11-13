@@ -45,6 +45,12 @@ sources = [
     "crates/runtime/tilo-fs-client/src/entry_name.rs",
 ]
 roots = ["Request", "Response", "ToolRequest", "ToolReply", "Call", "HostFrame", "FsRequest", "FsReply"]
+# Settings' language packs (`request.rs`) and the shell-owned tools (`tools.rs`) are
+# length-prefixed JSON on their own sockets; the rest of this interface is postcard.
+# Both share the interface's one version and are checked by the stricter rules, but a
+# field left out of a JSON message is only left out, so only the postcard roots pin
+# what a compact encoding carries.
+json_roots = ["Request", "Response", "ToolRequest", "ToolReply"]
 
 [opaque]
 Uuid = "uuid::Uuid: 16 bytes"

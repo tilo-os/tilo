@@ -31,6 +31,11 @@ label = "Interface schemas match the code and their versions"
 run = "python3 tools/policy/check_interfaces.py check"
 
 [[step]]
+name = "wire-attributes"
+label = "A type a compact format carries writes every field"
+run = "python3 tools/policy/check_wire_attributes.py"
+
+[[step]]
 name = "format-migrations"
 label = "Versioned on-disk formats name the oldest version they bring up"
 run = "python3 tools/policy/check_format_migrations.py check"

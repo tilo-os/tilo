@@ -33,6 +33,12 @@ A change that may break an encoding on purpose (a type no byte of which is
 ever kept, or a format whose version is bumped and read by migration) is
 named, with the reason, in ``tools/policy/wire_enum_breaks.toml``, in the
 commit that makes it.
+
+``carried_types`` is the tree's one answer to which types a compact format
+carries: the interfaces' ``postcard``/``bincode`` declarations and what their
+roots reach. Checks that must know whether a type's bytes are read by position
+use it (``check_wire_attributes.py``); this one judges every serde enum,
+since a variant that moves breaks bytes either way.
 """
 
 from __future__ import annotations
@@ -42,7 +48,7 @@ import re
 import subprocess
 import sys
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -51,6 +57,9 @@ from rust_source import code_only, is_test_file, matching  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 BREAKS = Path("tools/policy/wire_enum_breaks.toml")
 SCOPES = ("crates/", "apps/")
+# The encodings that name a field or variant by its place in the bytes, never by
+# its name: what an interface.toml declares with one of these is read by position.
+POSITIONAL = ("postcard", "bincode")
 
 DERIVE = re.compile(r"#\[derive\(([^\]]*)\)\]")
 ENUM = re.compile(r"\benum\s+([A-Za-z_][A-Za-z0-9_]*)\b[^{;]*\{")
@@ -155,6 +164,38 @@ def in_scope(path: str) -> bool:
         and path.startswith(SCOPES)
         and not is_test_file(Path(path))
     )
+
+
+def carried_types(root: Path = ROOT) -> dict[str, set[str]]:
+    """`{file: type names}` of what a compact format carries: every type reachable
+    from the roots of an `interface.toml` whose `encoding` is a positional format
+    (`POSITIONAL`), read with `check_interfaces.py`.
+
+    A type carried only by a JSON interface is not one: those bytes name their
+    fields and variants, so what is left out is only left out. Neither is a type
+    reachable only through the interface's `json_roots`, the roots it carries as
+    JSON on a socket it shares with a compact protocol. A type both kinds carry is
+    one, because the positional reader is the one that breaks.
+    """
+    from check_interfaces import load_spec, read_items, rust_schema, tokenize, top_type
+
+    carried: dict[str, set[str]] = {}
+    for manifest in sorted(root.glob("crates/*/*/interface.toml")):
+        spec = load_spec(manifest)[0]
+        if spec.encoding not in POSITIONAL:
+            continue
+        reachable = {top_type(key) for key in rust_schema(spec, root)}
+        # The same closure over the JSON roots alone: what only they carry is JSON.
+        if spec.json_roots:
+            as_json = replace(spec, roots=spec.json_roots)
+            reachable -= {top_type(key) for key in rust_schema(as_json, root)}
+        for source in spec.sources:
+            items = []
+            read_items(tokenize((root / source).read_text()), source, items)
+            defined = reachable & {item.name for item in items}
+            if defined:
+                carried.setdefault(source, set()).update(defined)
+    return carried
 
 
 def _git(root: Path, *args: str) -> str:
