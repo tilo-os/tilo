@@ -1,38 +1,21 @@
-//! Whether this process runs inside a Tilo login, and where that login's
-//! compositor publishes its endpoints: the private [`SESSION_DIR`] under the
-//! login's runtime directory. The compositor and every client that looks for
-//! it (the runtime's agent door, `tilo-control`, the runtime portal) resolve
-//! these paths here, so they cannot drift apart.
+//! Whether this process runs inside a Tilo login, and where that login's compositor
+//! publishes its endpoints: the private [`SESSION_DIR`] under the login's runtime
+//! directory.
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
-/// The desktop name a Tilo login announces in `XDG_CURRENT_DESKTOP`.
 pub const TILO_DESKTOP: &str = "tilo";
-/// The session's private directory under `XDG_RUNTIME_DIR`, holding the
-/// compositor's sockets and the facts it publishes for the login.
 pub const SESSION_DIR: &str = "tilo-session";
-/// The agent door's file name in [`SESSION_DIR`].
 pub const AGENT_SOCKET_FILE: &str = "agent.sock";
-/// The directory, beside the agent door, holding the door of each confined
-/// environment (a `ush` guest) open now: one socket per environment, bound
-/// into that environment alone at [`GUEST_AGENT_SOCKET`].
 pub const ENVIRONMENT_DOORS_DIR: &str = "environments";
-/// Where a confined environment sees its own agent door.
 pub const GUEST_AGENT_SOCKET: &str = "/run/tilo/agent.sock";
-/// The variable naming the agent door a `--connect` client uses in place of
-/// the session's own: an environment's ([`GUEST_AGENT_SOCKET`]).
 pub const AGENT_SOCKET_ENV: &str = "TILO_AGENT_SOCK";
-/// The device admin's control socket's file name in [`SESSION_DIR`].
 pub const ADMIN_CONTROL_SOCKET_FILE: &str = "admin-control.sock";
 /// The development test-control socket's file name in [`SESSION_DIR`]: what
 /// `tilo-control` and the tools that drive a desktop reach for unless they are
 /// told another path.
 pub const TEST_CONTROL_SOCKET_FILE: &str = "test-control.sock";
-/// File in [`SESSION_DIR`] naming the room of the workspace in front: the
-/// room a command started now (an app run from a terminal, or by
-/// `tilo-app dev`) joins, as an app the shell starts joins the room it names
-/// with the launcher's `--workspace-id`.
 pub const WORKSPACE_ID_FILE: &str = "workspace-id";
 /// File in [`SESSION_DIR`] holding the bare name of the running session's
 /// Wayland socket, so `WAYLAND_DISPLAY=$(cat …)` is exactly right. The
@@ -45,21 +28,11 @@ pub const WAYLAND_DISPLAY_FILE: &str = "wayland-display";
 /// continues a saved import, so nothing it carries lands under an identity
 /// ceremony still under way.
 pub const IMPORT_READINESS_SOCKET_PREFIX: &str = "import-readiness";
-/// The installed folder importer's directory under the login's local data
-/// directory, holding the state of the imports it was asked to carry over.
 pub const IMPORTER_DIR: &str = "tilo-imager";
-/// The saved folder import the importer keeps for the next login: what the
-/// person reviewed and left, whose `show_on_login` says whether it opens once
-/// their first use is over.
 pub const IMPORTER_CONTINUATION_FILE: &str = "desktop-continuation.json";
 
-/// The sockets a Tilo compositor serves in [`SESSION_DIR`] for the life of
-/// its session. Either one's presence is the session's own marker.
 const SESSION_SOCKETS: [&str; 2] = [AGENT_SOCKET_FILE, ADMIN_CONTROL_SOCKET_FILE];
 
-/// [`SESSION_DIR`] under `runtime_dir`; `None` when there is no runtime
-/// directory or it is not absolute, which leaves no private place for the
-/// session's files (guessing `/tmp` would put them somewhere world-writable).
 #[must_use]
 pub fn session_dir(runtime_dir: Option<OsString>) -> Option<PathBuf> {
     let runtime_dir = PathBuf::from(runtime_dir?);
@@ -68,9 +41,6 @@ pub fn session_dir(runtime_dir: Option<OsString>) -> Option<PathBuf> {
         .then(|| runtime_dir.join(SESSION_DIR))
 }
 
-/// [`import_readiness_socket_file`] in [`session_dir`], for the session whose
-/// Wayland socket is `display`. `None` without a runtime directory, or when
-/// `display` is not a name a Wayland socket can have.
 #[cfg(unix)]
 #[must_use]
 pub fn import_readiness_socket(
@@ -81,10 +51,6 @@ pub fn import_readiness_socket(
     Some(session_dir(runtime_dir)?.join(import_readiness_socket_file(display, wayland)?))
 }
 
-/// The file name [`import_readiness_socket`] ends in: the running session's
-/// own, since a click of Add folders belongs to the session the person is
-/// looking at even when another one of this login runs beside it. `None`
-/// when `display` could not name a Wayland socket.
 #[cfg(unix)]
 #[must_use]
 pub fn import_readiness_socket_file(display: &OsStr, wayland: u64) -> Option<String> {
@@ -103,9 +69,6 @@ pub fn import_readiness_socket_file(display: &OsStr, wayland: u64) -> Option<Str
     ))
 }
 
-/// Where the installed folder importer keeps the state of the imports it was
-/// asked to carry over: the importer writes it, and the login reads the review
-/// it left. `None` when this account has no local data directory.
 #[must_use]
 pub fn importer_migrations_dir() -> Option<PathBuf> {
     Some(
@@ -115,8 +78,6 @@ pub fn importer_migrations_dir() -> Option<PathBuf> {
     )
 }
 
-/// The saved folder import the login continues: [`importer_migrations_dir`]
-/// and [`IMPORTER_CONTINUATION_FILE`]. `None` without a local data directory.
 #[must_use]
 pub fn importer_continuation() -> Option<PathBuf> {
     Some(importer_migrations_dir()?.join(IMPORTER_CONTINUATION_FILE))
@@ -136,11 +97,6 @@ pub fn names_tilo(current_desktop: Option<&OsStr>) -> bool {
         })
 }
 
-/// The directory this login's runtime files live in: `XDG_RUNTIME_DIR` when
-/// it is set and absolute, else the account's `/run/user/<uid>` where
-/// `exists` says it is there. A terminal multiplexer, `ssh` or a service
-/// manager can each start a process without the variable, and the directory
-/// is where the session put its sockets all the same.
 #[must_use]
 pub fn login_runtime_dir_from(
     runtime_dir: Option<OsString>,
@@ -156,7 +112,6 @@ pub fn login_runtime_dir_from(
     })
 }
 
-/// This process's login runtime directory ([`login_runtime_dir_from`]).
 #[cfg(unix)]
 #[must_use]
 pub fn login_runtime_dir() -> Option<PathBuf> {
@@ -167,7 +122,6 @@ pub fn login_runtime_dir() -> Option<PathBuf> {
     )
 }
 
-/// This process's login runtime directory: none outside Unix.
 #[cfg(not(unix))]
 #[must_use]
 pub fn login_runtime_dir() -> Option<PathBuf> {
@@ -198,11 +152,9 @@ pub fn has_session_marker(_runtime_dir: &Path) -> bool {
     false
 }
 
-/// Whether a process with these facts runs inside a Tilo login: its
-/// environment names the desktop, **or** its account's runtime directory
-/// holds the session's own marker. The environment is a hint that can only
-/// add: a process that lost it (tmux, ssh, a service) is still inside the
-/// login its runtime directory belongs to.
+/// Whether a process with these facts runs inside a Tilo login: its environment names
+/// the desktop, or its account's runtime directory holds the session's own marker. The
+/// environment is a hint that can only add.
 #[must_use]
 pub fn in_tilo_login(
     current_desktop: Option<&OsStr>,
@@ -212,7 +164,6 @@ pub fn in_tilo_login(
     names_tilo(current_desktop) || runtime_dir.is_some_and(marker)
 }
 
-/// Whether this process runs inside a Tilo login ([`in_tilo_login`]).
 #[must_use]
 pub fn is_tilo_login() -> bool {
     in_tilo_login(
@@ -240,8 +191,6 @@ mod tests {
     #[test]
     fn a_process_that_lost_its_environment_is_still_inside_its_login() {
         let runtime = Path::new("/run/user/1000");
-        // tmux, ssh and services drop `XDG_CURRENT_DESKTOP`; the session's
-        // own sockets in the runtime directory still say whose login this is.
         assert!(in_tilo_login(None, Some(runtime), |_| true));
         assert!(in_tilo_login(Some(OsStr::new("")), Some(runtime), |_| true));
         assert!(in_tilo_login(
@@ -258,7 +207,6 @@ mod tests {
             Some(runtime),
             |_| false
         ));
-        // A foreign desktop with no Tilo session in its runtime directory.
         assert!(!in_tilo_login(
             Some(OsStr::new("GNOME")),
             Some(runtime),
@@ -295,8 +243,6 @@ mod tests {
         assert_eq!(session_dir(None), None);
     }
 
-    /// The importer and the session derive one path from the display the
-    /// person is looking at, and no path from a name no socket can have.
     #[cfg(unix)]
     #[test]
     fn the_import_readiness_socket_names_the_session_by_its_display() {
