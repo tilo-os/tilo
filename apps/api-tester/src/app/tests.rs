@@ -1,6 +1,5 @@
-//! Tests of the API tester root widget: the model it keeps, the commands it
-//! applies and the views it rebuilds. The widget tree itself is exercised
-//! through a headless driver in `tests/a11y.rs`.
+//! Tests of the API tester's root widget: the model it keeps, the commands it applies and
+//! the views it rebuilds. The widget tree itself is exercised in `tests/a11y.rs`.
 
 use super::*;
 use crate::http::Outgoing;
@@ -13,7 +12,6 @@ use ui::framework::testing::TestApp;
 use ui::tilo_resource::{Edit, Invoke, Operation as _, Replica, Resource as _};
 use ui::widget::DrawChild;
 
-/// The sample workspace, built through its edits and verbs.
 fn sample() -> AutoCommit {
     let mut replica = Replica::<Workspace>::new();
     for invoke in crate::seed::workspace() {
@@ -26,7 +24,6 @@ fn record(doc: &AutoCommit) -> Rc<Workspace> {
     Rc::new(Workspace::read(doc).unwrap())
 }
 
-/// A demo app whose workspace has been seeded into a fresh document.
 fn demo() -> (ApiTesterApp, AutoCommit) {
     let dispatcher = ui::framework::testing::dispatcher::<Workspace>("so.tilo.api-tester");
     let doc = sample();
@@ -45,8 +42,6 @@ fn resync(app: &mut ApiTesterApp, doc: &AutoCommit) {
     app.sync(doc, &ROOT);
 }
 
-/// Apply what the window submitted, as its host does, and present the
-/// result. Remembers the last field edit applied.
 fn drain(app: &mut ApiTesterApp, doc: &mut AutoCommit) -> bool {
     let changed = app.drain_commands();
     apply(app, doc);
@@ -65,7 +60,6 @@ fn apply(app: &mut ApiTesterApp, doc: &mut AutoCommit) {
     app.present_workspace(&record(doc));
 }
 
-/// The field edit `edit` as the last drain records one.
 fn as_applied(edit: &Edit<Workspace>) -> serde_json::Value {
     serde_json::to_value(edit).unwrap()
 }
@@ -75,7 +69,6 @@ fn outgoing(app: &mut ApiTesterApp, doc: &AutoCommit) -> Outgoing {
     crate::http::build_outgoing(&app.request, &app.env_vars())
 }
 
-/// Apply `submit` to `doc` as the window would submit it.
 fn submit(
     app: &mut ApiTesterApp,
     doc: &mut AutoCommit,
@@ -89,8 +82,6 @@ fn push(app: &ApiTesterApp, cmd: Cmd) {
     app.sink.borrow_mut().push(cmd);
 }
 
-/// The live constructor fabricates nothing, the demo constructor seeds a full
-/// workspace, and a seeded workspace survives a CRDT round trip.
 #[test]
 fn constructors_start_live_empty_demo_seeded_and_persist_through_crdt() {
     let a = ApiTesterApp::new_demo();
@@ -115,9 +106,6 @@ fn constructors_start_live_empty_demo_seeded_and_persist_through_crdt() {
     assert_eq!(b.environments.len(), a.environments.len());
 }
 
-/// The request builder's derived state: the active environment resolves, the
-/// outgoing URL is built from the document's text, and loading a saved request
-/// swaps the builder and the document's method, URL and body.
 #[test]
 fn request_builder_resolves_environment_and_loads_saved_requests() {
     let (mut a, mut doc) = demo();
@@ -159,10 +147,8 @@ fn replaying_history_fills_the_builder_without_sending() {
     assert_eq!(a.selected, None);
 }
 
-/// A history row offers what a person expects of one: replay it, keep it as a
-/// saved request, or forget it (`APP-api-tester-04`). A saved request's row
-/// offers its own two, and neither kind is offered a control that would do
-/// nothing to it.
+/// A history row offers replay, keep-as-request or forget; a saved request's row offers its
+/// own two, and neither is offered a control that would do nothing.
 #[test]
 fn history_rows_offer_replay_save_and_delete() {
     let (mut a, doc) = demo();
@@ -196,16 +182,13 @@ fn history_rows_offer_replay_save_and_delete() {
         .collect();
     assert_eq!(labels, ["Rename request", "Delete request"]);
 
-    // A row that is neither (a collection header) offers nothing at all.
+    // A collection header offers nothing at all.
     a.menu = None;
     a.open_row_menu("collection:0", lift, vello::kurbo::Point::new(40.0, 110.0));
     assert!(a.menu.is_none(), "no menu for a row with no actions");
     drop(doc);
 }
 
-/// Keeping a sent request as a saved one asks for its name and leaves the
-/// builder alone; forgetting it takes it out of the history, and Undo brings
-/// it back because the verb is a change of the record.
 #[test]
 fn a_sent_request_is_saved_as_a_request_or_forgotten() {
     let (mut a, mut doc) = demo();
@@ -246,10 +229,6 @@ fn a_sent_request_is_saved_as_a_request_or_forgotten() {
     );
 }
 
-/// The environment picker is wired through the action host: selecting a new
-/// environment submits exactly the field edit of the active environment an
-/// agent would, and the choice lands in the shared document. Its commands
-/// open the sheets that manage environments and are not kept as a value.
 #[test]
 fn selecting_environment_dispatches_the_set_active_action() {
     let (mut a, mut doc) = demo();
@@ -306,8 +285,6 @@ fn selecting_environment_dispatches_the_set_active_action() {
     assert_eq!(a.env_state.get(), target.name, "a command is not a value");
 }
 
-/// Renaming or deleting the active environment updates the picker to match
-/// instead of the stale picker switching the environment away.
 #[test]
 fn renaming_the_active_environment_keeps_it_active() {
     let (mut a, mut doc) = demo();
@@ -344,8 +321,6 @@ fn renaming_the_active_environment_keeps_it_active() {
     assert_eq!(a.env_state.get(), NO_ENV);
 }
 
-/// Each sheet collects what its action needs and dispatches the canonical
-/// action; a sheet opened from a row acts on that row.
 #[expect(
     clippy::too_many_lines,
     reason = "one scenario walks every sheet so each reads against the same workspace"
@@ -393,8 +368,8 @@ fn sheets_dispatch_canonical_actions_for_the_row_they_were_opened_on() {
         "Add variable submitted its edit"
     );
 
-    // A hover action on the second saved request renames that request, not
-    // the one open in the builder.
+    // A hover action on the second saved request renames that request, not the one open in the
+    // builder.
     let (collection, request) = {
         let collection = a
             .collections
@@ -450,9 +425,8 @@ fn sheets_dispatch_canonical_actions_for_the_row_they_were_opened_on() {
     assert!(a.form.is_none());
     assert_eq!(doc.get_heads(), heads);
 
-    // Deleting from a row removes it (once the host has the person's
-    // consent, which resolving here stands for) and keeps the builder's
-    // selection. No sheet of the window's own asks first.
+    // Deleting from a row removes it (the host has the person's consent, which resolving
+    // here stands for) and keeps the builder's selection.
     push(
         &a,
         Cmd::DeleteRequest(FormTarget {
@@ -487,7 +461,6 @@ fn saving_a_request_files_it_and_selects_it() {
     assert_eq!(a.request.name, "Health");
 }
 
-/// View commands choose what shows and stay off the collaborative document.
 #[test]
 fn view_commands_stay_device_local() {
     let (mut a, mut doc) = demo();
@@ -520,8 +493,6 @@ fn view_commands_stay_device_local() {
     assert!(!a.stale.tab_panel && !a.stale.response_body && !a.stale.body_inner);
 }
 
-/// Typing in the blank row makes it a pair and gives the table a new blank
-/// row; edits, the checkbox and remove act on the pair by id.
 #[test]
 fn key_value_tables_edit_the_request() {
     let (mut a, mut doc) = demo();
@@ -580,8 +551,8 @@ fn key_value_tables_edit_the_request() {
     assert_eq!(a.request.params.len(), count);
 }
 
-/// The auth tab edits the scheme the request is composed with; its
-/// credential stays on the device.
+/// The auth tab edits the scheme the request is composed with; its credential stays on the
+/// device.
 #[test]
 fn auth_fields_edit_the_request() {
     let mut app = TestApp::<ApiTesterShell>::new().unwrap();
@@ -650,8 +621,6 @@ fn actual_form_capture_settles_on_the_executor_clock_without_wall_time() {
     );
 }
 
-/// Every named `--shots` scenario stages, settles, renders, and leaves an
-/// accessibility tree with no findings.
 #[test]
 fn every_scenario_stages_and_renders_an_accessible_frame() {
     let mut default = TestApp::<ApiTesterShell>::capture(None).unwrap();
@@ -690,9 +659,6 @@ fn every_scenario_stages_and_renders_an_accessible_frame() {
     assert!(!app.stage("no-such-scenario"));
 }
 
-/// The resource surface: Send performs a real HTTP round trip and reports
-/// worker completion exactly once, and a late record resolves by one indexed
-/// lookup.
 #[test]
 fn resource_provider_sends_for_real_and_resolves_exact_records() {
     resource_send_performs_a_real_http_round_trip();
@@ -711,7 +677,6 @@ fn open(app: &mut TestApp<ApiTesterShell>, request: &Request) {
     }
 }
 
-/// Case of `resource_provider_sends_for_real_and_resolves_exact_records`.
 #[expect(
     clippy::too_many_lines,
     reason = "end-to-end scenario that reads top-to-bottom"
@@ -838,13 +803,12 @@ fn resource_send_performs_a_real_http_round_trip() {
     );
 }
 
-/// Case of `resource_provider_sends_for_real_and_resolves_exact_records`.
 fn resource_send_reports_worker_completion_instead_of_queue_success() {
-    // The real hosted HTTP scenario asserts admission, worker completion and exactly one terminal delivery.
+    // The hosted HTTP scenario asserts admission, worker completion and exactly one
+    // terminal delivery.
     resource_send_performs_a_real_http_round_trip();
 }
 
-/// A sheet that asks for one name is as short as that name's field.
 #[test]
 fn the_new_environment_sheet_is_as_tall_as_its_one_field() {
     let mut app =
@@ -884,8 +848,8 @@ fn a_wide_window_keeps_each_value_beside_its_key() {
     );
 }
 
-/// Send with no URL says what is missing instead of doing nothing (or, in a
-/// browser, fetching the page itself).
+/// Send with no URL says what is missing, instead of doing nothing or, in a browser,
+/// fetching the page itself.
 #[test]
 fn send_without_a_url_asks_for_one() {
     let mut app = TestApp::<ApiTesterShell>::new().unwrap();
@@ -908,8 +872,8 @@ fn send_without_a_url_asks_for_one() {
     assert!(app.state().history.is_empty());
 }
 
-/// A guest's Save opens the save form at once: the button reaches nothing
-/// outside, and saving into a collection is an edit, decided as one.
+/// A guest's Save opens the save form at once: the button reaches nothing outside, and
+/// saving into a collection is an edit.
 #[test]
 fn a_guests_save_opens_the_form_unasked() {
     let mut app = TestApp::<ApiTesterShell>::new().unwrap();
@@ -932,8 +896,8 @@ fn a_guests_save_opens_the_form_unasked() {
     .unwrap();
 }
 
-/// Escape answers the window's ask "no", as Cancel does: the ask closes,
-/// nothing is sent, and no empty search is left open in its place.
+/// Escape answers the window's ask "no", as Cancel does: the ask closes, nothing is sent,
+/// and no empty search is left open.
 #[test]
 fn escape_closes_a_guests_ask_without_leaving_a_search() {
     let mut app = TestApp::<ApiTesterShell>::new().unwrap();
@@ -964,10 +928,8 @@ fn escape_closes_a_guests_ask_without_leaving_a_search() {
     .unwrap();
 }
 
-/// A guest (an Editor) pressing Send reaches a server outside the workspace, so
-/// the workspace's grants ask first: the guest is asked in the window, told they
-/// decide, and nothing is sent until they confirm. The click is never
-/// dropped unseen.
+/// A guest pressing Send reaches a server outside the workspace, so the workspace's grants
+/// ask first: the guest is asked in the window.
 #[test]
 fn a_guests_send_is_asked_in_the_window_saying_who_decides() {
     let mut app = TestApp::<ApiTesterShell>::new().unwrap();
@@ -1004,8 +966,8 @@ fn a_guests_send_is_asked_in_the_window_saying_who_decides() {
     .unwrap();
 }
 
-/// A server that answers one request with `head` and then `body`, and stops
-/// writing when the client hangs up.
+/// A server that answers one request with `head` and then `body`, and stops writing when
+/// the client hangs up.
 fn serve_once(head: String, body: Vec<u8>) -> (String, Responder) {
     let served = Responder::serve(move |peer| {
         if !peer.write(head.as_bytes()) {
@@ -1020,8 +982,7 @@ fn serve_once(head: String, body: Vec<u8>) -> (String, Responder) {
     (format!("{}/body", served.url()), served)
 }
 
-/// Send the open request through the effect and wait for the response the
-/// pane shows.
+/// Send the open request through the effect and wait for the response the pane shows.
 fn sent_response(url: String) -> ResponseData {
     let mut app = TestApp::<ApiTesterShell>::new().unwrap();
     let mut request = Request::new("Body proof");
@@ -1043,9 +1004,8 @@ fn sent_response(url: String) -> ResponseData {
         .expect("the response is displayed")
 }
 
-/// Sending answers whoever sent the request with the response the pane
-/// shows: an agent or a script reads the status, headers and body without
-/// looking at the window.
+/// Sending answers whoever sent the request with the response the pane shows, so an agent
+/// reads the status, headers and body without looking at the window.
 #[test]
 fn send_answers_its_caller_with_the_response() {
     let body = "{\"ok\":true}";
@@ -1090,8 +1050,7 @@ fn send_answers_its_caller_with_the_response() {
     );
 }
 
-/// A response larger than the pane can lay out is downloaded only as far
-/// as it is shown, and the pane says so instead of holding gigabytes.
+/// A response larger than the pane can lay out is downloaded only as far as it is shown.
 #[test]
 fn a_huge_response_is_shown_in_part_without_downloading_it_whole() {
     let total = 4 * crate::http::MAX_SHOWN_BODY_BYTES;
@@ -1127,8 +1086,7 @@ fn a_huge_response_is_shown_in_part_without_downloading_it_whole() {
     assert_eq!(response.shown_bytes, crate::http::MAX_SHOWN_BODY_BYTES);
 }
 
-/// A binary body is shown as hex at its true size, not as replacement
-/// characters whose count the size was taken from.
+/// A binary body is shown as hex at its true size, not as replacement characters.
 #[test]
 fn a_binary_response_is_shown_as_hex_at_its_size() {
     let png: Vec<u8> = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]
@@ -1210,7 +1168,6 @@ fn a_failed_request_is_shown_in_the_response_pane() {
     .unwrap();
 }
 
-/// Case of `resource_provider_sends_for_real_and_resolves_exact_records`.
 fn resource_provider_resolves_a_late_record_without_scanning_the_workspace() {
     let mut workspace = Replica::<Workspace>::new();
     let mut requests = ui::tilo_resource::Collection::new();
@@ -1249,8 +1206,8 @@ fn resource_provider_resolves_a_late_record_without_scanning_the_workspace() {
     );
 }
 
-/// The document returns records in the order of their ids, so a pick or a
-/// rename that re-reads it must not shuffle the lists a person arranged.
+/// The document returns records in the order of their ids, so a pick or a rename must not
+/// shuffle the lists a person arranged.
 #[test]
 fn rereading_the_document_keeps_the_order_on_screen() {
     let (mut app, mut doc) = demo();
@@ -1274,8 +1231,8 @@ fn rereading_the_document_keeps_the_order_on_screen() {
     assert_eq!((names(&app), collections(&app)), before);
 }
 
-/// The app's retained shared navigation paints long saved-request and history
-/// labels within its measured row, including at twice the text size.
+/// The retained navigation paints long saved-request and history labels within its measured
+/// row, including at twice the text size.
 #[test]
 fn long_navigation_labels_fit_the_shared_rows() {
     fn find(widget: &mut dyn Widget, theme: &Theme, text: &mut ui::TextRenderer) -> usize {
@@ -1289,9 +1246,8 @@ fn long_navigation_labels_fit_the_shared_rows() {
                 theme,
                 &ui::presence::PresenceCtx::default(),
             );
-            // The list paints the rows near the viewport and clips the rest
-            // to itself, so a row below the box is clipped away, not overflow:
-            // what a label must do is stay inside the row that holds it.
+            // The list paints the rows near the viewport and clips the rest, so a label must
+            // stay inside the row that holds it.
             let rows: Vec<vello::kurbo::Rect> = widget
                 .children_mut()
                 .into_iter()
@@ -1362,8 +1318,7 @@ fn long_navigation_labels_fit_the_shared_rows() {
         let theme = Theme::dark().with_text_scale(scale);
         app.harness().set_theme(theme.clone());
         app.with_surface::<ApiTesterApp, _>(|surface| {
-            // At large text this viewport uses a push sidebar. Review the
-            // actual visible navigation pane rather than hidden content.
+            // At large text this viewport uses a push sidebar: review the visible pane.
             surface.nav.show(ui::widget::NavPane::Sidebar);
             surface.nav.open_sidebar();
             surface.nav.snap();
@@ -1385,9 +1340,8 @@ fn long_navigation_labels_fit_the_shared_rows() {
     }
 }
 
-/// The request's name and its commands stand in the window's header row, which is the window's
-/// bar: the bar declares no copy of them, and the window has no search of its own beside the
-/// bar's.
+/// The request's name and its commands stand in the window's bar, which declares no copy of
+/// them; the window has no search of its own beside the bar's.
 #[test]
 fn the_requests_name_and_commands_are_in_the_window_bar() {
     let mut app = TestApp::<ApiTesterShell>::new().unwrap();
@@ -1424,8 +1378,8 @@ fn the_requests_name_and_commands_are_in_the_window_bar() {
     .unwrap();
 }
 
-/// The history keeps the request that was sent, so replaying an entry brings
-/// its headers, body and parameters back — and never a credential's value.
+/// The history keeps the request that was sent, so replaying brings its headers, body and
+/// parameters back, and never a credential's value.
 #[test]
 fn a_history_entry_keeps_the_whole_request_it_sent() {
     let (mut a, mut doc) = demo();
@@ -1488,8 +1442,7 @@ fn a_history_entry_keeps_the_whole_request_it_sent() {
     assert_eq!(a.request.body_text, authored.body_text);
 }
 
-/// Cancelling a request that is in flight stops waiting for it and says so,
-/// instead of leaving the app looking like it is still on its way.
+/// Cancelling a request in flight stops waiting for it and says so.
 #[test]
 fn cancelling_a_request_in_flight_stops_waiting_for_it() {
     let (mut a, mut doc) = demo();
@@ -1506,8 +1459,8 @@ fn cancelling_a_request_in_flight_stops_waiting_for_it() {
     drain(&mut a, &mut doc);
 }
 
-/// Copying a response part with nothing to copy is a refusal with a reason,
-/// not a silent no-op; and a part that does not exist is refused by name.
+/// Copying a response part with nothing to copy is a refusal with a reason, and a part that
+/// does not exist is refused by name.
 #[test]
 fn copying_part_of_a_response_that_is_not_there_is_refused() {
     let a = ApiTesterApp::new_demo();
@@ -1522,8 +1475,8 @@ fn copying_part_of_a_response_that_is_not_there_is_refused() {
     );
 }
 
-/// The window bar's sidebar button flips the sidebar on every click, in a
-/// window wide enough to dock it and in a narrow one.
+/// The bar's sidebar button flips the sidebar on every click, in a wide window and in a
+/// narrow one.
 #[test]
 fn the_window_bars_sidebar_button_flips_the_sidebar() {
     ui::framework::testing::check_window_sidebar_button(

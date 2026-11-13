@@ -1,14 +1,8 @@
-//! The workspace's verbs and the app.
-//!
-//! Renaming a collection, a saved request, an environment or a variable,
-//! choosing the method, typing the URL or the body, editing a row and
-//! choosing the active environment are the built-in field edits of their
-//! paths (`Workspace::paths().request.url.splice(..)`). The methods below are
-//! the operations that are more than setting a field: creating and deleting,
-//! saving and opening requests, and recording what was sent. Sending itself
-//! reaches the network from this device: an effect
-//! ([`crate::actions::ApiTesterEffect`]) whose completion records the history
-//! entry through [`Workspace::RECORD_SENT`].
+//! The workspace's verbs and the app. Renaming and typing are the built-in field edits
+//! of their paths; the methods below are the operations beyond setting a field: creating
+//! and deleting, saving and opening requests, recording what was sent. Sending is an
+//! effect, whose completion records the history entry through
+//! [`Workspace::RECORD_SENT`].
 
 use ui::framework::{ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
@@ -22,13 +16,8 @@ use crate::record::{Environment, HISTORY_LIMIT, RequestRecord, SavedCollection, 
 pub use crate::record::Workspace;
 
 impl Workspace {
-    /// What the record holds: the collections, requests, environments and variables, and the
-    /// one active environment.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
+    /// What the record holds: the collections, requests, environments and variables, and
+    /// the one active environment.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -44,14 +33,12 @@ impl Workspace {
     read_content = Workspace::read_document
 )]
 impl Workspace {
-    /// Start a new request in the builder.
     #[action]
     pub fn new_request(&mut self, cx: &mut ActionCx) {
         self.request = RequestRecord::named("New request");
         self.opened = Atom(cx.uuid().to_string());
     }
 
-    /// Create a collection.
     #[action]
     pub fn new_collection(&mut self, cx: &mut ActionCx, #[param("Collection name")] name: String) {
         self.collections.push(
@@ -63,7 +50,6 @@ impl Workspace {
         );
     }
 
-    /// Delete a collection and the requests it holds.
     #[action(destructive, item = collections)]
     pub fn delete_collection(&mut self, collection: &Id) -> Result<(), Refusal> {
         self.collections
@@ -72,7 +58,6 @@ impl Workspace {
             .ok_or_else(|| Refusal::new("no such collection"))
     }
 
-    /// Add a new request to a collection.
     #[action(item = collections)]
     pub fn add_request(
         &mut self,
@@ -91,10 +76,6 @@ impl Workspace {
         Ok(())
     }
 
-    /// Save the request in the builder to a collection.
-    ///
-    /// A request the builder opened from that collection is saved over;
-    /// otherwise it is added, and the builder holds the saved request.
     #[action(item = collections)]
     pub fn save_request(
         &mut self,
@@ -129,7 +110,6 @@ impl Workspace {
         Ok(())
     }
 
-    /// Open a saved request in the builder.
     #[action(item = collections)]
     pub fn open_request(
         &mut self,
@@ -146,7 +126,6 @@ impl Workspace {
         Ok(())
     }
 
-    /// Delete a saved request.
     #[action(destructive, item = collections)]
     pub fn delete_request(
         &mut self,
@@ -160,7 +139,6 @@ impl Workspace {
             .ok_or_else(|| Refusal::new("no such request"))
     }
 
-    /// Create an environment.
     #[action]
     pub fn new_environment(
         &mut self,
@@ -176,7 +154,6 @@ impl Workspace {
         );
     }
 
-    /// Delete an environment and its variables.
     #[action(destructive, item = environments)]
     pub fn delete_environment(&mut self, environment: &Id) -> Result<(), Refusal> {
         self.environments
@@ -188,7 +165,6 @@ impl Workspace {
         Ok(())
     }
 
-    /// Use an environment's variables in what is sent.
     #[action(item = environments)]
     pub fn use_environment(&mut self, environment: &Id) -> Result<(), Refusal> {
         if !self.environments.contains(environment) {
@@ -198,9 +174,6 @@ impl Workspace {
         Ok(())
     }
 
-    /// Add a variable to an environment.
-    ///
-    /// A secret variable's value is set on each device, never here.
     #[action(item = environments)]
     pub fn add_variable(
         &mut self,
@@ -231,16 +204,15 @@ impl Workspace {
         Ok(())
     }
 
-    /// Open a sent request again in the builder, as a new request.
     #[action(item = history)]
     pub fn open_sent(&mut self, cx: &mut ActionCx, sent: &Id) -> Result<(), Refusal> {
         let sent = self.history.get(sent).ok_or("no such request")?;
         self.request = match sent.replay_of() {
-            // The entry kept the request it sent: its headers, body and
-            // parameters come back with it.
+            // The entry kept the request it sent: its headers, body and parameters come
+            // back with it.
             Some(replay) => RequestRecord::of(&replay.to_request()),
-            // An entry recorded before history kept the request itself: its
-            // method and URL are all that is known.
+            // An entry recorded before history kept the request itself: its method and URL
+            // are all that is known.
             None => RequestRecord {
                 method: sent.method,
                 url: sent.url.0.clone(),
@@ -251,12 +223,6 @@ impl Workspace {
         Ok(())
     }
 
-    /// Keep what a sent request sent as a saved request in a collection.
-    ///
-    /// The builder is left as it is: saving a request from the history is
-    /// something a person does while writing another one. An entry recorded
-    /// before the history kept the request itself saves the method and URL
-    /// that are all it has.
     #[action(item = collections)]
     pub fn save_sent(
         &mut self,
@@ -278,8 +244,8 @@ impl Workspace {
             .map(|name| name.trim().to_owned())
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| {
-                // The route names it: the query is where a token usually sits,
-                // and a request's name is searchable.
+                // The route names it: a query is where a token usually sits, and a name is
+                // searchable.
                 let route = entry.url.0.split(['?', '#']).next().unwrap_or_default();
                 format!(
                     "{} {}",
@@ -295,7 +261,6 @@ impl Workspace {
         Ok(())
     }
 
-    /// Forget a sent request. Undo brings it back, so nobody is asked first.
     #[action(destructive, item = history)]
     pub fn delete_sent(&mut self, sent: &Id) -> Result<(), Refusal> {
         self.history

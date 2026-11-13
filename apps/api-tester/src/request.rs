@@ -1,12 +1,7 @@
-//! The request builder: the URL bar, the variable hint, the tabs and what each
-//! tab edits.
-//!
-//! Every field of the request in the builder is a field of the shared
-//! record: the method, the URL and the body, the rows, the authentication.
-//! Their controls submit field edits at their paths; the URL and the body
-//! are text controls whose every keystroke is a splice there, so they keep
-//! their focus however the rest of the view is rebuilt. Credentials stay on
-//! the device: their fields set them through an effect.
+//! The request builder: the URL bar, the variable hint, the tabs and what each tab
+//! edits. Every field is a field of the shared record, and the URL and body are text
+//! controls whose keystrokes are splices there, so they keep their focus however the rest
+//! of the view is rebuilt. Credentials are set through an effect.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -27,7 +22,6 @@ use crate::resource::Workspace;
 use crate::vars;
 use ui::widget::{Slot, SlotHandle};
 
-/// Ids of the blank row each table ends with.
 #[derive(Clone, Debug)]
 pub(crate) struct BlankRows {
     pub(crate) params: String,
@@ -64,10 +58,9 @@ impl BlankRows {
     }
 }
 
-/// A tab's panel and what it reports besides its element.
 pub(crate) struct Panel {
     pub(crate) element: Element,
-    /// The slot inside the panel that its own mode switch replaces.
+    /// The slot the panel's own mode switch replaces.
     pub(crate) inner: Option<SlotHandle>,
     /// The key/value table showing, and the queue its rows change through.
     pub(crate) table: Option<(Table, KvQueue)>,

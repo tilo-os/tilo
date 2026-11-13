@@ -1,12 +1,6 @@
-//! Request execution.
-//!
-//! [`build_outgoing`] resolves a [`Request`] against the active
-//! environment's variables into a concrete, ready-to-send shape (URL with
-//! query string, header list, body bytes). [`send`] then performs the
-//! round-trip through `tilo_net` and returns a [`ResponseData`]. The
-//! builder is pure and unit-tested; the network call is isolated so the
-//! rest of the app never depends on a live connection — the screenshot
-//! seed uses [`sample_response`] instead.
+//! Request execution: [`build_outgoing`] resolves a [`Request`] against the active
+//! environment into a concrete shape, and [`send`] performs the round trip through
+//! `tilo_net`. The screenshot seed uses [`sample_response`] instead.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -16,12 +10,11 @@ use base64::Engine;
 use crate::model::{Auth, BodyMode, KeyValue, Request, ResponseData};
 use crate::vars;
 
-/// A fully-resolved request, with all `{{vars}}` expanded and auth folded
-/// into the header list. This is the exact thing that hits the wire.
+/// A fully resolved request, with every `{{var}}` expanded and auth folded into the
+/// headers.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Outgoing {
     pub method: String,
-    /// Full URL including the assembled query string.
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: Option<String>,
@@ -35,12 +28,11 @@ impl std::fmt::Debug for Outgoing {
     }
 }
 
-/// Appends the encoded `query` pairs to `base`, keeping any `#fragment` last.
 fn append_query(base: String, query: &[String]) -> String {
     if query.is_empty() {
         base
     } else {
-        // Fragments are not sent to the server; params must precede them.
+        // Params must precede a fragment: a fragment is not sent to the server.
         let (target, fragment) = base
             .split_once('#')
             .map_or((base.as_str(), None), |(target, fragment)| {
@@ -63,9 +55,7 @@ fn append_query(base: String, query: &[String]) -> String {
     }
 }
 
-/// Resolve a [`Request`] against `env_vars` into a concrete [`Outgoing`].
-/// Query params, headers, the chosen auth scheme, and the body are all
-/// substituted and assembled here.
+/// Resolve a [`Request`] against `env_vars` into what hits the wire.
 pub fn build_outgoing(req: &Request, env_vars: &HashMap<String, String>) -> Outgoing {
     let sub = |s: &str| vars::substitute(s, env_vars);
 
@@ -157,18 +147,12 @@ pub fn build_outgoing(req: &Request, env_vars: &HashMap<String, String>) -> Outg
     }
 }
 
-/// The shared client. In a page, requests to sites that do not allow the
-/// page to read their responses go through the host's fetch proxy when it
-/// offers one.
-/// The longest one request may take, from sending it to the last byte of its
-/// body. A server that never answers is a failure with a reason, not an app
-/// that waits forever with its only primary action disabled.
+/// The longest one request may take. A server that never answers is a failure with a
+/// reason, not an app that waits forever with its primary action disabled.
 pub const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// How often a request in flight looks at its cancellation flag.
 const CANCEL_SLICE: std::time::Duration = std::time::Duration::from_millis(50);
 
-/// Why a request stopped before the server answered.
 pub const CANCELLED: &str = "The request was cancelled.";
 
 fn client() -> Result<&'static tilo_net::Client, String> {
@@ -186,10 +170,8 @@ fn client() -> Result<&'static tilo_net::Client, String> {
         .map_err(Clone::clone)
 }
 
-/// Perform the request and collect the response, giving up when
-/// `cancelled` is set (the person pressed Cancel, or the app is closing) or
-/// when the request outlives [`REQUEST_TIMEOUT`]. The caller runs it on the
-/// app runtime so the UI stays responsive.
+/// Perform the request and collect the response, giving up when `cancelled` is set or the
+/// request outlives [`REQUEST_TIMEOUT`].
 pub async fn send(
     out: &Outgoing,
     cancelled: &std::sync::atomic::AtomicBool,
@@ -202,7 +184,6 @@ pub async fn send(
     }
 }
 
-/// Wait in slices, reporting as soon as `cancelled` is set.
 async fn watch_for_cancel(cancelled: &std::sync::atomic::AtomicBool) -> Cancelled {
     loop {
         ui::rt::sleep(CANCEL_SLICE).await;
@@ -212,12 +193,10 @@ async fn watch_for_cancel(cancelled: &std::sync::atomic::AtomicBool) -> Cancelle
     }
 }
 
-/// A request that was cancelled.
 struct Cancelled;
 
-/// Which of two futures finished first, dropping the other. Written out
-/// rather than pulled in: the toolkit has no `select` of its own, and this
-/// app needs exactly one.
+/// Which of two futures finished first, dropping the other: the toolkit has no `select`,
+/// and this app needs exactly one.
 async fn race<T>(
     work: impl std::future::Future<Output = T>,
     stop: impl std::future::Future<Output = Cancelled>,
@@ -236,7 +215,6 @@ async fn race<T>(
     .await
 }
 
-/// Perform the request and collect the response.
 async fn send_once(out: &Outgoing) -> Result<ResponseData, String> {
     let client = client()?;
     let method = tilo_net::Method::from_bytes(out.method.as_bytes())
@@ -287,8 +265,6 @@ async fn send_once(out: &Outgoing) -> Result<ResponseData, String> {
     })
 }
 
-/// What a sent request answers whoever sent it: the response as the pane
-/// shows it, with its headers by name.
 #[must_use]
 pub fn answer(response: &ResponseData) -> serde_json::Value {
     serde_json::json!({
@@ -309,17 +285,13 @@ pub fn answer(response: &ResponseData) -> serde_json::Value {
     })
 }
 
-/// The most of a response body the app downloads to show (2 MiB): the
-/// response pane lays its text out line by line, so a download of gigabytes
-/// would hold all of it in memory and freeze the window. The rest is never
-/// read; the pane says how much it shows.
+/// The most of a response body the app downloads to show (2 MiB): the pane lays its text
+/// out line by line, so more would freeze the window. The pane says how much it shows.
 pub const MAX_SHOWN_BODY_BYTES: usize = 2 * 1024 * 1024;
 
-/// The most of a binary body shown as hex (64 KiB): each byte takes a few
-/// characters of the dump.
+/// The most of a binary body shown as hex (64 KiB).
 pub const MAX_HEX_BYTES: usize = 64 * 1024;
 
-/// The body up to [`MAX_SHOWN_BODY_BYTES`], and whether that is all of it.
 async fn read_shown(resp: &mut tilo_net::Response) -> Result<(Vec<u8>, bool), String> {
     let mut body = Vec::new();
     while let Some(chunk) = resp.chunk().await.map_err(|e| describe(&e))? {
@@ -333,7 +305,6 @@ async fn read_shown(resp: &mut tilo_net::Response) -> Result<(Vec<u8>, bool), St
     Ok((body, true))
 }
 
-/// A body as the response pane shows it.
 struct ShownBody {
     text: String,
     /// How many of the body's bytes `text` shows.
@@ -342,10 +313,8 @@ struct ShownBody {
 }
 
 impl ShownBody {
-    /// Text as text; anything else that is not UTF-8 as a hex dump of its
-    /// start. A body cut short may end inside a character, which is not
-    /// binary, and a `textual` one in another encoding is shown with its
-    /// stray bytes replaced.
+    /// Text as text; anything else as a hex dump of its start. A body cut short may end
+    /// inside a character, which is not binary.
     fn of(bytes: Vec<u8>, complete: bool, textual: bool) -> Self {
         match String::from_utf8(bytes) {
             Ok(text) => Self {
@@ -380,8 +349,7 @@ impl ShownBody {
     }
 }
 
-/// Whether `content_type` names text, which is shown as text even when it
-/// is not UTF-8.
+/// Whether `content_type` names text, which is shown as text even when it is not UTF-8.
 fn textual(content_type: &str) -> bool {
     let essence = content_type
         .split(';')
@@ -395,8 +363,7 @@ fn textual(content_type: &str) -> bool {
             .any(|kind| essence.contains(kind))
 }
 
-/// `bytes` as lines of sixteen: the offset, the bytes in hex, and the bytes
-/// that are printable ASCII (a dot for the rest).
+/// `bytes` as lines of sixteen: the offset, the hex, and the printable ASCII.
 fn hex_dump(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut out = String::with_capacity(bytes.len().div_ceil(16).saturating_mul(78));
@@ -423,8 +390,8 @@ fn hex_dump(bytes: &[u8]) -> String {
     out
 }
 
-/// A request error for the response pane, naming the fix for a browser that
-/// refused a cross-origin response.
+/// An error for the response pane, naming the fix for a browser that refused a
+/// cross-origin response.
 fn describe(error: &tilo_net::NetError) -> String {
     if error.may_be_cors() && tilo_net::proxy::endpoint().is_none() {
         format!(
@@ -435,10 +402,7 @@ fn describe(error: &tilo_net::NetError) -> String {
     }
 }
 
-/// A representative populated response used to seed the headless
-/// screenshot (and the first-run example). Mirrors a real JSON API reply
-/// so the response viewer renders pretty-printed, highlighted output
-/// without needing the network.
+/// A populated response for the headless capture and the first-run example.
 pub fn sample_response() -> ResponseData {
     let body = r#"{
   "id": 4291,
@@ -523,12 +487,8 @@ mod tests {
         }
     }
 
-    /// `build_outgoing` turns a saved request plus environment into the wire
-    /// request: query string, auth header and encoded body.
     #[test]
     fn build_outgoing_encodes_query_auth_and_body() {
-        // Case "query string": only enabled params, percent-encoded, after
-        // environment substitution.
         {
             let mut req = Request::new("r");
             req.url = "{{base}}/search".into();
@@ -544,7 +504,6 @@ mod tests {
             );
         }
 
-        // Case "bearer auth": adds a substituted Authorization header.
         {
             let mut req = Request::new("r");
             req.url = "https://x.test".into();
@@ -560,7 +519,6 @@ mod tests {
             );
         }
 
-        // Case "basic auth": base64-encodes the credentials.
         {
             let mut req = Request::new("r");
             req.url = "https://x.test".into();
@@ -578,7 +536,6 @@ mod tests {
             );
         }
 
-        // Case "json body": the body passes through and Content-Type defaults.
         {
             let mut req = Request::new("r");
             req.method = HttpMethod::Post;
@@ -595,7 +552,6 @@ mod tests {
             );
         }
 
-        // Case "form body": pairs are url-encoded.
         {
             let mut req = Request::new("r");
             req.method = HttpMethod::Post;

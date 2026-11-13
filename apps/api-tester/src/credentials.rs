@@ -1,15 +1,12 @@
-//! Authentication is device-local; collaborative requests carry only opaque keys.
-//! A document holds references into this device's secret store, so a copy of it
-//! (a peer's, an export, a backup) never carries a credential.
+//! Authentication is device-local: the document holds references into this device's
+//! secret store, so a copy of it never carries a credential.
 
 use crate::model::Auth;
 use ui::secrets::{PutOptions, SecretStore};
 
 const UNAVAILABLE: &str = "Authentication secret unavailable; unlock the host secret store";
-/// A staged browser write has not yet received durable acknowledgement.
 pub const PENDING: &str = "Saving authentication securely; waiting for browser storage";
 
-/// Seal authentication, returning a reference only after storage acknowledges it.
 pub fn seal(auth: &Auth, store: &SecretStore) -> Result<Auth, &'static str> {
     let Some(value) = credential_bytes(auth) else {
         return Ok(auth.clone());
@@ -45,7 +42,6 @@ pub async fn seal_async(auth: &Auth, store: &SecretStore) -> Result<Auth, &'stat
     })
 }
 
-/// Keep the local envelope encoding identical for synchronous and async custody.
 fn credential_bytes(auth: &Auth) -> Option<Vec<u8>> {
     let value = match auth {
         Auth::None | Auth::SecretRef { .. } => return None,
@@ -60,17 +56,16 @@ fn credential_bytes(auth: &Auth) -> Option<Vec<u8>> {
     Some(value.to_string().into_bytes())
 }
 
-/// Whether storage has unacknowledged work.
 pub fn pending() -> bool {
     SecretStore::pending()
 }
 
-/// Resolve only an API Tester authentication reference from this device's store.
+/// Resolve only an API Tester reference from this device's store.
 pub fn resolve(auth: &Auth, store: &SecretStore) -> Result<Auth, &'static str> {
     let Auth::SecretRef { id, .. } = auth else {
         return Ok(auth.clone());
     };
-    // Do not allow a collaborative reference to address another consumer's keys.
+    // A collaborative reference must not address another consumer's keys.
     if id
         .strip_prefix("request-auth/")
         .and_then(|id| uuid::Uuid::parse_str(id).ok())

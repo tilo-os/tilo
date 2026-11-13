@@ -1,17 +1,8 @@
-//! Root widget for the API tester.
-//!
-//! The window is one [`NavShell`]: the sidebar lists saved requests by
-//! collection and the history of what was sent; the content is the request
-//! builder over the response, split by a divider the person can drag.
-//!
-//! The app composes the toolkit's widgets and paints nothing of its own. Its
-//! controls tell the app what happened by pushing a [`Cmd`] onto a queue; the
-//! app applies the queue where it has the shared document, keeps the model,
-//! and replaces the parts of the view that depend on it ([`Slot`]s), so
-//! the controls around them keep their focus.
-//!
-//! The request in the builder is part of the shared record: its controls
-//! bind to their fields' paths, and saving copies it into a collection.
+//! The API tester's window: one [`NavShell`], with the sidebar listing saved requests by
+//! collection and the history, and the content a request builder over the response, split
+//! by a draggable divider. Controls report what happened by pushing a [`Cmd`], which the
+//! app applies where it has the document, replacing only the [`Slot`]s that depend on it so
+//! focus survives.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -49,12 +40,10 @@ mod store;
 pub(crate) use store::window;
 use store::{SECRET_VARIABLE, Shared, Store};
 
-/// What the picker reads when no environment is chosen.
 const NO_ENV: &str = "No environment";
 
-/// What the environment picker offers besides the environments themselves,
-/// and the sheet each opens; deleting the environment opens none, the host
-/// asks. The first needs no active environment.
+/// What the environment picker offers besides the environments, and the sheet each opens;
+/// deleting asks the host, so it opens none. The first needs no active environment.
 const ENVIRONMENT_COMMANDS: [(&str, Option<FormMode>); 5] = [
     ("New environment\u{2026}", Some(FormMode::NewEnvironment)),
     (
@@ -66,8 +55,8 @@ const ENVIRONMENT_COMMANDS: [(&str, Option<FormMode>); 5] = [
     ("Delete environment\u{2026}", None),
 ];
 
-/// A pane of the split: `slot` with room between it and the divider, which
-/// is painted over the edge of both panes.
+/// A pane of the split: `slot` with room between it and the divider, which is painted over
+/// both panes' edges.
 fn pane(slot: Slot, below_divider: bool) -> Column {
     let gap = Spacing::BASE.s3;
     let column = Column::new().with_no_padding();
@@ -87,9 +76,8 @@ fn pane(slot: Slot, below_divider: bool) -> Column {
     column.push(Box::new(body.push(Box::new(slot))))
 }
 
-/// Preserve the shared divider across request-view replacements, with an
-/// explicit local reset requested by the published header control. It
-/// reports whether the divider moved, so the reset is offered only then.
+/// Keep the shared divider across request-view replacements, with a reset from the header
+/// control. It reports whether the divider moved, so the reset is offered only then.
 struct RequestSplit {
     split: ResizableSplit<Column, Column>,
     reset: LocalState<bool>,
@@ -137,12 +125,10 @@ impl ui::widget::Decorator for RequestSplit {
     }
 }
 
-/// What stands where a sheet goes while none is open.
 fn no_dialog() -> Element {
     Box::new(Spacer::token(ui::tokens::SpacingStep::S0))
 }
 
-/// What to rebuild at the next synchronization.
 #[derive(Default)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -161,7 +147,6 @@ struct Stale {
     response_body: bool,
 }
 
-/// The slots of the view the app replaces in place.
 struct Slots {
     sidebar: sidebar::NavHandle,
     url_bar: SlotHandle,
@@ -176,28 +161,25 @@ struct Slots {
     dialog: SlotHandle,
 }
 
-/// A state of the shell that exists only once the window has been laid out.
 #[derive(Clone, Copy)]
 enum Pose {
     SidebarOpen,
     SidebarClosed,
 }
 
-/// An open sheet and what it collects.
 struct OpenForm {
     mode: FormMode,
     target: FormTarget,
     fields: Fields,
 }
 
-/// The sidebar row whose actions are open, the menu that offers them and
-/// what each row of it does.
+/// The sidebar row whose actions are open, the menu offering them, and what each row of it
+/// does.
 struct OpenMenu {
     menu: ContextMenu,
     commands: Vec<Cmd>,
 }
 
-/// The model half of a freshly built [`ApiTesterApp`].
 struct BuiltModel {
     collections: Vec<Collection>,
     environments: Vec<Environment>,
@@ -206,7 +188,6 @@ struct BuiltModel {
     history: Vec<HistoryEntry>,
 }
 
-/// Root widget: the whole API tester.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "the bools split across unrelated concerns (an in-flight send, one-time seed/adopt \
@@ -224,13 +205,10 @@ pub struct ApiTesterApp {
     history: Vec<HistoryEntry>,
     /// The record as last presented.
     workspace: Rc<Workspace>,
-    /// What the window shares with the view's effect handler: the response,
-    /// the request in flight and the secrets on this device.
+    /// What the window shares with the view's effect handler.
     store: Shared,
-    /// The workspace as the document holds it, shown as it changes; `None`
-    /// for a window outside the framework.
+    /// The workspace as the document holds it; `None` outside the framework.
     live: Option<Live<Workspace>>,
-    /// The `(revision, loads)` of the workspace last shown.
     presented: Option<(u64, u64)>,
 
     // --- View state (local, per-peer) ---
@@ -238,48 +216,42 @@ pub struct ApiTesterApp {
     response_view: ResponseView,
     selected: Option<(usize, usize)>,
     form: Option<OpenForm>,
-    /// The open row menu, if one is: it belongs to the window, not to a row.
+    /// The open row menu: it belongs to the window, not to a row.
     menu: Option<OpenMenu>,
     blanks: BlankRows,
     table: Option<(Table, KvQueue)>,
     stale: Stale,
     /// A shell state to take at the next paint, for `--shots`.
     pose: Option<Pose>,
-    /// The sidebar row menu to open at the next paint, once the window is
-    /// laid out, for `--shots`.
+    /// The sidebar row menu to open at the next paint, once the window is laid out.
     menu_pending: bool,
     slots: Slots,
     /// The active environment's variables, for the URL's variable hint.
     env_vars: Rc<RefCell<HashMap<String, String>>>,
-    /// What the environment picker shows.
     env_state: LocalState<String>,
 
     /// Commands pushed by widget callbacks, applied after event routing.
     sink: Sink,
 
-    /// Where every change of the shared record goes: field edits and verbs,
-    /// submitted as one undo step each through the host, the same path the
-    /// palette and agents take.
+    /// Where every change of the record goes: field edits and verbs, one undo step each,
+    /// through the same path the palette and agents take.
     dispatcher: Option<Dispatcher<Workspace>>,
-    /// Whether this participant may only view, as the view follows it.
     read_only: Option<LocalState<bool>>,
-    /// The permission the window was last drawn under.
     shown_read_only: bool,
-    /// Mounted on a record another participant created: its content is
-    /// theirs to seed, so an empty document is left untouched.
+    /// Mounted on a record another participant created: its content is theirs to seed, so
+    /// an empty document is left untouched.
     dirty: bool,
 }
 
 impl ApiTesterApp {
-    /// The live app: no fabricated saved collections/history and NO canned
-    /// response — the response pane is empty until a real Send. It opens on a
-    /// single blank starter request.
+    /// The live app: no saved collections, history or canned response, and one blank starter
+    /// request.
     pub fn new() -> Self {
         Self::build(false)
     }
 
-    /// The hermetic `--shots` / demo build: a sample collection, environments,
-    /// history and a rendered example response so the screenshot is populated.
+    /// The hermetic `--shots` build: a sample collection, environments, history and an
+    /// example response.
     pub fn new_demo() -> Self {
         Self::build(true)
     }
@@ -339,9 +311,8 @@ impl ApiTesterApp {
             .sidebar(sidebar::frame(Box::new(env_slot), Box::new(lists_slot)))
             .sidebar_header("", vec![sidebar::new_collection(&sink)])
             .content(content)
-            // Save and Send stand in the window bar's row beside New
-            // collection; resetting the request area is occasional and
-            // follows them, in the bar's menu.
+            // Save and Send stand in the bar beside New collection; resetting the request
+            // area is occasional and follows them, in the bar's menu.
             .content_header(
                 model.request.name.clone(),
                 vec![Box::new(actions_slot), Box::new(Self::reset_area(&sink))],
@@ -392,10 +363,9 @@ impl ApiTesterApp {
         app
     }
 
-    /// The header control that gives the request and the response their
-    /// first sizes again, offered only while the person moved the divider.
-    /// Its glyph is the request standing on the divider, not a rotating
-    /// arrow, which reads as reloading the request.
+    /// The header control that gives the request and the response their first sizes again,
+    /// offered only while the person moved the divider. Its glyph is the request standing on
+    /// the divider, not a rotating arrow, which reads as reloading.
     fn reset_area(sink: &Sink) -> ui::widget::Button {
         let reset = sink.reset_area.clone();
         ui::widget::Button::icon_only(
@@ -407,8 +377,8 @@ impl ApiTesterApp {
         .enabled_from(&sink.area_resized)
     }
 
-    /// The content column: the URL bar over the request and the response,
-    /// which a divider splits, with the sheet's slot above them.
+    /// The content column: the URL bar over the request and the response, which a divider
+    /// splits, with the sheet's slot above them.
     fn content(
         url_bar: Slot,
         request: Slot,
@@ -429,9 +399,8 @@ impl ApiTesterApp {
         Box::new(
             Stack::new()
                 .push(Box::new(
-                    // The URL and its variable-resolution caption belong
-                    // together; keep the caption's tight text rhythm so the
-                    // content-sized request leaves room for the response.
+                    // The URL and its variable-resolution caption belong together; the tight
+                    // rhythm leaves room for the response.
                     Column::new()
                         .with_rhythm(ui::tokens::Rhythm::Tight)
                         .push(Box::new(url_bar))
@@ -454,7 +423,6 @@ impl ApiTesterApp {
         )
     }
 
-    /// The response pane's slot, showing `response` or the empty state.
     fn response_slot(
         response: Option<&ResponseData>,
         sink: &Sink,
@@ -469,8 +437,6 @@ impl ApiTesterApp {
         }
     }
 
-    /// The model half of a fresh app: sample data when `demo`, otherwise
-    /// empty/blank.
     fn build_model(demo: bool) -> BuiltModel {
         let collections = if demo {
             crate::seed::collections()
@@ -502,12 +468,7 @@ impl ApiTesterApp {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Screenshot staging
-    // -----------------------------------------------------------------------
-
-    /// Show the state a named `--shots` scenario captures, on top of the demo
-    /// workspace. Returns whether the name is known.
+    /// Stage a named `--shots` scenario on the demo workspace; whether the name is known.
     pub fn stage(&mut self, scenario: &str) -> bool {
         let known = match scenario {
             "default" => true,
@@ -569,8 +530,7 @@ impl ApiTesterApp {
                 true
             }
             "history-actions" => {
-                // The menu of a sent request: replayed, kept as a request,
-                // or forgotten (`APP-api-tester-04`).
+                // The menu of a sent request.
                 self.menu_pending = true;
                 true
             }
@@ -602,7 +562,6 @@ impl ApiTesterApp {
         })
     }
 
-    /// Every scenario name `stage` accepts.
     pub const SCENARIOS: &'static [&'static str] = &[
         "default",
         "empty",
@@ -626,11 +585,6 @@ impl ApiTesterApp {
         "form-delete-variable",
     ];
 
-    // -----------------------------------------------------------------------
-    // Views
-    // -----------------------------------------------------------------------
-
-    /// The name the picker shows for `active`.
     fn environment_name<'a>(environments: &'a [Environment], active: Option<&Id>) -> &'a str {
         environments
             .iter()
@@ -638,8 +592,8 @@ impl ApiTesterApp {
             .map_or(NO_ENV, |environment| environment.name.as_str())
     }
 
-    /// The environment picker: the environments, no environment, and the
-    /// commands that manage them.
+    /// The environment picker: the environments, no environment, and the commands that
+    /// manage them.
     fn environment_picker(
         environments: &[Environment],
         active: Option<&Id>,
@@ -667,7 +621,6 @@ impl ApiTesterApp {
         *self.env_vars.borrow_mut() = self.env_vars();
     }
 
-    /// Replace the parts of the view whose model changed.
     fn refresh_views(&mut self) {
         if std::mem::take(&mut self.stale.sidebar) {
             self.slots.sidebar.set(&SidebarView {
@@ -777,23 +730,13 @@ impl ApiTesterApp {
         self.stale.response_body = false;
     }
 
-    // -----------------------------------------------------------------------
-    // Sending
-    // -----------------------------------------------------------------------
-
-    /// The active environment's variable map (for `{{var}}` substitution).
     fn env_vars(&self) -> HashMap<String, String> {
         self.store
             .borrow()
             .env_vars(&self.environments, self.active_env.as_ref())
     }
 
-    // -----------------------------------------------------------------------
-    // The saved workspace
-    // -----------------------------------------------------------------------
-
-    /// Show a saved request from a collection in the builder, with the
-    /// document untouched. Used before the document is first synchronized.
+    /// Show a saved request in the builder, the document untouched.
     fn load_saved(&mut self, ci: usize, ri: usize) {
         if let Some(req) = self
             .collections
@@ -811,7 +754,6 @@ impl ApiTesterApp {
         }
     }
 
-    /// Open a saved request from a collection in the builder.
     fn load_request(&mut self, ci: usize, ri: usize) {
         if let Some((collection, request)) = self
             .collections
@@ -833,8 +775,6 @@ impl ApiTesterApp {
         }
     }
 
-    /// The collections, environments or history changed: rebuild what shows
-    /// them.
     fn workspace_changed(&mut self) {
         self.stale.sidebar = true;
         self.stale.environments = true;
@@ -843,12 +783,7 @@ impl ApiTesterApp {
         self.refresh_env_vars();
     }
 
-    // -----------------------------------------------------------------------
-    // Commands
-    // -----------------------------------------------------------------------
-
-    /// Drain the command sink and apply each command, persisting when a
-    /// command changes shared state. Returns `true` if anything was applied.
+    /// Drain the command sink and apply each command; whether anything was applied.
     fn drain_commands(&mut self) -> bool {
         let cmds: Vec<Cmd> = self.sink.borrow_mut().drain(..).collect();
         if cmds.is_empty() {
@@ -899,7 +834,6 @@ impl ApiTesterApp {
         true
     }
 
-    /// Keep the sent request `target` names as a saved one under `name`.
     fn submit_save_sent(&mut self, target: FormTarget, name: String) {
         if let (Some(collection), Some(sent)) = (target.collection, target.sent) {
             let name = (!name.is_empty()).then_some(name);
@@ -914,9 +848,9 @@ impl ApiTesterApp {
 
     fn replay_history(&mut self, index: usize) {
         if let Some(entry) = self.history.get(index).cloned() {
-            // The same verb the click runs: the entry's whole request comes
-            // back through the record, so a collaborator sees the builder
-            // change too. The local copy only saves a frame.
+            // The verb the click runs: the entry's whole request comes back through the
+            // record, so a collaborator sees the builder change. The local copy saves a
+            // frame.
             self.request = if let Some(replay) = entry.replay.as_ref() {
                 replay.to_request()
             } else {
@@ -936,8 +870,6 @@ impl ApiTesterApp {
         }
     }
 
-    /// Keep the sent request at `index` as a saved one: the sheet takes its
-    /// name and the collection it goes in. The builder keeps what is in it.
     fn save_history(&mut self, index: usize) {
         let Some(entry) = self.history.get(index) else {
             return;
@@ -951,8 +883,7 @@ impl ApiTesterApp {
         self.open_form_with(FormMode::SaveSent, target, &suggested);
     }
 
-    /// Forget the sent request at `index`. Undo takes it back, so the window
-    /// asks nothing first.
+    /// Forget the sent request at `index`; Undo takes it back, so nobody is asked first.
     fn delete_history(&mut self, index: usize) {
         if let Some(entry) = self.history.get(index) {
             self.submit(Workspace::DELETE_SENT.with(verbs::DeleteSent {
@@ -962,9 +893,7 @@ impl ApiTesterApp {
         self.dirty = true;
     }
 
-    /// The actions of the sidebar row `id`, under its `lift`, at `at`: a
-    /// saved request is renamed or deleted, a sent one is replayed, kept as a
-    /// request, or forgotten (`APP-api-tester-04`).
+    /// The actions of the sidebar row `id`, under its `lift`, at `at`.
     fn open_row_menu(&mut self, id: &str, lift: vello::kurbo::Rect, at: vello::kurbo::Point) {
         let mut menu = ContextMenu::new();
         let mut commands: Vec<Cmd> = Vec::new();
@@ -1029,7 +958,6 @@ impl ApiTesterApp {
         self.dirty = true;
     }
 
-    /// Route an event to the open menu, and apply what it chose.
     fn route_menu_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if matches!(event, WindowEvent::Focused(false)) {
             self.menu = None;
@@ -1097,8 +1025,8 @@ impl ApiTesterApp {
         }
     }
 
-    /// Apply one edit to a row of a table. Typing in the blank row makes it a
-    /// real pair and gives the table a new blank row.
+    /// Apply one edit to a row of a table. Typing in the blank row makes it a real pair and
+    /// gives the table a new blank row.
     fn edit_rows(&mut self, table: Table, row: &str, edit: &RowEdit) {
         if row == self.blanks.of(table) {
             return;
@@ -1112,10 +1040,6 @@ impl ApiTesterApp {
         }
         let RowEdit::Remove = edit;
     }
-
-    // -----------------------------------------------------------------------
-    // Sheets
-    // -----------------------------------------------------------------------
 
     fn current_collection_id(&self) -> Option<Id> {
         self.selected
@@ -1137,8 +1061,8 @@ impl ApiTesterApp {
         ))
     }
 
-    /// The collection and request a sheet acts on: the row it was opened
-    /// from, else the one in the builder.
+    /// The collection and request a sheet acts on: the row it was opened from, else the one
+    /// in the builder.
     fn resolve_target(&self, target: FormTarget) -> FormTarget {
         let selected = self.selected_request();
         FormTarget {
@@ -1175,8 +1099,6 @@ impl ApiTesterApp {
         self.open_form_with(mode, target, &suggested);
     }
 
-    /// [`Self::open_form`] with the name its field starts from, for a row
-    /// whose subject the window already knows.
     fn open_form_with(&mut self, mode: FormMode, target: FormTarget, suggested: &str) {
         let initial = match mode {
             FormMode::RenameCollection => target
@@ -1197,8 +1119,8 @@ impl ApiTesterApp {
             | FormMode::DeleteVariable => String::new(),
         };
         self.nav.show(ui::widget::NavPane::Content);
-        // In drawer mode, choosing a sidebar command must uncover the
-        // content-owned form; selecting a push pane alone cannot close it.
+        // In drawer mode, choosing a sidebar command must uncover the content-owned form;
+        // selecting a push pane alone cannot close it.
         self.dismiss_drawer();
         let fields = Fields::new(&initial);
         self.slots
@@ -1219,8 +1141,6 @@ impl ApiTesterApp {
         self.dirty = true;
     }
 
-    /// Delete the saved request `target` names (the one in the builder when
-    /// none). Undo takes it back, so nobody is asked first.
     fn delete_request(&mut self, target: FormTarget) {
         let target = self.resolve_target(target);
         if let (Some(collection), Some(request)) = (target.collection, target.request) {
@@ -1232,8 +1152,7 @@ impl ApiTesterApp {
         self.dirty = true;
     }
 
-    /// Delete the active environment. Undo takes it back, so nobody is asked
-    /// first.
+    /// Delete the active environment; Undo takes it back.
     fn delete_environment(&mut self) {
         if let Some(id) = self.active_env.clone() {
             self.submit(Workspace::DELETE_ENVIRONMENT.with(id));
@@ -1339,9 +1258,8 @@ impl ApiTesterApp {
         self.dirty = true;
     }
 
-    /// Add the variable the form names to the active environment, or give
-    /// the one of that key its new value. A secret's value is kept on this
-    /// device.
+    /// Add the variable the form names, or give the one of that key its new value; a
+    /// secret's value stays on this device.
     fn set_variable(&mut self, fields: &Fields) {
         let key = fields.key.get().trim().to_string();
         let value = fields.value.get().trim().to_string();
@@ -1358,8 +1276,8 @@ impl ApiTesterApp {
             .as_ref()
             .map_or_else(|| fields.secret.get(), |variable| variable.secret);
         let Some(variable) = existing else {
-            // The window names the new variable, so a secret's value is kept
-            // under its id before the variable is added.
+            // The window names the new variable, so a secret's value is kept under its id
+            // before the variable is added.
             let id = crate::model::fresh_id();
             let kept = secret
                 .then(|| {
@@ -1415,9 +1333,8 @@ impl ApiTesterApp {
         );
     }
 
-    /// The person chose from the environment picker: an environment, or one
-    /// of the commands that manage them. Which environment is active is
-    /// shared, so a choice is a field edit of the record.
+    /// The person chose from the environment picker. Which environment is active is shared,
+    /// so a choice is a field edit of the record.
     fn pick_environment(&mut self, choice: &str) {
         if let Some((_, mode)) = ENVIRONMENT_COMMANDS
             .iter()
@@ -1446,18 +1363,11 @@ impl ApiTesterApp {
         self.show_active_environment();
     }
 
-    /// Make the environment picker read the active environment, whichever way
-    /// it changed (a pick, a rename, a deletion, the palette).
+    /// Make the picker read the active environment, however it changed.
     fn show_active_environment(&self) {
         self.env_state
             .set(Self::environment_name(&self.environments, self.active_env.as_ref()).to_owned());
     }
-
-    // Method selection uses the typed request dispatcher.
-
-    // -----------------------------------------------------------------------
-    // Resource operations
-    // -----------------------------------------------------------------------
 }
 
 impl Default for ApiTesterApp {
@@ -1465,10 +1375,6 @@ impl Default for ApiTesterApp {
         Self::new()
     }
 }
-
-// ===========================================================================
-// Widget impl
-// ===========================================================================
 
 impl ui::widget::Decorator for ApiTesterApp {
     type Inner = NavShell;
@@ -1489,8 +1395,8 @@ impl ui::widget::Decorator for ApiTesterApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        // An open row menu takes the event first: it is over the window, and
-        // the row it belongs to is still there under it.
+        // An open row menu takes the event first: it is over the window, and the row it
+        // belongs to is still there under it.
         let menu_open = self.menu.is_some();
         let replaces = matches!(
             event,
@@ -1523,8 +1429,7 @@ impl ui::widget::Decorator for ApiTesterApp {
         presence: &ui::presence::PresenceCtx,
     ) {
         if std::mem::take(&mut self.menu_pending) && !self.history.is_empty() {
-            // Staged after layout: the menu opens under the newest sent
-            // request, where its row is.
+            // Staged after layout: the menu opens under the newest sent request.
             let window = Widget::get_rect(&self.nav);
             let at = vello::kurbo::Point::new(window.x0 + 60.0, (window.y1 - 120.0).max(window.y0));
             self.open_row_menu("history:0", vello::kurbo::Rect::ZERO, at);
@@ -1564,9 +1469,7 @@ impl ui::widget::Decorator for ApiTesterApp {
             || ui::widget::Widget::needs_animation_frame(self)
     }
 
-    /// What the window says to assistive technology: the shell's own tree,
-    /// and the open row menu over it. The menu's rows are read out where they
-    /// are; the arrows and Enter pick one, as they do for a pointer.
+    /// The shell's accessibility tree with the open row menu over it.
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
         let mut node = self.nav.accessibility()?;
@@ -1628,29 +1531,26 @@ impl ui::widget::Decorator for ApiTesterApp {
 mod tests;
 
 impl ApiTesterApp {
-    /// Submit a field edit or a verb of the shared record: the host checks
-    /// the participant may, applies it as one undo step and presents the
-    /// changed workspace.
+    /// Submit a field edit or a verb of the record; the host checks the permission and
+    /// applies it as one undo step.
     fn submit(&self, submit: impl Submit<Workspace>) {
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.submit(submit);
         }
     }
 
-    /// What the window shares with the view's effect handler.
     pub(crate) fn state(&self) -> std::cell::RefMut<'_, Store> {
         self.store.borrow_mut()
     }
 
-    /// A request is in flight.
     fn sending(&self) -> bool {
         self.store.borrow().sending
     }
 }
 
 impl ApiTesterApp {
-    /// Take part in the view `cx` builds: edit through its dispatcher, keep
-    /// secrets in its storage, and follow the document it holds.
+    /// Take part in the view `cx` builds: edit through its dispatcher, keep secrets in its
+    /// storage, and follow the document it holds.
     pub(crate) fn attach(&mut self, cx: &ViewCx<Workspace>) {
         let dispatcher = cx.dispatcher();
         *self.sink.dispatcher.borrow_mut() = Some(dispatcher.clone());
@@ -1664,8 +1564,8 @@ impl ApiTesterApp {
         self.stale.request = true;
     }
 
-    /// Show the workspace when the document changed since it was last shown,
-    /// and draw again when the participant's permission to edit changed.
+    /// Show the workspace when the document changed, and draw again when the permission to
+    /// edit changed.
     fn follow_document(&mut self) {
         if let Some(read_only) = self.read_only.as_ref().map(LocalState::get)
             && read_only != self.shown_read_only
@@ -1683,7 +1583,6 @@ impl ApiTesterApp {
         self.present_workspace(&shown);
     }
 
-    /// Bring the window in step with what the effects changed and staged.
     fn follow_store(&mut self) {
         let (shown, staged) = {
             let mut state = self.state();
@@ -1703,8 +1602,6 @@ impl ApiTesterApp {
         }
     }
 
-    /// Whether the effects changed or staged something the window has not
-    /// shown yet.
     fn store_changed(&self) -> bool {
         let store = self.store.borrow();
         let shown = &store.shown;
@@ -1742,8 +1639,8 @@ impl ApiTesterApp {
         self.sink.method.set(request.method.as_str().to_owned());
         self.sink.url.borrow_mut().clone_from(&request.url);
         self.request = request;
-        // Canonical row-field actions turn the trailing blank into a durable
-        // row. Its next presentation must expose a new blank identity.
+        // A canonical row-field action turns the trailing blank into a durable row; its next
+        // presentation must expose a new blank identity.
         for table in [Table::Params, Table::Headers, Table::Form] {
             let blank = self.blanks.of(table);
             let consumed = match table {

@@ -1,6 +1,3 @@
-//! The response pane: nothing yet, a failure, or the response with its status,
-//! timing, size and body.
-
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::tokens::TextRole;
@@ -15,13 +12,11 @@ use crate::model::{KeyValue, ResponseData, ResponseView, human_duration};
 use crate::palette::status_tone;
 use ui::widget::{Slot, SlotHandle};
 
-/// A built response pane and the slot its body view can be replaced in.
 pub(crate) struct Built {
     pub(crate) element: Element,
     pub(crate) body: SlotHandle,
 }
 
-/// No request has been sent yet.
 pub(crate) fn empty(_sink: &Sink) -> Element {
     Box::new(
         EmptyState::new("No response yet")
@@ -31,7 +26,6 @@ pub(crate) fn empty(_sink: &Sink) -> Element {
     )
 }
 
-/// A request is on its way, with the way out of waiting for it.
 pub(crate) fn sending(sink: &Sink) -> Element {
     let waiting = EmptyState::new("Sending request")
         .with_icon(Icon::Send)
@@ -44,7 +38,6 @@ pub(crate) fn sending(sink: &Sink) -> Element {
     )
 }
 
-/// The request could not be completed. The reason is shown here once.
 pub(crate) fn failed(detail: &str, sink: &Sink) -> Element {
     let status = Row::new().push(Box::new(
         Badge::text("Failed").style(ChipStyle::Tinted(Tone::Danger)),
@@ -79,7 +72,6 @@ fn caption(text: &str) -> Element {
     )
 }
 
-/// The status, timing and size, and the switch between views of the body.
 pub(crate) fn response(
     data: &ResponseData,
     view: ResponseView,
@@ -115,8 +107,8 @@ pub(crate) fn response(
         Some(notice) => summary.push(caption(notice)),
         None => summary,
     };
-    // The response can leave the app: its body, its headers, and the request
-    // that produced it.
+    // The response can leave the app: its body, its headers, and the request that
+    // produced it.
     let summary = summary.push(copy_control(
         sink,
         "api.copy.body",
@@ -150,8 +142,8 @@ pub(crate) fn response(
     }
 }
 
-/// A control that copies something out of the response, as the effect the
-/// palette and an agent invoke.
+/// A control that copies part of the response out, as the effect the palette and an
+/// agent invoke.
 fn copy_control(sink: &Sink, id: &str, icon: Icon, label: &str, part: &str) -> Element {
     let effect = crate::actions::ApiTesterEffect::CopyResponse {
         part: part.to_owned(),
@@ -166,8 +158,8 @@ fn size(bytes: usize) -> String {
     ui::format::size(u64::try_from(bytes).unwrap_or(u64::MAX))
 }
 
-/// The body's size; a lower bound when the server declared none and only
-/// its start was downloaded.
+/// The body's size; a lower bound when the server declared none and only its start was
+/// downloaded.
 pub(crate) fn size_caption(data: &ResponseData) -> String {
     if data.size_exact {
         size(data.size_bytes)
@@ -179,8 +171,8 @@ pub(crate) fn size_caption(data: &ResponseData) -> String {
     }
 }
 
-/// How the body view shows the body, when it is not the whole of it as
-/// text: only its start, or in hex.
+/// How the body view shows the body, when it is not the whole of it: only its start, or
+/// in hex.
 pub(crate) fn shown_caption(data: &ResponseData) -> Option<String> {
     let partial = !data.size_exact || data.shown_bytes < data.size_bytes;
     let shown = size(data.shown_bytes);
