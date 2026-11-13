@@ -164,4 +164,94 @@ mod tests {
         secrets.deliver(BOT_TOKEN, TOKEN_ITEM, None);
         assert!(secrets.cache.lock().unwrap().is_empty());
     }
+
+    const NOT_TEXT: &[u8] = &[0xff, 0xfe];
+
+    /// An answer with nothing in it (none at all, an empty one, bytes that
+    /// are no text) is no secret: the waiter gets none, nothing is kept, and
+    /// the next use asks the host again.
+    #[tokio::test]
+    async fn an_answer_with_nothing_in_it_is_no_secret_and_is_asked_for_again() {
+        let rows: [(&str, Option<&[u8]>); 4] = [
+            ("no answer", None),
+            ("an empty answer", Some(b"".as_slice())),
+            ("only whitespace", Some(b" \r\n".as_slice())),
+            ("not UTF-8", Some(NOT_TEXT)),
+        ];
+        for (what, answer) in rows {
+            let (out, mut sent) = mpsc::unbounded_channel();
+            let secrets = std::sync::Arc::new(Secrets::new(out));
+            let asked = tokio::spawn({
+                let secrets = std::sync::Arc::clone(&secrets);
+                async move { secrets.get(WEBHOOK, "1101").await }
+            });
+            let Some(FromWorker::NeedSecret { purpose, item }) = sent.recv().await else {
+                panic!("{what}: asks the host");
+            };
+            assert_eq!((purpose.as_str(), item.as_str()), (WEBHOOK, "1101"));
+            let bytes = answer.map(|bytes| Bytes(bytes.to_vec()));
+            secrets.deliver(WEBHOOK, "1101", bytes.as_ref());
+            assert!(asked.await.unwrap().is_none(), "{what}");
+            assert!(
+                secrets.cached(WEBHOOK, "1101").is_none(),
+                "{what}: nothing is kept"
+            );
+
+            let again = tokio::spawn({
+                let secrets = std::sync::Arc::clone(&secrets);
+                async move { secrets.get(WEBHOOK, "1101").await }
+            });
+            assert!(
+                matches!(sent.recv().await, Some(FromWorker::NeedSecret { .. })),
+                "{what}: the next use asks again"
+            );
+            secrets.deliver(WEBHOOK, "1101", Some(&Bytes(b"tok".to_vec())));
+            assert_eq!(
+                again.await.unwrap().as_deref().map(String::as_str),
+                Some("tok"),
+                "{what}"
+            );
+        }
+    }
+
+    /// A secret the worker made is handed to the host's store and kept under
+    /// its own purpose and item, so using it asks nobody; forgotten, it is
+    /// held no longer.
+    #[tokio::test]
+    async fn a_stored_secret_is_kept_under_its_own_item_until_forgotten() {
+        let (out, mut sent) = mpsc::unbounded_channel();
+        let secrets = Secrets::new(out);
+        secrets.store(WEBHOOK, "1101", "made");
+        let Some(FromWorker::StoreSecret {
+            purpose,
+            item,
+            bytes,
+        }) = sent.recv().await
+        else {
+            panic!("hands it to the host's store");
+        };
+        assert_eq!(
+            (purpose.as_str(), item.as_str(), bytes.0.as_slice()),
+            (WEBHOOK, "1101", b"made".as_slice())
+        );
+        assert_eq!(
+            secrets
+                .get(WEBHOOK, "1101")
+                .await
+                .as_deref()
+                .map(String::as_str),
+            Some("made")
+        );
+        assert!(sent.try_recv().is_err(), "held: the host is not asked");
+        assert!(
+            secrets.cached(WEBHOOK, "1102").is_none(),
+            "another channel's token is not this one"
+        );
+        assert!(
+            secrets.cached(BOT_TOKEN, "1101").is_none(),
+            "nor is another purpose's"
+        );
+        secrets.forget(WEBHOOK, "1101");
+        assert!(secrets.cached(WEBHOOK, "1101").is_none(), "forgotten");
+    }
 }

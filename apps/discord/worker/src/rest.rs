@@ -491,4 +491,26 @@ mod tests {
             Some("guilds/1/members/:id/roles/:id")
         );
     }
+
+    /// What a bucket's reset says is a wait only when it is a time that can
+    /// be waited; anything else is no wait at all, and never a panic.
+    #[test]
+    fn a_reset_is_a_wait_or_nothing() {
+        for (text, wait) in [
+            ("0", Some(Duration::ZERO)),
+            ("0.5", Some(Duration::from_millis(500))),
+            (" 1.25 ", Some(Duration::from_millis(1250))),
+            ("20", Some(Duration::from_secs(20))),
+            ("", None),
+            ("soon", None),
+            ("-1", None),
+            ("-0.001", None),
+            ("NaN", None),
+            ("inf", None),
+            ("1e400", None),
+            ("1e20", None),
+        ] {
+            assert_eq!(seconds(text), wait, "{text:?}");
+        }
+    }
 }

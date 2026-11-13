@@ -244,4 +244,42 @@ mod tests {
         assert_eq!(read.api_base.as_str(), "https://discord.com/api/v10");
         assert_eq!(read.cdn_base.as_str(), "https://media.discordapp.net/");
     }
+
+    /// The override that lets the worker reach this machine is on for a
+    /// spelling of yes and for nothing else: with any other value a loopback
+    /// base is refused as it is without the setting, and no other flag
+    /// stands in for it.
+    #[test]
+    fn loopback_opens_only_for_a_spelling_of_yes() {
+        let base = (ENV_API_BASE, "http://127.0.0.1:9/api/v10");
+        let refused = "DISCORD_API_BASE: 127.0.0.1: Discord is reached on its default port";
+        for (value, open) in [
+            ("1", true),
+            ("true", true),
+            ("yes", true),
+            ("", false),
+            ("0", false),
+            ("no", false),
+            ("false", false),
+        ] {
+            let alone = config(&[(ENV_ALLOW_LOOPBACK, value)]).unwrap();
+            assert_eq!(
+                alone.egress.allow_loopback, open,
+                "{ENV_ALLOW_LOOPBACK}={value:?}"
+            );
+            let read = config(&[base, (ENV_ALLOW_LOOPBACK, value)])
+                .map(|settings| settings.api_base.to_string());
+            let expected = if open {
+                Ok(base.1.to_owned())
+            } else {
+                Err(refused.to_owned())
+            };
+            assert_eq!(read, expected, "{ENV_ALLOW_LOOPBACK}={value:?}");
+        }
+        assert_eq!(
+            config(&[base, (ENV_READ_ONLY, "1")]).unwrap_err(),
+            refused,
+            "read-only is another setting"
+        );
+    }
 }
