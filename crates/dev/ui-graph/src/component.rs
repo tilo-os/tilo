@@ -85,6 +85,7 @@ impl Catalogue {
     /// Read a catalogue written by [`Self::to_json`].
     ///
     /// # Errors
+    ///
     /// The text is not a catalogue, or one of another format version.
     pub fn from_json(text: &str) -> Result<Self, String> {
         let catalogue: Self = serde_json::from_str(text).map_err(|e| e.to_string())?;
@@ -208,12 +209,11 @@ pub enum Companion {
     Time,
 }
 
-/// The companion `name` is, and the prop it completes, when it is one: `value:as` says which
-/// kind of text `value` holds, and `meta:time` the time of day the day `meta` is due at.
+/// The companion `name` is, and the prop it completes, when it is one: `value:as` says which kind
+/// of text `value` holds, and `meta:time` the time of day the day `meta` is due at.
 ///
-/// A companion is the UI host's: it reads it beside the prop it completes, so a component
-/// declares the prop and never the companion. `None` for a name that is no companion; whether
-/// the component a node is of declares the prop is the description's to say.
+/// A companion is the UI host's: it reads it beside the prop it completes, so a component declares
+/// the prop and never the companion. `None` for a name that is no companion.
 #[must_use]
 pub fn companion(name: &str) -> Option<(&str, Companion)> {
     let (prop, said) = name.rsplit_once(':')?;
@@ -275,7 +275,6 @@ pub struct Slot {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Accepts {
-    /// Any view.
     View,
     /// Only the component of this name, whose props the slot's owner reads.
     Component(String),
