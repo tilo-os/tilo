@@ -32,8 +32,12 @@ pub struct Candidate {
 pub enum Caller {
     /// The compositor of the person at the seat: the only process that
     /// draws the consent prompt, so the only one that may open drives.
-    Shell { uid: u32 },
-    Person { uid: u32 },
+    Shell {
+        uid: u32,
+    },
+    Person {
+        uid: u32,
+    },
 }
 
 impl Caller {

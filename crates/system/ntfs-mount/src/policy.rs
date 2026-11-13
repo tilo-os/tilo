@@ -36,7 +36,9 @@ pub enum Binding {
         device_path: String,
         identity: Identity,
     },
-    External { identity: Identity },
+    External {
+        identity: Identity,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -25,7 +25,9 @@ pub enum Device {
     Fd,
     /// As the node [`NODE`] in the sandbox directory, for a program that
     /// opens its device by path.
-    Node { writable: bool },
+    Node {
+        writable: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

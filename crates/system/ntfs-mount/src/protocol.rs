@@ -111,11 +111,18 @@ pub enum Request {
         consent: Option<Consent>,
     },
     /// Close a drive the caller opened.
-    Close { drive: String },
+    Close {
+        drive: String,
+    },
     /// The caller's remembered drives.
     Remembered,
-    Forget { grant: String },
-    SetMode { grant: String, mode: Mode },
+    Forget {
+        grant: String,
+    },
+    SetMode {
+        grant: String,
+        mode: Mode,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
