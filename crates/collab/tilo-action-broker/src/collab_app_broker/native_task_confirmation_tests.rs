@@ -435,90 +435,89 @@ async fn press_replied(
 /// with any other arguments is not what they confirmed.
 #[tokio::test(flavor = "current_thread")]
 async fn a_runs_step_edited_on_the_sheet_runs_exactly_as_the_person_changed_it() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let f = Fixture::new();
-            f.approve();
-            let agent = f.channel(100, true);
-            let run = delivered(&agent).await;
-            let (_target, notes) = append_target(&f).await;
-            let (tracker, answers) = tracker_target(&f).await;
-            ask_first_for_notes(&f);
-            let (sheet, mut asked) = tokio::sync::mpsc::unbounded_channel();
-            f.state
-                .set_app_action_consent(Arc::new(super::store_witness::Sheet(sheet)));
+    Box::pin(tokio::task::LocalSet::new().run_until(async {
+        let f = Fixture::new();
+        f.approve();
+        let agent = f.channel(100, true);
+        let run = delivered(&agent).await;
+        let (_target, notes) = append_target(&f).await;
+        let (tracker, answers) = tracker_target(&f).await;
+        ask_first_for_notes(&f);
+        let (sheet, mut asked) = tokio::sync::mpsc::unbounded_channel();
+        f.state
+            .set_app_action_consent(Arc::new(super::store_witness::Sheet(sheet)));
 
-            assert!(append(&agent, &run, 9300, "Draft line").await.is_err());
-            ask(
-                &f,
-                ("notes:release", "append"),
-                serde_json::json!({ "text": "Draft line" })
-                    .as_object()
-                    .unwrap(),
-            );
-            let reply = press_answer(&tracker);
-            let ((question, answer), reply) = sheet_asked(&mut asked, reply).await;
-            let draft = question.draft.expect("the sheet shows the step's draft");
-            assert!(draft.fields[0].editable, "{draft:?}");
-            answer
-                .send(crate::app_actions::AppActionAnswer {
-                    consent: crate::app_actions::AppActionConsent::Once,
-                    edits: vec![tilo_actions::DraftEdit {
-                        path: vec!["text".into()],
-                        text: "Reviewed line".into(),
-                    }],
-                })
-                .unwrap();
-            let replied = press_replied(&f, reply).await;
-            assert!(
-                !matches!(
-                    replied,
-                    tilo_actions::remote::RemoteActionMessage::Receipt(
-                        tilo_actions::remote::InvocationReceipt {
-                            status: tilo_actions::remote::ReceiptStatus::Rejected { .. },
-                            ..
-                        }
-                    )
-                ),
-                "{replied:?}"
-            );
-            let given = next_arguments(&answers).await;
-            assert_eq!(given["confirm"], true);
-            assert_eq!(
-                given["edits"],
-                serde_json::json!([{"path": ["text"], "text": "Reviewed line"}]),
-                "the person's edits, not the app's"
-            );
-            // The tracker records the answer it was given.
-            answer_with(
-                &f,
-                TrackerAnswer::Confirmed {
-                    edits: given["edits"].clone(),
-                },
-            );
+        assert!(append(&agent, &run, 9300, "Draft line").await.is_err());
+        ask(
+            &f,
+            ("notes:release", "append"),
+            serde_json::json!({ "text": "Draft line" })
+                .as_object()
+                .unwrap(),
+        );
+        let reply = press_answer(&tracker);
+        let ((question, answer), reply) = sheet_asked(&mut asked, reply).await;
+        let draft = question.draft.expect("the sheet shows the step's draft");
+        assert!(draft.fields[0].editable, "{draft:?}");
+        answer
+            .send(crate::app_actions::AppActionAnswer {
+                consent: crate::app_actions::AppActionConsent::Once,
+                edits: vec![tilo_actions::DraftEdit {
+                    path: vec!["text".into()],
+                    text: "Reviewed line".into(),
+                }],
+            })
+            .unwrap();
+        let replied = press_replied(&f, reply).await;
+        assert!(
+            !matches!(
+                replied,
+                tilo_actions::remote::RemoteActionMessage::Receipt(
+                    tilo_actions::remote::InvocationReceipt {
+                        status: tilo_actions::remote::ReceiptStatus::Rejected { .. },
+                        ..
+                    }
+                )
+            ),
+            "{replied:?}"
+        );
+        let given = next_arguments(&answers).await;
+        assert_eq!(given["confirm"], true);
+        assert_eq!(
+            given["edits"],
+            serde_json::json!([{"path": ["text"], "text": "Reviewed line"}]),
+            "the person's edits, not the app's"
+        );
+        // The tracker records the answer it was given.
+        answer_with(
+            &f,
+            TrackerAnswer::Confirmed {
+                edits: given["edits"].clone(),
+            },
+        );
 
-            let other = append(&agent, &run, 9301, "Something else")
-                .await
-                .unwrap_err();
-            assert!(
-                other
-                    .to_string()
-                    .contains(tilo_actions::draft::AWAITING_CONFIRMATION),
-                "{other}"
-            );
-            assert!(
-                nothing_delivered(),
-                "other arguments are not what they confirmed"
-            );
-            append(&agent, &run, 9300, "Draft line").await.unwrap();
-            assert_eq!(
-                next_arguments(&notes).await["text"],
-                "Reviewed line",
-                "exactly what the person made"
-            );
-            drop(f);
-        })
-        .await;
+        let other = append(&agent, &run, 9301, "Something else")
+            .await
+            .unwrap_err();
+        assert!(
+            other
+                .to_string()
+                .contains(tilo_actions::draft::AWAITING_CONFIRMATION),
+            "{other}"
+        );
+        assert!(
+            nothing_delivered(),
+            "other arguments are not what they confirmed"
+        );
+        append(&agent, &run, 9300, "Draft line").await.unwrap();
+        assert_eq!(
+            next_arguments(&notes).await["text"],
+            "Reviewed line",
+            "exactly what the person made"
+        );
+        drop(f);
+    }))
+    .await;
 }
 
 /// The person allows the step as it is: the tracker is given no edits, as
