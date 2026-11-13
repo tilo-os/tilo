@@ -1431,6 +1431,58 @@ mod tests {
         assert!(guide.up(), "the guide itself stays up");
     }
 
+    /// A key pressed while a hold shows the keys is the person's, not the guide's: the hold is
+    /// over with that key, and the chord it makes runs where the guide would hold it back.
+    #[test]
+    fn a_key_that_ends_a_hold_runs_where_the_guide_would_hold_it_back() {
+        use std::time::Instant;
+        use tilo_session_core::super_tap::HOLD;
+
+        let guide: Rc<GuideState> = Rc::default();
+        guide.set_up(true);
+        let tap: Rc<RefCell<SuperTap>> = Rc::default();
+        let mut keys = NativeKeys::new(
+            SessionKeys::new(
+                Rc::default(),
+                Presses::default(),
+                Rc::clone(&guide),
+                DeskKeys::default(),
+                None,
+                ControllerKeys::default(),
+                Rc::default(),
+                Rc::clone(&tap),
+            ),
+            None,
+            Rc::default(),
+        );
+        // The hold showed the guide, and the keys are up.
+        let at = Instant::now();
+        tap.borrow_mut().super_key(true, at, false);
+        assert_eq!(
+            tap.borrow_mut().take(at + HOLD),
+            [tilo_session_core::super_tap::Ask::Hints]
+        );
+        // Held with the guide up, Super+W is the guide's to swallow.
+        let close = key(keysyms::w, Some('w'), held("l"));
+        assert_eq!(keys.claim_key(&close, false, false), KeyClaim::Take);
+        keys.key(&close);
+        assert!(asked(&keys).is_empty(), "the guide holds the chord back");
+        assert!(guide.up());
+
+        // The press that ends the hold is not: the keys go with it, and Super+W closes the
+        // window in front.
+        tap.borrow_mut().chord();
+        assert_eq!(keys.claim_key(&close, false, false), KeyClaim::Take);
+        keys.key(&close);
+        assert_eq!(
+            asked(&keys),
+            vec![
+                Invocation::new(CHROME_RESOURCE, "fixed-shortcut")
+                    .with("action", "fixed-close-tab")
+            ]
+        );
+    }
+
     #[test]
     fn a_client_holding_the_shortcuts_keeps_the_chords_but_not_the_way_to_lock() {
         let mut keys = keys();

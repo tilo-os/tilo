@@ -113,8 +113,8 @@ impl SuperTap {
         self.end_hints();
     }
 
-    /// What the desktop owes Super at `now` , in the order it was asked. A clean read of the
-    /// hold's first stage is the caller's to show once: [`Ask::Hints`] comes once per hold.
+    /// What the desktop owes Super at `now` , in the order it was asked, each once: the search of
+    /// a tap, the keys of a hold that has lasted, and the going of keys a hold showed.
     pub fn take(&mut self, now: Instant) -> Vec<Ask> {
         let mut asks = Vec::new();
         if self.hints == Hints::Ending {
@@ -157,7 +157,7 @@ impl SuperTap {
         self.hints = Hints::None;
     }
 
-    /// The hold is over, hush or not.
+    /// The hints a hold showed are over, and the desktop has them to take down.
     fn end_hints(&mut self) {
         if self.hints == Hints::Up {
             self.hints = Hints::Ending;
