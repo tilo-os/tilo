@@ -2,7 +2,7 @@
 
 use super::{
     DisplayEffect, DisplayModel, Dropdown, LiveRow, LocalState, SettingsEffect, SettingsSection,
-    Toggle, effect, note, rows, section, setting_row, setting_row_described, t, t_args,
+    Toggle, block, effect, note, rows, section, setting_row, setting_row_described, t, t_args,
 };
 use provider_settings_ui::bound::{SettingRows as _, record_item};
 use settings_store::person_displays::{Arrangement, Layout, ResolvedDisplay};
@@ -30,42 +30,10 @@ impl DisplayModel {
             .map_err(|error| t_args("display-shared-save-failed", &[("error", error.into())]))
     }
 
+    /// The person's screens as their arrangement lays them out: the layout the pointer crosses
+    /// between their devices by, so the edge shown here is the edge that crosses.
     pub(super) fn shared_layout(&self) -> Layout {
-        let origins = self
-            .person_devices
-            .iter()
-            .filter_map(|device| {
-                let local_x = device
-                    .outputs
-                    .iter()
-                    .filter(|output| output.active())
-                    .map(|output| output.x)
-                    .min()?;
-                let local_y = device
-                    .outputs
-                    .iter()
-                    .filter(|output| output.active())
-                    .map(|output| output.y)
-                    .min()?;
-                let screens = self
-                    .device_displays
-                    .iter()
-                    .filter(|screen| screen.device == device.device)
-                    .collect::<Vec<_>>();
-                let x = screens
-                    .iter()
-                    .map(|screen| screen.x)
-                    .min()?
-                    .saturating_sub(local_x);
-                let y = screens
-                    .iter()
-                    .map(|screen| screen.y)
-                    .min()?
-                    .saturating_sub(local_y);
-                Some((device.device.clone(), (x, y)))
-            })
-            .collect();
-        Layout::resolve_at_device_origins(&self.person_devices, &self.arrangement(), &origins)
+        Layout::resolve(&self.person_devices, &self.arrangement())
     }
 
     fn shared_revision(&self, device: &str, output: &str) -> u64 {
@@ -109,69 +77,149 @@ impl DisplayModel {
         )
     }
 
-    pub(super) fn capture_shared_move_revisions(&self, device: &str) -> Option<Vec<(String, u64)>> {
-        let outputs = &self
-            .person_devices
-            .iter()
-            .find(|item| item.device == device)?
-            .outputs;
-        Some(
-            outputs
-                .iter()
-                .map(|output| (output.id.clone(), self.shared_revision(device, &output.id)))
-                .collect(),
+    /// A screen's tile on the device arrangement: dragging it moves its device's screens.
+    fn device_screen_row(&self, display: &ResolvedDisplay) -> LiveRow {
+        LiveRow::new(
+            format!("settings.device-display:{}", screen_key(display)),
+            "settings.device-display",
+            display.name.clone(),
+        )
+        .operation(
+            SettingsEffect::from(DisplayEffect::MoveDeviceDisplay {
+                display: screen_key(display),
+                revision: self.shared_revision(&display.device, &display.output),
+                x: display.rect.x,
+                y: display.rect.y,
+            })
+            .bound_asking(&["x", "y"]),
         )
     }
 
-    /// Only the target's newer confirmed observation can pin a shared move.
-    /// A concurrent arrangement edit is preserved rather than overwritten.
-    pub(super) fn confirm_shared_device_move(&self, device: &str) -> Result<(), String> {
-        let Some(expected) = self.shared_move_revisions.as_ref() else {
-            return Ok(());
-        };
-        if expected
-            .iter()
-            .any(|(output, revision)| self.shared_revision(device, output) != *revision)
-        {
-            return Err(t("display-shared-move-stale"));
-        }
+    /// Move the device whose screen `display` names so that screen's corner stands at `at` in the
+    /// person's layout; the device's other screens keep their places beside it.
+    pub(super) fn move_shared_device(
+        &mut self,
+        display: &str,
+        revision: u64,
+        (x, y): (i32, i32),
+    ) -> Result<String, String> {
         let layout = self.shared_layout();
-        let group = layout
+        let moved = layout
             .displays
             .iter()
-            .filter(|display| display.device == device)
-            .collect::<Vec<_>>();
-        let screens = self
-            .device_displays
-            .iter()
-            .filter(|screen| screen.device == device)
-            .collect::<Vec<_>>();
-        let Some(dx) = screens
-            .iter()
-            .map(|screen| screen.x)
-            .min()
-            .zip(group.iter().map(|display| display.rect.x).min())
-            .map(|(target, current)| target.saturating_sub(current))
-        else {
-            return Err(t("display-shared-unavailable"));
+            .find(|screen| screen_key(screen) == display)
+            .ok_or_else(|| t("display-shared-unavailable"))?;
+        if self.shared_revision(&moved.device, &moved.output) != revision {
+            return Err(t("display-shared-stale"));
+        }
+        let next = layout.move_device(
+            &self.arrangement(),
+            &moved.device,
+            x.saturating_sub(moved.rect.x),
+            y.saturating_sub(moved.rect.y),
+        );
+        self.arrange(&next)?;
+        self.changed = true;
+        Ok(t("display-shared-saved"))
+    }
+
+    /// The person's devices' screens as their layout places them, once a device of theirs other
+    /// than this one has a screen in it: where two devices' screens meet is where the pointer
+    /// crosses between them.
+    pub(super) fn build_device_arrangement_card(
+        &self,
+        dispatcher: &Dispatcher<Settings>,
+    ) -> Option<SettingsSection> {
+        use crate::panes::display_arrangement::{
+            ArrangedDisplay, DisplayArrangement, SharedDisplayState, placement::Placement,
         };
-        let Some(dy) = screens
+        let layout = self.shared_layout();
+        if layout.displays.iter().all(|display| display.local) {
+            return None;
+        }
+        let first_local = layout.displays.iter().position(|display| display.local);
+        let displays = layout
+            .displays
             .iter()
-            .map(|screen| screen.y)
-            .min()
-            .zip(group.iter().map(|display| display.rect.y).min())
-            .map(|(target, current)| target.saturating_sub(current))
-        else {
-            return Err(t("display-shared-unavailable"));
-        };
-        self.arrange(&layout.move_device(&self.arrangement(), device, dx, dy))
+            .enumerate()
+            .filter_map(|(index, display)| {
+                Some(ArrangedDisplay {
+                    connector: screen_key(display),
+                    movement_group: Some(display.device.clone()),
+                    shared: Some(SharedDisplayState {
+                        device: display.device.clone(),
+                        output: display.output.clone(),
+                        online: display.online,
+                        included: display.enabled,
+                    }),
+                    label: t_args(
+                        "display-device-screen",
+                        &[
+                            ("device", display.device_label.clone().into()),
+                            ("screen", display.name.clone().into()),
+                            (
+                                "status",
+                                t(if display.online {
+                                    "display-device-online"
+                                } else {
+                                    "display-device-offline"
+                                })
+                                .into(),
+                            ),
+                        ],
+                    ),
+                    number: display.order.saturating_add(1),
+                    placement: Placement::new(
+                        display.rect.x,
+                        display.rect.y,
+                        i32::try_from(display.rect.width).ok()?,
+                        i32::try_from(display.rect.height).ok()?,
+                    ),
+                    primary: first_local == Some(index),
+                    movable: true,
+                })
+            })
+            .collect();
+        let moves = layout
+            .displays
+            .iter()
+            .filter_map(|display| {
+                let key = screen_key(display);
+                let target = key.clone();
+                let revision = self.shared_revision(&display.device, &display.output);
+                crate::on_row::binding(
+                    dispatcher,
+                    &self.device_screen_row(display).into_resource(),
+                    effect(DisplayEffect::MOVE_DEVICE_DISPLAY)
+                        .map(move |(x, y): (i32, i32)| (target.clone(), revision, x, y)),
+                )
+                .map(|binding| (key, binding))
+            })
+            .collect();
+        Some(section(
+            &t("display-devices-title"),
+            rows(vec![block(Box::new(DisplayArrangement::new(
+                displays,
+                moves,
+                self.device_arrangement_drag.clone(),
+            )))]),
+        ))
     }
 
     pub(super) fn shared_display_rows(&self) -> Vec<LiveRow> {
         let layout = self.shared_layout();
-        shared_displays(&layout)
+        let mut rows: Vec<LiveRow> = shared_displays(&layout)
             .map(|(display, active)| self.shared_row(display, active))
-            .collect()
+            .collect();
+        if layout.displays.iter().any(|display| !display.local) {
+            rows.extend(
+                layout
+                    .displays
+                    .iter()
+                    .map(|display| self.device_screen_row(display)),
+            );
+        }
+        rows
     }
 
     pub(super) fn shared_display_inspection(&self) -> serde_json::Value {
@@ -330,6 +378,11 @@ fn automatic_input(cx: &ViewCx<AutomaticDisplayPrefs>) -> provider_settings_ui::
         )
 }
 
+/// One screen of the person's layout, as the device arrangement names its tile.
+fn screen_key(display: &ResolvedDisplay) -> String {
+    format!("{}/{}", display.device, display.output)
+}
+
 fn shared_displays(layout: &Layout) -> impl Iterator<Item = (&ResolvedDisplay, bool)> {
     let active = layout.displays.iter().map(|display| (display, true));
     active.chain(layout.inactive.iter().map(|display| (display, false)))
@@ -377,29 +430,6 @@ mod tests {
         local.local = true;
         local.online = true;
         (offline, local)
-    }
-
-    fn screens(
-        devices: &[&settings_store::person_displays::PersonDevice],
-    ) -> Vec<settings_store::device_displays::DeviceDisplay> {
-        devices
-            .iter()
-            .map(|device| settings_store::device_displays::DeviceDisplay {
-                device: device.device.clone(),
-                device_label: device.label.clone(),
-                connector: "DP-1".into(),
-                output_id: Some("edid:panel-1".into()),
-                label: "Desk panel".into(),
-                online: device.online,
-                local: device.local,
-                x: if device.local { 0 } else { 1920 },
-                y: 120,
-                width: 960,
-                height: 540,
-                scale_milli: 2000,
-                revision: 1,
-            })
-            .collect()
     }
 
     fn shared(device: &str) -> String {
@@ -469,12 +499,8 @@ mod tests {
     fn shared_canvas_keeps_offline_tiles_and_marks_exclusion_after_the_resource_edit() {
         let mut app = on_displays();
         let (offline, local) = offline_and_local();
-        let observed = screens(&[&offline, &local]);
         let people = vec![offline.clone(), local];
-        change_model(&mut app, move |model| {
-            model.person_devices = people;
-            model.device_displays = observed;
-        });
+        change_model(&mut app, move |model| model.person_devices = people);
         frame(&mut app);
         let before = tiles(&mut app);
         assert_eq!(before.len(), 2);
@@ -530,22 +556,46 @@ mod tests {
     }
 
     #[test]
+    fn settings_lays_out_unplaced_devices_as_the_crossing_pointer_does() {
+        let mut app = on_displays();
+        let (offline, local) = offline_and_local();
+        // Neither device was placed: both stand where the person's arrangement puts devices not
+        // dragged into place yet.
+        let people = vec![offline.clone(), local.clone()];
+        change_model(&mut app, move |model| model.person_devices = people);
+        let (shown, arrangement) = read_model(&mut app, |model| {
+            (model.shared_layout(), model.arrangement())
+        });
+        let crossed = settings_store::person_displays::PersonDisplays {
+            devices: vec![offline, local],
+            ..Default::default()
+        }
+        .layout(&arrangement);
+        assert_eq!(
+            shown, crossed,
+            "Settings shows the layout the session's pointer crosses by"
+        );
+        let rect = |device: &str| {
+            shown
+                .displays
+                .iter()
+                .find(|display| display.device == device)
+                .map(|display| display.rect)
+                .unwrap()
+        };
+        assert_eq!(
+            rect("offline-peer").x,
+            rect("local-peer").right(),
+            "the second device stands at the first one's right edge"
+        );
+    }
+
+    #[test]
     fn shared_canvas_numbers_follow_resolved_device_output_identity_and_order() {
         let mut app = on_displays();
         let (offline, local) = offline_and_local();
-        let mut observed = screens(&[&offline, &local]);
-        let mut legacy = observed[0].clone();
-        legacy.device = "legacy-peer".into();
-        legacy.device_label = "Legacy computer".into();
-        legacy.output_id = None;
-        legacy.x = 2880;
-        legacy.revision = 0;
-        observed.insert(1, legacy);
         let people = vec![offline.clone(), local.clone()];
-        change_model(&mut app, move |model| {
-            model.person_devices = people;
-            model.device_displays = observed;
-        });
+        change_model(&mut app, move |model| model.person_devices = people);
         frame(&mut app);
         app.call_on(
             &shared(&local.device),
@@ -566,12 +616,6 @@ mod tests {
                 .iter()
                 .any(|name| name.starts_with("Display 1:") && name.contains("Local computer"))
         );
-        assert!(
-            before
-                .iter()
-                .any(|name| name.starts_with("Display 3:") && name.contains("Legacy computer")),
-            "unresolved rows must not duplicate a resolved number: {before:?}"
-        );
         app.call_on(
             &shared(&offline.device),
             "order-shared-display",
@@ -589,11 +633,6 @@ mod tests {
             after
                 .iter()
                 .any(|name| name.starts_with("Display 2:") && name.contains("Local computer"))
-        );
-        assert!(
-            after
-                .iter()
-                .any(|name| name.starts_with("Display 3:") && name.contains("Legacy computer"))
         );
         assert!(
             automatic_input(&app),
@@ -618,7 +657,7 @@ mod tests {
                 model.shared_revision("offline-peer", "edid:panel-1"),
                 model.shared_layout().displays[0].enabled,
                 model.person_devices.clone(),
-                model.pending_candidate.is_none() && model.pending_device_move.is_none(),
+                model.pending_candidate.is_none(),
             )
         });
         assert!(revision > 0);
@@ -763,97 +802,48 @@ mod tests {
     }
 
     #[test]
-    fn shared_display_move_pins_only_confirmed_positions_and_preserves_concurrent_edits() {
-        for concurrent in [false, true] {
-            let mut app = on_displays();
-            let mut people = devices();
-            people[0].online = true;
-            change_model(&mut app, move |model| {
-                model.person_devices = people;
-                model.device_displays = vec![settings_store::device_displays::DeviceDisplay {
-                    device: "offline-peer".into(),
-                    device_label: "Desk computer".into(),
-                    connector: "DP-1".into(),
-                    output_id: None,
-                    label: "Desk panel".into(),
-                    online: true,
-                    local: false,
-                    x: 1920,
-                    y: 120,
-                    width: 960,
-                    height: 540,
-                    scale_milli: 2000,
-                    revision: 1,
-                }];
-            });
-            frame(&mut app);
-            app.call_on(
-                &shared("offline-peer"),
-                "include-shared-display",
-                serde_json::json!({"on": false}),
-            )
-            .unwrap();
-            frame(&mut app);
-            let screen = read_model(&mut app, |model| model.device_displays[0].key());
-            app.call_on(
-                &format!("settings.device-display:{screen}"),
-                "move-device-display",
-                serde_json::json!({"x": 2000, "y": 200}),
-            )
-            .unwrap();
-            let shared_x =
-                |app: &mut App| read_model(app, |model| model.shared_layout().displays[0].rect.x);
-            assert_eq!(
-                shared_x(&mut app),
-                1920,
-                "a request never commits a placement"
-            );
-            let Some(ui::widget::AppHostIntent::MoveDeviceDisplay { reply, .. }) =
-                app.harness().take_host_intent()
-            else {
-                panic!("typed device placement");
-            };
-            reply.upgrade().unwrap().borrow_mut().result = Some(Ok(()));
-            frame(&mut app);
-            assert_eq!(
-                shared_x(&mut app),
-                1920,
-                "delivery is not target confirmation"
-            );
-            if concurrent {
-                app.call_on(
-                    &shared("offline-peer"),
-                    "include-shared-display",
-                    serde_json::json!({"on": true}),
-                )
-                .unwrap();
-                frame(&mut app);
-            }
-            change_model(&mut app, |model| {
-                let screen = &mut model.device_displays[0];
-                screen.x = 2000;
-                screen.y = 200;
-                screen.revision = 2;
-            });
-            frame(&mut app);
-            let (display, notice, settled) = read_model(&mut app, |model| {
-                (
-                    model.shared_layout().displays[0].clone(),
-                    model.notice.clone(),
-                    model.awaiting_device_move.is_none(),
-                )
-            });
-            if concurrent {
-                assert!(display.enabled);
-                assert_eq!(display.rect.x, 1920);
-                assert_eq!(notice, Some(t("display-shared-move-stale")));
-            } else {
-                assert_eq!((display.rect.x, display.rect.y), (2000, 200));
-                assert!(!display.enabled);
-                assert_eq!(notice, Some(t("display-device-move-confirmed")));
-            }
-            assert!(settled);
-        }
+    fn dragging_a_screen_moves_its_device_in_the_person_layout() {
+        let mut app = on_displays();
+        let (offline, local) = offline_and_local();
+        let people = vec![offline, local];
+        change_model(&mut app, move |model| model.person_devices = people);
+        frame(&mut app);
+        // A choice made beside the drag is kept: the screen stays out of the layout.
+        app.call_on(
+            &shared("offline-peer"),
+            "include-shared-display",
+            serde_json::json!({"on": false}),
+        )
+        .unwrap();
+        frame(&mut app);
+        app.call_on(
+            "settings.device-display:offline-peer/edid:panel-1",
+            "move-device-display",
+            serde_json::json!({"x": 2000, "y": 200}),
+        )
+        .unwrap();
+        frame(&mut app);
+        let layout = read_model(&mut app, DisplayModel::shared_layout);
+        let screen = |device: &str| {
+            layout
+                .displays
+                .iter()
+                .find(|display| display.device == device)
+                .cloned()
+                .unwrap()
+        };
+        let moved = screen("offline-peer");
+        assert_eq!((moved.rect.x, moved.rect.y), (2000, 200));
+        assert!(
+            !moved.enabled,
+            "the drag keeps the screen out of the layout"
+        );
+        let here = screen("local-peer");
+        assert_eq!(
+            (here.rect.x, here.rect.y),
+            (0, 0),
+            "this device's screens stay where they were"
+        );
     }
 
     #[test]

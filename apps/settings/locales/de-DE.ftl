@@ -2257,14 +2257,7 @@ display-device-screen = { $screen } auf { $device }, { $status }
 display-device-online = Online
 display-device-offline = Offline
 display-device-switched-off = Auf dem Gerät ausgeschaltet
-display-devices-arrange = Einen verbundenen Gerätebildschirm neben Ihren ziehen. Bildschirme desselben Geräts werden zusammen verschoben. Verschieben erlaubt keine Eingabe.
-display-device-move-requested = Warte darauf, dass dieses Gerät den Bildschirm verschiebt.
-display-device-move-pending = Bildschirmposition wird gesendet…
-display-device-move-unavailable = Dieser Bildschirm ist offline oder seine Anordnung kann hier nicht geändert werden.
 
-display-device-move-confirmed = Der Bildschirm wurde auf diesem Gerät verschoben.
-display-device-move-changed = Die Anordnung dieses Geräts hat sich geändert, daher wurde diese Position nicht übernommen. Versuche es erneut.
-display-device-move-unconfirmed = Das Gerät hat diese Position nicht bestätigt. Aktualisieren und erneut versuchen.
 
 a11y-dictation-literal = Wörtliches Diktieren
 a11y-dictation-literal-desc = Erkannte Wörter unverändert lassen. Wenn ausgeschaltet, werden eindeutige Zahlenkorrekturen auf Deutsch, Englisch, Französisch oder Spanisch bereinigt, etwa „zwei, äh, nein, drei“ zu „drei“. Namen, Zitate und andere Unflüssigkeiten bleiben unverändert.
@@ -2361,9 +2354,8 @@ display-shared-stale = Die Anordnung wurde geändert. Aktualisiere diese Anzeige
 display-shared-order-invalid = Wähle eine Anzeigennummer aus der aktuellen Liste.
 display-shared-save-failed = Die Anordnung konnte nicht gespeichert werden: { $error }
 display-shared-saved = Gemeinsame Anzeigeanordnung gespeichert.
-display-shared-move-stale = Das Gerät hat seine Position bestätigt, aber die gemeinsame Anordnung wurde geändert. Aktualisiere sie und versuche es erneut.
-display-shared-auto-input = Automatische Eingabe von deinen Geräten erlauben
-display-shared-auto-description = Solange eine Anzeige dieses Geräts eingebunden ist, dürfen deine registrierten Geräte es steuern, wenn sie online sind. Kontinuität und Anzeige/Eingabe müssen ebenfalls aktiviert sein. Abgelehnte Geräte bleiben abgelehnt. Diese Auswahl gilt nur hier.
+display-shared-auto-input = Deine anderen Geräte dürfen diesen Bildschirm nutzen
+display-shared-auto-description = Deine anderen Geräte können den Bildschirm dieses Geräts mit ihrer Tastatur und Maus nutzen: ihr Zeiger wechselt an dem Rand herüber, an dem deine Anzeigeanordnung sie platziert.
 
 input-layouts-title = Belegungen
 input-mismatch-title = Tippt eine andere Belegung

@@ -2257,14 +2257,7 @@ display-device-screen = { $screen } on { $device }, { $status }
 display-device-online = Online
 display-device-offline = Offline
 display-device-switched-off = Switched off on that device
-display-devices-arrange = Drag an online device screen beside yours. Screens on one device move together. Moving screens does not allow input.
-display-device-move-requested = Waiting for that device to move the screen.
-display-device-move-pending = Sending display placement…
-display-device-move-unavailable = That screen is offline or its arrangement cannot be changed here.
 
-display-device-move-confirmed = The screen moved on that device.
-display-device-move-changed = That device's layout changed, so this position was not applied. Try again.
-display-device-move-unconfirmed = The device did not confirm this position. Refresh and try again.
 
 a11y-dictation-literal = Literal dictation
 a11y-dictation-literal-desc = Keep recognised words as spoken. When off, explicit number corrections in English, German, French or Spanish are removed, such as “two, uh, no, three” becoming “three”. Names, quoted speech and other disfluencies stay unchanged.
@@ -2361,9 +2354,8 @@ display-shared-stale = The arrangement changed. Refresh this display and try aga
 display-shared-order-invalid = Choose a display number from the current list.
 display-shared-save-failed = The arrangement could not be saved: { $error }
 display-shared-saved = Shared display arrangement saved.
-display-shared-move-stale = The device confirmed its position, but the shared arrangement changed. Refresh and try again.
-display-shared-auto-input = Allow automatic input from your devices
-display-shared-auto-description = While one of this device's displays is included, let your enrolled online devices control it. Continuity and Display/input must also be enabled. Devices you have declined stay declined. This choice applies only here.
+display-shared-auto-input = Let your other devices use this screen
+display-shared-auto-description = Your other devices can use this device's screen with their keyboard and mouse: their pointer crosses over at the edge where your display layout places them.
 
 input-layouts-title = Layouts
 input-mismatch-title = Typing a different layout

@@ -191,7 +191,6 @@ pub struct CaptureScene {
     pub account_root: Option<PathBuf>,
     pub account_form: Option<AccountKind>,
     pub displays: Option<DisplaysSample>,
-    pub device_displays: Vec<settings_store::device_displays::DeviceDisplay>,
     pub person_devices: Vec<settings_store::person_displays::PersonDevice>,
     pub input_hardware: Option<settings_store::hardware::InputHardwareSnapshot>,
     #[cfg(feature = "tilo-os")]
@@ -314,11 +313,6 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
         },
         person_devices: if fixture.scenario() == Some(DEVICE_DISPLAYS) {
             person_display_fixture()
-        } else {
-            Vec::new()
-        },
-        device_displays: if fixture.scenario() == Some(DEVICE_DISPLAYS) {
-            device_display_fixture()
         } else {
             Vec::new()
         },
@@ -771,66 +765,62 @@ fn windows_support(scenario: Option<&str>) -> Option<os_actions::windows_compat:
 
 fn person_display_fixture() -> Vec<settings_store::person_displays::PersonDevice> {
     use settings_store::person_displays::{DeviceOutput, PersonDevice};
-    device_display_fixture()
-        .into_iter()
-        .map(|screen| PersonDevice {
-            device: screen.device,
-            label: screen.device_label,
-            local: screen.local,
-            online: screen.online,
+    [
+        (
+            "fixture-laptop",
+            "Laptop",
+            "eDP-1",
+            "Built-in display",
+            true,
+            960,
+            540,
+            2000,
+        ),
+        (
+            "fixture-desktop",
+            "Desktop",
+            "DP-1",
+            "External display",
+            false,
+            1280,
+            720,
+            1250,
+        ),
+    ]
+    .into_iter()
+    .map(
+        |(device, label, output, name, local, width, height, scale_milli): (
+            &str,
+            &str,
+            &str,
+            &str,
+            bool,
+            u32,
+            u32,
+            u16,
+        )| PersonDevice {
+            device: device.into(),
+            label: label.into(),
+            local,
+            online: true,
             outputs: vec![DeviceOutput {
-                id: screen.connector,
-                name: screen.label,
-                builtin: screen.local,
+                id: output.into(),
+                name: name.into(),
+                builtin: local,
                 x: 0,
                 y: 0,
-                width: screen.width,
-                height: screen.height,
-                mode_width: screen.width * u32::from(screen.scale_milli) / 1000,
-                mode_height: screen.height * u32::from(screen.scale_milli) / 1000,
+                width,
+                height,
+                mode_width: width * u32::from(scale_milli) / 1000,
+                mode_height: height * u32::from(scale_milli) / 1000,
                 refresh_mhz: 60_000,
-                scale_milli: screen.scale_milli,
+                scale_milli,
                 connected: true,
                 enabled: true,
             }],
-        })
-        .collect()
-}
-
-fn device_display_fixture() -> Vec<settings_store::device_displays::DeviceDisplay> {
-    use settings_store::device_displays::DeviceDisplay;
-    vec![
-        DeviceDisplay {
-            device: "fixture-laptop".into(),
-            device_label: "Laptop".into(),
-            connector: "eDP-1".into(),
-            output_id: Some("eDP-1".into()),
-            label: "Built-in display".into(),
-            online: true,
-            local: true,
-            x: 0,
-            y: 0,
-            width: 960,
-            height: 540,
-            scale_milli: 2000,
-            revision: 1,
         },
-        DeviceDisplay {
-            device: "fixture-desktop".into(),
-            device_label: "Desktop".into(),
-            connector: "DP-1".into(),
-            output_id: Some("DP-1".into()),
-            label: "External display".into(),
-            online: true,
-            local: false,
-            x: 960,
-            y: 0,
-            width: 1280,
-            height: 720,
-            scale_milli: 1250,
-            revision: 1,
-        },
-    ]
+    )
+    .collect()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
