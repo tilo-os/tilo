@@ -30,332 +30,585 @@ fn titled_content(actions: Vec<Element>) -> NavShell {
         .content_header("Quarterly planning: first draft", actions)
 }
 
-/// Swapping a column while the host holds the tree waits for the next
-/// build: the event routed in between still reaches the widget the tree
-/// was built with, never a dropped one.
-#[test]
-fn a_swap_waits_for_the_next_build() {
-    let (old, old_events) = Probe::boxed("content");
-    let shell = NavShell::new()
-        .content(old)
-        .content_header("Draft", Vec::new());
-    let mut h = harness(shell, 1024, 700, Theme::dark());
-    settle(&mut h, 1024, 700);
-    let (new, new_events) = Probe::boxed("content-next");
-    h.root_mut::<NavShell>().set_content(new);
-    h.root_mut::<NavShell>()
-        .set_content_header("Final", vec![icon("share", Icon::Send, "Share")]);
-    assert_eq!(
-        exposed_ids(&h),
-        ["content"],
-        "the old content stays until the host builds again"
-    );
-    let device = winit::event::DeviceId::dummy();
-    h.dispatch_to_root(&WindowEvent::CursorMoved {
-        device_id: device,
-        position: winit::dpi::PhysicalPosition::new(400.0, 400.0),
-    });
-    assert!(old_events.get() > 0, "the event reached the built content");
-    assert_eq!(new_events.get(), 0);
-    assert!(
+tilo_test_env::scenario! {
+    fn a_header_row_gives_its_title_and_actions_the_room_they_need;
+
+    // Swapping a column while the host holds the tree waits for the next
+    // build: the event routed in between still reaches the widget the tree
+    // was built with, never a dropped one.
+    phase a_swap_waits_for_the_next_build;
+    {
+        let (old, old_events) = Probe::boxed("content");
+        let shell = NavShell::new()
+            .content(old)
+            .content_header("Draft", Vec::new());
+        let mut h = harness(shell, 1024, 700, Theme::dark());
+        settle(&mut h, 1024, 700);
+        let (new, new_events) = Probe::boxed("content-next");
+        h.root_mut::<NavShell>().set_content(new);
         h.root_mut::<NavShell>()
-            .content_mut::<Probe>()
-            .is_some_and(|p| p.id == "content-next"),
-        "typed access sees the content waiting to go in"
-    );
-    settle(&mut h, 1024, 700);
-    assert_eq!(exposed_ids(&h), ["content-next", "share"]);
-    assert_eq!(
-        h.root::<NavShell>()
+            .set_content_header("Final", vec![icon("share", Icon::Send, "Share")]);
+        assert_eq!(
+            exposed_ids(&h),
+            ["content"],
+            "the old content stays until the host builds again"
+        );
+        let device = winit::event::DeviceId::dummy();
+        h.dispatch_to_root(&WindowEvent::CursorMoved {
+            device_id: device,
+            position: winit::dpi::PhysicalPosition::new(400.0, 400.0),
+        });
+        assert!(old_events.get() > 0, "the event reached the built content");
+        assert_eq!(new_events.get(), 0);
+        assert!(
+            h.root_mut::<NavShell>()
+                .content_mut::<Probe>()
+                .is_some_and(|p| p.id == "content-next"),
+            "typed access sees the content waiting to go in"
+        );
+        settle(&mut h, 1024, 700);
+        assert_eq!(exposed_ids(&h), ["content-next", "share"]);
+        assert_eq!(
+            h.root::<NavShell>()
+                .part(Part::Title(Column::Content))
+                .and_then(Widget::accessibility)
+                .and_then(|node| node.name)
+                .as_deref(),
+            Some("Final")
+        );
+    }
+
+    // The bar follows the actions it is given in place: a window that shows something else shows
+    // its actions from the first layout that sees them, each placed, never the ones before.
+    phase a_header_takes_new_actions_in_place;
+    {
+        let shell = NavShell::new()
+            .overview(Probe::boxed("overview").0)
+            .overview_header(
+                "Inbox",
+                vec![
+                    labelled("one", "One", Icon::Plus),
+                    icon("two", Icon::Send, "Two"),
+                ],
+            );
+        let mut h = harness(shell, 1024, 700, Theme::dark());
+        settle(&mut h, 1024, 700);
+        assert!(
+            (0..2).all(|i| part_rect(&h, Part::Action(Column::Overview, i)).width() > 0.0),
+            "the window's own actions stand in its bar"
+        );
+        let next = vec![
+            icon("three", Icon::Send, "Three"),
+            labelled("four", "Four", Icon::Plus),
+            Box::new(Button::new("five", "Five").in_menu().on_view(|| {})) as Element,
+            Box::new(Button::new("six", "Six").in_menu().on_view(|| {})) as Element,
+        ];
+        {
+            let mut shell = h.root_mut::<NavShell>();
+            let views = shell
+                .slot_views("overview_actions")
+                .expect("the shell changes its header's actions in place");
+            for index in (0..views.len()).rev() {
+                views.remove(index);
+            }
+            for (index, view) in next.into_iter().enumerate() {
+                views.insert(index, view);
+            }
+        }
+        settle(&mut h, 1024, 700);
+        for i in 0..2 {
+            assert!(
+                part_rect(&h, Part::Action(Column::Overview, i)).width() > 0.0,
+                "action {i} of the new set stands in the bar"
+            );
+        }
+        assert_eq!(
+            h.root::<NavShell>()
+                .part(Part::Action(Column::Overview, 0))
+                .and_then(Widget::accessibility)
+                .and_then(|node| node.name)
+                .as_deref(),
+            Some("Three"),
+            "the bar shows what arrived, not what it showed"
+        );
+    }
+
+    phase every_column_title_changes_in_place_and_a_bound_title_follows_its_state;
+    {
+        let title = LocalState::new("Inbox".to_owned());
+        let shell = NavShell::new()
+            .sidebar(Probe::boxed("sidebar").0)
+            .content(Probe::boxed("content").0)
+            .inspector(Probe::boxed("inspector").0)
+            .content_header_bound(&title, Vec::new())
+            .overview_count(3);
+        let mut h = harness(shell, 1400, 800, Theme::dark());
+        settle(&mut h, 1400, 800);
+        let heading = |h: &FrameHarness, column: Column| {
+            h.root::<NavShell>()
+                .part(Part::Title(column))
+                .and_then(Widget::accessibility)
+                .filter(|_| {
+                    h.root::<NavShell>()
+                        .host_parts
+                        .contains(&Part::Title(column))
+                })
+                .and_then(|node| node.name)
+        };
+        assert_eq!(heading(&h, Column::Content).as_deref(), Some("Inbox"));
+        h.root_mut::<NavShell>().set_sidebar_title("Mail");
+        h.root_mut::<NavShell>().set_inspector_title("Details");
+        h.root_mut::<NavShell>().set_content_count(Some(12));
+        title.set("Archive".to_owned());
+        let doc = automerge::AutoCommit::new();
+        h.root_mut::<NavShell>().sync(&doc, &automerge::ROOT);
+        settle(&mut h, 1400, 800);
+        assert_eq!(heading(&h, Column::Sidebar).as_deref(), Some("Mail"));
+        assert_eq!(heading(&h, Column::Inspector).as_deref(), Some("Details"));
+        assert_eq!(heading(&h, Column::Content).as_deref(), Some("Archive"));
+        let count = h
+            .root::<NavShell>()
             .part(Part::Title(Column::Content))
             .and_then(Widget::accessibility)
-            .and_then(|node| node.name)
-            .as_deref(),
-        Some("Final")
-    );
-}
-
-/// The bar follows the actions it is given in place: a window that shows something else shows
-/// its actions from the first layout that sees them, each placed, never the ones before.
-#[test]
-fn a_header_takes_new_actions_in_place() {
-    let shell = NavShell::new()
-        .overview(Probe::boxed("overview").0)
-        .overview_header(
-            "Inbox",
-            vec![
-                labelled("one", "One", Icon::Plus),
-                icon("two", Icon::Send, "Two"),
-            ],
+            .and_then(|node| node.value);
+        assert_eq!(
+            count.as_deref(),
+            Some("12"),
+            "the count reads after the title"
         );
-    let mut h = harness(shell, 1024, 700, Theme::dark());
-    settle(&mut h, 1024, 700);
-    assert!(
-        (0..2).all(|i| part_rect(&h, Part::Action(Column::Overview, i)).width() > 0.0),
-        "the window's own actions stand in its bar"
-    );
-    let next = vec![
-        icon("three", Icon::Send, "Three"),
-        labelled("four", "Four", Icon::Plus),
-        Box::new(Button::new("five", "Five").in_menu().on_view(|| {})) as Element,
-        Box::new(Button::new("six", "Six").in_menu().on_view(|| {})) as Element,
-    ];
+    }
+
+    // The actions band starts after the leading buttons and the title's
+    // measured width; the title starts at the content gutter.
+    phase the_actions_start_after_the_title_and_the_title_at_the_gutter;
     {
-        let mut shell = h.root_mut::<NavShell>();
-        let views = shell
-            .slot_views("overview_actions")
-            .expect("the shell changes its header's actions in place");
-        for index in (0..views.len()).rev() {
-            views.remove(index);
-        }
-        for (index, view) in next.into_iter().enumerate() {
-            views.insert(index, view);
+        let theme = Theme::dark();
+        let m = Metrics::resolve(&theme);
+        let shell = titled_content(vec![
+            icon("reply", Icon::Reply, "Reply"),
+            icon("delete", Icon::Trash2, "Delete message"),
+        ]);
+        let mut h = harness(shell, 1024, 700, theme.clone());
+        settle(&mut h, 1024, 700);
+        let title = part_rect(&h, Part::Title(Column::Content));
+        assert!(
+            (title.x0 - f64::from(theme.tokens.spacing.rhythm.group)).abs() < 0.5,
+            "the title starts at the content gutter ({})",
+            title.x0
+        );
+        let reply = part_rect(&h, Part::Action(Column::Content, 0));
+        assert!(
+            reply.x0 >= title.x1 + m.gap - 0.5,
+            "{reply:?} after {title:?}"
+        );
+        assert!(reply.x1 < 1024.0 && reply.width() > 0.0);
+
+        let shell = NavShell::new()
+            .sidebar(Probe::boxed("sidebar").0)
+            .content(Probe::boxed("content").0)
+            .content_header(
+                "Quarterly planning",
+                vec![icon("reply", Icon::Reply, "Reply")],
+            )
+            .with_sidebar_hidden();
+        let mut h = harness(shell, 1024, 700, theme);
+        settle(&mut h, 1024, 700);
+        let g = geometry(&h);
+        let title = part_rect(&h, Part::Title(Column::Content));
+        assert!(title.x0 >= g.toggle.x1 + m.gap - 0.5);
+        assert!(part_rect(&h, Part::Action(Column::Content, 0)).x0 >= title.x1);
+    }
+
+    // A title takes the room the actions leave: where most of the row's actions wait in the
+    // menu, the title says what it says instead of being held to a third of the row with empty
+    // space beside it.
+    phase a_title_takes_the_room_its_actions_leave;
+    {
+        let theme = Theme::dark();
+        let title = "Launch plan for the autumn release, and everything it has to carry with it";
+        let actions: Vec<Element> = (0..10)
+            .map(|_| Box::new(Button::new("open", "Open").in_menu().on_view(|| {})) as Element)
+            .collect();
+        let shell = NavShell::new()
+            .content(Probe::boxed("content").0)
+            .content_header(title, actions);
+        let mut h = harness(shell, 1024, 700, theme.clone());
+        settle(&mut h, 1024, 700);
+        let shown = part_rect(&h, Part::Title(Column::Content));
+        let door = part_rect(&h, Part::More(Column::Content));
+        assert!(door.width() > 0.0, "the actions wait in the menu's door");
+        let (needs, _) =
+            crate::chrome::header_row::measure_title(&mut TextRenderer::new(), &theme, title, None);
+        assert!(
+            (shown.width() - needs).abs() < 1.5,
+            "the title says {needs:.0} wide and takes {:.0} ({shown:?})",
+            shown.width()
+        );
+        assert!(shown.x1 <= door.x0, "{shown:?} does not run into {door:?}");
+    }
+
+    // The row's order of giving way: an action's label gives way for its icon, then what else stands
+    // in the row for the menu's door, and only then is the title cut — the primary action never
+    // leaves the row, whatever the row's width and whatever language the title speaks.
+    phase a_title_is_cut_only_once_its_actions_have_given_what_they_can;
+    {
+        let theme = Theme::dark();
+        let title = "Launch plan for the autumn release";
+        let needs = |title: &str| {
+            let (w, _) =
+                crate::chrome::header_row::measure_title(&mut TextRenderer::new(), &theme, title, None);
+            w
+        };
+        let actions = || {
+            vec![
+                icon("sort", Icon::ArrowUpDown, "Sort"),
+                Box::new(
+                    Button::new("new", "New note")
+                        .with_icon(Icon::Plus)
+                        .role(crate::widget::ButtonRole::Primary)
+                        .on_view(|| {}),
+                ) as Element,
+                labelled("pin", "Pin", Icon::Pin),
+                Box::new(
+                    Button::new("delete", "Delete note")
+                        .with_icon(Icon::Trash2)
+                        .in_menu()
+                        .on_view(|| {}),
+                ) as Element,
+            ]
+        };
+        // Every row width, in the words of two languages: the title is never cut while a label
+        // stands in the row that could be an icon, and the primary action is never missing.
+        for width in [1024, 700, 560, 460, 380, 300, 240, 200] {
+            for title in [
+                title,
+                "Sammelplan für die Herbstausgabe und alles, was er trägt",
+            ] {
+                let mut h = harness(
+                    NavShell::new()
+                        .content(Probe::boxed("content").0)
+                        .content_header(title, actions()),
+                    width,
+                    700,
+                    theme.clone(),
+                );
+                settle(&mut h, width, 700);
+                let shown = part_rect(&h, Part::Title(Column::Content));
+                let primary = part_rect(&h, Part::Action(Column::Content, 1));
+                assert!(
+                    primary.width() > 0.0,
+                    "at {width} the primary action left the row ({primary:?})"
+                );
+                let edge = h.root::<NavShell>().get_rect().x1;
+                for part in (0..4)
+                    .map(|i| Part::Action(Column::Content, i))
+                    .chain([Part::More(Column::Content)])
+                {
+                    let placed = part_rect(&h, part);
+                    assert!(
+                        placed.x1 <= edge + 0.5,
+                        "at {width} {part:?} runs past the row: {placed:?} beside {edge:.0}"
+                    );
+                }
+                let cut = shown.width() + 1.0 < needs(title);
+                if cut {
+                    let shell = h.root::<NavShell>();
+                    let labelled = (0..shell.shown_actions(Column::Content)).any(|i| {
+                        shell
+                            .part(Part::Action(Column::Content, i))
+                            .and_then(|action| button_of(action))
+                            .is_some_and(|button| {
+                                button.shrinks_to_icon() && !button.is_shown_compact()
+                            })
+                    });
+                    assert!(
+                        !labelled,
+                        "at {width} {title:?} is cut to {:.0} of {:.0} while a label stands in the row",
+                        shown.width(),
+                        needs(title)
+                    );
+                }
+            }
         }
     }
-    settle(&mut h, 1024, 700);
-    for i in 0..2 {
+
+    // A header row reports what it settled on: the title's width against what it says, the room it
+    // left beside it, and what its actions kept.
+    phase a_header_row_reports_what_it_settled_on;
+    {
+        let shell = NavShell::new()
+            .content(Probe::boxed("content").0)
+            .content_header(
+                "Quarterly planning",
+                vec![
+                    labelled("new", "New note", Icon::Plus),
+                    labelled("pin", "Pin", Icon::Pin),
+                ],
+            );
+        let mut h = harness(shell, 280, 700, Theme::dark());
+        settle(&mut h, 280, 700);
+        let Some(crate::widget::LayoutInfo::Shell(shell)) = h.root::<NavShell>().layout_info() else {
+            panic!("the shell reports its columns");
+        };
+        let row = shell.rows.rows[Column::Content.index()].expect("the content column's row");
+        assert_eq!(row.column, "content");
+        let title = part_rect(&h, Part::Title(Column::Content));
+        assert!((f64::from(row.title_has) - title.width()).abs() < 0.5);
+        // The content column's row keeps its title to what it says: the status message it paints
+        // starts where the title ends.
+        assert!(f64::from(row.title_needs) >= f64::from(row.title_has));
+        assert!(f64::from(row.free_beside_title) >= 0.0);
+        assert!(row.primary_shown, "the row keeps its primary action");
+    }
+
+    phase a_leading_fill_stands_between_the_toggle_and_the_actions;
+    {
+        let shell = NavShell::new()
+            .sidebar(Probe::boxed("sidebar").0)
+            .content(Probe::boxed("content").0)
+            .content_header("", vec![icon("new", Icon::Plus, "New folder")])
+            .content_header_leading(Box::new(Button::new("path", "Home › Documents › Taxes")));
+        let mut h = harness(shell, 1280, 800, Theme::dark());
+        settle(&mut h, 1280, 800);
+        let g = geometry(&h);
+        let leading = part_rect(&h, Part::Leading(Column::Content));
+        let action = part_rect(&h, Part::Action(Column::Content, 0));
+        assert!(leading.width() > 0.0);
+        assert!(leading.x0 >= g.content_column.x0, "in the content's header");
+        assert!(leading.x1 <= action.x0, "{leading:?} before {action:?}");
+        assert!(leading.y0 >= 0.0 && leading.y1 <= g.header_height);
+    }
+
+    // A switch states its size and measures nothing; in a header it still
+    // stands at that size, beside a labelled button.
+    phase a_switch_in_the_header_keeps_its_own_width;
+    {
+        let switch = crate::widget::Toggle::new("power", "Power");
+        let intrinsic = crate::widget::ToggleFace::size(&Theme::dark()).0;
+        let shell = titled_content(vec![
+            Box::new(switch),
+            labelled("apply", "Apply", Icon::Check),
+        ]);
+        let mut h = harness(shell, 1280, 800, Theme::dark());
+        settle(&mut h, 1280, 800);
+        let switch = part_rect(&h, Part::Action(Column::Content, 0));
+        let apply = part_rect(&h, Part::Action(Column::Content, 1));
         assert!(
-            part_rect(&h, Part::Action(Column::Overview, i)).width() > 0.0,
-            "action {i} of the new set stands in the bar"
+            switch.width() >= intrinsic,
+            "{switch:?} is at least the switch's own {intrinsic} wide"
+        );
+        assert!(switch.x1 <= apply.x0, "{switch:?} before {apply:?}");
+    }
+
+    phase a_page_columns_filter_field_lines_up_with_the_page_under_it;
+    {
+        let lines = 55.0_f32;
+        for (w, theme) in [(1280, Theme::dark()), (520, Theme::light())] {
+            let seen = SharedRc::new(Cell::new(Rect::ZERO));
+            let width = (theme.text(crate::TextRole::Body).line_height_px() * lines).round();
+            let page = crate::widget::Scrollable::new(crate::widget::ScrollAxis::Vertical)
+                .fill_parent_height()
+                .with_stable_vertical_gutter()
+                .with_child(Box::new(
+                    crate::widget::Container::new()
+                        .with_no_padding()
+                        .with_centered_max_width(width)
+                        .with_child(Box::new(crate::widget::Column::new().push(Box::new(
+                            EdgeProbe {
+                                rect: Rect::ZERO,
+                                seen: SharedRc::clone(&seen),
+                            },
+                        )))),
+                ));
+            let shell = NavShell::new()
+                .content(Box::new(page))
+                .content_header("Discover", Vec::new())
+                .content_kind(ContentKind::Grid)
+                .with_page_column(lines)
+                .with_filter(SearchField::filter());
+            let mut h = harness(shell, w, 800, theme);
+            settle(&mut h, w, 800);
+            let field = part_rect(&h, Part::Filter);
+            let row = seen.get();
+            assert!(row.width() > 0.0, "the page was laid out at {w}");
+            assert!(
+                (field.x0 - row.x0).abs() < 0.5 && (field.x1 - row.x1).abs() < 0.5,
+                "at {w} the field {field:?} spans the page's content {row:?}"
+            );
+            let g = geometry(&h);
+            assert!(
+                field.y0 - g.header(Column::Content).y1 >= Metrics::resolve(h.theme()).gap - 0.5,
+                "the field stands clear of the header's hairline"
+            );
+            assert!(row.y0 >= field.y1, "the page starts under the field");
+        }
+    }
+
+    // A header's actions stand at the trailing edge of their own column, whether the columns after
+    // it are quiet or say something of their own: they stay beside what they act on, and they do not
+    // move as a person selects and deselects an item in the column beside them.
+    phase a_headers_actions_stand_at_their_columns_trailing_edge;
+    {
+        let theme = Theme::dark();
+        let gutter = crate::chrome::column_gutter(&theme);
+        let shell = NavShell::new()
+            .overview(Probe::boxed("overview").0)
+            .content(Probe::boxed("content").0)
+            .overview_header("Inbox", vec![icon("search", Icon::Send, "Search")]);
+        let mut h = harness(shell, 1024, 700, theme);
+        settle(&mut h, 1024, 700);
+        let edge = h.root::<NavShell>().geometry().overview_column.x1;
+        assert!(
+            edge < 1024.0 - 40.0,
+            "the detail beside the list stands in the window: the list ends at {edge}"
+        );
+        let ends_at =
+            |rect: Rect, edge: f64| rect.width() > 0.0 && (rect.x1 - (edge - gutter)).abs() < 0.5;
+        let quiet = part_rect(&h, Part::Action(Column::Overview, 0));
+        assert!(
+            ends_at(quiet, edge),
+            "the list's action ends at the list's edge {edge} while the detail is quiet: {quiet:?}"
+        );
+        h.root_mut::<NavShell>()
+            .set_content_header("Move flat", vec![icon("board", Icon::Send, "Board")]);
+        settle(&mut h, 1024, 700);
+        let selected = part_rect(&h, Part::Action(Column::Overview, 0));
+        assert!(
+            (selected.x0 - quiet.x0).abs() < 0.5 && (selected.x1 - quiet.x1).abs() < 0.5,
+            "the list's action keeps its place when an item is selected beside it: {quiet:?} then {selected:?}"
+        );
+        let content = h.root::<NavShell>().geometry().content_column.x1;
+        let own = part_rect(&h, Part::Action(Column::Content, 0));
+        assert!(
+            ends_at(own, content),
+            "the detail's action ends at the detail's edge {content}: {own:?}"
         );
     }
-    assert_eq!(
-        h.root::<NavShell>()
-            .part(Part::Action(Column::Overview, 0))
-            .and_then(Widget::accessibility)
-            .and_then(|node| node.name)
-            .as_deref(),
-        Some("Three"),
-        "the bar shows what arrived, not what it showed"
-    );
-}
 
-#[test]
-fn every_column_title_changes_in_place_and_a_bound_title_follows_its_state() {
-    let title = LocalState::new("Inbox".to_owned());
-    let shell = NavShell::new()
-        .sidebar(Probe::boxed("sidebar").0)
-        .content(Probe::boxed("content").0)
-        .inspector(Probe::boxed("inspector").0)
-        .content_header_bound(&title, Vec::new())
-        .overview_count(3);
-    let mut h = harness(shell, 1400, 800, Theme::dark());
-    settle(&mut h, 1400, 800);
-    let heading = |h: &FrameHarness, column: Column| {
-        h.root::<NavShell>()
-            .part(Part::Title(column))
-            .and_then(Widget::accessibility)
-            .filter(|_| {
-                h.root::<NavShell>()
-                    .host_parts
-                    .contains(&Part::Title(column))
-            })
-            .and_then(|node| node.name)
-    };
-    assert_eq!(heading(&h, Column::Content).as_deref(), Some("Inbox"));
-    h.root_mut::<NavShell>().set_sidebar_title("Mail");
-    h.root_mut::<NavShell>().set_inspector_title("Details");
-    h.root_mut::<NavShell>().set_content_count(Some(12));
-    title.set("Archive".to_owned());
-    let doc = automerge::AutoCommit::new();
-    h.root_mut::<NavShell>().sync(&doc, &automerge::ROOT);
-    settle(&mut h, 1400, 800);
-    assert_eq!(heading(&h, Column::Sidebar).as_deref(), Some("Mail"));
-    assert_eq!(heading(&h, Column::Inspector).as_deref(), Some("Details"));
-    assert_eq!(heading(&h, Column::Content).as_deref(), Some("Archive"));
-    let count = h
-        .root::<NavShell>()
-        .part(Part::Title(Column::Content))
-        .and_then(Widget::accessibility)
-        .and_then(|node| node.value);
-    assert_eq!(
-        count.as_deref(),
-        Some("12"),
-        "the count reads after the title"
-    );
-}
+    // A list offers its actions again as what it shows changes: the row takes the ones it is
+    // handed now, so an action that arrives with the icon it draws gives its label up for the
+    // icon, and the title keeps its words instead of standing cut beside it.
+    phase a_row_gives_its_labels_up_when_its_actions_are_offered_again;
+    {
+        let theme = Theme::dark();
+        let title = "Quarterly planning for the autumn release, and the review after it";
+        let primary = |icon: Option<Icon>| {
+            let button = Button::new("new", "New note")
+                .role(crate::widget::ButtonRole::Primary)
+                .on_view(|| {});
+            Box::new(match icon {
+                Some(icon) => button.with_icon(icon),
+                None => button,
+            }) as Element
+        };
+        let shell = NavShell::new()
+            .content(Probe::boxed("content").0)
+            .content_header(
+                title,
+                vec![labelled("pin", "Pin to the top", Icon::Pin), primary(None)],
+            );
+        let mut h = harness(shell, 560, 700, theme);
+        settle(&mut h, 560, 700);
+        let before = part_rect(&h, Part::Title(Column::Content));
+        let stood = part_rect(&h, Part::Action(Column::Content, 1));
+        assert!(
+            stood.width() > stood.height() * 1.5,
+            "an action with no icon to give up stands labelled ({stood:?})"
+        );
 
-/// The actions band starts after the leading buttons and the title's
-/// measured width; the title starts at the content gutter.
-#[test]
-fn the_actions_start_after_the_title_and_the_title_at_the_gutter() {
-    let theme = Theme::dark();
-    let m = Metrics::resolve(&theme);
-    let shell = titled_content(vec![
-        icon("reply", Icon::Reply, "Reply"),
-        icon("delete", Icon::Trash2, "Delete message"),
-    ]);
-    let mut h = harness(shell, 1024, 700, theme.clone());
-    settle(&mut h, 1024, 700);
-    let title = part_rect(&h, Part::Title(Column::Content));
-    assert!(
-        (title.x0 - f64::from(theme.tokens.spacing.rhythm.group)).abs() < 0.5,
-        "the title starts at the content gutter ({})",
-        title.x0
-    );
-    let reply = part_rect(&h, Part::Action(Column::Content, 0));
-    assert!(
-        reply.x0 >= title.x1 + m.gap - 0.5,
-        "{reply:?} after {title:?}"
-    );
-    assert!(reply.x1 < 1024.0 && reply.width() > 0.0);
-
-    let shell = NavShell::new()
-        .sidebar(Probe::boxed("sidebar").0)
-        .content(Probe::boxed("content").0)
-        .content_header(
-            "Quarterly planning",
-            vec![icon("reply", Icon::Reply, "Reply")],
-        )
-        .with_sidebar_hidden();
-    let mut h = harness(shell, 1024, 700, theme);
-    settle(&mut h, 1024, 700);
-    let g = geometry(&h);
-    let title = part_rect(&h, Part::Title(Column::Content));
-    assert!(title.x0 >= g.toggle.x1 + m.gap - 0.5);
-    assert!(part_rect(&h, Part::Action(Column::Content, 0)).x0 >= title.x1);
-}
-
-/// A title takes the room the actions leave: where most of the row's actions wait in the
-/// menu, the title says what it says instead of being held to a third of the row with empty
-/// space beside it.
-#[test]
-fn a_title_takes_the_room_its_actions_leave() {
-    let theme = Theme::dark();
-    let title = "Launch plan for the autumn release, and everything it has to carry with it";
-    let actions: Vec<Element> = (0..10)
-        .map(|_| Box::new(Button::new("open", "Open").in_menu().on_view(|| {})) as Element)
-        .collect();
-    let shell = NavShell::new()
-        .content(Probe::boxed("content").0)
-        .content_header(title, actions);
-    let mut h = harness(shell, 1024, 700, theme.clone());
-    settle(&mut h, 1024, 700);
-    let shown = part_rect(&h, Part::Title(Column::Content));
-    let door = part_rect(&h, Part::More(Column::Content));
-    assert!(door.width() > 0.0, "the actions wait in the menu's door");
-    let (needs, _) =
-        crate::chrome::header_row::measure_title(&mut TextRenderer::new(), &theme, title, None);
-    assert!(
-        (shown.width() - needs).abs() < 1.5,
-        "the title says {needs:.0} wide and takes {:.0} ({shown:?})",
-        shown.width()
-    );
-    assert!(shown.x1 <= door.x0, "{shown:?} does not run into {door:?}");
-}
-
-/// The row's order of giving way: an action's label gives way for its icon, then what else stands
-/// in the row for the menu's door, and only then is the title cut — the primary action never
-/// leaves the row, whatever the row's width and whatever language the title speaks.
-#[test]
-fn a_title_is_cut_only_once_its_actions_have_given_what_they_can() {
-    let theme = Theme::dark();
-    let title = "Launch plan for the autumn release";
-    let needs = |title: &str| {
-        let (w, _) =
-            crate::chrome::header_row::measure_title(&mut TextRenderer::new(), &theme, title, None);
-        w
-    };
-    let actions = || {
-        vec![
-            icon("sort", Icon::ArrowUpDown, "Sort"),
-            Box::new(
-                Button::new("new", "New note")
-                    .with_icon(Icon::Plus)
-                    .role(crate::widget::ButtonRole::Primary)
-                    .on_view(|| {}),
-            ) as Element,
-            labelled("pin", "Pin", Icon::Pin),
-            Box::new(
-                Button::new("delete", "Delete note")
-                    .with_icon(Icon::Trash2)
-                    .in_menu()
-                    .on_view(|| {}),
-            ) as Element,
-        ]
-    };
-    // Every row width, in the words of two languages: the title is never cut while a label
-    // stands in the row that could be an icon, and the primary action is never missing.
-    for width in [1024, 700, 560, 460, 380, 300, 240, 200] {
-        for title in [
+        h.root_mut::<NavShell>().set_content_header(
             title,
-            "Sammelplan für die Herbstausgabe und alles, was er trägt",
-        ] {
-            let mut h = harness(
-                NavShell::new()
-                    .content(Probe::boxed("content").0)
-                    .content_header(title, actions()),
-                width,
-                700,
-                theme.clone(),
-            );
-            settle(&mut h, width, 700);
-            let shown = part_rect(&h, Part::Title(Column::Content));
-            let primary = part_rect(&h, Part::Action(Column::Content, 1));
-            assert!(
-                primary.width() > 0.0,
-                "at {width} the primary action left the row ({primary:?})"
-            );
-            let edge = h.root::<NavShell>().get_rect().x1;
-            for part in (0..4)
-                .map(|i| Part::Action(Column::Content, i))
-                .chain([Part::More(Column::Content)])
-            {
-                let placed = part_rect(&h, part);
-                assert!(
-                    placed.x1 <= edge + 0.5,
-                    "at {width} {part:?} runs past the row: {placed:?} beside {edge:.0}"
-                );
-            }
-            let cut = shown.width() + 1.0 < needs(title);
-            if cut {
-                let shell = h.root::<NavShell>();
-                let labelled = (0..shell.shown_actions(Column::Content)).any(|i| {
-                    shell
-                        .part(Part::Action(Column::Content, i))
-                        .and_then(|action| button_of(action))
-                        .is_some_and(|button| {
-                            button.shrinks_to_icon() && !button.is_shown_compact()
-                        })
-                });
-                assert!(
-                    !labelled,
-                    "at {width} {title:?} is cut to {:.0} of {:.0} while a label stands in the row",
-                    shown.width(),
-                    needs(title)
-                );
-            }
-        }
-    }
-}
-
-/// A header row reports what it settled on: the title's width against what it says, the room it
-/// left beside it, and what its actions kept.
-#[test]
-fn a_header_row_reports_what_it_settled_on() {
-    let shell = NavShell::new()
-        .content(Probe::boxed("content").0)
-        .content_header(
-            "Quarterly planning",
             vec![
-                labelled("new", "New note", Icon::Plus),
-                labelled("pin", "Pin", Icon::Pin),
+                labelled("pin", "Pin to the top", Icon::Pin),
+                primary(Some(Icon::Plus)),
             ],
         );
-    let mut h = harness(shell, 280, 700, Theme::dark());
-    settle(&mut h, 280, 700);
-    let Some(crate::widget::LayoutInfo::Shell(shell)) = h.root::<NavShell>().layout_info() else {
-        panic!("the shell reports its columns");
-    };
-    let row = shell.rows.rows[Column::Content.index()].expect("the content column's row");
-    assert_eq!(row.column, "content");
-    let title = part_rect(&h, Part::Title(Column::Content));
-    assert!((f64::from(row.title_has) - title.width()).abs() < 0.5);
-    // The content column's row keeps its title to what it says: the status message it paints
-    // starts where the title ends.
-    assert!(f64::from(row.title_needs) >= f64::from(row.title_has));
-    assert!(f64::from(row.free_beside_title) >= 0.0);
-    assert!(row.primary_shown, "the row keeps its primary action");
+        settle(&mut h, 560, 700);
+        let action = part_rect(&h, Part::Action(Column::Content, 1));
+        assert!(
+            action.width() < action.height() * 1.5,
+            "the action gave its label up ({action:?})"
+        );
+        let after = part_rect(&h, Part::Title(Column::Content));
+        assert!(
+            after.width() > before.width() + (stood.width() - action.width()) / 2.0,
+            "the title took the room the label gave up ({before:?} then {after:?})"
+        );
+    }
+
+    // Labelled buttons collapse to their icons when the row is short; then
+    // the rest move into the More menu, and choosing one there runs it.
+    phase actions_collapse_to_icons_then_overflow_into_more;
+    {
+        let deleted = SharedRc::new(Cell::new(false));
+        let actions = || {
+            let deleted = SharedRc::clone(&deleted);
+            vec![
+                labelled("reply", "Reply to everyone", Icon::Reply),
+                labelled("forward", "Forward", Icon::Send),
+                labelled("archive", "Archive", Icon::Archive),
+                Box::new(
+                    Button::new("delete", "Delete message")
+                        .with_icon(Icon::Trash2)
+                        .on_view(move || deleted.set(true)),
+                ) as Element,
+            ]
+        };
+        let mut h = harness(titled_content(actions()), 1400, 700, Theme::dark());
+        settle(&mut h, 1400, 700);
+        let wide = part_rect(&h, Part::Action(Column::Content, 0));
+        assert!(wide.width() > wide.height() * 1.5, "a labelled button");
+        assert!(part_rect(&h, Part::More(Column::Content)).width() <= 0.0);
+
+        let mut h = harness(titled_content(actions()), 640, 700, Theme::dark());
+        settle(&mut h, 640, 700);
+        let compact = part_rect(&h, Part::Action(Column::Content, 0));
+        assert!(
+            (compact.width() - compact.height()).abs() < 1.0,
+            "an icon-only square ({compact:?})"
+        );
+        let reply = h
+            .root::<NavShell>()
+            .part(Part::Action(Column::Content, 0))
+            .and_then(Widget::accessibility)
+            .and_then(|node| node.name);
+        assert_eq!(
+            reply.as_deref(),
+            Some("Reply to everyone"),
+            "the label stays its name"
+        );
+
+        let mut h = harness(titled_content(actions()), 220, 700, Theme::dark());
+        settle(&mut h, 220, 700);
+        let shown = h.root::<NavShell>().shown_actions(Column::Content);
+        assert!(shown < 4, "{shown}");
+        let more = part_rect(&h, Part::More(Column::Content));
+        assert!(more.width() > 0.0 && more.x1 <= 220.0);
+        assert!(
+            h.root::<NavShell>()
+                .part_hidden(Part::Action(Column::Content, 3)),
+            "an action in the menu is not in the row"
+        );
+        assert!(
+            h.root::<NavShell>()
+                .exposed_parts()
+                .contains(&Part::More(Column::Content))
+        );
+        h.click_at(more.center().x, more.center().y);
+        settle(&mut h, 220, 700);
+        let doc = automerge::AutoCommit::new();
+        h.root_mut::<NavShell>().sync(&doc, &automerge::ROOT);
+        let labels = at(&h.root::<NavShell>().headers, Column::Content)
+            .more
+            .menu_labels();
+        assert_eq!(labels.last().map(String::as_str), Some("Delete message"));
+        let row = labels.len() - 1;
+        at_mut(&mut h.root_mut::<NavShell>().headers, Column::Content)
+            .more
+            .choose(row);
+        h.send(&crate::synthetic_input::cursor_moved(10.0, 300.0));
+        assert!(deleted.get(), "the chosen action ran through its door");
+    }
 }
 
 /// A title's box reaches the actions that follow it, not just the width its words measure: a
@@ -395,278 +648,392 @@ fn a_titles_box_reaches_the_actions_that_follow_it() {
     );
 }
 
-/// Labelled buttons collapse to their icons when the row is short; then
-/// the rest move into the More menu, and choosing one there runs it.
-#[test]
-fn actions_collapse_to_icons_then_overflow_into_more() {
-    let deleted = SharedRc::new(Cell::new(false));
-    let actions = || {
-        let deleted = SharedRc::clone(&deleted);
-        vec![
+tilo_test_env::scenario! {
+    fn drawers_bindings_and_typed_access_serve_the_app;
+
+    phase the_window_group_is_keyed_by_the_shell_id;
+    {
+        let mut h = harness(mail_shell().with_id("mail.shell"), 1280, 800, Theme::dark());
+        settle(&mut h, 1280, 800);
+        let node = h.root::<NavShell>().accessibility().expect("a group");
+        assert_eq!(node.semantic_key.as_deref(), Some("mail.shell.window"));
+        let audit = h.accessibility_audit();
+        assert!(audit.issues.is_empty(), "{:?}", audit.issues);
+    }
+
+    // A bound Back and a bound title ask for an idle sync only once what they
+    // follow moved, and the sync that shows it settles them again: a shell
+    // with nothing to change keeps its window's event loop asleep.
+    phase bindings_ask_for_an_idle_sync_only_when_they_moved;
+    {
+        let pages = LocalState::new(crate::NavStack::new("dashboard"));
+        let title = LocalState::new("Dashboard".to_owned());
+        let shell = NavShell::new()
+            .content(Probe::boxed("content").0)
+            .content_header_bound(&title, Vec::new())
+            .with_back(&pages);
+        let mut h = harness(shell, 1024, 700, Theme::dark());
+        settle(&mut h, 1024, 700);
+        assert!(!h.root::<NavShell>().needs_idle_sync(), "nothing moved");
+
+        let doc = automerge::AutoCommit::new();
+        pages.update(|stack| stack.push("queue"));
+        assert!(
+            h.root::<NavShell>().needs_idle_sync(),
+            "Back can go back now"
+        );
+        h.root_mut::<NavShell>().sync(&doc, &automerge::ROOT);
+        assert!(
+            !h.root::<NavShell>().needs_idle_sync(),
+            "the sync showed Back"
+        );
+
+        title.set("Queue".to_owned());
+        assert!(h.root::<NavShell>().needs_idle_sync(), "the title moved");
+        h.root_mut::<NavShell>().sync(&doc, &automerge::ROOT);
+        assert!(
+            !h.root::<NavShell>().needs_idle_sync(),
+            "the sync took the title"
+        );
+    }
+
+    // The content's Back follows the app's page stack; the shell draws the
+    // chip, and a press pops the stack.
+    phase back_follows_the_apps_page_stack;
+    {
+        let pages = LocalState::new(crate::NavStack::new("dashboard"));
+        let shell = NavShell::new()
+            .content(Probe::boxed("content").0)
+            .content_header("Dashboard", Vec::new())
+            .with_back(&pages);
+        let mut h = harness(shell, 1024, 700, Theme::dark());
+        settle(&mut h, 1024, 700);
+        assert_eq!(geometry(&h).back, Rect::ZERO, "the root has no Back");
+
+        pages.update(|stack| stack.push("queue"));
+        let doc = automerge::AutoCommit::new();
+        h.root_mut::<NavShell>().sync(&doc, &automerge::ROOT);
+        settle(&mut h, 1024, 700);
+        let g = geometry(&h);
+        assert!(g.back.width() > 0.0, "a page pushed: Back shows");
+        assert_eq!(g.back_column, Some(Column::Content));
+        assert!(part_rect(&h, Part::Title(Column::Content)).x0 >= g.back.x1);
+
+        assert!(h.root_mut::<NavShell>().back());
+        assert_eq!(pages.with(|stack| *stack.current()), "dashboard");
+        settle(&mut h, 1024, 700);
+        assert_eq!(geometry(&h).back, Rect::ZERO);
+
+        let pages = LocalState::new(crate::NavStack::new("watch"));
+        pages.update(|stack| stack.push("creator"));
+        let shell = NavShell::new()
+            .sidebar(Probe::boxed("sidebar").0)
+            .content(Probe::boxed("content").0)
+            .with_back(&pages)
+            .with_sidebar_hidden();
+        let mut h = harness(shell, 1280, 800, Theme::dark());
+        settle(&mut h, 1280, 800);
+        let g = geometry(&h);
+        assert!(g.back.width() > 0.0, "Back leads: {g:?}");
+        assert_eq!(g.toggle, Rect::ZERO, "the toggle stands aside for it");
+        assert!(h.root_mut::<NavShell>().back());
+        settle(&mut h, 1280, 800);
+        let g = geometry(&h);
+        assert!(
+            g.toggle.width() > 0.0 && g.back == Rect::ZERO,
+            "the first page brings the toggle back"
+        );
+    }
+
+    // Beside an open drawer the other columns stay laid out, painted and live:
+    // a drawer is not modal. It opens under the header row, which stays live.
+    phase an_open_drawer_leaves_the_window_live_beside_it;
+    {
+        let mut h = harness(
+            mail_shell().content_kind(ContentKind::Document),
+            800,
+            600,
+            Theme::dark(),
+        );
+        h.root_mut::<NavShell>()
+            .set_history_control(Some(HistoryControl::Closed));
+        settle(&mut h, 800, 600);
+        let before = child_rect(&h, "content").expect("content laid out");
+        h.root_mut::<NavShell>().open_sidebar();
+        settle(&mut h, 800, 600);
+        let g = geometry(&h);
+        assert_eq!(g.sidebar, SidebarPlacement::Drawer);
+        assert!(
+            g.sidebar_column.y0 >= g.header_height,
+            "under the header row"
+        );
+        let shell = h.root::<NavShell>();
+        assert!(shell.host_parts.contains(&Part::Body(Column::Content)));
+        assert_eq!(
+            shell
+                .part(Part::Body(Column::Content))
+                .map(Widget::get_rect),
+            Some(before),
+            "the content keeps its place beside the drawer"
+        );
+        let ids = exposed_ids(&h);
+        assert!(ids.contains(&"content".to_owned()), "not inert: {ids:?}");
+        assert!(
+            ids.contains(&"nav-shell-history".to_owned()),
+            "History stays reachable"
+        );
+        assert!(ids.contains(&"sidebar".to_owned()));
+    }
+
+    phase a_bound_state_opens_a_drawer_and_hears_the_persons_choice;
+    {
+        let open = LocalState::new(true);
+        let shell = mail_shell()
+            .content_kind(ContentKind::Document)
+            .with_sidebar_state(&open);
+        let mut h = harness(shell, 800, 600, Theme::dark());
+        settle(&mut h, 800, 600);
+        assert!(
+            !open.with(|v| *v),
+            "the shell wrote where it stands: a closed drawer"
+        );
+        open.set(true);
+        let doc = automerge::AutoCommit::new();
+        h.root_mut::<NavShell>().sync(&doc, &automerge::ROOT);
+        settle(&mut h, 800, 600);
+        assert!(
+            h.root::<NavShell>().is_sidebar_open(),
+            "the state opened the drawer"
+        );
+        h.root_mut::<NavShell>().close_sidebar();
+        assert!(!open.with(|v| *v), "the shell wrote the choice back");
+
+        let inspector = LocalState::new(false);
+        let shell = NavShell::new()
+            .content(Probe::boxed("content").0)
+            .inspector(Probe::boxed("inspector").0)
+            .with_inspector_state(&inspector);
+        let mut h = harness(shell, 1280, 800, Theme::dark());
+        settle(&mut h, 1280, 800);
+        assert!(inspector.with(|v| *v), "docked: open");
+        inspector.set(false);
+        h.root_mut::<NavShell>().sync(&doc, &automerge::ROOT);
+        settle(&mut h, 1280, 800);
+        assert!(
+            !h.root::<NavShell>().is_inspector_open(),
+            "docked, but closed by state"
+        );
+    }
+
+    // The inspector keeps the choice made for its size class while the app
+    // takes it away and gives it back.
+    phase the_inspector_remembers_its_choice_across_removal;
+    {
+        let shell = NavShell::new()
+            .content(Probe::boxed("content").0)
+            .inspector(Probe::boxed("inspector").0);
+        let mut h = harness(shell, 1280, 800, Theme::dark());
+        settle(&mut h, 1280, 800);
+        h.root_mut::<NavShell>().close_inspector();
+        settle(&mut h, 1280, 800);
+        h.root_mut::<NavShell>().set_inspector(None);
+        settle(&mut h, 1280, 800);
+        h.root_mut::<NavShell>()
+            .set_inspector(Some(Probe::boxed("inspector").0));
+        settle(&mut h, 1280, 800);
+        assert!(!h.root::<NavShell>().is_inspector_open());
+    }
+
+    phase typed_access_controls_and_the_filter_reach_the_apps_widgets;
+    {
+        let query = SharedRc::new(RefCell::new(String::new()));
+        let list = Filtered {
+            query: SharedRc::clone(&query),
+            inner: Probe {
+                id: "overview",
+                deadline: None,
+                animating: false,
+                rect: Rect::ZERO,
+                events: SharedRc::new(Cell::new(0)),
+            },
+        };
+        let shell = NavShell::new()
+            .overview(Box::new(list))
+            .content(Probe::boxed("content").0)
+            .overview_header("Contacts", Vec::new())
+            .overview_controls(Box::new(Button::new("sort", "Sort by name").on_view(|| {})))
+            .with_filter(SearchField::filter());
+        let mut h = harness(shell, 1280, 800, Theme::dark());
+        settle(&mut h, 1280, 800);
+        let g = geometry(&h);
+        assert!(g.filter.width() > 0.0 && g.controls.width() > 0.0);
+        assert!(
+            g.controls.y0 >= g.filter.y1,
+            "the controls stand under the filter"
+        );
+        let sort = part_rect(&h, Part::Controls);
+        assert!(
+            (sort.x0 - (g.overview_column.x0 + Metrics::resolve(&Theme::dark()).inset)).abs() < 0.5
+        );
+        let overview = child_rect(&h, "overview").expect("overview laid out");
+        assert!(overview.y0 >= g.controls.y1);
+
+        let order = LocalState::new("Name".to_owned());
+        let shell = NavShell::new()
+            .overview(Probe::boxed("list").0)
+            .content(Probe::boxed("detail").0)
+            .overview_header("Contacts", Vec::new())
+            .overview_controls(Box::new(
+                crate::widget::Dropdown::from_state(vec!["Name".into(), "Organization".into()], &order)
+                    .with_accessible_name("Sort contacts"),
+            ));
+        let mut d = harness(shell, 1280, 800, Theme::dark());
+        settle(&mut d, 1280, 800);
+        let sort = part_rect(&d, Part::Controls);
+        assert!(sort.width() > 0.0 && sort.height() > 0.0, "{sort:?}");
+
+        assert!(
+            h.root_mut::<NavShell>()
+                .overview_mut::<Filtered>()
+                .is_some()
+        );
+        assert!(h.root_mut::<NavShell>().content_mut::<Probe>().is_some());
+        assert!(h.root_mut::<NavShell>().sidebar_mut::<Probe>().is_none());
+
+        h.root_mut::<NavShell>()
+            .filter_mut()
+            .expect("the filter")
+            .set_query("kai");
+        let doc = automerge::AutoCommit::new();
+        h.root_mut::<NavShell>().sync(&doc, &automerge::ROOT);
+        assert_eq!(query.borrow().as_str(), "kai");
+        assert_eq!(
+            h.root::<NavShell>().filter().and_then(SearchField::count),
+            Some(FilterCount::new(2, 9))
+        );
+    }
+
+    phase the_overview_collapses_into_its_rail_before_it_pushes;
+    {
+        let rail = crate::widget::NavList::new(vec![crate::widget::NavSection::untitled(
+            "places",
+            vec![
+                crate::widget::NavItem::new("oslo", "Oslo").icon(Icon::Pin),
+                crate::widget::NavItem::new("lima", "Lima").icon(Icon::Pin),
+            ],
+        )])
+        .rail();
+        let shell = NavShell::new()
+            .overview(Probe::boxed("overview").0)
+            .overview_rail(Box::new(rail))
+            .content(Probe::boxed("content").0);
+        let theme = Theme::dark();
+        let m = Metrics::resolve(&theme);
+        let mut h = harness(shell, 1280, 800, theme.clone());
+        settle(&mut h, 1280, 800);
+        assert_eq!(geometry(&h).overview, OverviewPlacement::List);
+        assert!(m.rail + m.page_min < 600.0 && 600.0 < m.overview + m.page_min);
+        settle(&mut h, 600, 800);
+        let g = geometry(&h);
+        assert_eq!(g.overview, OverviewPlacement::Rail, "{g:?}");
+        assert!(g.stack.is_empty(), "no push while the rail fits");
+        assert!((g.rail.width() - m.rail).abs() < 0.5);
+        assert!(g.content_column.x0 >= g.rail.x1 - 0.5);
+        settle(&mut h, 300, 800);
+        assert_eq!(geometry(&h).stack, [NavPane::Overview, NavPane::Content]);
+    }
+
+    phase a_shell_with_overflowing_actions_passes_the_native_audits;
+    {
+        let shell = titled_content(vec![
             labelled("reply", "Reply to everyone", Icon::Reply),
             labelled("forward", "Forward", Icon::Send),
             labelled("archive", "Archive", Icon::Archive),
-            Box::new(
-                Button::new("delete", "Delete message")
-                    .with_icon(Icon::Trash2)
-                    .on_view(move || deleted.set(true)),
-            ) as Element,
-        ]
-    };
-    let mut h = harness(titled_content(actions()), 1400, 700, Theme::dark());
-    settle(&mut h, 1400, 700);
-    let wide = part_rect(&h, Part::Action(Column::Content, 0));
-    assert!(wide.width() > wide.height() * 1.5, "a labelled button");
-    assert!(part_rect(&h, Part::More(Column::Content)).width() <= 0.0);
+            labelled("delete", "Delete message", Icon::Trash2),
+        ])
+        .with_id("audit.shell");
+        let mut h = harness(shell, 220, 700, Theme::dark());
+        settle(&mut h, 220, 700);
+        let audit = h.accessibility_audit();
+        assert!(audit.issues.is_empty(), "{:?}", audit.issues);
+        let native = h.native_app_audit();
+        assert!(native.issues.is_empty(), "{:?}", native.issues);
+    }
 
-    let mut h = harness(titled_content(actions()), 640, 700, Theme::dark());
-    settle(&mut h, 640, 700);
-    let compact = part_rect(&h, Part::Action(Column::Content, 0));
-    assert!(
-        (compact.width() - compact.height()).abs() < 1.0,
-        "an icon-only square ({compact:?})"
-    );
-    let reply = h
-        .root::<NavShell>()
-        .part(Part::Action(Column::Content, 0))
-        .and_then(Widget::accessibility)
-        .and_then(|node| node.name);
-    assert_eq!(
-        reply.as_deref(),
-        Some("Reply to everyone"),
-        "the label stays its name"
-    );
-
-    let mut h = harness(titled_content(actions()), 220, 700, Theme::dark());
-    settle(&mut h, 220, 700);
-    let shown = h.root::<NavShell>().shown_actions(Column::Content);
-    assert!(shown < 4, "{shown}");
-    let more = part_rect(&h, Part::More(Column::Content));
-    assert!(more.width() > 0.0 && more.x1 <= 220.0);
-    assert!(
-        h.root::<NavShell>()
-            .part_hidden(Part::Action(Column::Content, 3)),
-        "an action in the menu is not in the row"
-    );
-    assert!(
-        h.root::<NavShell>()
-            .exposed_parts()
-            .contains(&Part::More(Column::Content))
-    );
-    h.click_at(more.center().x, more.center().y);
-    settle(&mut h, 220, 700);
-    let doc = automerge::AutoCommit::new();
-    h.root_mut::<NavShell>().sync(&doc, &automerge::ROOT);
-    let labels = at(&h.root::<NavShell>().headers, Column::Content)
-        .more
-        .menu_labels();
-    assert_eq!(labels.last().map(String::as_str), Some("Delete message"));
-    let row = labels.len() - 1;
-    at_mut(&mut h.root_mut::<NavShell>().headers, Column::Content)
-        .more
-        .choose(row);
-    h.send(&crate::synthetic_input::cursor_moved(10.0, 300.0));
-    assert!(deleted.get(), "the chosen action ran through its door");
-}
-
-#[test]
-fn a_leading_fill_stands_between_the_toggle_and_the_actions() {
-    let shell = NavShell::new()
-        .sidebar(Probe::boxed("sidebar").0)
-        .content(Probe::boxed("content").0)
-        .content_header("", vec![icon("new", Icon::Plus, "New folder")])
-        .content_header_leading(Box::new(Button::new("path", "Home › Documents › Taxes")));
-    let mut h = harness(shell, 1280, 800, Theme::dark());
-    settle(&mut h, 1280, 800);
-    let g = geometry(&h);
-    let leading = part_rect(&h, Part::Leading(Column::Content));
-    let action = part_rect(&h, Part::Action(Column::Content, 0));
-    assert!(leading.width() > 0.0);
-    assert!(leading.x0 >= g.content_column.x0, "in the content's header");
-    assert!(leading.x1 <= action.x0, "{leading:?} before {action:?}");
-    assert!(leading.y0 >= 0.0 && leading.y1 <= g.header_height);
-}
-
-/// A switch states its size and measures nothing; in a header it still
-/// stands at that size, beside a labelled button.
-#[test]
-fn a_switch_in_the_header_keeps_its_own_width() {
-    let switch = crate::widget::Toggle::new("power", "Power");
-    let intrinsic = crate::widget::ToggleFace::size(&Theme::dark()).0;
-    let shell = titled_content(vec![
-        Box::new(switch),
-        labelled("apply", "Apply", Icon::Check),
-    ]);
-    let mut h = harness(shell, 1280, 800, Theme::dark());
-    settle(&mut h, 1280, 800);
-    let switch = part_rect(&h, Part::Action(Column::Content, 0));
-    let apply = part_rect(&h, Part::Action(Column::Content, 1));
-    assert!(
-        switch.width() >= intrinsic,
-        "{switch:?} is at least the switch's own {intrinsic} wide"
-    );
-    assert!(switch.x1 <= apply.x0, "{switch:?} before {apply:?}");
-}
-
-#[test]
-fn the_window_group_is_keyed_by_the_shell_id() {
-    let mut h = harness(mail_shell().with_id("mail.shell"), 1280, 800, Theme::dark());
-    settle(&mut h, 1280, 800);
-    let node = h.root::<NavShell>().accessibility().expect("a group");
-    assert_eq!(node.semantic_key.as_deref(), Some("mail.shell.window"));
-    let audit = h.accessibility_audit();
-    assert!(audit.issues.is_empty(), "{:?}", audit.issues);
-}
-
-/// A bound Back and a bound title ask for an idle sync only once what they
-/// follow moved, and the sync that shows it settles them again: a shell
-/// with nothing to change keeps its window's event loop asleep.
-#[test]
-fn bindings_ask_for_an_idle_sync_only_when_they_moved() {
-    let pages = LocalState::new(crate::NavStack::new("dashboard"));
-    let title = LocalState::new("Dashboard".to_owned());
-    let shell = NavShell::new()
-        .content(Probe::boxed("content").0)
-        .content_header_bound(&title, Vec::new())
-        .with_back(&pages);
-    let mut h = harness(shell, 1024, 700, Theme::dark());
-    settle(&mut h, 1024, 700);
-    assert!(!h.root::<NavShell>().needs_idle_sync(), "nothing moved");
-
-    let doc = automerge::AutoCommit::new();
-    pages.update(|stack| stack.push("queue"));
-    assert!(
-        h.root::<NavShell>().needs_idle_sync(),
-        "Back can go back now"
-    );
-    h.root_mut::<NavShell>().sync(&doc, &automerge::ROOT);
-    assert!(
-        !h.root::<NavShell>().needs_idle_sync(),
-        "the sync showed Back"
-    );
-
-    title.set("Queue".to_owned());
-    assert!(h.root::<NavShell>().needs_idle_sync(), "the title moved");
-    h.root_mut::<NavShell>().sync(&doc, &automerge::ROOT);
-    assert!(
-        !h.root::<NavShell>().needs_idle_sync(),
-        "the sync took the title"
-    );
-}
-
-/// The content's Back follows the app's page stack; the shell draws the
-/// chip, and a press pops the stack.
-#[test]
-fn back_follows_the_apps_page_stack() {
-    let pages = LocalState::new(crate::NavStack::new("dashboard"));
-    let shell = NavShell::new()
-        .content(Probe::boxed("content").0)
-        .content_header("Dashboard", Vec::new())
-        .with_back(&pages);
-    let mut h = harness(shell, 1024, 700, Theme::dark());
-    settle(&mut h, 1024, 700);
-    assert_eq!(geometry(&h).back, Rect::ZERO, "the root has no Back");
-
-    pages.update(|stack| stack.push("queue"));
-    let doc = automerge::AutoCommit::new();
-    h.root_mut::<NavShell>().sync(&doc, &automerge::ROOT);
-    settle(&mut h, 1024, 700);
-    let g = geometry(&h);
-    assert!(g.back.width() > 0.0, "a page pushed: Back shows");
-    assert_eq!(g.back_column, Some(Column::Content));
-    assert!(part_rect(&h, Part::Title(Column::Content)).x0 >= g.back.x1);
-
-    assert!(h.root_mut::<NavShell>().back());
-    assert_eq!(pages.with(|stack| *stack.current()), "dashboard");
-    settle(&mut h, 1024, 700);
-    assert_eq!(geometry(&h).back, Rect::ZERO);
-
-    let pages = LocalState::new(crate::NavStack::new("watch"));
-    pages.update(|stack| stack.push("creator"));
-    let shell = NavShell::new()
-        .sidebar(Probe::boxed("sidebar").0)
-        .content(Probe::boxed("content").0)
-        .with_back(&pages)
-        .with_sidebar_hidden();
-    let mut h = harness(shell, 1280, 800, Theme::dark());
-    settle(&mut h, 1280, 800);
-    let g = geometry(&h);
-    assert!(g.back.width() > 0.0, "Back leads: {g:?}");
-    assert_eq!(g.toggle, Rect::ZERO, "the toggle stands aside for it");
-    assert!(h.root_mut::<NavShell>().back());
-    settle(&mut h, 1280, 800);
-    let g = geometry(&h);
-    assert!(
-        g.toggle.width() > 0.0 && g.back == Rect::ZERO,
-        "the first page brings the toggle back"
-    );
-}
-
-/// Beside an open drawer the other columns stay laid out, painted and live:
-/// a drawer is not modal. It opens under the header row, which stays live.
-#[test]
-fn an_open_drawer_leaves_the_window_live_beside_it() {
-    let mut h = harness(
-        mail_shell().content_kind(ContentKind::Document),
-        800,
-        600,
-        Theme::dark(),
-    );
-    h.root_mut::<NavShell>()
-        .set_history_control(Some(HistoryControl::Closed));
-    settle(&mut h, 800, 600);
-    let before = child_rect(&h, "content").expect("content laid out");
-    h.root_mut::<NavShell>().open_sidebar();
-    settle(&mut h, 800, 600);
-    let g = geometry(&h);
-    assert_eq!(g.sidebar, SidebarPlacement::Drawer);
-    assert!(
-        g.sidebar_column.y0 >= g.header_height,
-        "under the header row"
-    );
-    let shell = h.root::<NavShell>();
-    assert!(shell.host_parts.contains(&Part::Body(Column::Content)));
-    assert_eq!(
-        shell
-            .part(Part::Body(Column::Content))
-            .map(Widget::get_rect),
-        Some(before),
-        "the content keeps its place beside the drawer"
-    );
-    let ids = exposed_ids(&h);
-    assert!(ids.contains(&"content".to_owned()), "not inert: {ids:?}");
-    assert!(
-        ids.contains(&"nav-shell-history".to_owned()),
-        "History stays reachable"
-    );
-    assert!(ids.contains(&"sidebar".to_owned()));
-}
-
-#[test]
-fn an_enlarged_sidebar_drawer_leaves_a_pointer_target_that_dismisses_it() {
-    for theme in [Theme::light(), Theme::dark().with_text_scale(2.0)] {
-        let band = f64::from(theme.tokens.metrics.min_pointer_target + theme.tokens.spacing.s4);
+    // A shell that searches its sidebar hands the window's search the
+    // sidebar's list, also while a narrow window shows the content screen and
+    // the list is off screen; another shell leaves its sidebar alone.
+    phase a_shell_that_searches_its_sidebar_hands_the_search_its_list;
+    {
+        let filtered = |query: &SharedRc<RefCell<String>>| Filtered {
+            query: SharedRc::clone(query),
+            inner: Probe {
+                id: "sidebar",
+                deadline: None,
+                animating: false,
+                rect: Rect::ZERO,
+                events: SharedRc::new(Cell::new(0)),
+            },
+        };
+        let query = SharedRc::new(RefCell::new(String::new()));
         let shell = NavShell::new()
-            .content_kind(ContentKind::Document)
-            .sidebar(Probe::boxed("sidebar").0)
+            .mode(NavMode::Push)
+            .sidebar(Box::new(filtered(&query)))
             .content(Probe::boxed("content").0)
-            .inspector(Probe::boxed("inspector").0);
-        let mut h = harness(shell, 480, 800, theme.clone());
-        h.root_mut::<NavShell>().open_sidebar();
-        settle(&mut h, 480, 800);
-        let g = geometry(&h);
-        assert!(480.0 - g.sidebar_column.x1 >= band - 0.5);
-        assert_eq!(g.open_drawer(), Some(Column::Sidebar));
-        h.click_at(
-            (480.0 + g.sidebar_column.x1) / 2.0,
-            g.content_column.center().y,
+            .content_header("Found", Vec::new())
+            .search_sidebar();
+        let mut h = harness(shell, 400, 800, Theme::dark());
+        settle(&mut h, 400, 800);
+        h.root_mut::<NavShell>().show(NavPane::Content);
+        settle(&mut h, 400, 800);
+        assert!(
+            !h.root::<NavShell>().is_sidebar_open(),
+            "the narrow window shows its content"
         );
-        settle(&mut h, 480, 800);
+        let found = crate::widget::search_field::apply_filter(&mut *h.root_mut::<NavShell>(), "kai");
         assert_eq!(
-            geometry(&h).open_drawer(),
-            None,
-            "a press beside the drawer closes it"
+            query.borrow().as_str(),
+            "kai",
+            "the search narrows the list"
         );
+        assert_eq!(found, Some(FilterCount::new(2, 9)));
+
+        let other = SharedRc::new(RefCell::new(String::new()));
+        let mut plain = NavShell::new()
+            .sidebar(Box::new(filtered(&other)))
+            .content(Probe::boxed("content").0);
+        assert!(
+            crate::widget::capability::capability_mut::<dyn Filterable>(&mut plain).is_none(),
+            "a shell answers for its sidebar's list only when it searches it"
+        );
+    }
+
+    phase an_enlarged_sidebar_drawer_leaves_a_pointer_target_that_dismisses_it;
+    {
+        for theme in [Theme::light(), Theme::dark().with_text_scale(2.0)] {
+            let band = f64::from(theme.tokens.metrics.min_pointer_target + theme.tokens.spacing.s4);
+            let shell = NavShell::new()
+                .content_kind(ContentKind::Document)
+                .sidebar(Probe::boxed("sidebar").0)
+                .content(Probe::boxed("content").0)
+                .inspector(Probe::boxed("inspector").0);
+            let mut h = harness(shell, 480, 800, theme.clone());
+            h.root_mut::<NavShell>().open_sidebar();
+            settle(&mut h, 480, 800);
+            let g = geometry(&h);
+            assert!(480.0 - g.sidebar_column.x1 >= band - 0.5);
+            assert_eq!(g.open_drawer(), Some(Column::Sidebar));
+            h.click_at(
+                (480.0 + g.sidebar_column.x1) / 2.0,
+                g.content_column.center().y,
+            );
+            settle(&mut h, 480, 800);
+            assert_eq!(
+                geometry(&h).open_drawer(),
+                None,
+                "a press beside the drawer closes it"
+            );
+        }
     }
 }
 
@@ -705,65 +1072,6 @@ fn an_enlarged_inspector_sheet_leaves_the_content_above_it_in_reach() {
             "the sheet stays up while the content above is used"
         );
     }
-}
-
-#[test]
-fn a_bound_state_opens_a_drawer_and_hears_the_persons_choice() {
-    let open = LocalState::new(true);
-    let shell = mail_shell()
-        .content_kind(ContentKind::Document)
-        .with_sidebar_state(&open);
-    let mut h = harness(shell, 800, 600, Theme::dark());
-    settle(&mut h, 800, 600);
-    assert!(
-        !open.with(|v| *v),
-        "the shell wrote where it stands: a closed drawer"
-    );
-    open.set(true);
-    let doc = automerge::AutoCommit::new();
-    h.root_mut::<NavShell>().sync(&doc, &automerge::ROOT);
-    settle(&mut h, 800, 600);
-    assert!(
-        h.root::<NavShell>().is_sidebar_open(),
-        "the state opened the drawer"
-    );
-    h.root_mut::<NavShell>().close_sidebar();
-    assert!(!open.with(|v| *v), "the shell wrote the choice back");
-
-    let inspector = LocalState::new(false);
-    let shell = NavShell::new()
-        .content(Probe::boxed("content").0)
-        .inspector(Probe::boxed("inspector").0)
-        .with_inspector_state(&inspector);
-    let mut h = harness(shell, 1280, 800, Theme::dark());
-    settle(&mut h, 1280, 800);
-    assert!(inspector.with(|v| *v), "docked: open");
-    inspector.set(false);
-    h.root_mut::<NavShell>().sync(&doc, &automerge::ROOT);
-    settle(&mut h, 1280, 800);
-    assert!(
-        !h.root::<NavShell>().is_inspector_open(),
-        "docked, but closed by state"
-    );
-}
-
-/// The inspector keeps the choice made for its size class while the app
-/// takes it away and gives it back.
-#[test]
-fn the_inspector_remembers_its_choice_across_removal() {
-    let shell = NavShell::new()
-        .content(Probe::boxed("content").0)
-        .inspector(Probe::boxed("inspector").0);
-    let mut h = harness(shell, 1280, 800, Theme::dark());
-    settle(&mut h, 1280, 800);
-    h.root_mut::<NavShell>().close_inspector();
-    settle(&mut h, 1280, 800);
-    h.root_mut::<NavShell>().set_inspector(None);
-    settle(&mut h, 1280, 800);
-    h.root_mut::<NavShell>()
-        .set_inspector(Some(Probe::boxed("inspector").0));
-    settle(&mut h, 1280, 800);
-    assert!(!h.root::<NavShell>().is_inspector_open());
 }
 
 struct Capturing {
@@ -881,122 +1189,6 @@ impl Widget for Filtered {
     }
 }
 
-#[test]
-fn typed_access_controls_and_the_filter_reach_the_apps_widgets() {
-    let query = SharedRc::new(RefCell::new(String::new()));
-    let list = Filtered {
-        query: SharedRc::clone(&query),
-        inner: Probe {
-            id: "overview",
-            deadline: None,
-            animating: false,
-            rect: Rect::ZERO,
-            events: SharedRc::new(Cell::new(0)),
-        },
-    };
-    let shell = NavShell::new()
-        .overview(Box::new(list))
-        .content(Probe::boxed("content").0)
-        .overview_header("Contacts", Vec::new())
-        .overview_controls(Box::new(Button::new("sort", "Sort by name").on_view(|| {})))
-        .with_filter(SearchField::filter());
-    let mut h = harness(shell, 1280, 800, Theme::dark());
-    settle(&mut h, 1280, 800);
-    let g = geometry(&h);
-    assert!(g.filter.width() > 0.0 && g.controls.width() > 0.0);
-    assert!(
-        g.controls.y0 >= g.filter.y1,
-        "the controls stand under the filter"
-    );
-    let sort = part_rect(&h, Part::Controls);
-    assert!(
-        (sort.x0 - (g.overview_column.x0 + Metrics::resolve(&Theme::dark()).inset)).abs() < 0.5
-    );
-    let overview = child_rect(&h, "overview").expect("overview laid out");
-    assert!(overview.y0 >= g.controls.y1);
-
-    let order = LocalState::new("Name".to_owned());
-    let shell = NavShell::new()
-        .overview(Probe::boxed("list").0)
-        .content(Probe::boxed("detail").0)
-        .overview_header("Contacts", Vec::new())
-        .overview_controls(Box::new(
-            crate::widget::Dropdown::from_state(vec!["Name".into(), "Organization".into()], &order)
-                .with_accessible_name("Sort contacts"),
-        ));
-    let mut d = harness(shell, 1280, 800, Theme::dark());
-    settle(&mut d, 1280, 800);
-    let sort = part_rect(&d, Part::Controls);
-    assert!(sort.width() > 0.0 && sort.height() > 0.0, "{sort:?}");
-
-    assert!(
-        h.root_mut::<NavShell>()
-            .overview_mut::<Filtered>()
-            .is_some()
-    );
-    assert!(h.root_mut::<NavShell>().content_mut::<Probe>().is_some());
-    assert!(h.root_mut::<NavShell>().sidebar_mut::<Probe>().is_none());
-
-    h.root_mut::<NavShell>()
-        .filter_mut()
-        .expect("the filter")
-        .set_query("kai");
-    let doc = automerge::AutoCommit::new();
-    h.root_mut::<NavShell>().sync(&doc, &automerge::ROOT);
-    assert_eq!(query.borrow().as_str(), "kai");
-    assert_eq!(
-        h.root::<NavShell>().filter().and_then(SearchField::count),
-        Some(FilterCount::new(2, 9))
-    );
-}
-
-#[test]
-fn the_overview_collapses_into_its_rail_before_it_pushes() {
-    let rail = crate::widget::NavList::new(vec![crate::widget::NavSection::untitled(
-        "places",
-        vec![
-            crate::widget::NavItem::new("oslo", "Oslo").icon(Icon::Pin),
-            crate::widget::NavItem::new("lima", "Lima").icon(Icon::Pin),
-        ],
-    )])
-    .rail();
-    let shell = NavShell::new()
-        .overview(Probe::boxed("overview").0)
-        .overview_rail(Box::new(rail))
-        .content(Probe::boxed("content").0);
-    let theme = Theme::dark();
-    let m = Metrics::resolve(&theme);
-    let mut h = harness(shell, 1280, 800, theme.clone());
-    settle(&mut h, 1280, 800);
-    assert_eq!(geometry(&h).overview, OverviewPlacement::List);
-    assert!(m.rail + m.page_min < 600.0 && 600.0 < m.overview + m.page_min);
-    settle(&mut h, 600, 800);
-    let g = geometry(&h);
-    assert_eq!(g.overview, OverviewPlacement::Rail, "{g:?}");
-    assert!(g.stack.is_empty(), "no push while the rail fits");
-    assert!((g.rail.width() - m.rail).abs() < 0.5);
-    assert!(g.content_column.x0 >= g.rail.x1 - 0.5);
-    settle(&mut h, 300, 800);
-    assert_eq!(geometry(&h).stack, [NavPane::Overview, NavPane::Content]);
-}
-
-#[test]
-fn a_shell_with_overflowing_actions_passes_the_native_audits() {
-    let shell = titled_content(vec![
-        labelled("reply", "Reply to everyone", Icon::Reply),
-        labelled("forward", "Forward", Icon::Send),
-        labelled("archive", "Archive", Icon::Archive),
-        labelled("delete", "Delete message", Icon::Trash2),
-    ])
-    .with_id("audit.shell");
-    let mut h = harness(shell, 220, 700, Theme::dark());
-    settle(&mut h, 220, 700);
-    let audit = h.accessibility_audit();
-    assert!(audit.issues.is_empty(), "{:?}", audit.issues);
-    let native = h.native_app_audit();
-    assert!(native.issues.is_empty(), "{:?}", native.issues);
-}
-
 struct EdgeProbe {
     rect: Rect,
     seen: SharedRc<Cell<Rect>>,
@@ -1034,188 +1226,4 @@ impl Widget for EdgeProbe {
     fn name(&self) -> &'static str {
         "EdgeProbe"
     }
-}
-
-#[test]
-fn a_page_columns_filter_field_lines_up_with_the_page_under_it() {
-    let lines = 55.0_f32;
-    for (w, theme) in [(1280, Theme::dark()), (520, Theme::light())] {
-        let seen = SharedRc::new(Cell::new(Rect::ZERO));
-        let width = (theme.text(crate::TextRole::Body).line_height_px() * lines).round();
-        let page = crate::widget::Scrollable::new(crate::widget::ScrollAxis::Vertical)
-            .fill_parent_height()
-            .with_stable_vertical_gutter()
-            .with_child(Box::new(
-                crate::widget::Container::new()
-                    .with_no_padding()
-                    .with_centered_max_width(width)
-                    .with_child(Box::new(crate::widget::Column::new().push(Box::new(
-                        EdgeProbe {
-                            rect: Rect::ZERO,
-                            seen: SharedRc::clone(&seen),
-                        },
-                    )))),
-            ));
-        let shell = NavShell::new()
-            .content(Box::new(page))
-            .content_header("Discover", Vec::new())
-            .content_kind(ContentKind::Grid)
-            .with_page_column(lines)
-            .with_filter(SearchField::filter());
-        let mut h = harness(shell, w, 800, theme);
-        settle(&mut h, w, 800);
-        let field = part_rect(&h, Part::Filter);
-        let row = seen.get();
-        assert!(row.width() > 0.0, "the page was laid out at {w}");
-        assert!(
-            (field.x0 - row.x0).abs() < 0.5 && (field.x1 - row.x1).abs() < 0.5,
-            "at {w} the field {field:?} spans the page's content {row:?}"
-        );
-        let g = geometry(&h);
-        assert!(
-            field.y0 - g.header(Column::Content).y1 >= Metrics::resolve(h.theme()).gap - 0.5,
-            "the field stands clear of the header's hairline"
-        );
-        assert!(row.y0 >= field.y1, "the page starts under the field");
-    }
-}
-
-/// A shell that searches its sidebar hands the window's search the
-/// sidebar's list, also while a narrow window shows the content screen and
-/// the list is off screen; another shell leaves its sidebar alone.
-#[test]
-fn a_shell_that_searches_its_sidebar_hands_the_search_its_list() {
-    let filtered = |query: &SharedRc<RefCell<String>>| Filtered {
-        query: SharedRc::clone(query),
-        inner: Probe {
-            id: "sidebar",
-            deadline: None,
-            animating: false,
-            rect: Rect::ZERO,
-            events: SharedRc::new(Cell::new(0)),
-        },
-    };
-    let query = SharedRc::new(RefCell::new(String::new()));
-    let shell = NavShell::new()
-        .mode(NavMode::Push)
-        .sidebar(Box::new(filtered(&query)))
-        .content(Probe::boxed("content").0)
-        .content_header("Found", Vec::new())
-        .search_sidebar();
-    let mut h = harness(shell, 400, 800, Theme::dark());
-    settle(&mut h, 400, 800);
-    h.root_mut::<NavShell>().show(NavPane::Content);
-    settle(&mut h, 400, 800);
-    assert!(
-        !h.root::<NavShell>().is_sidebar_open(),
-        "the narrow window shows its content"
-    );
-    let found = crate::widget::search_field::apply_filter(&mut *h.root_mut::<NavShell>(), "kai");
-    assert_eq!(
-        query.borrow().as_str(),
-        "kai",
-        "the search narrows the list"
-    );
-    assert_eq!(found, Some(FilterCount::new(2, 9)));
-
-    let other = SharedRc::new(RefCell::new(String::new()));
-    let mut plain = NavShell::new()
-        .sidebar(Box::new(filtered(&other)))
-        .content(Probe::boxed("content").0);
-    assert!(
-        crate::widget::capability::capability_mut::<dyn Filterable>(&mut plain).is_none(),
-        "a shell answers for its sidebar's list only when it searches it"
-    );
-}
-
-/// A header's actions stand at the trailing edge of their own column, whether the columns after
-/// it are quiet or say something of their own: they stay beside what they act on, and they do not
-/// move as a person selects and deselects an item in the column beside them.
-#[test]
-fn a_headers_actions_stand_at_their_columns_trailing_edge() {
-    let theme = Theme::dark();
-    let gutter = crate::chrome::column_gutter(&theme);
-    let shell = NavShell::new()
-        .overview(Probe::boxed("overview").0)
-        .content(Probe::boxed("content").0)
-        .overview_header("Inbox", vec![icon("search", Icon::Send, "Search")]);
-    let mut h = harness(shell, 1024, 700, theme);
-    settle(&mut h, 1024, 700);
-    let edge = h.root::<NavShell>().geometry().overview_column.x1;
-    assert!(
-        edge < 1024.0 - 40.0,
-        "the detail beside the list stands in the window: the list ends at {edge}"
-    );
-    let ends_at =
-        |rect: Rect, edge: f64| rect.width() > 0.0 && (rect.x1 - (edge - gutter)).abs() < 0.5;
-    let quiet = part_rect(&h, Part::Action(Column::Overview, 0));
-    assert!(
-        ends_at(quiet, edge),
-        "the list's action ends at the list's edge {edge} while the detail is quiet: {quiet:?}"
-    );
-    h.root_mut::<NavShell>()
-        .set_content_header("Move flat", vec![icon("board", Icon::Send, "Board")]);
-    settle(&mut h, 1024, 700);
-    let selected = part_rect(&h, Part::Action(Column::Overview, 0));
-    assert!(
-        (selected.x0 - quiet.x0).abs() < 0.5 && (selected.x1 - quiet.x1).abs() < 0.5,
-        "the list's action keeps its place when an item is selected beside it: {quiet:?} then {selected:?}"
-    );
-    let content = h.root::<NavShell>().geometry().content_column.x1;
-    let own = part_rect(&h, Part::Action(Column::Content, 0));
-    assert!(
-        ends_at(own, content),
-        "the detail's action ends at the detail's edge {content}: {own:?}"
-    );
-}
-
-/// A list offers its actions again as what it shows changes: the row takes the ones it is
-/// handed now, so an action that arrives with the icon it draws gives its label up for the
-/// icon, and the title keeps its words instead of standing cut beside it.
-#[test]
-fn a_row_gives_its_labels_up_when_its_actions_are_offered_again() {
-    let theme = Theme::dark();
-    let title = "Quarterly planning for the autumn release, and the review after it";
-    let primary = |icon: Option<Icon>| {
-        let button = Button::new("new", "New note")
-            .role(crate::widget::ButtonRole::Primary)
-            .on_view(|| {});
-        Box::new(match icon {
-            Some(icon) => button.with_icon(icon),
-            None => button,
-        }) as Element
-    };
-    let shell = NavShell::new()
-        .content(Probe::boxed("content").0)
-        .content_header(
-            title,
-            vec![labelled("pin", "Pin to the top", Icon::Pin), primary(None)],
-        );
-    let mut h = harness(shell, 560, 700, theme);
-    settle(&mut h, 560, 700);
-    let before = part_rect(&h, Part::Title(Column::Content));
-    let stood = part_rect(&h, Part::Action(Column::Content, 1));
-    assert!(
-        stood.width() > stood.height() * 1.5,
-        "an action with no icon to give up stands labelled ({stood:?})"
-    );
-
-    h.root_mut::<NavShell>().set_content_header(
-        title,
-        vec![
-            labelled("pin", "Pin to the top", Icon::Pin),
-            primary(Some(Icon::Plus)),
-        ],
-    );
-    settle(&mut h, 560, 700);
-    let action = part_rect(&h, Part::Action(Column::Content, 1));
-    assert!(
-        action.width() < action.height() * 1.5,
-        "the action gave its label up ({action:?})"
-    );
-    let after = part_rect(&h, Part::Title(Column::Content));
-    assert!(
-        after.width() > before.width() + (stood.width() - action.width()) / 2.0,
-        "the title took the room the label gave up ({before:?} then {after:?})"
-    );
 }
