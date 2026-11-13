@@ -109,111 +109,56 @@ impl TiloStore {
         if inner.chunks.seen(chunk) == heads.as_slice() {
             return false;
         }
-        let from = inner.chunks.heads();
-        let old_snapshots = inner.answering();
         // What the splices below are measured from is the listing as those who read the mirror
         // had it before this change: the store's own writes are the mirror's open transaction,
         // which every read holds, so an item one of them placed was already read at its place
         // and the change that brings it takes no step for it. A reader that did not read since
         // is told the collection and reads its items there.
-        let old_overlay = std::mem::take(&mut inner.overlay);
-        // The store's own writes the record's new changes hold leave the mirror: the items they
-        // added, removed or moved are moved again below, as the record has them. Every write
-        // they do not hold stays — a change that came from elsewhere leaves the edits a person
-        // has here — and is written onto the record's new copy again below, as the rollback took
-        // the whole open transaction out.
-        // The record's new changes, read once: what the store's writes are the record's by, and
-        // what the mirror takes in.
-        let arrived = doc
-            .committed_document()
-            .get_changes(inner.chunks.seen(chunk));
-        let (committed, every_one_an_action) = committed_edits(&arrived, &inner.sent);
-        let taken = inner.drop_committed_local(chunk, &committed);
-        inner.forget_sent();
-        let mut items = taken.items;
-        inner.rollback(chunk);
-        let (changed, ends, placed) = inner.apply_new_changes(chunk, &arrived);
-        inner.chunks.set_seen(chunk, heads);
-        let Some(changed) = changed else {
+        let before = Before {
+            from: inner.chunks.heads(),
+            snapshots: inner.answering(),
+            overlay: std::mem::take(&mut inner.overlay),
+        };
+        let Some(mut applied) = inner.take_in(chunk, doc, heads) else {
             // The mirror held a change of its own, which only a copy of the record removes.
             inner.copy_record(chunk, doc);
             return true;
         };
-        inner.stats.incremental_syncs = inner.stats.incremental_syncs.saturating_add(1);
-        if chunk == chunk::FIRST {
-            // The record's manifest is where every other chunk's resources are placed: the
-            // record's changes may have started a run in a chunk, and a read or a write there
-            // routes by what it says now.
-            inner.chunks.reread_placement();
-        }
-        // The record's new changes are on the mirror; what the store still holds is written onto
-        // them again, as the rollback took it out.
-        inner.reapply_kept(chunk);
-        for doc in &changed.nested {
-            inner.nested.forget(doc);
-        }
-        // What the index held before the change, when every resource it held and holds now is
-        // derived again: a change that writes fields of resources leaves it uncopied.
-        let before = (changed.unplaced || changed.layout).then(|| inner.index.clone());
-        if changed.structure || changed.unplaced {
-            inner.rescan();
-        }
-        let reached = before.map_or_else(
-            || Reached {
-                docs: changed.docs.clone(),
-                placed: changed.placed.clone(),
-            },
-            |before| everything(&before, &inner.index),
-        );
-        let (moved, wholes, notified) = inner.derive_all(&reached, Some((&from, &ends, &placed)));
-        // A write routed to a chunk above the record whose document this sync does not carry —
-        // a record kept as one document that the store also routes by its manifest, or a caller
-        // handing over the record alone ([`Self::sync_from`]) — stays in `local`; the change
-        // above tells the versions it made, and the index holds them. Keep deriving that write
-        // without them ([`Inner::settle_versions`]).
-        inner.settle_versions(&ends);
-        // The overlay was the old transaction's, and what an origin derives was written onto
-        // the mirror again: derive it over the indexes as the record's changes left them, so a
-        // later write into one of its collections sees the items it holds, at their places.
-        inner.rebuild_overlay();
-        for (key, ids) in moved {
-            items.entry(key).or_default().extend(ids);
-        }
-        // The record's changes are the store's own writes and nothing else, and those who read
-        // the mirror were told what each changed when its action committed: the mirror and the
-        // overlay showed it as the record now has it. What they are told now is only what reads
-        // differently: the versions, which name the change that made them.
-        let told = taken.told
-            && every_one_an_action
-            && wholes.is_empty()
-            && !changed.unplaced
-            && !changed.layout;
-        let docs = named(changed.docs, items.keys(), wholes, notified, &ends);
-        if changed.unplaced || changed.layout {
-            inner.changed();
-        } else {
-            inner.changed_within(&docs, &items);
-        }
-        let (docs, listings, collections) = if told {
-            (
-                told_differently(&ends, &taken.versions),
-                BTreeMap::new(),
-                BTreeMap::new(),
-            )
-        } else {
-            (
-                docs,
-                inner.splices_since(&old_snapshots, &old_overlay, &items),
-                collections_by_doc(items.keys()),
-            )
-        };
-        if changed.unplaced {
-            inner.notify_all();
-        } else {
-            inner.tell_synced(docs, (listings, collections), &changed.by);
-        }
+        let derived = inner.derive(&mut applied, &before);
+        inner.tell(applied, derived, &before);
         true
     }
+}
+
+/// The record's changes a sync applied to the mirror of one chunk, between that and telling those
+/// who read it: what they changed, the versions they made of each resource they changed, where
+/// they placed the items they did, and the store's own writes the record took, with the items
+/// those writes moved.
+struct Applied {
+    changed: Changed,
+    ends: Ends,
+    placed: idx::reflect::Placed,
+    items: ItemTouches,
+    /// Whether those who read the mirror were told every one of the record's changes already, as
+    /// the store's own write it made.
+    told: bool,
+    versions: Ends,
+}
+
+/// What those who read the mirror had before a sync: the heads the record moved on from, each
+/// answering index's snapshot, and the overlay over them, which held the store's own writes as
+/// its readers did. What the splices a sync tells are measured from.
+struct Before {
+    from: chunk::Stamps,
+    snapshots: BTreeMap<AppId, Arc<idx::Snapshot>>,
+    overlay: Arc<Overlay>,
+}
+
+/// What a sync derived and has yet to tell: the records a change derived anew whole, and the
+/// fields that moved on records it did not name.
+struct Derived {
+    wholes: BTreeSet<DocId>,
+    notified: BTreeMap<DocId, Vec<FieldKey>>,
 }
 
 impl Inner {
@@ -237,6 +182,136 @@ impl Inner {
         self.rebuild_overlay();
         self.changed();
         self.notify_all();
+    }
+
+    /// Take the record's new changes into the mirror of `chunk`, once its heads have moved: the
+    /// store's own writes the record holds leave the mirror and the overlay, the changes are
+    /// applied to the mirror, and the store's writes the record has not taken are written onto
+    /// them again as the rollback took them out. `None` when the mirror holds a change of its own,
+    /// which only a copy of the record removes.
+    fn take_in(
+        &mut self,
+        chunk: ChunkNo,
+        doc: &Doc,
+        heads: Vec<automerge::ChangeHash>,
+    ) -> Option<Applied> {
+        // The record's new changes, read once: what the store's writes are the record's by, and
+        // what the mirror takes in. Every write they do not hold stays — a change that came from
+        // elsewhere leaves the edits a person has here — and is written onto the mirror again
+        // below, as the rollback took the whole open transaction out.
+        let arrived = doc
+            .committed_document()
+            .get_changes(self.chunks.seen(chunk));
+        let (committed, every_one_an_action) = committed_edits(&arrived, &self.sent);
+        let taken = self.drop_committed_local(chunk, &committed);
+        self.forget_sent();
+        self.rollback(chunk);
+        let (changed, ends, placed) = self.apply_new_changes(chunk, &arrived);
+        self.chunks.set_seen(chunk, heads);
+        let changed = changed?;
+        self.stats.incremental_syncs = self.stats.incremental_syncs.saturating_add(1);
+        if chunk == chunk::FIRST {
+            // The record's manifest is where every other chunk's resources are placed: the
+            // record's changes may have started a run in a chunk, and a read or a write there
+            // routes by what it says now.
+            self.chunks.reread_placement();
+        }
+        // The record's new changes are on the mirror; what the store still holds is written onto
+        // them again, as the rollback took it out.
+        self.reapply_kept(chunk);
+        for doc in &changed.nested {
+            self.nested.forget(doc);
+        }
+        Some(Applied {
+            changed,
+            ends,
+            placed,
+            items: taken.items,
+            told: taken.told && every_one_an_action,
+            versions: taken.versions,
+        })
+    }
+
+    /// Derive the record's changes the mirror of `chunk` now holds into every index read from:
+    /// what they moved of the items a listing holds joins `applied.items`, and the records
+    /// derived anew whole and the fields that moved on records the changes did not name are
+    /// returned, to be told.
+    fn derive(&mut self, applied: &mut Applied, before: &Before) -> Derived {
+        // What the index held before the change, when every resource it held and holds now is
+        // derived again: a change that writes fields of resources leaves it uncopied.
+        let held = (applied.changed.unplaced || applied.changed.layout).then(|| self.index.clone());
+        if applied.changed.structure || applied.changed.unplaced {
+            self.rescan();
+        }
+        let reached = held.map_or_else(
+            || Reached {
+                docs: applied.changed.docs.clone(),
+                placed: applied.changed.placed.clone(),
+            },
+            |held| everything(&held, &self.index),
+        );
+        let (moved, wholes, notified) = self.derive_all(
+            &reached,
+            Some((&before.from, &applied.ends, &applied.placed)),
+        );
+        // A write routed to a chunk above the record whose document this sync does not carry —
+        // a record kept as one document that the store also routes by its manifest, or a caller
+        // handing over the record alone ([`TiloStore::sync_from`]) — stays in `local`; the
+        // change above tells the versions it made, and the index holds them. Keep deriving that
+        // write without them ([`Self::settle_versions`]).
+        self.settle_versions(&applied.ends);
+        // The overlay was the old transaction's, and what an origin derives was written onto
+        // the mirror again: derive it over the indexes as the record's changes left them, so a
+        // later write into one of its collections sees the items it holds, at their places.
+        self.rebuild_overlay();
+        for (key, ids) in moved {
+            applied.items.entry(key).or_default().extend(ids);
+        }
+        Derived { wholes, notified }
+    }
+
+    /// Tell those who read the mirror what a sync changed: per document the fields the record's
+    /// changes named, how its listings moved and which collections' items did, and the records
+    /// derived anew whole — or, when the record's changes are the store's own writes and nothing
+    /// else, only what reads differently: the versions, which name the change that made them.
+    fn tell(&mut self, applied: Applied, derived: Derived, before: &Before) {
+        let Derived { wholes, notified } = derived;
+        // Those who read the mirror were told what each of the store's own writes changed when
+        // its action committed: the mirror and the overlay showed it as the record now has it.
+        let told = applied.told
+            && wholes.is_empty()
+            && !applied.changed.unplaced
+            && !applied.changed.layout;
+        let docs = named(
+            applied.changed.docs,
+            applied.items.keys(),
+            wholes,
+            notified,
+            &applied.ends,
+        );
+        if applied.changed.unplaced || applied.changed.layout {
+            self.changed();
+        } else {
+            self.changed_within(&docs, &applied.items);
+        }
+        let (docs, listings, collections) = if told {
+            (
+                told_differently(&applied.ends, &applied.versions),
+                BTreeMap::new(),
+                BTreeMap::new(),
+            )
+        } else {
+            (
+                docs,
+                self.splices_since(&before.snapshots, &before.overlay, &applied.items),
+                collections_by_doc(applied.items.keys()),
+            )
+        };
+        if applied.changed.unplaced {
+            self.notify_all();
+        } else {
+            self.tell_synced(docs, (listings, collections), &applied.changed.by);
+        }
     }
 
     /// The snapshot each index that answers reads now, by its app.
