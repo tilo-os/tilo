@@ -718,25 +718,9 @@ fn read_policy(doc: &AutoCommit, entry: &ObjId) -> StoredPolicy {
                 _ => None,
             }
         }
-        // The app grants that follow the roles, in the order
-        // `workspace_role_grants` adds them: the session's own app, the
-        // device's panel, then the files' app. Lexical map keys put the panel
-        // first.
-        fn app_order(grant: &Grant) -> u8 {
-            if tilo_action_policy::roles::is_session_app(grant) {
-                0
-            } else if tilo_action_policy::roles::is_device_panel(grant) {
-                1
-            } else if tilo_action_policy::roles::is_files_app(grant) {
-                2
-            } else {
-                3
-            }
-        }
         grants.compact_sort_by(|left, right| {
             role_order(left)
                 .cmp(&role_order(right))
-                .then_with(|| app_order(left).cmp(&app_order(right)))
                 .then_with(|| role_index(left).cmp(&role_index(right)))
                 .then_with(|| left.id.cmp(&right.id))
         });

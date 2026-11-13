@@ -715,12 +715,7 @@ fn the_centre_publishes_what_it_keeps_and_the_verbs_that_change_it() {
     assert_eq!(rig.history().len(), 2, "both are kept");
 
     let mut served = Served::new(Rc::clone(&rig.bridge));
-    let resource = served.resources().remove(0);
-    assert_eq!(
-        resource.readers,
-        tilo_actions::Readers::Granted,
-        "what people said to this person is personal"
-    );
+    let _resource = served.resources().remove(0);
     assert!(served.poll(), "what the centre keeps is a reading");
     assert_eq!(centre_of(&served).count, 2, "the centre counts them");
     let newest = rig

@@ -281,32 +281,6 @@ impl WorkspacePolicy {
     #[must_use]
     pub fn with_current_roles(mut self) -> Self {
         self.grants = roles::current_role_grants(std::mem::take(&mut self.grants));
-        // A workspace written before the session's app was granted gains it.
-        if !self.grants.iter().any(roles::is_session_app) {
-            let by = self
-                .owner
-                .clone()
-                .map_or_else(|| Grantee::role(Role::Owner), Grantee::person);
-            self.grants.push(roles::session_app(&self.workspace, by));
-        }
-        // And the one the device's panel reads the session's own readings
-        // through, which a workspace written before it was granted gains too.
-        if !self.grants.iter().any(roles::is_device_panel) {
-            let by = self
-                .owner
-                .clone()
-                .map_or_else(|| Grantee::role(Role::Owner), Grantee::person);
-            self.grants.push(roles::device_panel(&self.workspace, by));
-        }
-        // And the one its files are authored through, which a workspace
-        // written before it was granted gains too.
-        if !self.grants.iter().any(roles::is_files_app) {
-            let by = self
-                .owner
-                .clone()
-                .map_or_else(|| Grantee::role(Role::Owner), Grantee::person);
-            self.grants.push(roles::files_app(&self.workspace, by));
-        }
         self
     }
 
@@ -463,21 +437,11 @@ impl WorkspacePolicy {
         }
     }
 
-    /// The workspace's grants naming a delegation grantee (an agent, an app,
-    /// a task), for bounding a person's authority.
+    /// The workspace's grants naming a delegation grantee (an agent, an
+    /// issue, a Shortcut), for bounding a person's authority.
     #[must_use]
     pub fn party_of(&self, grantee: Grantee) -> Party<'_> {
         Party::new(vec![grantee], &self.grants)
-    }
-
-    /// Whether application `app` is an author in the workspace: its grants
-    /// let it change its own records there ([`roles::app_authorship`]).
-    #[must_use]
-    pub fn app_authors(&self, app: &str, cx: &Context<'_>) -> bool {
-        Authority::person(self.party_of(Grantee::app(app.to_owned())))
-            .decide(&self.node().app(app), ActionKind::Undoable, cx)
-            .answer
-            == Answer::Allow
     }
 
     /// The grants naming the work on the issue `issue`.

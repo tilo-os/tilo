@@ -673,24 +673,6 @@ impl ResourceSemanticIdentity {
     }
 }
 
-/// Who may read a resource's reading.
-///
-/// A reading says what the device or the app holds right now, so a resource
-/// of the person's own — the clipboard's copies, a screen's content — is not
-/// every caller's to read. Declaring a reading [`Granted`](Self::Granted)
-/// puts it under the same permission model the resource's actions already
-/// have: the session decides it where the resource sits, from the workspace's
-/// grants, and a caller the workspace does not grant it to is refused.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Readers {
-    /// Anyone who reaches the session's door: what a resource is unless it
-    /// says otherwise.
-    #[default]
-    Everyone,
-    /// Only a caller the workspace grants reading this resource.
-    Granted,
-}
-
 pub use crate::noun::{Noun, ResourceType, in_words, plural, singular};
 
 /// Whether `kind` names a control the window already draws, or an
@@ -739,8 +721,6 @@ pub struct ResourceSpec {
     /// Explicit presentations of this resource. Actions remain invocation
     /// mechanisms; only entries in this collection are resource views.
     pub views: Vec<ResourceViewSpec>,
-    /// Who may read the reading this resource publishes.
-    pub readers: Readers,
     /// What it is, as people name it, when its type says ([`ResourceType`]).
     pub resource_type: Option<ResourceType>,
 }
@@ -758,7 +738,6 @@ impl ResourceSpec {
             children: Vec::new(),
             actions: Vec::new(),
             views: Vec::new(),
-            readers: Readers::Everyone,
         }
     }
 
@@ -791,15 +770,6 @@ impl ResourceSpec {
     #[must_use]
     pub fn with_view(mut self, view: ResourceViewSpec) -> Self {
         self.views.push(view);
-        self
-    }
-
-    /// Publish this resource's reading only to callers the workspace grants it to
-    /// ([`Readers::Granted`]): what the person's own state needs, when it is
-    /// theirs alone.
-    #[must_use]
-    pub fn with_granted_reading(mut self) -> Self {
-        self.readers = Readers::Granted;
         self
     }
 

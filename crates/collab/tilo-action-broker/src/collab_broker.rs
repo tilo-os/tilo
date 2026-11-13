@@ -370,26 +370,6 @@ impl WeakAppActionBroker {
     }
 }
 
-/// Why an app opening in a workspace was not let author there
-/// ([`AppActionBroker::grant_app_authorship`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AppAuthorshipError {
-    /// The grant was not asked: the broker is shutting down, or this device
-    /// may not ask it in the workspace.
-    Unasked(String),
-    /// The workspace's owner refused the grant or could not commit it.
-    Refused(String),
-}
-
-impl std::fmt::Display for AppAuthorshipError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Unasked(why) => formatter.write_str(why),
-            Self::Refused(why) => write!(formatter, "native app authorship refused: {why}"),
-        }
-    }
-}
-
 impl AppActionBroker {
     /// The host this person's other devices reach this device's actions
     /// through: every request admitted for the caller its own device's
@@ -437,53 +417,6 @@ impl AppActionBroker {
     ) -> Result<std::sync::mpsc::Receiver<bool>, String> {
         self.state
             .while_live(|state| Ok(state.await_membership_surface(workspace)))
-    }
-
-    /// Let `app` author in `workspace`, as `certificate`'s person, this device,
-    /// opening it there: checked as their membership invocation is, and
-    /// committed by the workspace's owner before this returns
-    /// (`AppBrokerState::app_authorship_commit`). Blocks on the owner's
-    /// commit: call it off the broker's loop and the frame loop.
-    ///
-    /// #
-    /// Errors [`AppAuthorshipError::Unasked`]: the broker is shutting down, or the
-    /// device may not ask it in this workspace; [`AppAuthorshipError::Refused`]:
-    /// the workspace's owner refused or could not commit it.
-    pub fn grant_app_authorship(
-        &self,
-        workspace: &str,
-        app: &str,
-        certificate: &tilo_user_identity::DeviceCert,
-    ) -> Result<(), AppAuthorshipError> {
-        use AppAuthorshipError::{Refused, Unasked};
-        // A workspace this device just made or joined holds its membership here
-        // once its replica is projected: told so by the refresh that
-        // publishes the workspace's membership, never on a clock.
-        let projected = self
-            .state
-            .while_live(|state| Ok(state.membership_projection(workspace)))
-            .map_err(Unasked)?;
-        if let Some(published) = projected
-            && !published.recv().map_err(|_| {
-                Unasked(
-                    "the session's broker ended before the workspace's membership was held here"
-                        .to_owned(),
-                )
-            })?
-        {
-            return Err(Unasked(
-                "the workspace's membership is not held on this device, and it neither holds, \
-                 joins nor places the workspace"
-                    .into(),
-            ));
-        }
-        let (service, request) = self
-            .state
-            .while_live(|state| state.app_authorship_commit(workspace, app, certificate))
-            .map_err(Unasked)?;
-        let receipt =
-            futures::executor::block_on(service.execute(request.clone())).map_err(Refused)?;
-        receipt.validate_for(&request).map_err(Refused)
     }
 
     pub fn change_workspace_membership(

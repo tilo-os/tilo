@@ -7,9 +7,7 @@ use super::{
     PublishedSurface,
 };
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
-use tilo_peer_state::workspace_membership::{
-    AppAction, SettingsChange, WorkspaceMembershipCommand,
-};
+use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 
 const APP: &str = "so.tilo.desktop";
 const RECORD: &str = "membership";
@@ -33,8 +31,6 @@ impl Surface {
         }
     }
 }
-const GRANT_APP_AUTHORSHIP: &str = "grant-app-authorship";
-
 impl AppBrokerState {
     /// [`Self::stage_workspace_membership`], started once its admission is
     /// durable, on a thread that may block: never the broker's loop.
@@ -64,13 +60,8 @@ impl AppBrokerState {
             | WorkspaceMembershipCommand::RetiredRemoveAgent { .. } => {
                 return Err(tilo_peer_state::workspace_membership::RETIRED_AGENT_MEMBERSHIP.into());
             }
-            WorkspaceMembershipCommand::GrantAppAuthorship { app } => {
-                let argument = format!(
-                    "{}{}",
-                    tilo_actions::ARGUMENTS_JSON_PREFIX,
-                    serde_json::json!({"app": app})
-                );
-                (WORKSPACE.into(), GRANT_APP_AUTHORSHIP, Some(argument))
+            WorkspaceMembershipCommand::RetiredGrantAppAuthorship { .. } => {
+                return Err(tilo_peer_state::workspace_membership::RETIRED_APP_AUTHORSHIP.into());
             }
             WorkspaceMembershipCommand::Grant { grant } => {
                 let argument = format!(
@@ -114,16 +105,6 @@ impl AppBrokerState {
                 "rename",
                 Some(encoded(&serde_json::json!({ "name": name }))?),
             ),
-            WorkspaceMembershipCommand::Settings(SettingsChange::GrantAppAction(action)) => (
-                governance_resource(workspace),
-                tilo_desktop_model::APP_ACTION_GRANT_ACTION_ID,
-                Some(encoded(action)?),
-            ),
-            WorkspaceMembershipCommand::Settings(SettingsChange::RevokeAppAction(action)) => (
-                governance_resource(workspace),
-                tilo_desktop_model::APP_ACTION_REVOKE_ACTION_ID,
-                Some(encoded(action)?),
-            ),
             WorkspaceMembershipCommand::Settings(_) => {
                 return Err(
                     "a workspace's saved grant sets and app permissions change where its person changes them"
@@ -149,173 +130,6 @@ impl AppBrokerState {
             argument.as_deref(),
             certificate,
         )
-    }
-
-    /// Let the app `route` names author its workspace before it opens there as
-    /// `certificate`'s person, when the workspace does not let it yet and that
-    /// person may let it there
-    /// ([`super::services::WorkspaceMemberships::app_opens_by_granting`]):
-    /// the same membership invocation a launch asks, started once its
-    /// admission is durable. Nothing to do otherwise.
-    ///
-    /// A workspace this device's own host serves decides through this device's
-    /// owner: what an app opening there needs is for the owner to record.
-    pub(crate) async fn admit_opening_app(
-        &self,
-        route: &CrdtRoute,
-        certificate: &tilo_user_identity::DeviceCert,
-    ) -> Result<(), String> {
-        if route.app_id.is_empty() {
-            return Ok(());
-        }
-        let Some(memberships) = self.services.workspace_memberships.as_ref() else {
-            return Ok(());
-        };
-        // This device hosts the workspace, or its own owner decides the same
-        // question a member's owner does: either way the app opens here.
-        let decided_here = certificate.capabilities.can_act_as_host
-            || memberships.hosted_here(&route.cluster_id)
-            || memberships.app_opens_by_granting(&route.cluster_id, &route.app_id, certificate);
-        if !decided_here {
-            return Ok(());
-        }
-        // This runs on the broker's loop, which answers every other app
-        // meanwhile: the admission's write is waited for without holding it.
-        let job = self
-            .stage_workspace_membership(
-                &route.cluster_id,
-                &WorkspaceMembershipCommand::GrantAppAuthorship {
-                    app: route.app_id.clone(),
-                },
-                certificate,
-            )?
-            .start(self)
-            .await?;
-        // Its answer comes when the workspace's owner has recorded the grant,
-        // or when the invocation fails or expires. Nobody acts on it: the
-        // app asks for its keys again when the grant is in. It is heard on
-        // a thread of its own, which neither the broker's loop nor its
-        // runtime's shutdown waits for.
-        let workspace = route.cluster_id.clone();
-        let app = route.app_id.clone();
-        std::thread::Builder::new()
-            .name("app-authorship".into())
-            .spawn(move || match job.completion.recv() {
-                Ok(completed) if completed.code.is_empty() => {}
-                Ok(completed) => tracing::warn!(
-                    %workspace,
-                    %app,
-                    error = %completed.message,
-                    "an opening app was not let author its workspace"
-                ),
-                Err(_) => tilo_failure::ignored!(
-                    "the caller is told the authorship answer was not heard",
-                    tracing::debug!(
-                        %workspace,
-                        %app,
-                        "an opening app's authorship ended without an answer"
-                    )
-                ),
-            })
-            .map(drop)
-            .map_err(|error| format!("app authorship answer unheard: {error}"))
-    }
-
-    /// The workspace owner's commit that lets `app` author in `workspace`, as
-    /// `certificate`'s person, this device, asks it on opening the app there:
-    /// checked as that person's membership invocation is (an ordinary person
-    /// device, admitted to the workspace, its certificate current), and handed to
-    /// the workspace's owner, which decides it against the workspace's governance.
-    ///
-    /// Not journaled, unlike an invocation another actor asks: the grant is
-    /// idempotent and the workspace's commit is its one durable record, so
-    /// nothing is lost when a crash comes between the commit and an answer.
-    /// The opening waits for the owner's commit alone, never for the
-    /// journal's writes of other invocations queued before it, nor for the
-    /// workspace's membership actions to be published.
-    ///
-    /// # Errors
-    /// The workspace's membership is not held here, the device is not admitted
-    /// to it, or the owner refused or could not commit the grant.
-    /// What an opening in `workspace` waits for before its grant can be
-    /// committed: nothing (`None`) when the workspace's membership is held here
-    /// already, else to be told whether it comes
-    /// ([`Self::await_membership_surface`]).
-    pub(crate) fn membership_projection(
-        &self,
-        workspace: &str,
-    ) -> Option<std::sync::mpsc::Receiver<bool>> {
-        let service = self.services.workspace_memberships.as_ref()?;
-        if service.requires_workspace(workspace) || service.grants_authorship_at_host(workspace) {
-            return None;
-        }
-        Some(self.await_membership_surface(workspace))
-    }
-
-    pub(crate) fn app_authorship_commit(
-        &self,
-        workspace: &str,
-        app: &str,
-        certificate: &tilo_user_identity::DeviceCert,
-    ) -> Result<
-        (
-            Arc<dyn crate::services::WorkspaceMemberships>,
-            OwnerCommitRequest,
-        ),
-        String,
-    > {
-        let command = WorkspaceMembershipCommand::GrantAppAuthorship {
-            app: app.to_owned(),
-        };
-        command.validate()?;
-        let service = self
-            .services
-            .workspace_memberships
-            .clone()
-            .ok_or("workspace membership owner unavailable")?;
-        if !(service.requires_workspace(workspace) || service.grants_authorship_at_host(workspace))
-        {
-            return Err("the workspace's membership is not held on this device".into());
-        }
-        if certificate.capabilities.can_act_as_host {
-            return Err("membership changes require an ordinary person device".into());
-        }
-        let authority = self
-            .certificate_authority
-            .get()
-            .ok_or("current certificate authority unavailable")?;
-        let workspace_id =
-            uuid::Uuid::parse_str(workspace).map_err(|_| "invalid exact workspace")?;
-        authority.authorize_join(workspace_id, certificate)?;
-        let time = self.registered_policy_time()?;
-        let now = self.checked_policy_time(time.as_ref())?.1;
-        tilo_user_identity::verify_device_cert_at(certificate, now)
-            .map_err(|_| "membership device certificate rejected")?;
-        let membership = self
-            .membership
-            .as_ref()
-            .ok_or("workspace authority unavailable")?;
-        let verified = super::VerifiedJoinIdentity::of(
-            certificate,
-            super::cert_capped_in(Some(authority.as_ref()), workspace, certificate),
-        );
-        let route = CrdtRoute::record(APP, workspace, RECORD);
-        membership.decide_in_workspace(workspace, |workspace| {
-            super::admit_verified_join_at(workspace, &route, verified, now / 1_000_000_000)
-        })??;
-        // The owner's commit waits for an owner still opening (a session's
-        // first moments) inside its own future, as every commit does.
-        Ok((
-            service,
-            OwnerCommitRequest {
-                workspace: workspace.into(),
-                operation: CommitOperation::WorkspaceMembershipCommand {
-                    invocation: uuid::Uuid::new_v4(),
-                    caller: certificate.clone(),
-                    command,
-                },
-            },
-        ))
     }
 
     fn invoke_workspace_person_action(
@@ -603,9 +417,7 @@ impl AppBrokerState {
         for (workspace, actions) in workspaces {
             // A workspace its host stewards offers its membership changes here
             // too: this device writes them itself, as in any workspace it holds.
-            if !(service.requires_workspace(&workspace)
-                || service.grants_authorship_at_host(&workspace))
-            {
+            if !service.requires_workspace(&workspace) {
                 continue;
             }
             let governance = governance_actions(&governance_resource(&workspace));
@@ -734,8 +546,7 @@ impl AppBrokerState {
         if key.workspace != workspace
             || key.invocation != envelope.invocation
             || key.owner != pending.owner
-            || !(service.requires_workspace(workspace)
-                || service.grants_authorship_at_host(workspace))
+            || !service.requires_workspace(workspace)
         {
             return Err("membership invocation binding changed".into());
         }
@@ -763,19 +574,7 @@ fn membership_command(envelope: &InvocationEnvelope) -> Result<WorkspaceMembersh
     if let Some(command) = people_command(envelope)? {
         return Ok(command);
     }
-    let command = if let Some(command) = bot_command(envelope)? {
-        command
-    } else if envelope.resource == WORKSPACE && envelope.action == "grant-app-authorship" {
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct AppAuthorship {
-            app: String,
-        }
-        let encoded = bounded_argument(envelope, "app authorship")?;
-        let input: AppAuthorship =
-            serde_json::from_str(encoded).map_err(|error| error.to_string())?;
-        WorkspaceMembershipCommand::GrantAppAuthorship { app: input.app }
-    } else {
+    let Some(command) = bot_command(envelope)? else {
         return Err("unknown workspace membership command".into());
     };
     command.validate()?;
@@ -807,24 +606,6 @@ fn people_command(
     };
     if workspace.is_empty() {
         return Err("a workspace's governance names its workspace".into());
-    }
-    if envelope.action == tilo_desktop_model::APP_ACTION_GRANT_ACTION_ID
-        || envelope.action == tilo_desktop_model::APP_ACTION_REVOKE_ACTION_ID
-    {
-        let named: AppAction = serde_json::from_str(bounded_argument(envelope, "the app action")?)
-            .map_err(|error| error.to_string())?;
-        let named = AppAction::new(
-            &named.app,
-            &named.target_app,
-            &named.resource,
-            &named.action,
-        )?;
-        let change = if envelope.action == tilo_desktop_model::APP_ACTION_GRANT_ACTION_ID {
-            SettingsChange::GrantAppAction(named)
-        } else {
-            SettingsChange::RevokeAppAction(named)
-        };
-        return Ok(Some(WorkspaceMembershipCommand::Settings(change)));
     }
     if envelope.action == "rename" {
         #[derive(serde::Deserialize)]
@@ -963,65 +744,14 @@ fn argument_limit(action: &str) -> usize {
 }
 
 fn membership_actions() -> Vec<PublishedAction> {
-    let mut actions = vec![membership_action(
-        WORKSPACE,
-        GRANT_APP_AUTHORSHIP,
-        "Workspace",
-        "Allow app authorship",
-        vec![tilo_actions::ActionParam::required(
-            "app",
-            tilo_actions::ParamType::Text,
-            "Application id",
-        )],
-    )];
-    actions.extend(bot_actions());
-    actions
+    bot_actions()
 }
 
 /// The changes to a workspace's governance, as it offers them: its people, its own
 /// name, and the permission of one app to use another's action — made here at this
 /// device and admitted by every device.
 fn governance_actions(resource: &str) -> Vec<PublishedAction> {
-    let mut actions = people_actions(resource);
-    actions.extend(app_action_actions(resource));
-    actions
-}
-
-/// One app's use of another app's action, as the workspace's governance offers it:
-/// the same grant the consent sheet's "Always allow" writes, given by name.
-fn app_action_actions(resource: &str) -> Vec<PublishedAction> {
-    let named = || {
-        [
-            ("app", "The application this lets act."),
-            ("target_app", "The application whose action it uses."),
-            (
-                "resource",
-                "The resource of that application, as it publishes it.",
-            ),
-            ("action", "The action on that resource."),
-        ]
-        .into_iter()
-        .map(|(name, description)| {
-            tilo_actions::ActionParam::required(name, tilo_actions::ParamType::Text, description)
-        })
-        .collect()
-    };
-    vec![
-        people_action(
-            resource,
-            tilo_desktop_model::APP_ACTION_GRANT_ACTION_ID,
-            "App actions",
-            "Let an app use another app's action",
-            named(),
-        ),
-        people_action(
-            resource,
-            tilo_desktop_model::APP_ACTION_REVOKE_ACTION_ID,
-            "App actions",
-            "Take back an app's use of another app's action",
-            named(),
-        ),
-    ]
+    people_actions(resource)
 }
 
 /// The changes to a workspace's people, as the workspace's governance offers them:
@@ -1337,28 +1067,6 @@ mod tests {
 
     struct DiscoveryMemberships;
 
-    /// A service standing in for a workspace this device holds but a host
-    /// stewards: the workspace's own membership changes are what it publishes.
-    struct HostedElsewhereMemberships;
-
-    impl WorkspaceMemberships for HostedElsewhereMemberships {
-        fn requires_workspace(&self, _: &str) -> bool {
-            false
-        }
-
-        fn grants_authorship_at_host(&self, _: &str) -> bool {
-            true
-        }
-
-        fn health(&self) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn execute(&self, _: OwnerCommitRequest) -> tilo_peer_state::owner_commit::CommitFuture {
-            Box::pin(async { Err("discovery fixture must not mutate the owner".into()) })
-        }
-    }
-
     impl WorkspaceMemberships for DiscoveryMemberships {
         fn requires_workspace(&self, _: &str) -> bool {
             true
@@ -1440,61 +1148,6 @@ mod tests {
             actual, expected,
             "discovery exposes the exact action contract"
         );
-    }
-
-    #[tokio::test]
-    async fn a_workspace_a_host_stewards_offers_its_own_membership() {
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                let mut tree = crate::test_support::WorkspaceTree::default();
-                tree.desktop
-                    .workspaces
-                    .push(tilo_desktop_model::Workspace::new(
-                        tilo_desktop_model::WorkspaceSlot(1),
-                        "Hosted elsewhere",
-                    ));
-                let workspace = tree.desktop.workspaces.first().unwrap().id().to_string();
-                let tree = tree.shared();
-                let state = AppBrokerState::test_state(
-                    Some(tree.authority()),
-                    HostServices {
-                        workspace_memberships: Some(Arc::new(HostedElsewhereMemberships)),
-                        ..Default::default()
-                    },
-                )
-                .0;
-                state.refresh_workspace_membership_services().unwrap();
-                // The workspace's own governance is offered, so letting one app
-                // use another's action is an action here.
-                let expected = vec![
-                    (WORKSPACE, "grant-app-authorship"),
-                    (WORKSPACE, "install-bot"),
-                    (WORKSPACE, "renew-bot"),
-                    (WORKSPACE, "adopt-bot"),
-                    (WORKSPACE, "uninstall-bot"),
-                    (WORKSPACE, "pause-bot"),
-                    (WORKSPACE, "resume-bot"),
-                    (WORKSPACE, "set-bot-appearance"),
-                    (WORKSPACE, "request-bot"),
-                    (WORKSPACE, "withdraw-bot-request"),
-                ];
-                assert_membership_action_set(&state, &workspace, &expected);
-                {
-                    use crate::test_support::{Grants as _, KindSet};
-                    tree.write()
-                        .desktop
-                        .workspaces
-                        .first_mut()
-                        .unwrap()
-                        .allow_agent("scribe", KindSet::READ);
-                }
-                state.refresh_workspace_membership_services().unwrap();
-                // Admission is the record's: the agent it names changes no
-                // membership action here.
-                assert_membership_action_set(&state, &workspace, &expected);
-                drop(state);
-            })
-            .await;
     }
 
     /// An app opened in a workspace that appeared since the broker last published
@@ -1620,9 +1273,8 @@ mod tests {
                 assert_eq!(state.published_surfaces_generation(), 0);
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(state.published_surfaces_generation(), 1);
-                assert_eq!(membership_surface_counts(&state, &workspace), (1, 10));
+                assert_eq!(membership_surface_counts(&state, &workspace), (1, 9));
                 let expected = vec![
-                    (WORKSPACE, "grant-app-authorship"),
                     (WORKSPACE, "install-bot"),
                     (WORKSPACE, "renew-bot"),
                     (WORKSPACE, "adopt-bot"),
@@ -1655,7 +1307,7 @@ mod tests {
                     1,
                     "an admitted agent adds no membership action"
                 );
-                assert_eq!(membership_surface_counts(&state, &workspace), (1, 10));
+                assert_eq!(membership_surface_counts(&state, &workspace), (1, 9));
                 assert_membership_action_set(&state, &workspace, &expected);
                 let peer = *state
                     .workspace_membership_peers
@@ -1755,6 +1407,7 @@ mod tests {
 
     #[test]
     fn public_arguments_choose_only_closed_commands() {
+        let governance = governance_resource("8f0ee7bd-30e8-4e2f-9f17-2e57cbcf84b2");
         assert!(
             membership_command(&envelope(
                 WORKSPACE,
@@ -1771,16 +1424,9 @@ mod tests {
             "capability",
             "signing_key",
         ] {
-            let mut arguments = serde_json::json!({"app": "so.tilo.chat"});
+            let mut arguments = serde_json::json!({"name": "Studio"});
             arguments[field] = serde_json::json!("forged");
-            assert!(
-                membership_command(&envelope(
-                    WORKSPACE,
-                    "grant-app-authorship",
-                    Some(arguments)
-                ))
-                .is_err()
-            );
+            assert!(membership_command(&envelope(&governance, "rename", Some(arguments))).is_err());
         }
     }
 
@@ -1823,9 +1469,9 @@ mod tests {
         assert!(forged.is_err());
         assert!(
             membership_command(&envelope(
-                WORKSPACE,
-                "grant-app-authorship",
-                Some(serde_json::json!({ "app": "x".repeat(2048) })),
+                &governance_resource("8f0ee7bd-30e8-4e2f-9f17-2e57cbcf84b2"),
+                "rename",
+                Some(serde_json::json!({ "name": "x".repeat(2048) })),
             ))
             .is_err(),
             "other commands keep their small bound"
@@ -1936,56 +1582,6 @@ mod tests {
         );
     }
 
-    /// One app's use of another app's action is the workspace's governance change
-    /// too: the same grant the consent sheet's "Always allow" writes, given by a
-    /// person who names the app, the other app, its resource and the action.
-    #[test]
-    fn an_apps_use_of_another_apps_action_is_the_governance_change_it_names() {
-        let governance = governance_resource("8f0ee7bd-30e8-4e2f-9f17-2e57cbcf84b2");
-        let named = serde_json::json!({
-            "app": "so.tilo.lang.today",
-            "target_app": "so.tilo.lang.notes",
-            "resource": "tl:so.tilo.lang.notes:root",
-            "action": "file-note",
-        });
-        let app_action = || {
-            AppAction::new(
-                "so.tilo.lang.today",
-                "so.tilo.lang.notes",
-                "tl:so.tilo.lang.notes:root",
-                "file-note",
-            )
-            .unwrap()
-        };
-        for (verb, change) in [
-            (
-                tilo_desktop_model::APP_ACTION_GRANT_ACTION_ID,
-                SettingsChange::GrantAppAction(app_action()),
-            ),
-            (
-                tilo_desktop_model::APP_ACTION_REVOKE_ACTION_ID,
-                SettingsChange::RevokeAppAction(app_action()),
-            ),
-        ] {
-            assert_eq!(
-                membership_command(&envelope(&governance, verb, Some(named.clone()))).unwrap(),
-                WorkspaceMembershipCommand::Settings(change),
-                "{verb} is the governance change it names"
-            );
-        }
-        let unnamed =
-            serde_json::json!({"app": "", "target_app": "t", "resource": "r", "action": "a"});
-        assert!(
-            membership_command(&envelope(
-                &governance,
-                tilo_desktop_model::APP_ACTION_GRANT_ACTION_ID,
-                Some(unnamed),
-            ))
-            .is_err(),
-            "a grant names the app it lets act"
-        );
-    }
-
     #[test]
     fn membership_actions_are_admin_only() {
         let workspace =
@@ -1994,9 +1590,6 @@ mod tests {
         assert!(actions.iter().all(|action| {
             action.contract.kind == tilo_actions::ActionKind::Outside
                 && action.operation_kind == tilo_actions::OperationKind::Effect
-        }));
-        assert!(actions.iter().any(|action| {
-            action.resource == WORKSPACE && action.action == "grant-app-authorship"
         }));
         assert!(
             actions
@@ -2010,7 +1603,7 @@ mod tests {
         let changes = governance_actions(&governance);
         assert_eq!(
             changes.len(),
-            10,
+            8,
             "every change the workspace's governance takes"
         );
         assert!(changes.iter().all(|action| {
@@ -2019,18 +1612,12 @@ mod tests {
                 && action.contract.kind == tilo_actions::ActionKind::Outside
         }));
         assert!(changes.iter().any(|action| action.action == "ban"));
-        let app_action = changes
-            .iter()
-            .find(|offered| offered.action == tilo_desktop_model::APP_ACTION_GRANT_ACTION_ID)
-            .expect("an app's use of another app's action is a governance change");
-        assert_eq!(
-            app_action
+        assert!(
+            changes.iter().all(|offered| offered
                 .params
                 .iter()
-                .map(|param| param.name.as_ref())
-                .collect::<Vec<_>>(),
-            ["app", "target_app", "resource", "action"],
-            "it names the app, the other app, its resource and the action"
+                .all(|param| param.name != "target_app")),
+            "an app's use of another app's action is the person's setting, not the workspace's"
         );
     }
 
@@ -2067,7 +1654,7 @@ mod tests {
                     tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
                 );
                 assert_eq!(offered.resource_kind, "workspace.permissions");
-                assert_eq!(surface.actions.len(), 10);
+                assert_eq!(surface.actions.len(), 8);
                 assert!(
                     state
                         .governance_surface(&workspace, &resource, "call")

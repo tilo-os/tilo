@@ -47,11 +47,6 @@ pub struct Apps {
     admission: RefCell<Option<Admission>>,
 }
 
-/// What lets a package author its own records in the workspace it opens in,
-/// called with the workspace's id and the package's, and what runs once it
-/// may: at once, or on the pass after the workspace's governance answered.
-type Authorship = Rc<dyn Fn(&str, &str, Box<dyn FnOnce(&Apps)>)>;
-
 /// Why the apps of a workspace, by its id, may not start yet: `None` once they may.
 pub(crate) type Admission = Rc<dyn Fn(&str) -> Option<String>>;
 
@@ -93,10 +88,6 @@ struct State {
     /// This session, while the doors are lent: a window that must start a process of its own starts
     /// it here.
     me: Weak<Apps>,
-    /// What lets a package author its own records in the workspace it opens in, once it is lent:
-    /// asked before the process is planned, so the app starts with the authorship rather than
-    /// waiting for a window to reopen.
-    authorship: Option<Authorship>,
     /// The door of each launch still running, by the launch's id: the end of the launch retires it,
     /// so the app's next window there starts a process again.
     held: BTreeMap<u64, HeldDoor>,
@@ -198,7 +189,6 @@ impl Apps {
                 launches: None,
                 doors: None,
                 me: Weak::new(),
-                authorship: None,
                 held: BTreeMap::new(),
                 planned: BTreeMap::new(),
                 opened: BTreeMap::new(),
@@ -517,13 +507,6 @@ impl Apps {
         )
         .map_err(|error| error.to_string())?;
         Ok(planned)
-    }
-
-    /// What lets a package author its own records in the workspace it opens
-    /// in, once it is lent: called with the workspace's id and the package's,
-    /// before the launch is planned, so the process starts as an author.
-    pub fn lend_authorship(&self, authorship: Authorship) {
-        self.state.borrow_mut().authorship = Some(authorship);
     }
 
     /// The files apps are handed, as the session serves them: a package opening one of the
@@ -1129,7 +1112,7 @@ impl Apps {
     /// their authority in it is projected from.
     fn launching_into(shown: &tilo_desktop_model::Workspace) -> Workspace {
         let mut launched = Workspace::under(&runtime_dir(), shown.id().to_string());
-        launched.grants = shown.launch_grants(unix_seconds());
+        launched.grants = shown.launch_grants();
         launched.policy = Some(shown.policy.clone());
         launched
     }
@@ -1307,46 +1290,6 @@ impl Apps {
         Some(key.clone())
     }
 
-    /// Run `start` with `workspace` as this launch starts in it: a launch that opens a package
-    /// there has the workspace make that package an author of its own records first, and is read
-    /// again with what it granted. A grant the workspace's governance signs runs off the loop, and
-    /// the launch starts on the pass after it landed: what it answers then is logged, and the
-    /// launch answers that its window comes.
-    fn authored(
-        &self,
-        launch: &Launch,
-        workspace: &Workspace,
-        start: impl FnOnce(&Self, &Workspace) -> Result<bool, DoorError> + 'static,
-    ) -> Result<bool, DoorError> {
-        let authorship = self.state.borrow().authorship.clone();
-        let (Some(app), Some(authorship)) = (launch.package(), authorship) else {
-            return start(self, workspace);
-        };
-        if !workspace.is_workspace() || workspace.grants.authors(app) {
-            return start(self, workspace);
-        }
-        let started = Rc::new(std::cell::Cell::new(None));
-        let (answer, kept, package) = (Rc::clone(&started), workspace.clone(), app.to_owned());
-        authorship(
-            &workspace.id,
-            app,
-            Box::new(move |apps: &Self| {
-                let refreshed = apps.workspace_named(&kept.id);
-                let workspace = if refreshed.grants.authors(&package) {
-                    refreshed
-                } else {
-                    kept
-                };
-                let ran = start(apps, &workspace);
-                if let Err(error) = &ran {
-                    tracing::warn!(%error, app = package, "an app did not start once it could author");
-                }
-                answer.set(Some(ran));
-            }),
-        );
-        started.take().unwrap_or(Ok(true))
-    }
-
     /// Start `launch` in `workspace` : in the process the app already runs there when that one
     /// opens the app's windows, and otherwise in a process of its own, which holds the app's door
     /// for its workspace until it ends. Whether a window comes for the tab held for this launch.
@@ -1358,14 +1301,10 @@ impl Apps {
         instance: Option<u64>,
         reveal: Option<&str>,
     ) -> Result<bool, DoorError> {
-        let (owned, reveal) = (launch.clone(), reveal.map(str::to_owned));
-        self.authored(launch, workspace, move |apps, workspace| {
-            apps.start_authored_window(&owned, workspace, new_window, instance, reveal.as_deref())
-        })
+        self.start_launched_window(launch, workspace, new_window, instance, reveal)
     }
 
-    /// [`Self::start_window`] in `workspace` as the launch's package may author there.
-    fn start_authored_window(
+    fn start_launched_window(
         &self,
         launch: &Launch,
         workspace: &Workspace,
@@ -1609,16 +1548,10 @@ impl Apps {
                 launch.app()
             )));
         }
-        let owned = launch.clone();
-        self.authored(launch, workspace, move |apps, workspace| {
-            apps.start_authored_windowless(&owned, workspace)
-                .map(|()| true)
-        })
-        .map(drop)
+        self.start_launched_windowless(launch, workspace)
     }
 
-    /// [`Self::start_windowless`] in `workspace` as the launch's package may author there.
-    fn start_authored_windowless(
+    fn start_launched_windowless(
         &self,
         launch: &Launch,
         workspace: &Workspace,
@@ -2085,13 +2018,6 @@ fn no_action_host() -> DoorError {
 /// Where a launch's private files live: the per-user runtime directory.
 fn runtime_dir() -> PathBuf {
     tilo_paths::xdg::runtime_dir_or_default()
-}
-
-/// The time grants are decided at: seconds since the epoch, as the workspace stores them.
-fn unix_seconds() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
 }
 
 /// `launch` as its package can open it: a file of the person's is granted to the app in

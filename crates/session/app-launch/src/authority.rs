@@ -256,7 +256,7 @@ mod tests {
         .expect("a projection");
         assert_eq!(
             (
-                read.room.as_str(),
+                read.workspace.as_str(),
                 read.app_id.as_str(),
                 read.person.as_str()
             ),
@@ -324,9 +324,9 @@ mod tests {
         let authority = Authority::new();
         let mut policy = WorkspacePolicy::new("workspace-7", OWNER);
         policy.members.insert(MEMBER.into(), Role::Editor);
-        let mut room = workspace(directory.path(), policy.clone(), MEMBER);
+        let mut launched = workspace(directory.path(), policy.clone(), MEMBER);
         let file = authority
-            .publish(&room, APP)
+            .publish(&launched, APP)
             .expect("published")
             .expect("a projection");
         assert!(may_add_notes(&file));
@@ -336,7 +336,7 @@ mod tests {
         };
         // Nothing changed: the projection is not written again.
         assert_eq!(
-            authority.publish(&room, APP).expect("published"),
+            authority.publish(&launched, APP).expect("published"),
             Some(file.clone())
         );
         let inode = {
@@ -348,9 +348,9 @@ mod tests {
         // The workspace takes the member's part back: the app already running
         // there hears the new authority.
         policy.members.insert(MEMBER.into(), Role::Viewer);
-        room.policy = Some(policy);
+        launched.policy = Some(policy);
         assert_eq!(authority.workspaces(), vec!["workspace-7".to_owned()]);
-        authority.refresh(&room).expect("refreshed");
+        authority.refresh(&launched).expect("refreshed");
         assert!(!may_add_notes(&file), "the app no longer may make a note");
     }
 

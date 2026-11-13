@@ -571,20 +571,10 @@ mod tests {
 
         let ada = SigningKey::from_bytes(&rand::random());
         member_at(workspaces, &owner, &closed, &ada, Role::Moderator).await;
-        member_at(
-            workspaces,
-            &owner,
-            &unlisted,
-            &ada,
-            Role::Commenter,
-        )
-        .await;
+        member_at(workspaces, &owner, &unlisted, &ada, Role::Commenter).await;
         let before = role_of(workspaces, &closed, ada.verifying_key().to_bytes()).await;
 
-        for (workspace, role) in [
-            (&closed, Role::Moderator),
-            (&unlisted, Role::Commenter),
-        ] {
+        for (workspace, role) in [(&closed, Role::Moderator), (&unlisted, Role::Commenter)] {
             let tab = device_of(&ada, DeviceCapabilities::member());
             let entered = through_the_door(workspaces, workspace, &tab).await;
             assert!(
@@ -645,14 +635,7 @@ mod tests {
             .await
             .unwrap();
         let ada = SigningKey::from_bytes(&rand::random());
-        member_at(
-            workspaces,
-            &owner,
-            &workspace,
-            &ada,
-            Role::Moderator,
-        )
-        .await;
+        member_at(workspaces, &owner, &workspace, &ada, Role::Moderator).await;
         let before = role_of(workspaces, &workspace, ada.verifying_key().to_bytes()).await;
 
         let join = DoorJoin {

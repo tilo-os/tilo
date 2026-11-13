@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tilo_action_broker::services::{
-    AppActionGrants, LegacyWorkspaceProjection, WorkspaceAuthority,
+    LegacyWorkspaceProjection, WorkspaceAuthority, WorkspaceGrants,
 };
 use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
 use tilo_desktop_model::WorkspaceId;
@@ -880,7 +880,7 @@ fn consent(
 fn app_grant(workspace: &str) -> tilo_action_policy::Grant {
     tilo_action_policy::Grant::new(
         "caller-opens-target",
-        tilo_action_policy::Grantee::app("so.tilo.caller"),
+        tilo_action_policy::Grantee::person("owner"),
         tilo_action_policy::TreePath::workspace(workspace)
             .app("so.tilo.target-app")
             .any(tilo_action_policy::Level::Kind)
@@ -908,9 +908,6 @@ fn grants_in_the_runtimes_own_workspace_are_recorded_by_its_administrator_and_sa
     let workspace_id = workspace.workspace();
     let grants = grants(workspace, temp.path());
 
-    assert!(grants.may_grant(&workspace_id, "owner"));
-    assert!(!grants.may_grant(&workspace_id, "stranger"));
-    assert!(!grants.may_grant(&WorkspaceId::new().to_string(), "owner"));
     let recorded = |person: &str| {
         tilo_rt::app()
             .block_on(grants.record(
@@ -964,7 +961,6 @@ fn the_desktop_sessions_workspace_takes_no_grants_here() {
     std::fs::write(&desktop, &bytes).unwrap();
     let grants = grants(ProfileWorkspace::open(temp.path()).unwrap(), temp.path());
 
-    assert!(!grants.may_grant(&workspace_id, "owner"));
     assert!(
         tilo_rt::app()
             .handle()
@@ -983,8 +979,8 @@ fn the_desktop_sessions_workspace_takes_no_grants_here() {
             .policy
             .grants
             .iter()
-            .all(|grant| grant.grantee != tilo_action_policy::Grantee::app("so.tilo.caller")),
-        "nothing granted to the app"
+            .all(|grant| grant.id.as_str() != "caller-opens-target"),
+        "nothing recorded here"
     );
 }
 

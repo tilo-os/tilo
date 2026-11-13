@@ -1859,12 +1859,10 @@ fn close_control(control: Rc<dyn crate::services::WorkspaceControlSession>) {
 }
 
 /// What a connection reaches of the session's published resources: the
-/// provider, the caller it reads them for, and the broker state a granted
-/// reading is decided from.
+/// provider and the caller it reads them for.
 struct Publishing {
     published: Arc<dyn crate::services::PublishedResources>,
     caller: crate::services::Caller,
-    state: Arc<AppBrokerState>,
 }
 
 impl WireConnection {
@@ -1936,7 +1934,6 @@ impl WireConnection {
                 app_id: launch.app_id.clone(),
                 workspace: launch.workspace_id.clone(),
             },
-            state: Arc::clone(&service.state),
         })
     }
 
@@ -2135,14 +2132,6 @@ impl WireConnection {
                     .and_then(|()| self.publishing());
                 Box::pin(async move {
                     let publishing = asking?;
-                    // A reading the person's own is decided before it is read,
-                    // as an action is before it runs.
-                    super::published::gate(
-                        &publishing.state,
-                        publishing.published.as_ref(),
-                        &publishing.caller,
-                        &resource,
-                    )?;
                     super::published::read(Ok(publishing
                         .published
                         .snapshot(&publishing.caller, &resource)))
@@ -2444,20 +2433,6 @@ impl WireConnection {
                 if self.subscriptions.borrow().contains_key(&id) {
                     return Err(format!("subscription {id} is already live"));
                 }
-                // A watch begins only where the workspace's grants let the caller
-                // read, and each reading is decided again as it is served.
-                super::published::gate(
-                    &publishing.state,
-                    publishing.published.as_ref(),
-                    &publishing.caller,
-                    &resource,
-                )?;
-                let gate = super::published::ReadingGate {
-                    state: Arc::clone(&publishing.state),
-                    published: Arc::clone(&publishing.published),
-                    caller: publishing.caller.clone(),
-                    resource: resource.clone(),
-                };
                 let (readings, deliveries) = mpsc::unbounded_channel();
                 let watch = publishing
                     .published
@@ -2468,7 +2443,6 @@ impl WireConnection {
                     deliveries,
                     self.frames.clone(),
                     id,
-                    gate,
                 );
                 self.subscriptions.borrow_mut().insert(id, (services, task));
                 Ok(Reply::Subscribed)

@@ -2,7 +2,6 @@
 //! permissions.
 
 use std::collections::{BTreeMap, HashMap};
-use tilo_sort::CompactSort as _;
 
 use serde::{Deserialize, Serialize};
 
@@ -751,45 +750,27 @@ impl Workspace {
             })
     }
 
-    /// What a launch into this workspace hands its apps at `now`: the apps the
-    /// workspace's grants make authors, and the workspace's sandbox.
+    /// What a launch into this workspace hands its apps: the workspace's
+    /// sandbox.
     #[must_use]
-    pub fn launch_grants(&self, now: u64) -> collab_types::caps::LaunchGrants {
-        let mut authors: Vec<String> = self
-            .policy
-            .grants
-            .iter()
-            .filter_map(|grant| match &grant.grantee {
-                Grantee::App(app) => Some(app.clone()),
-                _ => None,
-            })
-            .filter(|app| self.app_is_author_at(app, now))
-            .collect();
-        authors.compact_sort();
-        authors.dedup();
+    pub fn launch_grants(&self) -> collab_types::caps::LaunchGrants {
         collab_types::caps::LaunchGrants {
-            authors,
             sandbox: self.sandbox.clone(),
+            ..collab_types::caps::LaunchGrants::default()
         }
-    }
-
-    /// Whether application `app` is an author of the workspace at `now`: it may
-    /// change the workspace's content ([`roles::app_authorship`]).
-    #[must_use]
-    pub fn app_is_author_at(&self, app: &str, now: u64) -> bool {
-        self.policy.app_authors(app, &context_at(now))
     }
 
     /// Whether what `app`'s window changes in this workspace is told to that
     /// window as the person's own change: `person` may change the workspace
-    /// through `app` at `now` and `app` is an author of it. `None` when
-    /// `person` has no place in the workspace, so nothing is told to the window.
+    /// through `app` at `now`. `None` when `person` has no place in the
+    /// workspace, so nothing is told to the window.
     #[must_use]
     pub fn app_writes_at(&self, person: &str, app: &str, now: u64) -> Option<bool> {
         self.role_of(person)?;
-        let changes = self.answer_at(person, &self.node().app(app), ActionKind::Undoable, now)
-            == Answer::Allow;
-        Some(changes && self.app_is_author_at(app, now))
+        Some(
+            self.answer_at(person, &self.node().app(app), ActionKind::Undoable, now)
+                == Answer::Allow,
+        )
     }
 
     /// The grants naming a person on one node below the workspace — the share list

@@ -87,6 +87,7 @@ impl Workspace {
     #[must_use]
     pub fn grants_for_launch(&self, app: &str, home: Option<PathBuf>) -> LaunchGrants {
         let mut grants = self.grants.for_app(app);
+        grants.author = self.may_change(app);
         if app != FILE_MANAGER {
             return grants;
         }
@@ -99,6 +100,24 @@ impl Workspace {
             Access::Write,
         ));
         grants
+    }
+
+    /// Whether `person` may change this workspace through `app`: what its
+    /// answer in the workspace's policy says, and nothing where the session
+    /// holds no policy for the workspace.
+    fn may_change(&self, app: &str) -> bool {
+        let Some(policy) = &self.policy else {
+            return false;
+        };
+        policy
+            .person_on_device(&self.person, false)
+            .decide(
+                &policy.node().app(app),
+                tilo_action_policy::ActionKind::Undoable,
+                &tilo_action_policy::Context::at_time(std::time::SystemTime::now()),
+            )
+            .answer
+            == tilo_action_policy::Answer::Allow
     }
 
     /// Write the grants where `tilo-launcher --capabilities` reads them, and
@@ -211,7 +230,7 @@ mod tests {
         assert_eq!(
             workspace.grants_for_launch("so.tilo.file-explorer", Some(home.clone())),
             LaunchGrants {
-                authors: Vec::new(),
+                author: false,
                 sandbox: vec![CapOverride::grant(
                     Subject::app("so.tilo.file-explorer"),
                     Scope::FsPath(home.display().to_string()),
@@ -260,7 +279,7 @@ mod tests {
                 Scope::FsPath("/home/you/mail".into()),
                 Access::Read,
             ));
-            grants.authors.push("so.tilo.notes".into());
+            grants.author = true;
             grants
         };
         let path = workspace
@@ -275,7 +294,7 @@ mod tests {
             "the launcher reads what was granted to this app, not the workspace's other grants"
         );
         assert_eq!(read.sandbox.len(), 1);
-        assert_eq!(read.authors, vec!["so.tilo.notes".to_string()]);
+        assert!(read.author);
     }
 
     #[test]

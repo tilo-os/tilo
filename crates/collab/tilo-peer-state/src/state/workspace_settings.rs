@@ -1,6 +1,6 @@
 //! The workspace's own settings: its name, its saved grant sets and their
-//! assignment, the actions its apps may use of each other, its apps' sandbox
-//! capabilities, its door and its saved shortcuts, which every member reads
+//! assignment, its apps' sandbox capabilities, its door and its saved
+//! shortcuts, which every member reads
 //! from the workspace's governance document
 //! ([`tilo_desktop_model::projection::workspace_presets_of`],
 //! [`tilo_desktop_model::projection::workspace_sandbox_of`],
@@ -15,7 +15,7 @@ use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{StatePeer, SystemTime, err};
 use crate::workspace_membership::SettingsChange;
 use collab_types::signer::DeviceSigner;
-use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Lifetime};
+use tilo_action_policy::Grant;
 use tilo_desktop_model::projection;
 use tilo_user_identity::DeviceCert;
 
@@ -77,36 +77,10 @@ impl StatePeer {
                     .collect();
                 self.governance_mut().put_governed_grants(&grants, key, now)
             }
-            SettingsChange::GrantAppAction(action) => {
-                if action.target_app == tilo_desktop_model::WORKSPACE_GOVERNANCE_APP_ID {
-                    return Err("governing the workspace is granted to people, not apps".into());
-                }
-                // Enough for any action that at most changes the workspace
-                // undoably: an outside effect still asks.
-                let grant = Grant::new(
-                    action.grant_id().as_str(),
-                    Grantee::app(action.app.clone()),
-                    action.node(&workspace.node()),
-                    KindSet::READ_UNDOABLE,
-                    Answer::Allow,
-                    Grantee::person(member.person.as_str()),
-                )
-                .with_lifetime(Lifetime::UntilRevoked);
-                self.apply_member_change(
-                    caller,
-                    &tilo_action_policy::Change::Grant(grant),
-                    key,
-                    now,
-                )
-            }
-            SettingsChange::RevokeAppAction(action) => {
-                let revoked = app_action_grants(&workspace, action);
-                if revoked.is_empty() {
-                    return Ok(false);
-                }
-                self.governance_mut()
-                    .remove_governed_grants(&revoked, key, now)
-            }
+            // Retired with app consent in the person's settings
+            // ([`crate::workspace_membership::SettingsChange::GrantAppAction`]);
+            // `validate` refuses them, so they never reach here.
+            SettingsChange::GrantAppAction(_) | SettingsChange::RevokeAppAction(_) => Ok(false),
             SettingsChange::GrantSandbox { capability } => {
                 let by = collab_types::caps::Principal::Person(member.person.clone());
                 grant_sandbox(&mut workspace, capability, by)?;
@@ -148,25 +122,6 @@ impl StatePeer {
         crate::workspace::adopt_workspace(&mut workspace, doc, &[]);
         Ok(workspace)
     }
-}
-
-/// Every grant given for `action`, through a grant here or by answering the
-/// app's ask in place.
-fn app_action_grants(
-    workspace: &tilo_desktop_model::Workspace,
-    action: &crate::workspace_membership::AppAction,
-) -> Vec<tilo_action_policy::GrantId> {
-    let subject = Grantee::app(action.app.clone());
-    let node = action.node(&workspace.node());
-    workspace
-        .policy
-        .grants
-        .iter()
-        .filter(|grant| {
-            grant.grantee == subject && (grant.node == node || node.covers(&grant.node))
-        })
-        .map(|grant| grant.id.clone())
-        .collect()
 }
 
 /// Record `capability` in `workspace`'s sandbox as granted `by` a member,

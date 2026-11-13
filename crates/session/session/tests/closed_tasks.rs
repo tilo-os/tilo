@@ -171,7 +171,6 @@ fn an_agents_step_makes_an_issue_with_tasks_closed_and_the_persons_devices_read_
     site.publish(Role::Editor);
     // The workspace lets Tasks write the tracker its people read there, as its host does before
     // they open the app in it.
-    site.author_apps(&[tilo_desktop_model::ownership::DESKTOP_APP, APP]);
     let mut laptop = ada.device("Ada's laptop");
     let mut phone = ada.device("Ada's phone");
     for device in [&mut laptop, &mut phone] {

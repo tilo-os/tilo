@@ -292,25 +292,14 @@ fn teller_standing(meta: &Meta, who: &str) -> tilo_action_policy::Standing {
         .kind(meta.kind_of("Note"))
         .action(&tell.id);
     let owner = Grantee::person("sol");
-    policy.grants.extend([
-        Grant::new(
-            "tells",
-            Grantee::person(who),
-            node.clone(),
-            KindSet::OUTSIDE,
-            Answer::Allow,
-            owner.clone(),
-        ),
-        // The app's own code bounds it too, and its code asks before reaching outside.
-        Grant::new(
-            "app-tells",
-            Grantee::app(TELLER_APP),
-            node,
-            KindSet::OUTSIDE,
-            Answer::Allow,
-            owner,
-        ),
-    ]);
+    policy.grants.extend([Grant::new(
+        "tells",
+        Grantee::person(who),
+        node.clone(),
+        KindSet::OUTSIDE,
+        Answer::Allow,
+        owner.clone(),
+    )]);
     Standing::person(policy, who)
 }
 

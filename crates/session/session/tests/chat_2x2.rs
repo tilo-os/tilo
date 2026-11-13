@@ -44,7 +44,6 @@ impl Studio {
         // The workspace's host lets Chat author its records, as the host of a workspace does before
         // its people open apps there: Chat writes the people who introduced themselves into its own
         // record, and a member's device cannot grant that for itself.
-        site.author_apps(&["so.tilo.chat"]);
         let mut ada_laptop = ada.device("Ada's laptop");
         let mut ada_phone = ada.device("Ada's phone");
         for device in [&mut ada_laptop, &mut ada_phone] {

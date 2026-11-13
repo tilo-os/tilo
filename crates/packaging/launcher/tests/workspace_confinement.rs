@@ -413,7 +413,7 @@ fn run_with_grants(
         })
         .collect();
     let grants = LaunchGrants {
-        authors: Vec::new(),
+        author: false,
         sandbox,
     };
     std::fs::write(

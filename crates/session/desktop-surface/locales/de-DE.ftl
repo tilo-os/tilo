@@ -479,7 +479,6 @@ workspace-settings-granted-by-token = erteilt über Token { $id }
 workspace-settings-granted-by-workspace = erteilt vom Arbeitsbereich { $id }
 workspace-settings-permission-detail = { $allows }, { $grantor }
 workspace-settings-section-apps = Apps
-workspace-settings-section-app-actions = App-Aktionen
 workspace-settings-section-people = Personen
 workspace-settings-section-agents = Agenten
 workspace-settings-section-roles = Rollen

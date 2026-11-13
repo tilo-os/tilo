@@ -255,25 +255,14 @@ fn relay_standing(meta: &tilolang_runtime::meta::Meta, who: &str) -> tilo_action
         .kind(meta.kind_of("Draft"))
         .action(&post.id);
     let owner = Grantee::person("sol");
-    policy.grants.extend([
-        Grant::new(
-            "posts",
-            Grantee::person(who),
-            node.clone(),
-            KindSet::OUTSIDE,
-            Answer::Allow,
-            owner.clone(),
-        ),
-        // The app's own code bounds it too, and its code asks before reaching outside.
-        Grant::new(
-            "app-posts",
-            Grantee::app(RELAY_APP),
-            node,
-            KindSet::OUTSIDE,
-            Answer::Allow,
-            owner,
-        ),
-    ]);
+    policy.grants.extend([Grant::new(
+        "posts",
+        Grantee::person(who),
+        node.clone(),
+        KindSet::OUTSIDE,
+        Answer::Allow,
+        owner.clone(),
+    )]);
     Standing::person(policy, who)
 }
 

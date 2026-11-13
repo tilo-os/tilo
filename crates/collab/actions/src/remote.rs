@@ -152,16 +152,16 @@ pub enum CallerPrincipal {
 }
 
 impl CallerPrincipal {
-    /// The grant subject this principal is decided as. The one mapping every
-    /// door uses, instead of each matching on the principal by hand.
+    /// The grantee this principal is decided as, when it is a member: an app
+    /// acts as the person whose session runs it.
     #[must_use]
-    pub fn subject(&self) -> tilo_action_policy::Grantee {
+    pub fn grantee(&self) -> Option<tilo_action_policy::Grantee> {
         use tilo_action_policy::Grantee;
         match self {
-            Self::Person(id) => Grantee::person(id.clone()),
-            Self::Agent(id) => Grantee::agent(id.clone()),
-            Self::App(id) => Grantee::app(id.clone()),
-            Self::Bot(id) => Grantee::bot(id.clone()),
+            Self::Person(id) => Some(Grantee::person(id.clone())),
+            Self::Agent(id) => Some(Grantee::agent(id.clone())),
+            Self::Bot(id) => Some(Grantee::bot(id.clone())),
+            Self::App(_) => None,
         }
     }
 }
@@ -1848,8 +1848,10 @@ mod tests {
         let installer = [7u8; 32];
         let caller = Caller::bot("6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6", installer, [9u8; 32]);
         assert_eq!(
-            caller.principal().subject(),
-            tilo_action_policy::Grantee::bot("6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6")
+            caller.principal().grantee(),
+            Some(tilo_action_policy::Grantee::bot(
+                "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6"
+            ))
         );
         let actor = caller.actor();
         assert_eq!(actor.id, "bot:6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6");
@@ -1862,24 +1864,21 @@ mod tests {
     }
 
     #[test]
-    fn every_principal_maps_to_its_subject() {
+    fn a_member_principal_maps_to_its_grantee() {
         use tilo_action_policy::Grantee;
         assert_eq!(
-            CallerPrincipal::Person("p".into()).subject(),
-            Grantee::person("p")
+            CallerPrincipal::Person("p".into()).grantee(),
+            Some(Grantee::person("p"))
         );
         assert_eq!(
-            CallerPrincipal::Agent("a".into()).subject(),
-            Grantee::agent("a")
+            CallerPrincipal::Agent("a".into()).grantee(),
+            Some(Grantee::agent("a"))
         );
         assert_eq!(
-            CallerPrincipal::App("x.y".into()).subject(),
-            Grantee::app("x.y")
+            CallerPrincipal::Bot("b".into()).grantee(),
+            Some(Grantee::bot("b"))
         );
-        assert_eq!(
-            CallerPrincipal::Bot("b".into()).subject(),
-            Grantee::bot("b")
-        );
+        assert_eq!(CallerPrincipal::App("x.y".into()).grantee(), None);
     }
 
     #[test]

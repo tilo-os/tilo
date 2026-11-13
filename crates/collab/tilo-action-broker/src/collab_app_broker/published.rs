@@ -3,44 +3,9 @@
 
 use std::sync::Arc;
 
-use super::AppBrokerState;
-use crate::services::{Caller, PublishedResources, Reading, ResourceWatch};
+use crate::services::{PublishedResources, Reading, ResourceWatch};
 use runtime_collab::wire::{Event, HostFrame, Receipt, Reply};
 use tokio::sync::{mpsc, oneshot};
-
-/// Refuse `resource` when the workspace's grants do not let `caller` read it: what
-/// its publisher declares the person's own (see [`super::readings`]).
-pub(super) fn gate(
-    state: &AppBrokerState,
-    published: &dyn PublishedResources,
-    caller: &Caller,
-    resource: &str,
-) -> Result<(), String> {
-    match published.granted(resource) {
-        Some(granted) => super::readings::admit(state, caller, resource, &granted),
-        None => Ok(()),
-    }
-}
-
-/// The decision a watch is held to: what its readings are gated by, decided
-/// again at each one, so a grant taken away stops what it already serves.
-pub(super) struct ReadingGate {
-    pub(super) state: Arc<AppBrokerState>,
-    pub(super) published: Arc<dyn PublishedResources>,
-    pub(super) caller: Caller,
-    pub(super) resource: String,
-}
-
-impl ReadingGate {
-    fn admit(&self) -> Result<(), String> {
-        gate(
-            &self.state,
-            self.published.as_ref(),
-            &self.caller,
-            &self.resource,
-        )
-    }
-}
 
 /// What a read of the session's resources answers: the reading and the
 /// services' revision it was read at, once the session's loop made the read.
@@ -65,26 +30,17 @@ pub(super) async fn invoke(
 
 /// Carry `watch`'s readings to the app as `subscription`'s events until the
 /// subscription ends, answering the task that carries them: the task lives
-/// with the subscription, and the watch with the task. A reading the caller
-/// may no longer read ends it, with why.
+/// with the subscription, and the watch with the task.
 pub(super) fn serving(
     published: Arc<dyn PublishedResources>,
     watch: ResourceWatch,
     mut deliveries: mpsc::UnboundedReceiver<Event>,
     frames: mpsc::UnboundedSender<HostFrame>,
     subscription: u64,
-    gate: ReadingGate,
 ) -> tokio::task::AbortHandle {
     tokio::task::spawn_local(async move {
         let _served = ServedWatch { published, watch };
         while let Some(event) = deliveries.recv().await {
-            if let Err(reason) = gate.admit() {
-                let _ = frames.send(HostFrame::Ended {
-                    subscription,
-                    reason,
-                });
-                break;
-            }
             if frames
                 .send(HostFrame::Event {
                     subscription,

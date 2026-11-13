@@ -54,6 +54,7 @@ use serde_json::{Map, Value};
 
 pub mod accessibility;
 pub mod agent_door;
+pub mod app_consent;
 pub mod app_scope;
 pub mod appearance;
 pub mod clipboard_history;

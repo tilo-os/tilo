@@ -1622,10 +1622,6 @@ impl Session {
             controller_keys,
             app_sheets,
         };
-        // A package the person opens authors its own records in the workspace
-        // it opens in, as the person there: the workspace's governance gives
-        // it before the process is planned, so the app starts able to keep
-        // what they do in it.
         // An app of a workspace this device waits for its host to admit it to is not started:
         // whoever asked hears why at once (`Apps::spawn`).
         if let (Some(launch), Some(engine)) = (&shared.launch, &shared.engine) {
@@ -1633,54 +1629,6 @@ impl Session {
             launch.lend_admission(Rc::new(move |workspace: &str| {
                 crate::agent_door::awaited_reason(&engine, &handle, workspace)
             }));
-        }
-        if let Some(launch) = &shared.launch {
-            let handle = shared.handle.clone();
-            let engine = shared.engine.clone();
-            let landings = Rc::clone(&shared.landings);
-            let apps = Rc::downgrade(launch);
-            launch.lend_authorship(Rc::new(
-                move |workspace: &str, app: &str, then: Box<dyn FnOnce(&crate::apps::Apps)>| {
-                    let apps = apps.clone();
-                    let start = move || {
-                        if let Some(apps) = apps.upgrade() {
-                            then(&apps);
-                        }
-                    };
-                    let desk = crate::governance::Desk(&handle);
-                    let granting =
-                        match crate::membership::authorship(engine.as_ref(), &desk, workspace, app)
-                        {
-                            Ok(Some(granting)) => granting,
-                            Ok(None) => return start(),
-                            Err(error) => {
-                                not_authored(workspace, app, &error);
-                                return start();
-                            }
-                        };
-                    // The workspace's governance signs the grant off the loop; the launch starts
-                    // once it landed, and asking again then takes the grant onto the desk.
-                    let (engine, handle) = (engine.clone(), handle.clone());
-                    let (workspace, app) = (workspace.to_owned(), app.to_owned());
-                    landings.then(crate::landing::off_loop(granting), move |granted| {
-                        let desk = crate::governance::Desk(&handle);
-                        let taken = granted
-                            .unwrap_or_else(|| Err("the grant was given up".into()))
-                            .and_then(|()| {
-                                crate::membership::authorship(
-                                    engine.as_ref(),
-                                    &desk,
-                                    &workspace,
-                                    &app,
-                                )
-                            });
-                        if let Err(error) = taken {
-                            not_authored(&workspace, &app, &error);
-                        }
-                        start();
-                    });
-                },
-            ));
         }
         shared.start_search();
         // What the person copied is personal: the clipboard publishes the
@@ -1728,14 +1676,6 @@ impl Session {
                     Rc::clone(&shared.devices.pressed),
                     Rc::clone(&shared.devices.handed),
                 )));
-        }
-        // The broker decides a granted reading when the app asks, which is
-        // before this loop's first pass: what the services declare is read
-        // here, with every service mounted, so a connection that arrives as
-        // the session starts meets the workspace's grants and not an empty
-        // declaration.
-        if let Some(plane) = &action_plane {
-            plane.link.declare(&shared.services.borrow());
         }
         // What the portal brings comes from any thread, and wakes the loop
         // instead of waiting for its next turn.
@@ -2834,11 +2774,6 @@ impl LoopTurns for Turns {
     fn unparked(&self) {
         self.0.unparked();
     }
-}
-
-/// Say that the app `app` opening in `workspace` was not let author its records there.
-fn not_authored(workspace: &str, app: &str, error: &str) {
-    tracing::warn!(%workspace, app, %error, "an opening app was not let author its workspace");
 }
 
 /// Every resource of `resource` and its children: what an app publishes is found among these,

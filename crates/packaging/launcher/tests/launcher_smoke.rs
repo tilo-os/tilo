@@ -894,7 +894,7 @@ fn capability_files_on_disk_become_binds_or_nothing() {
         std::fs::write(
             &caps_file,
             serde_json::to_vec(&collab_types::caps::LaunchGrants {
-                authors: Vec::new(),
+                author: false,
                 sandbox: caps,
             })
             .unwrap(),

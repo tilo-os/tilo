@@ -1822,37 +1822,6 @@ impl Workspaces {
         Ok((governed.summary().generation, marks))
     }
 
-    /// The apps `workspace` lets author its content
-    /// ([`tilo_action_policy::roles::app_authorship`]), as its governance
-    /// holds them now.
-    ///
-    /// # Errors
-    ///
-    /// The workspace is not governed here.
-    pub async fn app_authors(
-        &self,
-        workspace: &str,
-    ) -> Result<std::collections::BTreeSet<String>, CollaborationError> {
-        let now = tilo_clock::wall();
-        let state = self.workspace(workspace).await?;
-        let policy = state
-            .lock()
-            .await
-            .peer()
-            .permissions(self.inner.host.cert.device_public_key, now)?
-            .policy;
-        let cx = tilo_action_policy::Context::at_time(now);
-        Ok(policy
-            .grants
-            .iter()
-            .filter_map(|grant| match &grant.grantee {
-                tilo_action_policy::Grantee::App(app) => Some(app.clone()),
-                _ => None,
-            })
-            .filter(|app| policy.app_authors(app, &cx))
-            .collect())
-    }
-
     /// The workspace-join contract's membership answer for `device`, a
     /// device the workspace just admitted to subscribe ([`member_bootstrap`]).
     pub(crate) async fn subscriber_bootstrap(

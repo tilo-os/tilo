@@ -2,9 +2,9 @@
 //! so.tilo.lang.todo)`): the one lookup every place that keeps an app id reads through.
 //!
 //! What was kept under an earlier id (records, grants, windows, references) stays as written and
-//! is the renamed app's: a grant on `app:so.tilo.lang.todo` covers `app:so.tilo.lang.tasks`, a
-//! grant to the app Todo is Tasks', `tl.so.tilo.lang.todo.TodoItem` is the kind
-//! `tl.so.tilo.lang.tasks.TodoItem`. Nothing is rewritten.
+//! is the renamed app's: a grant on `app:so.tilo.lang.todo` covers `app:so.tilo.lang.tasks`,
+//! `tl.so.tilo.lang.todo.TodoItem` is the kind `tl.so.tilo.lang.tasks.TodoItem`. Nothing is
+//! rewritten.
 //!
 //! Who builds the table decides whom to believe: the installed catalogue honours a claim only
 //! from the publisher that signed the earlier id (`app_catalogue::apps::earlier_ids`), a host
@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{PoisonError, RwLock};
 
-use crate::{Grantee, Level, Segment, TreePath};
+use crate::{Level, Segment, TreePath};
 
 /// For each app, the ids it was published under before.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -151,23 +151,6 @@ impl EarlierIds {
                 .iter()
                 .any(|earlier| pattern.covers(earlier))
     }
-
-    /// Whether a grant to `granted` speaks for one of `grantees`: the same grantee, or the app
-    /// `granted` names was renamed to an app among them.
-    #[must_use]
-    pub fn grantee_matches(&self, granted: &Grantee, grantees: &[Grantee]) -> bool {
-        if grantees.contains(granted) {
-            return true;
-        }
-        let Grantee::App(old) = granted else {
-            return false;
-        };
-        self.successor(old).is_some_and(|app| {
-            grantees
-                .iter()
-                .any(|grantee| matches!(grantee, Grantee::App(held) if held == app))
-        })
-    }
 }
 
 /// What this process was told of renamed apps: the table a decision made without one of its own
@@ -268,18 +251,6 @@ mod tests {
     }
 
     #[test]
-    fn a_grant_to_the_earlier_app_is_the_renamed_apps() {
-        let ids = tasks();
-        let todo = Grantee::app("so.tilo.lang.todo");
-        assert!(ids.grantee_matches(&todo, &[Grantee::app("so.tilo.lang.tasks")]));
-        assert!(!ids.grantee_matches(&todo, &[Grantee::app("so.tilo.lang.notes")]));
-        assert!(!ids.grantee_matches(
-            &Grantee::app("so.tilo.lang.tasks"),
-            &[Grantee::app("so.tilo.lang.todo")]
-        ));
-    }
-
-    #[test]
     fn an_earlier_id_has_one_successor() {
         let mut ids = tasks();
         ids.insert(
@@ -312,7 +283,7 @@ mod tests {
 
     #[test]
     fn a_decision_without_a_table_reads_what_the_process_registered() {
-        use crate::{ActionKind, Answer, Context, Grant, KindSet, decide};
+        use crate::{ActionKind, Answer, Context, Grant, Grantee, KindSet, decide};
         let node = TreePath::workspace("r")
             .app("so.tilo.lang.tasks")
             .kind("tl.so.tilo.lang.tasks.TodoItem")

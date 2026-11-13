@@ -611,18 +611,23 @@ async fn governor_application_authoring_survives_publication_tail_rollover() {
         if due().await {
             break;
         }
-        let app = std::collections::BTreeSet::from([format!("so.tilo.rollover-fixture-{index}")]);
-        assert!(
-            workspaces
-                .settle_app_authorship(
-                    &created.workspace,
-                    &cert,
-                    &app,
-                    &std::collections::BTreeSet::new()
-                )
-                .await
-                .unwrap()
+        let grant = tilo_action_policy::Grant::new(
+            format!("rollover-fixture-{index}"),
+            tilo_action_policy::Grantee::person(hex::encode(cert.user_public_key)),
+            tilo_action_policy::TreePath::workspace(&created.workspace).app("so.tilo.chat"),
+            tilo_action_policy::KindSet::READ,
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Grantee::person(hex::encode(cert.user_public_key)),
         );
+        workspaces
+            .put_room_grants(
+                &created.workspace,
+                &cert,
+                uuid::Uuid::new_v4().into_bytes(),
+                vec![grant],
+            )
+            .await
+            .unwrap();
     }
     assert!(due().await, "real governance writes reach rollover");
     workspaces
@@ -901,18 +906,6 @@ async fn applications_are_prepared_for_the_current_owner_only() {
     let relay = test_host(scratch.path(), &key, &cert).await;
     let workspaces = relay.workspaces();
     let created = workspaces.create("Private app authoring").await.unwrap();
-    let chat = std::collections::BTreeSet::from(["so.tilo.chat".to_owned()]);
-    assert!(
-        workspaces
-            .settle_app_authorship(
-                &created.workspace,
-                &cert,
-                &chat,
-                &std::collections::BTreeSet::new()
-            )
-            .await
-            .unwrap()
-    );
     let catalogue = tilo_agent_participant::AppCatalogue::native();
     Box::pin(assert_canonical_chat_preparation(
         workspaces,
@@ -921,26 +914,6 @@ async fn applications_are_prepared_for_the_current_owner_only() {
         &catalogue,
     ))
     .await;
-    let state = workspaces.workspace(&created.workspace).await.unwrap();
-    {
-        let workspace = state.lock().await;
-        let now = std::time::SystemTime::now();
-        let policy = workspace
-            .peer()
-            .permissions(cert.device_public_key, now)
-            .unwrap()
-            .policy;
-        let grant = policy
-            .grants
-            .iter()
-            .find(|grant| grant.id.as_str() == "app-author:so.tilo.chat")
-            .unwrap();
-        assert_eq!(
-            grant.grantee,
-            tilo_action_policy::Grantee::app("so.tilo.chat")
-        );
-        assert!(policy.app_authors("so.tilo.chat", &tilo_action_policy::Context::at_time(now),));
-    }
     let other_root = SigningKey::from_bytes(&[73; 32]);
     let other_key = SigningKey::from_bytes(&[74; 32]);
     let mut stranger = cert.clone();

@@ -1,27 +1,23 @@
-//! A record a member creates: empty, where the workspace lets its app author
-//! records and the member change the record.
+//! A record a member creates: empty, where the member may change the record.
 use super::{
     AutoCommit, DocumentMutation, MemberAuthority, Route, SignedOp, StatePeer, SystemTime,
 };
 use tilo_action_policy::ActionKind;
 
 impl StatePeer {
-    /// Whether `member` may create `route`'s record empty: the workspace lets
-    /// its app author records and lets them change that record.
+    /// Whether `member` may create `route`'s record empty: they may change
+    /// that record.
     pub(super) fn may_create_record(
         &self,
         member: &MemberAuthority,
         route: &Route,
         at: SystemTime,
     ) -> bool {
-        member
-            .policy
-            .app_authors(&route.app, &tilo_action_policy::Context::at_time(at))
-            && member.allows(
-                &collab_types::document_node(&self.core.workspace, &route.app, &route.record),
-                ActionKind::Undoable,
-                at,
-            )
+        member.allows(
+            &collab_types::document_node(&self.core.workspace, &route.app, &route.record),
+            ActionKind::Undoable,
+            at,
+        )
     }
 }
 

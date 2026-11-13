@@ -1196,8 +1196,7 @@ impl Service for Served {
             RESOURCE,
             KIND,
             t("session-notifications"),
-        ))
-        .with_granted_reading();
+        ));
         // The panel keeps the words the rest of the desktop names them by.
         for spec in &mut resource.actions {
             let label = match spec.id.as_str() {

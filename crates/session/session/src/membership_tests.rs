@@ -15,7 +15,7 @@ use tilo_network_actor::HostIdentity;
 use tilo_peer_state::owner::testing::{self, governor::TestGovernor};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 use tilo_session_client::engine::Engine;
-use tilo_session_client::membership::{Membership, authorship, project};
+use tilo_session_client::membership::{Membership, project};
 
 const WORKSPACE: &str = testing::WORKSPACE;
 
@@ -465,116 +465,6 @@ fn the_workspace_takes_the_people_its_settings_change() {
         role_of(&engine, &person),
         Some(Role::Editor),
         "the workspace has her again"
-    );
-}
-
-/// A package the person opens authors its own records in the workspace through the workspace's
-/// governance, and the desk's projection is what the launch reads its authorship from.
-#[test]
-fn the_app_the_person_opens_authors_its_records_through_the_workspace() {
-    let (engine, mut workspace, _, _state) = workspace_here("ada");
-    let app = "so.tilo.notes";
-    let now = tilo_clock::unix_now();
-    let make_up: Vec<Grant> = workspace
-        .policy
-        .grants
-        .iter()
-        .filter(|grant| tilo_action_policy::roles::is_session_app(grant))
-        .cloned()
-        .collect();
-    assert!(
-        !workspace.app_is_author_at(app, now),
-        "a workspace an app was never opened in makes it no author"
-    );
-
-    Membership::of(&engine, workspace.id())
-        .grant_app_authorship(app)
-        .block_on()
-        .expect("the workspace admits its person's grant");
-
-    let policy = engine
-        .policy(WORKSPACE)
-        .expect("the workspace's governance here");
-    assert!(
-        policy
-            .grants
-            .iter()
-            .any(|grant| grant.id.as_str() == format!("app-author:{app}")
-                && grant.grantee.app_id().is_some()),
-        "the workspace's governance holds the authorship, so every device has it"
-    );
-    assert!(
-        project(&mut workspace, &policy),
-        "the desk's authorship is the governance's projection"
-    );
-    assert!(
-        workspace.app_is_author_at(app, now),
-        "the launch reads the app's authorship off the desk"
-    );
-    assert!(
-        workspace.launch_grants(now).authors(app),
-        "and hands it the authorship when it starts"
-    );
-    assert!(
-        !project(&mut workspace, &policy),
-        "a projection of what the desk has already changes nothing"
-    );
-    assert_eq!(
-        workspace
-            .policy
-            .grants
-            .iter()
-            .filter(|grant| tilo_action_policy::roles::is_session_app(grant))
-            .cloned()
-            .collect::<Vec<Grant>>(),
-        make_up,
-        "the session's own app grants are the desk's make-up and stay"
-    );
-}
-
-/// A desk holding one workspace, as a launch finds it.
-struct OneDesk(std::cell::RefCell<Vec<Workspace>>);
-
-impl tilo_session_client::membership::Workspaces for OneDesk {
-    fn edit(
-        &self,
-        edit: &mut dyn FnMut(&mut [Workspace]) -> Result<bool, String>,
-    ) -> Result<(), String> {
-        edit(&mut self.0.borrow_mut()).map(|_| ())
-    }
-}
-
-#[test]
-fn a_workspace_that_lives_only_on_the_desk_lets_its_owner_author_records() {
-    let app = "so.tilo.notes";
-    let now = tilo_clock::unix_now();
-    let mut workspace = Workspace::create("Notes");
-    workspace.set_owner("ada");
-    let id = workspace.id().to_string();
-    let desk = OneDesk(std::cell::RefCell::new(vec![workspace]));
-    assert!(
-        !desk.0.borrow()[0].launch_grants(now).authors(app),
-        "an app no one opened started read-only before"
-    );
-
-    authorship(None, &desk, &id, app).expect("the owner may let it author");
-    let shown = desk.0.borrow();
-    assert!(
-        shown[0].app_is_author_at(app, now),
-        "the launch reads the app's authorship off the desk"
-    );
-    assert!(
-        shown[0].launch_grants(now).authors(app),
-        "and hands it the authorship when it starts"
-    );
-    let granted = shown[0].policy.grants.len();
-    drop(shown);
-
-    authorship(None, &desk, &id, app).expect("there is nothing left to ask");
-    assert_eq!(
-        desk.0.borrow()[0].policy.grants.len(),
-        granted,
-        "a second opening writes nothing"
     );
 }
 
@@ -1892,13 +1782,13 @@ fn a_share_signed_late_never_holds_the_loop_that_asked() {
     assert_eq!(shared["grants"], 4, "one grant per role below the owner");
 }
 
-/// "Always allow" on the sheet an app asked on is a grant in the workspace's governance, given by
-/// the person at this device, and in force for the broker once the desk the loop publishes
-/// carries it: the call it was given for waits for exactly that. "Allow once" is taken back the
-/// same way once spent.
+/// "Allow for this issue" on the sheet a run's question asked is a grant in the workspace's
+/// governance, given by the person at this device, and in force for the broker once the desk the
+/// loop publishes carries it: the call it was given for waits for exactly that. A grant given
+/// once is taken back the same way once spent.
 #[test]
-fn a_grant_the_person_gives_an_app_is_in_force_once_the_desk_carries_it() {
-    use tilo_action_broker::services::AppActionGrants as _;
+fn a_grant_the_person_gives_is_in_force_once_the_desk_carries_it() {
+    use tilo_action_broker::services::WorkspaceGrants as _;
     let (engine, mut workspace, _, _state) = workspace_here("ada");
     let engine = std::sync::Arc::new(engine);
     let person = engine
@@ -1921,14 +1811,10 @@ fn a_grant_the_person_gives_an_app_is_in_force_once_the_desk_carries_it() {
         std::sync::Arc::clone(&engine),
         std::sync::Arc::clone(&desk),
     );
-    assert!(grants.may_grant(WORKSPACE, &person));
-    assert!(!grants.may_grant(WORKSPACE, "someone else"));
-    assert!(!grants.may_grant("00000000-0000-4000-8000-00000000beef", &person));
-
     let today = "so.tilo.lang.today";
     let grant = Grant::new(
         "app-action:clear",
-        Grantee::app(today.to_owned()),
+        Grantee::person(&person),
         tilo_action_policy::TreePath::workspace(WORKSPACE.to_owned()),
         tilo_action_policy::KindSet::ALL,
         tilo_action_policy::Answer::Allow,
@@ -1979,7 +1865,7 @@ fn a_grant_the_person_gives_an_app_is_in_force_once_the_desk_carries_it() {
         }
         // The loop's pass: the governance projected into the desk, and the desk published.
         let policy = engine.policy(WORKSPACE).expect("the workspace's governance here");
-        assert!(project(&mut workspace, &policy), "the desk takes the app's grant");
+        assert!(project(&mut workspace, &policy), "the desk takes the grant");
         desk.publish(tree(&workspace));
         recording.await
     });

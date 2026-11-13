@@ -127,7 +127,6 @@ async fn observed_person_launch_retains_exact_original_scope_and_cancellation() 
                 custody.certificate().is_err(),
                 "cancelled original cannot be reused"
             );
-            assert!(custody.delegate_authorship().is_err());
             adopt.send(Ok(())).unwrap();
             let (_, json) = pending.await.unwrap().unwrap();
             assert!(matches!(

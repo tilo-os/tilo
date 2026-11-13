@@ -365,7 +365,7 @@ impl AppBrokerState {
     /// ([`tilo_action_policy::Verdict::spent`]), through the host that
     /// records the workspace's grants.
     pub(super) fn spend_once_grants(&self, workspace: &str, spent: &[tilo_action_policy::GrantId]) {
-        let Some(grants) = self.services.app_action_grants.as_ref() else {
+        let Some(grants) = self.services.workspace_grants.as_ref() else {
             return;
         };
         for grant in spent {

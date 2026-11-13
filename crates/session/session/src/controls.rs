@@ -337,12 +337,7 @@ impl SessionControls {
 
 impl Service for SessionControls {
     fn resources(&self) -> Vec<ResourceSpec> {
-        // What the controls change is this device's own state, not anyone's content: a grant to
-        // read the session's resources reads it.
         resources()
-            .into_iter()
-            .map(ResourceSpec::with_granted_reading)
-            .collect()
     }
 
     fn read(&self, resource: &str) -> Option<Value> {

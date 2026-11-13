@@ -347,7 +347,6 @@ fn shallow(spec: &ResourceSpec) -> ResourceSpec {
         children: Vec::new(),
         actions: spec.actions.clone(),
         views: spec.views.clone(),
-        readers: spec.readers,
         resource_type: spec.resource_type.clone(),
     }
 }

@@ -578,8 +578,8 @@ pub fn resolve_capabilities(manifest: &ManifestView, opts: &RunOptions) -> Capab
         .map(load_capability_file)
         .unwrap_or_default();
     let mut plan = CapabilityPlan::for_app(&app_id, &grants.sandbox, Some(unix_now()));
-    // A workspace launch is authorship when the grants make this app an author, else a viewer.
-    if grants.authors(&app_id) {
+    // A workspace launch may change the space when its person may.
+    if grants.author {
         plan.participation = crate::capabilities::Participation::Author;
     } else if opts.workspace_id.is_some() {
         plan.participation = crate::capabilities::Participation::ReadOnly;
@@ -1915,12 +1915,14 @@ fn splice_action_authority(
     policy.validate().map_err(|error| {
         RunError::InvalidServiceLaunch(format!("invalid host action authority binding: {error}"))
     })?;
-    if policy.app_id != manifest.package_id || opts.workspace_id.as_deref() != Some(&policy.room) {
+    if policy.app_id != manifest.package_id
+        || opts.workspace_id.as_deref() != Some(&policy.workspace)
+    {
         return Err(RunError::InvalidServiceLaunch(format!(
-            "invalid host action authority binding: it is for {} in room {}, the launch for {} \
-             in room {}",
+            "invalid host action authority binding: it is for {} in workspace {}, the launch for {} \
+             in workspace {}",
             policy.app_id,
-            policy.room,
+            policy.workspace,
             manifest.package_id,
             opts.workspace_id.as_deref().unwrap_or("(none)")
         )));
@@ -4937,7 +4939,7 @@ mod app_dir_tests {
             std::fs::write(
                 &file,
                 serde_json::to_vec(&collab_types::caps::LaunchGrants {
-                    authors: vec!["so.tilo.fixture".into()],
+                    author: true,
                     sandbox: Vec::new(),
                 })
                 .expect("encodes"),

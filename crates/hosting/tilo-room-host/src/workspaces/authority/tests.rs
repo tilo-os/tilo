@@ -12,9 +12,7 @@ use tilo_peer_state::join::Role;
 use tilo_relay_protocol::AuthenticatedPeer;
 use tilo_relay_protocol::operator::WaitListStanding;
 use tilo_relay_protocol::voice::{CallOperation, CallState};
-use tilo_relay_protocol::workspaces::{
-    JoinReply, WorkspacesReply, WorkspacesRequest,
-};
+use tilo_relay_protocol::workspaces::{JoinReply, WorkspacesReply, WorkspacesRequest};
 use tilo_user_identity::{DeviceCert, sign_device_cert};
 
 use crate::workspaces::tests::{governor, guest_device, signed_pre_admission, test_host};
@@ -94,11 +92,7 @@ async fn set_role(
         .unwrap();
 }
 
-fn role_request(
-    person: &DeviceCert,
-    role: Role,
-    request_id: [u8; 32],
-) -> SetMemberRoleRequest {
+fn role_request(person: &DeviceCert, role: Role, request_id: [u8; 32]) -> SetMemberRoleRequest {
     SetMemberRoleRequest {
         request_id,
         user_public_key: person.user_public_key,
@@ -757,11 +751,7 @@ async fn roles_and_removals_follow_the_rooms_policy() {
     set_role(workspaces, &workspace, &owner, &bo, Role::Moderator).await;
     assert!(
         workspaces
-            .set_member_role(
-                &workspace,
-                &bo,
-                role_request(&cy, Role::Viewer, [20; 32])
-            )
+            .set_member_role(&workspace, &bo, role_request(&cy, Role::Viewer, [20; 32]))
             .await
             .is_err()
     );
@@ -781,11 +771,7 @@ async fn roles_and_removals_follow_the_rooms_policy() {
     // changes an administrator's: only the owner makes or unmakes those.
     assert!(
         workspaces
-            .set_member_role(
-                &workspace,
-                &ada,
-                role_request(&cy, Role::Viewer, [22; 32])
-            )
+            .set_member_role(&workspace, &ada, role_request(&cy, Role::Viewer, [22; 32]))
             .await
             .is_err()
     );
@@ -806,11 +792,7 @@ async fn roles_and_removals_follow_the_rooms_policy() {
         .await
         .unwrap();
     let administrator = workspaces
-        .set_member_role(
-            &workspace,
-            &ada,
-            role_request(&cy, Role::Viewer, [25; 32]),
-        )
+        .set_member_role(&workspace, &ada, role_request(&cy, Role::Viewer, [25; 32]))
         .await
         .unwrap_err();
     assert!(
@@ -912,11 +894,7 @@ async fn an_administrator_rules_those_ranked_below(
     set_role(workspaces, workspace, ada, cy, Role::Commenter).await;
     assert!(
         workspaces
-            .set_member_role(
-                workspace,
-                ada,
-                role_request(bo, Role::Moderator, [53; 32])
-            )
+            .set_member_role(workspace, ada, role_request(bo, Role::Moderator, [53; 32]))
             .await
             .is_err()
     );

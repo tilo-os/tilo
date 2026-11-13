@@ -1629,6 +1629,7 @@ perm-grants-summary = { $grants } { $grants ->
         [one] workspace
        *[other] workspaces
     }
+perm-app-actions-title = Apps using other apps’ actions
 perm-workspace-unnamed = Workspace
 perm-kind-files = Files
 perm-kind-camera = Camera

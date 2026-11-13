@@ -128,9 +128,9 @@ fn fixture_with(
     }
 }
 
-/// Let a member author an app's records: an administered workspace command
-/// this device is allowed to give.
-async fn grant_app_authorship(fixture: &Fixture, app: &str) {
+/// Give the member a grant: a change of the workspace's governance this
+/// device is allowed to make.
+async fn grant(fixture: &Fixture, id: &str) {
     fixture
         .owner
         .commit_workspace_membership_command(
@@ -139,16 +139,27 @@ async fn grant_app_authorship(fixture: &Fixture, app: &str) {
                 operation: crate::owner_commit::CommitOperation::WorkspaceMembershipCommand {
                     invocation: uuid::Uuid::new_v4(),
                     caller: fixture.certificate.clone(),
-                    command:
-                        crate::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
-                            app: app.into(),
-                        },
+                    command: crate::workspace_membership::WorkspaceMembershipCommand::Grant {
+                        grant: tilo_action_policy::Grant::new(
+                            id,
+                            tilo_action_policy::Grantee::person(hex::encode(
+                                fixture.certificate.user_public_key,
+                            )),
+                            tilo_action_policy::TreePath::workspace(testing::WORKSPACE),
+                            tilo_action_policy::KindSet::READ,
+                            tilo_action_policy::Answer::Allow,
+                            tilo_action_policy::Grantee::person(hex::encode(
+                                fixture.certificate.user_public_key,
+                            )),
+                        ),
+                    },
                 },
             },
             &fixture.key,
             fixture.now,
         )
-        .await.unwrap();
+        .await
+        .unwrap();
 }
 
 /// One write of this device's record, committed to its custody.
@@ -201,7 +212,7 @@ async fn a_member_device_republishes_its_retained_frames_and_a_peer_converges() 
     let fixture = member_device_fixture();
     let workspace = crate::owner::WorkspaceId::parse(testing::WORKSPACE).unwrap();
     let path = fixture.directory.path().join("owner.json");
-    grant_app_authorship(&fixture, "so.tilo.chat").await;
+    grant(&fixture, "chat-read").await;
     testing::start_record(
         &fixture.owner,
         workspace,
@@ -277,7 +288,7 @@ async fn only_a_governance_change_is_announced_to_authorization() {
     let fixture = member_device_fixture();
     let workspace = crate::owner::WorkspaceId::parse(testing::WORKSPACE).unwrap();
     let before = epoch();
-    grant_app_authorship(&fixture, "so.tilo.chat").await;
+    grant(&fixture, "chat-read").await;
     assert_ne!(epoch(), before, "a grant is announced");
     testing::start_record(
         &fixture.owner,
@@ -291,7 +302,7 @@ async fn only_a_governance_change_is_announced_to_authorization() {
     publish_write(&fixture, workspace, "first");
     publish_write(&fixture, workspace, "second");
     assert_eq!(epoch(), before, "an app record's writes are not announced");
-    grant_app_authorship(&fixture, "so.tilo.notes").await;
+    grant(&fixture, "notes-read").await;
     assert_ne!(epoch(), before, "the next grant is announced");
 }
 

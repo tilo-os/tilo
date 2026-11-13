@@ -331,13 +331,6 @@ impl Site {
         });
     }
 
-    /// The apps the workspace's governance lets author its records, as its host records them now.
-    pub fn authors(&self) -> std::collections::BTreeSet<String> {
-        self.runtime
-            .block_on(self.workspaces.app_authors(&self.workspace))
-            .expect("the workspace's app authors")
-    }
-
     /// The records of the workspace this site holds, by the app and record they belong to: what its
     /// people wrote there, as their host keeps it.
     pub fn records(&self) -> Vec<(String, String)> {
@@ -373,34 +366,6 @@ impl Site {
                 .iter()
                 .any(|(recorded, _)| recorded.as_str() == app)
         });
-    }
-
-    /// Wait until the workspace's governance lets `app` author its records: what the owner's device
-    /// granting it there leaves the host holding, and what a member's device joins with.
-    pub fn wait_for_author(&self, app: &str) {
-        tilo_test_env::wait_until(format!("the workspace lets {app} author"), || {
-            self.authors().contains(app)
-        });
-    }
-
-    /// Let the apps `apps` author the workspace's records, as the host of a workspace does before
-    /// its people open them there ([`tilo_relay::workspaces::Workspaces::settle_app_authorship`]):
-    /// a member whose role lets them write writes through an app the workspace lets author, and a
-    /// member may not grant that themselves — the workspace's own devices do.
-    pub fn author_apps(&self, apps: &[&str]) {
-        let apps: std::collections::BTreeSet<String> =
-            apps.iter().map(|app| (*app).to_owned()).collect();
-        self.runtime
-            .block_on(self.workspaces.settle_app_authorship(
-                &self.workspace,
-                &self.host,
-                &apps,
-                &std::collections::BTreeSet::new(),
-            ))
-            .expect("the workspace lets its people's apps author");
-        for app in apps {
-            self.wait_for_author(&app);
-        }
     }
 
     /// The workspace's shared desktop as the site keeps it now: its strips and windows, or nothing
@@ -623,15 +588,11 @@ pub fn a_site_with_files_for_one_laptop() -> (Site, Person, Person, Device) {
 }
 
 /// The site the two people share and the first person's laptop in it, carrying what `install`
-/// puts in its store, with the workspace letting `authored` author its records.
-fn site_carrying(authored: &[&str], install: &impl Fn(&Device)) -> (Site, Person, Person, Device) {
+/// puts in its store.
+fn site_carrying(_apps: &[&str], install: &impl Fn(&Device)) -> (Site, Person, Person, Device) {
     let ada = Person::new("Ada");
     let bob = Person::new("Bob");
     let site = Site::start(&ada, "Studio");
-    let authored: Vec<&str> = std::iter::once(tilo_desktop_model::ownership::DESKTOP_APP)
-        .chain(authored.iter().copied())
-        .collect();
-    site.author_apps(&authored);
     let ada_laptop = joined_carrying(&site, &ada, "Ada's laptop", install);
     (site, ada, bob, ada_laptop)
 }
@@ -711,7 +672,6 @@ pub fn two_devices_of_one_person_with_files() -> (Site, Person, Device, Device) 
 fn two_devices_of_one_person_carrying(install: impl Fn(&Device)) -> (Site, Person, Device, Device) {
     let ada = Person::new("Ada");
     let site = Site::start(&ada, "Studio");
-    site.author_apps(&[tilo_desktop_model::ownership::DESKTOP_APP]);
     let mut laptop = ada.device("Ada's laptop");
     let mut phone = ada.device("Ada's phone");
     share_the_fleet(&ada, &[&laptop, &phone]);

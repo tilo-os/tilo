@@ -166,14 +166,7 @@ async fn a_member_whose_every_device_expired_is_still_a_member_on_each_way_back(
     let root = SigningKey::from_bytes(&rand::random());
     let person = root.verifying_key().to_bytes();
 
-    let tab = join_on_a_tab_that_ends(
-        workspaces,
-        &cert,
-        &workspace,
-        &root,
-        Role::Moderator,
-    )
-    .await;
+    let tab = join_on_a_tab_that_ends(workspaces, &cert, &workspace, &root, Role::Moderator).await;
     let registry = &workspaces.inner.host.workspaces;
     assert!(
         crate::workspace_access::admits_person(registry, cert.user_public_key, person).await,

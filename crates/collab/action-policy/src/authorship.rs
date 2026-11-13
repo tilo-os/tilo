@@ -4,19 +4,15 @@
 //! A program a person (or their agent) runs acts with that person's
 //! authority, and never with more than its authors may: each author in the
 //! chain of code that led to an action is a delegation bounding the person
-//! ([`crate::Authority::bounded_by`]), and the minimum wins. Code an
-//! application's package wrote is that application ([`Grantee::app`]): the
-//! workspace's grants naming the application bound it as they bound the
-//! application anywhere, a denial of it holding over everything more
-//! specific. Code a person or an agent wrote (a block in a conversation) is
-//! that person or agent.
+//! ([`crate::Authority::bounded_by`]), and the minimum wins. Code a person or
+//! an agent wrote (a block in a conversation) is that person or agent; an
+//! app's code is the person running it, and reaches as far as the kinds the
+//! app declares ([`crate::Authority::in_app`]).
 //!
 //! What code may do on its own account depends on whether it is trusted
-//! (an installed or built-in package, an agent's code its person admitted):
-//! trusted code reads and makes undoable changes and asks before reaching
-//! outside; code nobody trusts asks before everything. An application's own
-//! code is an author of its own records ([`crate::roles::app_authorship`]),
-//! trusted or not.
+//! (an agent's code its person admitted): trusted code reads and makes
+//! undoable changes and asks before reaching outside; code nobody trusts asks
+//! before everything.
 
 use crate::{Answer, Grant, Grantee, KindSet, Party, TreePath};
 
@@ -46,36 +42,13 @@ pub fn code_grants(workspace: &str, author: &Grantee, trusted: bool) -> Vec<Gran
 }
 
 /// The party code written by `author` is, holding `own` (its
-/// [`code_grants`], and an application's [`crate::roles::app_authorship`]
-/// of its own records) and the grants of `workspace` naming it. The workspace's
+/// [`code_grants`]) and the grants of `workspace` naming it. The workspace's
 /// denial of the author holds over every more specific grant.
 #[must_use]
 pub fn code_party<'g>(author: &Grantee, own: &'g [Grant], workspace: &'g [Grant]) -> Party<'g> {
-    code_party_in(author, own, workspace, None)
-}
-
-/// [`code_party`], where the apps `earlier` names were renamed: the workspace's grants to an app under
-/// an id it had before name it too.
-#[must_use]
-pub fn code_party_in<'g>(
-    author: &Grantee,
-    own: &'g [Grant],
-    workspace: &'g [Grant],
-    earlier: Option<&crate::EarlierIds>,
-) -> Party<'g> {
-    let author_alone = std::slice::from_ref(author);
     let named: Vec<&'g Grant> = workspace
         .iter()
-        .filter(|grant| match earlier {
-            Some(earlier) => earlier.grantee_matches(&grant.grantee, author_alone),
-            None => {
-                &grant.grantee == author
-                    || crate::earlier::with_held(|held| {
-                        held.grantee_matches(&grant.grantee, author_alone)
-                    })
-                    .unwrap_or(false)
-            }
-        })
+        .filter(|grant| &grant.grantee == author)
         .collect();
     Party::new(vec![author.clone()], own)
         .with_grants(named.iter().copied())
@@ -86,7 +59,6 @@ fn grantee_key(grantee: &Grantee) -> String {
     match grantee {
         Grantee::Member(crate::MemberId::Person(id)) => format!("person:{id}"),
         Grantee::Member(crate::MemberId::Agent(id)) => format!("agent:{id}"),
-        Grantee::App(id) => format!("app:{id}"),
         other => other.to_string(),
     }
 }
@@ -94,7 +66,7 @@ fn grantee_key(grantee: &Grantee) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ActionKind, Authority, Context, roles};
+    use crate::{ActionKind, Authority, Context};
 
     const WORKSPACE: &str = "workspace";
 
@@ -115,7 +87,7 @@ mod tests {
 
     #[test]
     fn trusted_code_asks_only_before_reaching_outside() {
-        let author = Grantee::app("so.tilo.notes");
+        let author = Grantee::agent("helper");
         let own = code_grants(WORKSPACE, &author, true);
         let party = code_party(&author, &own, &[]);
         assert_eq!(
@@ -126,38 +98,19 @@ mod tests {
     }
 
     #[test]
-    fn untrusted_code_asks_except_for_its_own_records() {
-        let author = Grantee::app("so.tilo.notes");
-        let mut own = code_grants(WORKSPACE, &author, false);
-        own.push(roles::app_authorship(
-            WORKSPACE,
-            "so.tilo.notes",
-            author.clone(),
-        ));
+    fn untrusted_code_asks_for_everything() {
+        let author = Grantee::agent("helper");
+        let own = code_grants(WORKSPACE, &author, false);
         let party = code_party(&author, &own, &[]);
-        assert_eq!(
-            answer(&party, &node("so.tilo.other"), ActionKind::Undoable),
-            Answer::Ask
-        );
-        assert_eq!(
-            answer(&party, &node("so.tilo.notes"), ActionKind::Undoable),
-            Answer::Allow
-        );
-        assert_eq!(
-            answer(&party, &node("so.tilo.notes"), ActionKind::Outside),
-            Answer::Ask
-        );
+        for kind in [ActionKind::Undoable, ActionKind::Outside] {
+            assert_eq!(answer(&party, &node("so.tilo.notes"), kind), Answer::Ask);
+        }
     }
 
     #[test]
     fn the_workspaces_denial_of_an_author_holds() {
-        let author = Grantee::app("so.tilo.notes");
-        let mut own = code_grants(WORKSPACE, &author, true);
-        own.push(roles::app_authorship(
-            WORKSPACE,
-            "so.tilo.notes",
-            author.clone(),
-        ));
+        let author = Grantee::agent("helper");
+        let own = code_grants(WORKSPACE, &author, true);
         let workspace = [Grant::new(
             "deny-notes",
             author.clone(),

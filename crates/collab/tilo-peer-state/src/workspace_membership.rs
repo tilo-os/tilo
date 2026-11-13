@@ -252,6 +252,10 @@ pub const RETIRED_TASK_GRANTS: &str =
 pub const RETIRED_AGENT_MEMBERSHIP: &str =
     "agent membership by preset is retired; an agent is a chat.agent record";
 
+/// Why a retired app authorship command is refused.
+pub const RETIRED_APP_AUTHORSHIP: &str =
+    "app authorship is retired; an app acts as the person running it";
+
 /// The preset an agent was admitted with, as workspaces hold it. Admission by
 /// preset is retired ([`WorkspaceMembershipCommand::RetiredAddAgent`]): this
 /// reads what a workspace holds and decides nothing.
@@ -278,8 +282,11 @@ pub enum WorkspaceMembershipCommand {
     /// Retired with admission by preset, as [`Self::RetiredAddAgent`].
     #[serde(rename = "RemoveAgent")]
     RetiredRemoveAgent { agent: String },
-    /// Delegate normal app authorship after an authenticated person opens it.
-    GrantAppAuthorship { app: String },
+    /// Retired with app authorship: an app acts as the person running it, so
+    /// no grant makes it one. It keeps the commands after it at their encoded
+    /// positions, still reads where workspaces hold it, and is refused.
+    #[serde(rename = "GrantAppAuthorship")]
+    RetiredGrantAppAuthorship { app: String },
     /// Retired with workspace tasks: an issue's grants are ordinary grants. It
     /// keeps the commands after it at their encoded positions, still reads
     /// where workspaces hold it, and is refused.
@@ -365,9 +372,12 @@ pub enum SettingsChange {
         subject: tilo_action_policy::Grantee,
         lifetime: tilo_action_policy::Lifetime,
     },
-    /// Let an app use one action of another app here.
+    /// Retired with app consent in the person's settings: an app's use of
+    /// another app's action is no workspace change. Both keep the settings
+    /// after them at their encoded positions, still read where a workspace
+    /// holds them, and are refused.
     GrantAppAction(AppAction),
-    /// Take back every grant letting an app use that action.
+    /// Retired with [`Self::GrantAppAction`], as it is.
     RevokeAppAction(AppAction),
     /// Record a sandbox capability for the workspace's apps.
     GrantSandbox {
@@ -384,72 +394,15 @@ pub enum SettingsChange {
     Door(tilo_action_policy::DoorPolicy),
 }
 
-/// The action an app-action grant is about: `action` on `target_app`'s
-/// resource `resource`, wherever in the app that resource sits, used by
-/// `app`.
+/// What a retired app-action setting named: `action` on `target_app`'s
+/// resource `resource`, used by `app`. A workspace's stored settings still
+/// read it and decide nothing by it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppAction {
     pub app: String,
     pub target_app: String,
     pub resource: String,
     pub action: String,
-}
-
-impl AppAction {
-    /// The action named, each part trimmed.
-    pub fn new(app: &str, target_app: &str, resource: &str, action: &str) -> Result<Self, String> {
-        let named = Self {
-            app: app.trim().to_owned(),
-            target_app: target_app.trim().to_owned(),
-            resource: resource.trim().to_owned(),
-            action: action.trim().to_owned(),
-        };
-        if named.app.is_empty()
-            || named.target_app.is_empty()
-            || named.resource.is_empty()
-            || named.action.is_empty()
-        {
-            return Err(
-                "name the application, the other application, its resource and the action".into(),
-            );
-        }
-        Ok(named)
-    }
-
-    /// The id of the grant this names: one standing grant per app, target app, resource and
-    /// action, so granting it again gives that grant rather than a second copy, and a turn that
-    /// drafts the change signs the same grant when it drafts it again.
-    #[must_use]
-    pub fn grant_id(&self) -> tilo_action_policy::GrantId {
-        let named = [
-            self.app.as_str(),
-            self.target_app.as_str(),
-            self.resource.as_str(),
-            self.action.as_str(),
-        ]
-        .join("\0");
-        // The first 128 bits of the digest: unique for every action a workspace's apps
-        // name, and short enough to read in a grant's id.
-        let digest: String = blake3::hash(named.as_bytes())
-            .to_hex()
-            .chars()
-            .take(32)
-            .collect();
-        tilo_action_policy::GrantId(format!("app-action:{digest}"))
-    }
-
-    /// The node the grant names, inside `workspace`'s node.
-    #[must_use]
-    pub fn node(&self, workspace: &TreePath) -> TreePath {
-        workspace.join(
-            &TreePath::root()
-                .app(self.target_app.as_str())
-                .rest()
-                .resource(self.resource.as_str())
-                .rest()
-                .action(self.action.as_str()),
-        )
-    }
 }
 
 /// The name a workspace is founded with, trimmed: none, which every reader
@@ -480,9 +433,9 @@ impl WorkspaceMembershipCommand {
     #[must_use]
     pub fn agent(&self) -> Option<&str> {
         match self {
-            Self::GrantAppAuthorship { .. }
-            | Self::RetiredAddAgent { .. }
+            Self::RetiredAddAgent { .. }
             | Self::RetiredRemoveAgent { .. }
+            | Self::RetiredGrantAppAuthorship { .. }
             | Self::RetiredGrantForTask { .. }
             | Self::RetiredRevokeForTask { .. }
             | Self::Grant { .. }
@@ -518,6 +471,9 @@ impl WorkspaceMembershipCommand {
             Self::RetiredAddAgent { .. } | Self::RetiredRemoveAgent { .. }
         ) {
             return Err(RETIRED_AGENT_MEMBERSHIP.into());
+        }
+        if let Self::RetiredGrantAppAuthorship { .. } = self {
+            return Err(RETIRED_APP_AUTHORSHIP.into());
         }
         if let Self::InstallBot(install) = self {
             install.installation.validate()?;
@@ -568,14 +524,9 @@ impl WorkspaceMembershipCommand {
                 SettingsChange::SavePreset { preset } => {
                     preset.validate().map_err(|error| error.to_string())
                 }
-                SettingsChange::GrantAppAction(action)
-                | SettingsChange::RevokeAppAction(action) => AppAction::new(
-                    &action.app,
-                    &action.target_app,
-                    &action.resource,
-                    &action.action,
-                )
-                .map(drop),
+                SettingsChange::GrantAppAction(_) | SettingsChange::RevokeAppAction(_) => {
+                    Err(RETIRED_APP_AUTHORSHIP.to_owned())
+                }
                 SettingsChange::Door(door) => door
                     .clone()
                     .checked()
@@ -590,9 +541,6 @@ impl WorkspaceMembershipCommand {
                 | SettingsChange::RevokeSandbox { .. }
                 | SettingsChange::Shortcuts(_) => Ok(()),
             };
-        }
-        if let Self::GrantAppAuthorship { app } = self {
-            return validate_app_id(app);
         }
         if matches!(self, Self::Share { .. } | Self::Unshare { .. }) {
             // The share's id and node are checked as its grants are made.
@@ -737,7 +685,7 @@ mod tests {
                 vec![0x01, 0x01, b'a'],
             ),
             (
-                WorkspaceMembershipCommand::GrantAppAuthorship { app: "x".into() },
+                WorkspaceMembershipCommand::RetiredGrantAppAuthorship { app: "x".into() },
                 vec![0x02, 0x01, b'x'],
             ),
             (

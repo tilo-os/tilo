@@ -128,9 +128,6 @@ impl NativeWorkspaceOwner {
 }
 
 #[cfg(test)]
-#[path = "workspace_app_authorship_tests.rs"]
-mod app_authorship_tests;
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1129,9 +1129,8 @@ mod door_tests {
     }
 
     /// Whether `device` may write in `workspace`'s Chat now: its role lets it
-    /// change Chat's content and Chat authors the workspace, the two things a
-    /// Tilo computer checks before it opens Chat writable rather than
-    /// read-only.
+    /// change Chat's content, the thing a Tilo computer checks before it opens
+    /// Chat writable rather than read-only.
     async fn writes_in_chat(workspaces: &Workspaces, workspace: &str, device: &DeviceCert) -> bool {
         const CHAT: &str = "so.tilo.chat";
         let state = workspaces.workspace(workspace).await.unwrap();
@@ -1146,14 +1145,11 @@ mod door_tests {
             &member.policy.node().app(CHAT),
             tilo_action_policy::ActionKind::Undoable,
             now,
-        ) && member
-            .policy
-            .app_authors(CHAT, &tilo_action_policy::Context::at_time(now))
+        )
     }
 
     #[tokio::test]
-    async fn a_person_who_joined_a_public_room_can_talk_in_its_chat_unless_the_host_withdraws_it() {
-        use std::collections::BTreeSet;
+    async fn a_person_who_joined_a_public_room_writes_in_its_chat_as_their_role_allows() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
         let relay = test_host(dir.path(), &key, &owner).await;
@@ -1178,32 +1174,10 @@ mod door_tests {
                 ..
             }
         ));
-        // An Editor of a workspace whose Chat authors nothing reads it only: what
-        // the Lounge showed ("You can read this conversation but not write
-        // in it").
-        assert!(!writes_in_chat(workspaces, &workspace, &guest).await);
-
-        let chat = BTreeSet::from(["so.tilo.chat".to_owned()]);
-        let none = BTreeSet::new();
-        assert!(
-            workspaces
-                .settle_app_authorship(&workspace, &owner, &chat, &none)
-                .await
-                .unwrap()
-        );
+        // An Editor writes in Chat, as in everything else in the workspace.
         assert!(writes_in_chat(workspaces, &workspace, &guest).await);
-        // Every start settles it again; a workspace already so is left alone.
-        assert!(
-            !workspaces
-                .settle_app_authorship(&workspace, &owner, &chat, &none)
-                .await
-                .unwrap()
-        );
-        let (_, later) = walk_in(workspaces, &workspace).await;
-        assert!(writes_in_chat(workspaces, &workspace, &later).await);
 
-        // Authorship is the app's; whether a person writes stays their
-        // role's, and moderation stays the host's.
+        // Whether a person writes stays their role's.
         workspaces
             .publish(
                 &workspace,
@@ -1217,23 +1191,6 @@ mod door_tests {
             .unwrap();
         let (_, viewer) = walk_in(workspaces, &workspace).await;
         assert!(!writes_in_chat(workspaces, &workspace, &viewer).await);
-        // Only the host settles it, not a member.
-        assert!(
-            workspaces
-                .settle_app_authorship(&workspace, &guest, &none, &chat)
-                .await
-                .is_err()
-        );
-        assert!(writes_in_chat(workspaces, &workspace, &guest).await);
-
-        // The host configured otherwise: Chat is read-only to members again.
-        assert!(
-            workspaces
-                .settle_app_authorship(&workspace, &owner, &none, &chat)
-                .await
-                .unwrap()
-        );
-        assert!(!writes_in_chat(workspaces, &workspace, &guest).await);
         relay.shutdown().await;
     }
 

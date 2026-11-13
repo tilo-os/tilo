@@ -3,7 +3,7 @@
 //! network hosts — as `(subject × scope × access)` capabilities.
 //!
 //! Granted to an app at install and through portals, and never what a person
-//! grants an agent: who may invoke which action is decided by
+//! grants a member: who may invoke which action is decided by
 //! `tilo-action-policy` over the published tree.
 //!
 //! [`decide_capability`] is fail-closed and deny-biased: no matching grant
@@ -404,33 +404,27 @@ impl From<Vec<CapOverride>> for FsAuthority {
     }
 }
 
-/// What a launch hands the apps of a workspace: which of them author it
-/// (its grants let them change it; see
-/// `tilo_action_policy::roles::app_authorship`), and its sandbox
-/// capabilities. An app that is not an author opens as a viewer.
+/// What a launch hands an app of a workspace: whether the person launching
+/// it may change the workspace through it, and its sandbox capabilities.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LaunchGrants {
+    /// Whether the app may change the workspace: its person may.
     #[serde(default)]
-    pub authors: Vec<String>,
+    pub author: bool,
     #[serde(default)]
     pub sandbox: Vec<CapOverride>,
 }
 
 impl LaunchGrants {
-    /// What reaches the app `app` itself: whether it authors, and only the
-    /// capabilities naming it. Restrictions travel too: the launcher's
-    /// decision needs them to narrow a grant.
+    /// What reaches the app `app` itself: only the capabilities naming it.
+    /// Restrictions travel too: the launcher's decision needs them to narrow
+    /// a grant.
     #[must_use]
     pub fn for_app(&self, app: &str) -> Self {
         let want = Subject::app(app);
         Self {
-            authors: self
-                .authors
-                .iter()
-                .filter(|author| author.as_str() == app)
-                .cloned()
-                .collect(),
+            author: self.author,
             sandbox: self
                 .sandbox
                 .iter()
@@ -440,16 +434,10 @@ impl LaunchGrants {
         }
     }
 
-    /// Whether `app` authors the workspace.
-    #[must_use]
-    pub fn authors(&self, app: &str) -> bool {
-        self.authors.iter().any(|author| author == app)
-    }
-
     /// Nothing to hand over.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.authors.is_empty() && self.sandbox.is_empty()
+        !self.author && self.sandbox.is_empty()
     }
 }
 

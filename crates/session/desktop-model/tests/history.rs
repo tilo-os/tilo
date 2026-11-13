@@ -89,7 +89,7 @@ fn a_policy_view_decides_like_the_workspace_and_carries_no_layout_or_history() {
     let notes = workspace.node().app("so.tilo.notes");
     workspace.grant(Grant::new(
         "notes-reads",
-        Grantee::app("so.tilo.notes"),
+        Grantee::person("editor"),
         notes,
         KindSet::READ,
         Answer::Allow,
@@ -131,7 +131,7 @@ fn a_policy_view_decides_like_the_workspace_and_carries_no_layout_or_history() {
         }
     }
     let app = |ws: &Workspace| {
-        ws.subject_authority(Grantee::app("so.tilo.notes"))
+        ws.subject_authority(Grantee::person("editor"))
             .decide(
                 &ws.node().join(&TreePath::root().app("so.tilo.notes")),
                 ActionKind::Read,

@@ -799,7 +799,7 @@ mod tests {
     fn signing_grant(workspace: &Workspace) -> Grant {
         Grant::new(
             "notes-sign-save",
-            Grantee::app("so.tilo.notes"),
+            Grantee::person("owner"),
             workspace
                 .node()
                 .app("so.tilo.notes")
@@ -1468,13 +1468,6 @@ params = []
         // a temporarily empty nonblocking receive as the end of this session.
         std::thread::sleep(Duration::from_millis(50));
         assert!(identity.sign_for("document.save", b"saved").is_err());
-        let grant = tilo_action_policy::roles::app_authorship(
-            &workspace_id,
-            "so.tilo.notes",
-            Grantee::person(profile.principal_id()),
-        );
-        tree.write().desktop.workspaces[0].grant(grant);
-        assert!(identity.sign_for("document.save", b"saved").is_err());
         let grant = signing_grant(&tree.read().desktop.workspaces[0]);
         tree.write().desktop.workspaces[0].grant(grant);
         assert!(
@@ -1486,7 +1479,7 @@ params = []
         let node = tree.read().desktop.workspaces[0].node();
         tree.write().desktop.workspaces[0].grant(Grant::new(
             "notes-outside",
-            Grantee::app("so.tilo.notes"),
+            Grantee::person("owner"),
             node,
             KindSet::ALL,
             Answer::Allow,

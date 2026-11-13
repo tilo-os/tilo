@@ -588,11 +588,6 @@ pub fn workspace_role_grants(workspace: &str, granted_by: &Grantee) -> Vec<Grant
                 &Lifetime::UntilRevoked,
             )
         })
-        .chain([
-            session_app(workspace, granted_by.clone()),
-            device_panel(workspace, granted_by.clone()),
-            files_app(workspace, granted_by.clone()),
-        ])
         .collect()
 }
 
@@ -799,135 +794,17 @@ pub fn agent_grants(workspace: &str, agent: &str, person: &str, bound: &[Rule]) 
     grants
 }
 
-/// The grant making application `app` an author of its own records in
-/// `workspace`: it reads and changes what it keeps there as the person using it,
-/// and reaches nothing outside it. Another app's actions in the workspace stay
-/// behind the workspace's own grants and the person's consent. Given when a
-/// person who may change the workspace opens the app.
-#[must_use]
-pub fn app_authorship(workspace: &str, app: &str, granted_by: Grantee) -> Grant {
-    Grant::new(
-        format!("app-author:{app}"),
-        Grantee::app(app.to_owned()),
-        TreePath::workspace(workspace).app(app),
-        KindSet::READ_UNDOABLE,
-        Answer::Allow,
-        granted_by,
-    )
-}
-
 /// The app a person's desktop session publishes its own functions as (the
 /// shell's actions: windows, workspaces, its settings), on their device.
 pub const SESSION_APP: &str = "shell";
-
-/// The id of the grant [`session_app`] makes.
-pub const SESSION_APP_GRANT: &str = "session-app";
-
-/// Whether `grant` is the one [`session_app`] makes: part of the workspace's
-/// make-up, never one a person gave and may take back.
-#[must_use]
-pub fn is_session_app(grant: &Grant) -> bool {
-    grant.id.as_str() == SESSION_APP_GRANT
-        && matches!(&grant.grantee, Grantee::App(app) if app == SESSION_APP)
-}
-
-/// The grant making the desktop session's own app, [`SESSION_APP`], one of
-/// the person's own apps in `workspace`: whatever the person may do there, it may
-/// do for them. It never reaches past the person it acts for, whose authority
-/// bounds every delegation.
-#[must_use]
-pub fn session_app(workspace: &str, granted_by: Grantee) -> Grant {
-    Grant::new(
-        SESSION_APP_GRANT,
-        Grantee::app(SESSION_APP.to_owned()),
-        TreePath::workspace(workspace),
-        KindSet::ALL,
-        Answer::Allow,
-        granted_by,
-    )
-}
-
-/// The id of the grant [`device_panel`] makes.
-pub const DEVICE_PANEL_GRANT: &str = "device-panel";
-
-/// Whether `grant` is the one [`device_panel`] makes: part of the workspace's
-/// make-up, like [`session_app`]'s.
-#[must_use]
-pub fn is_device_panel(grant: &Grant) -> bool {
-    grant.id.as_str() == DEVICE_PANEL_GRANT
-        && matches!(&grant.grantee, Grantee::App(app) if app == DEVICE_PANEL)
-}
-
-/// Whether `grant` is one the code defines and every read of a stored policy
-/// restores ([`crate::WorkspacePolicy::with_current_roles`]): a built-in
-/// role's, or part of the room's make-up ([`session_app`], [`device_panel`],
-/// [`files_app`]). Whatever narrows a policy and reads it back narrows these
-/// again.
-#[must_use]
-pub fn is_code_defined(grant: &Grant) -> bool {
-    is_role_grant(grant) || is_session_app(grant) || is_device_panel(grant) || is_files_app(grant)
-}
-
-/// Whether `grant` is one of the room's make-up, never one a person gave and
-/// may take back: [`session_app`], [`device_panel`] or [`files_app`].
-#[must_use]
-pub fn is_make_up(grant: &Grant) -> bool {
-    is_session_app(grant) || is_device_panel(grant) || is_files_app(grant)
-}
-
-/// The app a workspace's files are the record of: the tree every device
-/// holding the workspace mounts or mirrors, published as this app's record.
-pub const FILES_APP: &str = "so.tilo.file-explorer";
-
-/// The id of the grant [`files_app`] makes.
-pub const FILES_APP_GRANT: &str = "files-app";
-
-/// Whether `grant` is the one [`files_app`] makes: part of the workspace's
-/// make-up, like [`session_app`]'s.
-#[must_use]
-pub fn is_files_app(grant: &Grant) -> bool {
-    grant.id.as_str() == FILES_APP_GRANT
-        && matches!(&grant.grantee, Grantee::App(app) if app == FILES_APP)
-}
-
-/// The grant making [`FILES_APP`] an author of `workspace`'s files: every
-/// workspace has files, kept as that app's record, so whoever the workspace
-/// lets change its content changes its files through it, and the first of
-/// them to hold any starts the record. Whether a member may write stays
-/// their role's: a viewer still writes nothing.
-#[must_use]
-pub fn files_app(workspace: &str, granted_by: Grantee) -> Grant {
-    Grant::new(
-        FILES_APP_GRANT,
-        Grantee::app(FILES_APP.to_owned()),
-        TreePath::workspace(workspace).app(FILES_APP),
-        KindSet::READ_UNDOABLE,
-        Answer::Allow,
-        granted_by,
-    )
-}
 
 /// The app a person's device shows the session's own state in: quick
 /// settings, which is a panel of the session's rather than an app of its own.
 pub const DEVICE_PANEL: &str = "so.tilo.quick-settings";
 
-/// The grant letting the device's panel, [`DEVICE_PANEL`], read what the
-/// session publishes for it in `workspace`: the readings of its own resources
-/// that are nobody else's to read, such as what the person copied. It reads
-/// them, and nothing about them: changing the device stays the person's.
-#[must_use]
-pub fn device_panel(workspace: &str, granted_by: Grantee) -> Grant {
-    Grant::new(
-        DEVICE_PANEL_GRANT,
-        Grantee::app(DEVICE_PANEL.to_owned()),
-        TreePath::workspace(workspace)
-            .app(SESSION_APP)
-            .kind(SESSION_KIND),
-        KindSet::READ,
-        Answer::Allow,
-        granted_by,
-    )
-}
+/// The app a workspace's files are the record of: the tree every device
+/// holding the workspace mounts or mirrors, published as this app's record.
+pub const FILES_APP: &str = "so.tilo.file-explorer";
 
 /// The kind the session publishes its own resources under: the compositor's
 /// state, the clipboard, the lock.

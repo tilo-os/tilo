@@ -316,12 +316,6 @@ pub fn grant_given_by_label(
             &[("id", member_name_or_short_id(ws, id).into())],
         ));
     }
-    if let Some(id) = who.app_id() {
-        return Some(t_args(
-            "workspace-settings-granted-by-app",
-            &[("app", id.into())],
-        ));
-    }
     who.agent_id().map(|id| {
         t_args(
             "workspace-settings-granted-by-agent",
@@ -334,9 +328,6 @@ pub fn grant_given_by_label(
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SubjectKind {
     App,
-    /// An app granted another app's action: its own section, so what apps may do to each other is
-    /// never lost among device and file access.
-    AppAction,
     Member,
     Agent,
     Role,
@@ -349,7 +340,6 @@ impl SubjectKind {
     pub fn section_label(self) -> String {
         t(match self {
             SubjectKind::App => "workspace-settings-section-apps",
-            SubjectKind::AppAction => "workspace-settings-section-app-actions",
             SubjectKind::Member => "workspace-settings-section-people",
             SubjectKind::Agent => "workspace-settings-section-agents",
             SubjectKind::Role => "workspace-settings-section-roles",
@@ -369,7 +359,7 @@ impl GrantSubject {
     /// Who a sandbox capability for this subject is held by.
     pub fn to_subject(&self) -> Option<Subject> {
         match self.kind {
-            SubjectKind::App | SubjectKind::AppAction => Some(Subject::app(self.id.clone())),
+            SubjectKind::App => Some(Subject::app(self.id.clone())),
             SubjectKind::Member => Some(Subject::person(self.id.clone())),
             SubjectKind::Agent => Some(Subject::agent(self.id.clone())),
             // A role-wide grant is a policy decision, not a per-workspace click.
@@ -380,7 +370,7 @@ impl GrantSubject {
     pub fn display(&self, ws: &Workspace, local_user: &str, apps: &dyn AppDirectory) -> String {
         match self.kind {
             SubjectKind::Member | SubjectKind::Agent => person_name(ws, local_user, &self.id),
-            SubjectKind::App | SubjectKind::AppAction => app_display_name(apps, &self.id),
+            SubjectKind::App => app_display_name(apps, &self.id),
             // A subject that is a resource's work is named as the resource.
             _ => apps
                 .resource_label(&self.id)
@@ -523,7 +513,7 @@ pub fn grant_subject_key(entry: &GrantSubject) -> Option<String> {
     let kind = match entry.kind {
         SubjectKind::Member => "member",
         SubjectKind::Agent => "agent",
-        SubjectKind::App | SubjectKind::AppAction => "app",
+        SubjectKind::App => "app",
         SubjectKind::Role | SubjectKind::Other => return None,
     };
     Some(format!("{kind}:{}", entry.id))
@@ -620,13 +610,6 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
     for cap in &ws.sandbox {
         if let Subject::Principal(Principal::App(app)) = &cap.subject {
             apps.push(app.clone());
-        }
-    }
-    for grant in &ws.policy.grants {
-        if let Some(app) = grant.grantee.app_id()
-            && !tilo_action_policy::roles::is_make_up(grant)
-        {
-            apps.push(app.to_owned());
         }
     }
     apps.compact_sort();
@@ -952,21 +935,7 @@ fn classify_subject(subject: &Subject) -> GrantSubject {
 /// The section a grant is listed in: its subject's, except that an app granted another app's action
 /// is listed under App actions.
 fn classify_grant(grant: &tilo_action_policy::Grant) -> GrantSubject {
-    let names_action = grant
-        .node
-        .id_at(tilo_action_policy::Level::Action)
-        .is_some();
     let subject = &grant.grantee;
-    if let Some(id) = subject.app_id() {
-        return GrantSubject {
-            kind: if names_action {
-                SubjectKind::AppAction
-            } else {
-                SubjectKind::App
-            },
-            id: id.to_owned(),
-        };
-    }
     if let Some(id) = subject.person_id() {
         return GrantSubject {
             kind: SubjectKind::Member,
@@ -1004,12 +973,12 @@ fn classify_grant(grant: &tilo_action_policy::Grant) -> GrantSubject {
                 ),
             }
         }
-        tilo_action_policy::Grantee::App(_)
-        | tilo_action_policy::Grantee::Role(_)
-        | tilo_action_policy::Grantee::Member(_) => GrantSubject {
-            kind: SubjectKind::Other,
-            id: t("workspace-settings-subject-foreign-device"),
-        },
+        tilo_action_policy::Grantee::Role(_) | tilo_action_policy::Grantee::Member(_) => {
+            GrantSubject {
+                kind: SubjectKind::Other,
+                id: t("workspace-settings-subject-foreign-device"),
+            }
+        }
     }
 }
 
@@ -1033,8 +1002,7 @@ fn listed_capabilities(ws: &Workspace) -> Vec<(GrantSubject, Listed<'_>)> {
                     grant.grantee.role_of().is_some() && grant.id.as_str().starts_with("role:");
                 let admission = grant.grantee.agent_id().is_some()
                     && grant.id.as_str().starts_with("agent-member:");
-                let make_up = tilo_action_policy::roles::is_make_up(grant);
-                !preset && !admission && !make_up
+                !preset && !admission
             })
             .map(|grant| (classify_grant(grant), Listed::Grant(grant))),
     );
@@ -1938,34 +1906,6 @@ mod permissions_tests {
                     choice.label()
                 );
             }
-        }
-
-        {
-            let mut ws = ws_with_grants();
-            let now = tilo_clock::unix_now();
-            let grant = tilo_action_policy::roles::app_authorship(
-                &ws.policy.workspace,
-                "firefox",
-                tilo_action_policy::Grantee::person(OWNER),
-            );
-            let id = grant.id.as_str().to_owned();
-            ws.govern_as_at(OWNER, tilo_action_policy::Change::Grant(grant.clone()), now)
-                .expect("owner grants");
-            assert!(ws.app_is_author_at("firefox", now));
-            let row = listed(&ws)
-                .into_iter()
-                .find(|r| r.id == id)
-                .expect("the workspace-scoped app grant has a row");
-            assert_eq!(row.section, SubjectKind::App.section_label());
-            assert_eq!(row.allows, grant_allows(&grant, &NoAppDirectory));
-            assert_eq!(
-                apply_revoke(&mut ws, &OWNER.to_string(), &row.id)
-                    .expect("the owner may revoke")
-                    .revoked
-                    .len(),
-                1
-            );
-            assert!(!ws.app_is_author_at("firefox", now));
         }
 
         {

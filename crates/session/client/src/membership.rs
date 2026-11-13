@@ -5,14 +5,10 @@
 //! it as it admits every change its people make. A change the workspace refuses changes nothing,
 //! and the reason goes back to the sheet.
 //!
-//! A package the person opens belongs there too: the workspace's governance gives it authorship of
-//! its own records when they may change the workspace ([`authorship`]). A workspace only one desk
-//! holds has no governance to ask, and its owner gives the grant there directly.
-
 use std::collections::BTreeMap;
 
 use crate::engine::Engine;
-use tilo_action_policy::{Change, Grant, Grantee, Role, WorkspacePolicy};
+use tilo_action_policy::{Change, Grant, Role, WorkspacePolicy};
 use tilo_desktop_model::grants::PolicyEdit;
 use tilo_desktop_model::{UserId, Workspace, WorkspaceId};
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
@@ -183,114 +179,13 @@ impl<'a> Membership<'a> {
             .await
             .map(|_receipt| ())
     }
-
-    /// Let `app` author its own records in the workspace, as this device: the
-    /// grant a person who may change the workspace gives an app they open
-    /// there ([`tilo_action_policy::roles::app_authorship`]), which the
-    /// workspace decides and every device of it receives like any other
-    /// change.
-    ///
-    /// # Errors
-    /// The workspace refused the grant — this device's person does not
-    /// administer it — or this device could not publish it.
-    pub async fn grant_app_authorship(&self, app: &str) -> Result<(), String> {
-        self.command(WorkspaceMembershipCommand::GrantAppAuthorship {
-            app: app.to_owned(),
-        })
-        .await
-    }
-}
-
-/// The grant [`authorship`] asks of a workspace's governance, signed by this device's signer.
-/// A native session runs it on a worker thread, so it is `Send` there; a page has one thread,
-/// and the engine it shares is not `Send` there (`MaybeSendSync`).
-#[cfg(not(target_family = "wasm"))]
-pub type Granting = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
-/// The grant [`authorship`] asks of a workspace's governance, signed by this device's signer.
-#[cfg(target_family = "wasm")]
-pub type Granting = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>>>>;
-
-/// Let `app` author its own records in `workspace`, as the person who opens it
-/// there: the workspace's governance gives the grant when they administer it
-/// ([`crate::engine::Engine::administers`]), and the desk takes it from there
-/// like the rest of the workspace's grants ([`project`]), so the launch that
-/// follows hands the app its authorship. A workspace this device's governance
-/// does not hold — one that lives only on this desk, or a session that holds
-/// none — has nothing to ask, and its own policy takes the grant from the
-/// owner. Nothing is written while the workspace already makes the app an
-/// author.
-///
-/// The grant the governance must sign first comes back to run off the caller's
-/// loop: once it landed, asking again takes it onto the desk.
-///
-/// # Errors
-/// The workspace's governance refused the grant, or a desk-only workspace has
-/// no owner to give it.
-pub fn authorship(
-    engine: Option<&std::sync::Arc<Engine>>,
-    desk: &dyn Workspaces,
-    workspace: &str,
-    app: &str,
-) -> Result<Option<Granting>, String> {
-    let id = WorkspaceId::parse(workspace).ok_or("the launch names no workspace")?;
-    let authors = |policy: &WorkspacePolicy| {
-        policy
-            .grants
-            .iter()
-            .any(|grant| is_authorship_of(grant, app))
-    };
-    if let Some(engine) = engine.filter(|engine| engine.holds(id)) {
-        let policy = engine.policy(workspace)?;
-        // The grant is the workspace's to give, and this device gives it where its person
-        // administers the workspace: a member whose role only lets them write cannot change its
-        // people, and asks for nothing here. The workspace's own devices grant it, and what they
-        // grant arrives in the projection below like the rest of its grants.
-        if !authors(&policy) && engine.administers(workspace) {
-            let (engine, app) = (std::sync::Arc::clone(engine), app.to_owned());
-            return Ok(Some(Box::pin(async move {
-                Membership::of(&engine, id).grant_app_authorship(&app).await
-            })));
-        }
-        edit_workspace(desk, id, |shown| Ok(project(shown, &policy)))?;
-    } else {
-        // A workspace that lives only on this desk holds no governance here, so the desk's own
-        // policy is where its authorship goes.
-        let now = tilo_clock::wall()
-            .duration_since(tilo_clock::time::UNIX_EPOCH)
-            .map_or(0, |since| since.as_secs());
-        edit_workspace(desk, id, |shown| author_on_desk(shown, app, now))?;
-    }
-    Ok(None)
-}
-
-/// Let `app` author its records in `workspace` , which lives only on this desk: the owner, whose
-/// authority is structural, gives the grant, and no other device is asked because no other device
-/// holds the workspace. Whether the desk changed.
-fn author_on_desk(workspace: &mut Workspace, app: &str, now: u64) -> Result<bool, String> {
-    if workspace.app_is_author_at(app, now) {
-        return Ok(false);
-    }
-    let Some(owner) = workspace.owner().cloned() else {
-        return Err("the workspace has no one to give authorship".to_owned());
-    };
-    let grant = tilo_action_policy::roles::app_authorship(
-        &workspace.id().to_string(),
-        app,
-        Grantee::person(&owner),
-    );
-    workspace
-        .govern_as_at(&owner, Change::Grant(grant), now)
-        .map_err(|refusal| refusal.to_string())?;
-    Ok(true)
 }
 
 /// Write the people `policy` — the workspace's governance — names into `workspace` : the part each
 /// of them takes there, when each was admitted, the owner aside, whom the desk's policy names on
-/// its own, the agents it admits, each with the grants governance gave it, and the grants it gives
-/// apps: authorship of their own records there, and the use of another app's action a person
-/// allowed. The grants a person gives to a person on a node below the
-/// workspace, and the ones a consent or an invite makes for this session, are the desk's own and
-/// stay. Whether anything changed.
+/// its own, and the agents it admits, each with the grants governance gave it. The grants a person
+/// gives to a person on a node below the workspace, and the ones a consent or an invite makes for
+/// this session, are the desk's own and stay. Whether anything changed.
 pub fn project(workspace: &mut Workspace, policy: &WorkspacePolicy) -> bool {
     let owner = policy.owner.as_deref();
     let members: BTreeMap<UserId, Role> = policy
@@ -301,16 +196,10 @@ pub fn project(workspace: &mut Workspace, policy: &WorkspacePolicy) -> bool {
         .collect();
     let joined = policy.joined.clone();
     let agents = picked_grants(&policy.grants, |grant| grant.grantee.agent_id().is_some());
-    let apps = picked_grants(&policy.grants, is_app);
     let held = picked_grants(&workspace.policy.grants, |grant| {
         grant.grantee.agent_id().is_some()
     });
-    let held_apps = picked_grants(&workspace.policy.grants, is_app);
-    if workspace.policy.members == members
-        && workspace.policy.joined == joined
-        && held == agents
-        && held_apps == apps
-    {
+    if workspace.policy.members == members && workspace.policy.joined == joined && held == agents {
         return false;
     }
     workspace.policy.members = members;
@@ -321,10 +210,6 @@ pub fn project(workspace: &mut Workspace, policy: &WorkspacePolicy) -> bool {
             .grants
             .retain(|grant| grant.grantee.agent_id().is_none());
         workspace.policy.grants.extend(agents);
-    }
-    if held_apps != apps {
-        workspace.policy.grants.retain(|grant| !is_app(grant));
-        workspace.policy.grants.extend(apps);
     }
     true
 }
@@ -342,32 +227,4 @@ fn picked_grants<'a>(
         .collect();
     grants.sort_by(|a, b| a.id.cmp(&b.id));
     grants
-}
-
-/// Whether `grant` is one a person gave an app: the workspace's governance gives these, and the
-/// desk takes them from the governance alone. The session's own app grants are the desk's make-up
-/// ([`tilo_action_policy::roles::is_make_up`]) and stay.
-fn is_app(grant: &Grant) -> bool {
-    grant.grantee.app_id().is_some() && !tilo_action_policy::roles::is_make_up(grant)
-}
-
-/// Whether `grant` is the one making `app` an author of its own records in the workspace, as
-/// [`tilo_action_policy::roles::app_authorship`] gives it.
-fn is_authorship_of(grant: &Grant, app: &str) -> bool {
-    is_app(grant) && grant.id.as_str() == format!("app-author:{app}")
-}
-
-/// Write `edit` into the workspace `id` names on the desk, asking nothing of a desk that does not
-/// list it.
-fn edit_workspace(
-    desk: &dyn Workspaces,
-    id: WorkspaceId,
-    mut edit: impl FnMut(&mut Workspace) -> Result<bool, String>,
-) -> Result<(), String> {
-    desk.edit(
-        &mut |workspaces| match workspaces.iter_mut().find(|shown| shown.id() == id) {
-            Some(shown) => edit(shown),
-            None => Ok(false),
-        },
-    )
 }

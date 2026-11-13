@@ -93,7 +93,6 @@ impl JoinedChannel {
             drop(pending);
             original
         };
-        let grant_original = original.clone();
         let state = std::sync::Arc::downgrade(&self.state);
         let route = self.route();
         let identity = self.verified_identity.clone();
@@ -126,30 +125,11 @@ impl JoinedChannel {
         };
         let check = std::sync::Arc::new(check);
         check()?;
-        let grant_check = check.clone();
-        let state = std::sync::Arc::downgrade(&self.state);
-        let workspace_id = self.route().cluster_id;
-        let grant_workspace = workspace_id.clone();
-        let grant_app = app.to_owned();
-        let grant = std::sync::Arc::new(move |certificate: &tilo_user_identity::DeviceCert| {
-            if grant_check()? != *certificate {
-                return Err("original launch certificate changed".into());
-            }
-            let state = state.upgrade().ok_or("application launch broker stopped")?;
-            grant_original.launch_administrator_certificate(&state, &grant_workspace)?;
-            let result = state.invoke_workspace_membership(&grant_workspace,
-                    &tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
-                        app: grant_app.clone(),
-                    }, certificate);
-            drop(state);
-            result
-        });
         Ok(Some(crate::services::ObservedApplicationLaunch::new(
-            workspace_id,
+            self.route().cluster_id,
             app.to_owned(),
             root.map(str::to_owned),
             check,
-            grant,
         )))
     }
 

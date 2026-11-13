@@ -145,7 +145,6 @@ fn send(device: &Device, to: &Value, text: &str) -> Value {
 /// Ada's laptop in a published workspace, Chat open in it.
 fn laptop_with_chat(ada: &Person, site: &Site) -> Device {
     site.publish(Role::Editor);
-    site.author_apps(&["so.tilo.chat"]);
     let mut laptop = ada.device("Ada's laptop");
     let member = site.admit(ada.public);
     laptop.install_chat();

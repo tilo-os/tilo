@@ -3,22 +3,18 @@
 //! An application declares in its signed manifest what it may do on the
 //! door beyond its own actions ([`AppActionAccess`]): read the catalogue,
 //! invoke other apps' actions. The declaration is a ceiling, never a grant:
-//! invoking another app's action still needs the workspace to grant it to
-//! the app, exactly as it grants a collaborator.
+//! using another app's action still needs the person's own answer.
 //!
-//! When an app reaches for an action it holds no grant for, the person who
-//! admitted its connection is asked first — on a sheet the host draws
-//! ([`AppActionConsentPrompter`]) — instead of refusing silently. The
-//! answer becomes an ordinary capability in the workspace's records,
-//! granted by that person and recorded by the host
-//! ([`AppActionGrants`](crate::services::AppActionGrants)). Nobody present
-//! means nobody to ask: the request is refused without a sheet.
+//! When an app reaches for an action of another app nobody let it take, the
+//! person who admitted its connection is asked first — on a sheet the host
+//! draws ([`AppActionConsentPrompter`]) — instead of refusing silently. The
+//! answer is kept in their settings (`settings_store::app_consent`). Nobody
+//! present means nobody to ask: the request is refused without a sheet.
 
 pub use tilo_broker_core::access::{
     AppActionAccess, AppActionAccessResolver, AppResourceKindsResolver, nothing_declared,
 };
 
-use tilo_action_policy::Lifetime;
 use tokio::sync::oneshot;
 
 /// What the person is asked.
@@ -166,28 +162,19 @@ pub enum AppActionConsent {
 }
 
 impl AppActionConsent {
-    /// How long the grant this answer records lives; `None` records
-    /// nothing.
+    /// Whether the app may make this call.
     #[must_use]
-    pub fn grant_lifetime(self) -> Option<Lifetime> {
-        match self {
-            Self::Once => Some(Lifetime::Once),
-            Self::Session => Some(Lifetime::Session(
-                tilo_desktop_model::session_id().to_owned(),
-            )),
-            Self::Always => Some(Lifetime::UntilRevoked),
-            Self::Deny => None,
-        }
+    pub const fn grants(self) -> bool {
+        !matches!(self, Self::Deny)
     }
 
-    /// How long the grant lives, as the workspace's history records it:
-    /// `once`, `session` or `workspace`.
+    /// How long the answer is kept: `once`, `session` or `until revoked`.
     #[must_use]
     pub const fn lifetime(self) -> &'static str {
         match self {
             Self::Once => "once",
             Self::Session => "session",
-            Self::Always | Self::Deny => "workspace",
+            Self::Always | Self::Deny => "until revoked",
         }
     }
 }
@@ -370,21 +357,10 @@ mod tests {
     }
 
     #[test]
-    fn each_answer_records_the_matching_lifetime() {
-        assert_eq!(
-            AppActionConsent::Once.grant_lifetime(),
-            Some(Lifetime::Once)
-        );
-        assert_eq!(
-            AppActionConsent::Session.grant_lifetime(),
-            Some(Lifetime::Session(
-                tilo_desktop_model::session_id().to_owned()
-            ))
-        );
-        assert_eq!(
-            AppActionConsent::Always.grant_lifetime(),
-            Some(Lifetime::UntilRevoked)
-        );
-        assert_eq!(AppActionConsent::Deny.grant_lifetime(), None);
+    fn only_a_denial_withholds_the_call() {
+        assert!(AppActionConsent::Once.grants());
+        assert!(AppActionConsent::Session.grants());
+        assert!(AppActionConsent::Always.grants());
+        assert!(!AppActionConsent::Deny.grants());
     }
 }

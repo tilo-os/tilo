@@ -1629,6 +1629,7 @@ perm-grants-summary = { $grants } { $grants ->
         [one] Arbeitsbereich
        *[other] Arbeitsbereichen
     }
+perm-app-actions-title = Apps, die Aktionen anderer Apps nutzen
 perm-workspace-unnamed = Arbeitsbereich
 perm-kind-files = Dateien
 perm-kind-camera = Kamera

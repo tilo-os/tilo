@@ -341,23 +341,15 @@ fn a_volume_a_room_service_left_keeps_its_workspace_and_people() {
     room.stop();
 }
 
-/// The room process settles the apps it is told to let members write
-/// through at every start, and remembers which it let, so an app taken out
-/// of its list on a later start is withdrawn (the room's side of it is
-/// `governed_rooms::app_authorship`).
+/// A room started with an app it no longer names keeps the workspace it
+/// served: members write as their roles allow, whatever apps they use.
 #[test]
-fn a_persistent_room_remembers_the_apps_it_let_members_write_through_across_restarts() {
+fn a_persistent_room_keeps_its_workspace_across_restarts() {
     let scratch = tempfile::tempdir().unwrap();
     let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
     std::fs::create_dir_all(&state).unwrap();
     let root_file = scratch.path().join("root");
     std::fs::write(&root_file, "11".repeat(32)).unwrap();
-    let authored = || -> Vec<String> {
-        serde_json::from_slice(
-            &std::fs::read(state.join("relay").join("authored-apps.json")).unwrap(),
-        )
-        .unwrap()
-    };
     let started = |extra: &[&str]| {
         let room = start_with(&state, &root_file, &secrets, extra).unwrap();
         let OperatorEvent::Started {
@@ -370,25 +362,11 @@ fn a_persistent_room_remembers_the_apps_it_let_members_write_through_across_rest
         (room, id)
     };
 
-    let (room, id) = started(&["--author-app", "so.tilo.chat"]);
+    let (room, id) = started(&["--seed-app", "so.tilo.chat"]);
     room.stop();
-    assert_eq!(authored(), ["so.tilo.chat"]);
-
-    let (room, again) = started(&["--author-app", "so.tilo.chat"]);
+    let (room, again) = started(&["--seed-app", "so.tilo.chat"]);
     room.stop();
-    assert_eq!(again, id);
-    assert_eq!(
-        authored(),
-        ["so.tilo.chat"],
-        "the same start settles the same"
-    );
-
-    let (room, _) = started(&["--author-app", "none"]);
-    room.stop();
-    assert!(
-        authored().is_empty(),
-        "a start that names no app withdraws the ones it named before"
-    );
+    assert_eq!(again, id, "the volume's workspace is the one it serves");
 }
 
 /// A page reaches its host only through a relay, so `/host` names the host's

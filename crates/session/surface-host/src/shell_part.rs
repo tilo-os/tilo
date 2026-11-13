@@ -1494,7 +1494,7 @@ fn shell_standing(
     let mut policy = WorkspacePolicy::new(SHELL_ROOM, person);
     policy.grants.push(Grant::new(
         format!("shell:{app}:session"),
-        Grantee::app(app),
+        Grantee::person(person),
         TreePath::workspace(SHELL_ROOM).app(app),
         KindSet::OUTSIDE,
         Answer::Allow,

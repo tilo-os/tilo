@@ -214,7 +214,7 @@ mod tests {
     fn app_grant(workspace: &str) -> Grant {
         Grant::new(
             "app-open",
-            Grantee::app("so.tilo.caller"),
+            Grantee::person("someone else"),
             TreePath::workspace(workspace)
                 .app("so.tilo.target")
                 .resource("target.document")

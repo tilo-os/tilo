@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected, ViewCx};
-use ui::tilo_actions::policy::{Grant, Level, Lifetime};
+
 use ui::tilo_resource;
 use ui::widget::{Button, Column, Element, Row, Toggle};
 
@@ -341,6 +341,7 @@ struct PermissionsReading {
     secrets: Result<Vec<SecretApp>, String>,
     desktop_control: Vec<TabGrantEntry>,
     workspace_access: Option<Vec<WsGrants>>,
+    app_actions: Vec<AppGrants>,
 }
 
 impl PermissionsReading {
@@ -351,6 +352,7 @@ impl PermissionsReading {
             secrets: reader.secret_apps(),
             desktop_control: reader.desktop_control(),
             workspace_access: workspace_access(reader.workspace_state().as_deref()),
+            app_actions: consent_views(&settings_store::app_consent::ANSWERS.get()),
         }
     }
 }
@@ -672,14 +674,6 @@ struct WsView {
     name: String,
     #[serde(default)]
     sandbox: Vec<CapOverride>,
-    #[serde(default)]
-    policy: PolicyView,
-}
-
-#[derive(Deserialize, Default)]
-struct PolicyView {
-    #[serde(default)]
-    grants: Vec<Grant>,
 }
 
 /// Which tint a capability reads in — kept separate from the rendered `Color`
@@ -744,15 +738,6 @@ fn expiry_label(e: Expiry) -> &'static str {
         Expiry::AtUnix(_) => "Temporary",
         Expiry::EndOfSession => "Until log out",
         Expiry::AfterUse => "Once",
-    }
-}
-
-fn lifetime_label(lifetime: &Lifetime) -> &'static str {
-    match lifetime {
-        Lifetime::UntilRevoked => "Always",
-        Lifetime::Until(_) => "Temporary",
-        Lifetime::Session(_) => "Until log out",
-        Lifetime::Once => "Once",
     }
 }
 
@@ -826,33 +811,36 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
     })
 }
 
-/// Project one grant naming an app into a display capability: another app's
-/// action this app may use, which the consent sheet grants. Denials and
-/// grants that ask are enforcement, not something the app holds.
-fn grant_view(grant: &Grant) -> Option<CapView> {
-    if grant.answer != ui::tilo_actions::policy::Answer::Allow {
-        return None;
+/// One app's answers for the other apps' actions it may use, as the person
+/// gave them on the sheet.
+fn consent_views(consents: &[settings_store::app_consent::Consent]) -> Vec<AppGrants> {
+    let mut by_app: std::collections::BTreeMap<String, Vec<CapView>> =
+        std::collections::BTreeMap::new();
+    for consent in consents {
+        by_app
+            .entry(consent.app.clone())
+            .or_default()
+            .push(CapView {
+                kind: "App action",
+                detail: t_args(
+                    "perm-action-detail",
+                    &[
+                        ("action", consent.action.as_str().into()),
+                        ("resource", consent.resource.as_str().into()),
+                        ("app", consent.target_app.as_str().into()),
+                    ],
+                ),
+                expiry: "Always",
+                tint: Tint::AppAction,
+            });
     }
-    let action = grant.node.id_at(Level::Action)?;
-    let resource = grant
-        .node
-        .id_at(Level::Resource)
-        .or_else(|| grant.node.id_at(Level::Kind))
-        .unwrap_or_default();
-    let app = grant.node.id_at(Level::App).unwrap_or_default();
-    Some(CapView {
-        kind: "App action",
-        detail: t_args(
-            "perm-action-detail",
-            &[
-                ("action", action.into()),
-                ("resource", resource.into()),
-                ("app", app.into()),
-            ],
-        ),
-        expiry: lifetime_label(&grant.lifetime),
-        tint: Tint::AppAction,
-    })
+    by_app
+        .into_iter()
+        .map(|(app, mut caps)| {
+            caps.sort_by(|a, b| a.kind.cmp(b.kind).then(a.detail.cmp(&b.detail)));
+            AppGrants { app, caps }
+        })
+        .collect()
 }
 
 /// Project the whole state document into per-workspace, per-app grants,
@@ -870,14 +858,6 @@ fn project(state_json: &str) -> Result<Vec<WsGrants>, serde_json::Error> {
                 continue;
             };
             if let Some(view) = cap_view(cap) {
-                by_app.entry(app.to_owned()).or_default().push(view);
-            }
-        }
-        for grant in &ws.policy.grants {
-            let Some(app) = grant.grantee.app_id() else {
-                continue;
-            };
-            if let Some(view) = grant_view(grant) {
                 by_app.entry(app.to_owned()).or_default().push(view);
             }
         }
@@ -1108,6 +1088,10 @@ fn panel(
         panel.push(reading_card("perm-device-security"));
         panel.push(reading_card("perm-secrets-title"));
         panel.push(reading_card("perm-desktop-control-title"));
+    }
+    if let Some(reading) = reading.filter(|reading| !reading.app_actions.is_empty()) {
+        let body: Vec<Item> = reading.app_actions.iter().flat_map(app_block).collect();
+        panel.push(section(&t("perm-app-actions-title"), rows(body)));
     }
     panel.push(workspace_grants_intro_card(cx));
 
@@ -1552,26 +1536,22 @@ mod tests {
                 g(Scope::NetHost("*".into()), Access::Write),
                 Some("Network")
             );
-            let action = grant_view(&Grant::new(
-                "shortcuts-freeform",
-                ui::tilo_actions::policy::Grantee::app("so.tilo.shortcuts"),
-                ui::tilo_actions::policy::TreePath::workspace("studio")
-                    .app("so.tilo.agent")
-                    .any(Level::Kind)
-                    .resource("agent.transform:freeform")
-                    .action("freeform"),
-                ui::tilo_actions::policy::KindSet::ALL,
-                ui::tilo_actions::policy::Answer::Allow,
-                ui::tilo_actions::policy::Grantee::person("owner"),
-            ))
-            .unwrap();
-            assert_eq!(action.kind, "App action");
+            let action = consent_views(&[settings_store::app_consent::Consent::new(
+                "so.tilo.shortcuts",
+                "so.tilo.agent",
+                "agent.transform:freeform",
+                "freeform",
+            )]);
+            assert_eq!(action.len(), 1);
+            assert_eq!(action[0].app, "so.tilo.shortcuts");
+            let cap = &action[0].caps[0];
+            assert_eq!(cap.kind, "App action");
             assert!(
-                action.detail.contains("freeform")
-                    && action.detail.contains("agent.transform:freeform")
-                    && action.detail.contains("so.tilo.agent"),
+                cap.detail.contains("freeform")
+                    && cap.detail.contains("agent.transform:freeform")
+                    && cap.detail.contains("so.tilo.agent"),
                 "{}",
-                action.detail
+                cap.detail
             );
             let rw = cap_view(&CapOverride::grant(
                 Subject::app("a"),
@@ -1634,26 +1614,6 @@ mod tests {
             let labels = said(&mut app);
             assert!(labels.contains(&"No workspace access".to_string()));
             assert!(!labels.contains(&"Workspace access can't be checked".to_string()));
-        }
-
-        {
-            // A workspace whose only grant names a person holds no *app*
-            // grant and must not render a card.
-            let person = Grant::new(
-                "alice",
-                ui::tilo_actions::policy::Grantee::person("alice"),
-                ui::tilo_actions::policy::TreePath::workspace("workspace-1"),
-                ui::tilo_actions::policy::KindSet::ALL,
-                ui::tilo_actions::policy::Answer::Allow,
-                ui::tilo_actions::policy::Grantee::person("owner"),
-            );
-            let grants = serde_json::to_string(&vec![person]).unwrap();
-            let json =
-                format!(r#"{{"workspaces":[{{"name":"Empty","policy":{{"grants":{grants}}}}}]}}"#);
-            assert!(
-                project(&json).expect("valid workspace state").is_empty(),
-                "no app grants → no workspace card"
-            );
         }
 
         {

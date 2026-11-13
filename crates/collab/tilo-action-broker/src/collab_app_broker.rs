@@ -68,7 +68,6 @@ mod policy_turn_tests;
 mod process_binding;
 mod published;
 mod published_invocation;
-mod readings;
 mod resolved_invocation;
 mod route_holds;
 mod tracker_runs;
@@ -2822,8 +2821,8 @@ pub struct AppBrokerState {
     app_action_access: RwLock<crate::app_actions::AppActionAccessResolver>,
     app_resource_kinds: RwLock<Option<crate::app_actions::AppResourceKindsResolver>>,
     /// Who is asked before an application uses another application's
-    /// action it holds no grant for. Nobody, until the host installs its
-    /// sheet: such a request is then refused.
+    /// action the person has not let it take. Nobody, until the host
+    /// installs its sheet: such a request is then refused.
     app_action_consent: RwLock<Option<Arc<dyn crate::app_actions::AppActionConsentPrompter>>>,
     /// The notices of runs' questions given, by handle, with their workspace.
     run_question_notices: Mutex<HashMap<String, String>>,
@@ -2835,6 +2834,9 @@ pub struct AppBrokerState {
     /// in sheets, while the two apps one action of it changes are asked about
     /// in turn.
     app_action_consent_pending: Mutex<std::collections::HashSet<app_consent::ConsentKey>>,
+    /// The app actions the person let an app take for this session alone,
+    /// which their settings do not keep.
+    app_consent_session: Mutex<std::collections::HashSet<app_consent::ConsentKey>>,
     /// Bumped whenever a pending or completed invocation changes, so hosts
     /// can refresh retained invocation projections exactly when needed and
     /// a waiter on a running invocation wakes when it may have moved.
@@ -3603,6 +3605,7 @@ impl AppBrokerState {
                     conversation_ask::ConversationAsks::default(),
                 ),
                 app_action_consent_pending: Mutex::new(std::collections::HashSet::new()),
+                app_consent_session: Mutex::new(std::collections::HashSet::new()),
                 invocation_generation: tokio::sync::watch::Sender::new(0),
                 execution_activity: ActivityBus::default(),
                 admission_lock: Mutex::new(()),

@@ -8,8 +8,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::services::Caller;
 use crate::services::HostServices;
-use crate::services::{Caller, Granted};
 use runtime_collab::wire::{Event, Receipt};
 use tokio::sync::{mpsc, oneshot};
 
@@ -38,15 +38,6 @@ fn reading_of(resource: &str) -> Option<Vec<u8>> {
 }
 
 impl PublishedResources for Provider {
-    /// What the person copied is the session's own: the `session` kind of
-    /// the session's app, which only the workspace's grants read.
-    fn granted(&self, resource: &str) -> Option<Granted> {
-        (resource == "clipboard").then(|| Granted {
-            publisher: tilo_action_policy::roles::SESSION_APP.to_owned(),
-            kind: tilo_action_policy::roles::SESSION_KIND.to_owned(),
-        })
-    }
-
     fn snapshot(&self, _caller: &Caller, resource: &str) -> oneshot::Receiver<Reading> {
         let (reply, answered) = oneshot::channel();
         let _ = reply.send((7, reading_of(resource)));
@@ -155,121 +146,6 @@ fn app_in(
         client: wire_client(connection, outgoing),
         _state: state,
     }
-}
-
-/// A workspace `owner` owns, as a desk keeps it, with the session's panel
-/// granted to read the session's own readings: what every session's workspace
-/// holds.
-fn panel_workspace() -> (
-    crate::test_support::WorkspaceTreeHandle,
-    crate::services::WorkspaceAuthorityHandle,
-    String,
-) {
-    use crate::test_support::{Grantee, Workspace, WorkspaceSlot, WorkspaceTree};
-    let mut workspace = Workspace::new(WorkspaceSlot(41), "Readings");
-    workspace.set_owner("owner");
-    let workspace_id = workspace.id().to_string();
-    workspace.grant(tilo_action_policy::roles::device_panel(
-        &workspace_id,
-        Grantee::person("owner"),
-    ));
-    let mut tree = WorkspaceTree::default();
-    tree.workspaces.push(workspace);
-    let tree = tree.shared();
-    let membership = tree.authority();
-    (tree, membership, workspace_id)
-}
-
-/// The reading of what the person copied reaches the panel's launch, and no
-/// other app: the workspace grants the panel, and nothing an app borrows from the
-/// person reads it.
-#[tokio::test(flavor = "current_thread")]
-async fn a_granted_app_reads_the_session_reading_and_another_is_refused() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let provider = Arc::new(Provider::default());
-            let (_tree, membership, workspace_id) = panel_workspace();
-            let panel = app_in(
-                Arc::clone(&provider),
-                tilo_action_policy::roles::DEVICE_PANEL,
-                &workspace_id,
-                Some(Arc::clone(&membership)),
-            );
-            assert_eq!(
-                panel.client.services().snapshot("clipboard").await.unwrap(),
-                runtime_collab::Snapshot {
-                    revision: 7,
-                    reading: Some(r#"["the copied line"]"#.into()),
-                },
-                "the panel reads what the person copied"
-            );
-            assert_eq!(
-                panel.client.services().snapshot("sound").await.unwrap(),
-                runtime_collab::Snapshot {
-                    revision: 7,
-                    reading: Some(r#"{"output":40,"volume":0.4}"#.into()),
-                },
-                "and what everyone reads stays everyone's"
-            );
-
-            let other = app_in(
-                Arc::clone(&provider),
-                "so.tilo.settings",
-                &workspace_id,
-                Some(membership),
-            );
-            let refused = other.client.services().snapshot("clipboard").await;
-            let refusal = refused.expect_err("an app the workspace does not grant is refused");
-            assert!(
-                refusal.to_string().contains("not granted"),
-                "refused as a reading nobody granted it: {refusal}"
-            );
-        })
-        .await;
-}
-
-/// A watch the workspace does not grant is not opened at all, and one it does is
-/// served its reading.
-#[tokio::test(flavor = "current_thread")]
-async fn only_a_granted_app_watches_the_session_reading() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let provider = Arc::new(Provider::default());
-            let (_tree, membership, workspace_id) = panel_workspace();
-            let panel = app_in(
-                Arc::clone(&provider),
-                tilo_action_policy::roles::DEVICE_PANEL,
-                &workspace_id,
-                Some(Arc::clone(&membership)),
-            );
-            let readings = panel.client.services().watch("clipboard").await.unwrap();
-            assert_eq!(
-                readings.read().await.unwrap().reading.as_deref(),
-                Some(r#"["the copied line"]"#),
-                "the panel is sent the reading it watches"
-            );
-
-            let other = app_in(
-                Arc::clone(&provider),
-                "so.tilo.settings",
-                &workspace_id,
-                Some(membership),
-            );
-            let refused = other.client.services().watch("clipboard").await;
-            let Err(refusal) = refused else {
-                panic!("an app the workspace does not grant watches nothing");
-            };
-            assert!(
-                refusal.to_string().contains("not granted"),
-                "refused as a reading nobody granted it: {refusal}"
-            );
-            assert_eq!(
-                provider.watched.lock().unwrap().len(),
-                1,
-                "only the granted watch was opened"
-            );
-        })
-        .await;
 }
 
 /// A watch an app opened ends with the connection that opened it: the

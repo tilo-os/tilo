@@ -14,8 +14,8 @@ fn rejected(error: &runtime_collab::LocalDocumentActionError) -> bool {
 }
 
 struct LocalReportGrants(WorkspaceTreeHandle);
-impl crate::services::AppActionGrants for LocalReportGrants {
-    fn may_grant(&self, _workspace: &str, _person: &str) -> bool {
+impl crate::services::WorkspaceGrants for LocalReportGrants {
+    fn may_record(&self, _workspace: &str, _person: &str) -> bool {
         false
     }
     fn record(
@@ -109,7 +109,7 @@ async fn local_report_admission(
         .run_until(async {
             let env = Environment::new();
             let mut services = env.membership.services();
-            services.app_action_grants = Some(Arc::new(LocalReportGrants(env.membership.clone())));
+            services.workspace_grants = Some(Arc::new(LocalReportGrants(env.membership.clone())));
             let rig = Rig::with_services(&env, services).await;
             let pin_dropped = Rc::new(std::cell::Cell::new(false));
             let resolutions = Rc::new(std::cell::Cell::new(0));

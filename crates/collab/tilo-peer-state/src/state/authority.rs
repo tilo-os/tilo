@@ -67,9 +67,9 @@ impl MemberAuthority {
             == Answer::Allow
     }
 
-    /// Whether the member may run `action` of `resource` in `app` now: the
-    /// workspace's own grants for that app action decide it, whether the
-    /// member acts as a person's device, an agent or a bot.
+    /// Whether the member may run `action` of `resource` in `app` now, as
+    /// the workspace's grants decide it, whether the member acts as a
+    /// person's device, an agent or a bot.
     #[must_use]
     pub fn allows_app_action(
         &self,
@@ -78,11 +78,13 @@ impl MemberAuthority {
         action: &str,
         now: SystemTime,
     ) -> bool {
-        let Ok(named) = crate::workspace_membership::AppAction::new(app, app, resource, action)
-        else {
-            return false;
-        };
-        self.allows(&named.node(&self.policy.node()), ActionKind::Undoable, now)
+        let node = tilo_action_policy::TreePath::workspace(&self.policy.workspace)
+            .app(app)
+            .rest()
+            .resource(resource)
+            .rest()
+            .action(action);
+        self.allows(&node, ActionKind::Undoable, now)
     }
 }
 

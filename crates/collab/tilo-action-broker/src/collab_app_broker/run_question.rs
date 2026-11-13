@@ -145,9 +145,9 @@ impl AppBrokerState {
         let may_grant = keeps_answers
             || self
                 .services
-                .app_action_grants
+                .workspace_grants
                 .as_ref()
-                .is_some_and(|grants| grants.may_grant(workspace, person));
+                .is_some_and(|grants| grants.may_record(workspace, person));
         let grant = asked
             .as_ref()
             .filter(|action| may_grant && !action.contract.need().privileged)
@@ -215,7 +215,7 @@ impl AppBrokerState {
         answer: AppActionConsent,
     ) {
         if answer == AppActionConsent::Always
-            && let (Some(grant), Some(grants)) = (grant, self.services.app_action_grants.as_ref())
+            && let (Some(grant), Some(grants)) = (grant, self.services.workspace_grants.as_ref())
             && let Err(error) = grants.record(request, grant, answer).await
         {
             tracing::warn!(%error, "the grant for the issue could not be recorded");

@@ -25,7 +25,7 @@ use tilo_action_broker::collab_broker::{BrokerChannels, BrokerHandle, FanoutStat
 use tilo_action_broker::collab_outbound::PeerPublisher;
 use tilo_action_broker::services::{
     ApplicationServices, BrowserServiceSessionServices, Caller, DisplayControlServices,
-    DriveServices, Granted, HostServices, PublishedResources, Reading, ResourceWatch,
+    DriveServices, HostServices, PublishedResources, Reading, ResourceWatch,
     ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore, SpeakerChange, SpeakerServices,
     WifiContinuityServices, WorkspaceMemberships,
 };
@@ -78,20 +78,11 @@ enum Ask {
     },
 }
 
-/// The readings the services publish to granted callers only, as of the
-/// revision the catalogue was last read at.
-#[derive(Default)]
-struct Declared {
-    revision: Option<u64>,
-    granted: std::collections::HashMap<String, Granted>,
-}
-
 /// The seam between the session's loop and the broker's connections: what an
 /// app asks of the services, and the readings the apps watch.
 pub struct Link {
     asks: Mutex<Vec<Ask>>,
     watches: Mutex<Vec<Watch>>,
-    declared: Mutex<Declared>,
     next_watch: AtomicU64,
     wake: Wake,
 }
@@ -103,7 +94,6 @@ impl Link {
         std::sync::Arc::new(Self {
             asks: Mutex::new(Vec::new()),
             watches: Mutex::new(Vec::new()),
-            declared: Mutex::new(Declared::default()),
             next_watch: AtomicU64::new(1),
             wake,
         })
@@ -118,7 +108,6 @@ impl Link {
     /// watched resource's reading that moved: what the session's loop calls
     /// once per pass, after the services took in what their devices did.
     pub fn serve(&self, services: &mut Services) {
-        self.declare(services);
         let asked = std::mem::take(&mut *self.asks.lock_recover());
         for ask in asked {
             match ask {
@@ -145,43 +134,6 @@ impl Link {
             }
         }
         self.publish(services);
-    }
-
-    /// Read which readings the services publish to granted callers only, so
-    /// the broker admits every call about one before this loop sees it. The
-    /// catalogue is the declaration's only source; it moves with the
-    /// services' revision like everything else they publish.
-    ///
-    /// The session reads it once its services are all mounted, before the
-    /// broker answers anyone: an app that connects as the session starts is
-    /// decided by the workspace's grants, not by a declaration not yet read.
-    pub fn declare(&self, services: &Services) {
-        let revision = services.revision();
-        let mut declared = self.declared.lock_recover();
-        if declared.revision == Some(revision) {
-            return;
-        }
-        declared.granted = services
-            .resources()
-            .into_iter()
-            .filter(|resource| resource.readers == tilo_actions::Readers::Granted)
-            .map(|resource| {
-                // The session's own resources name the session's app, as its
-                // actions do: that is whose grants the workspace says may read
-                // them.
-                let publisher = resource
-                    .app_id
-                    .unwrap_or_else(|| tilo_action_policy::roles::SESSION_APP.to_owned());
-                (
-                    resource.id.as_str().to_owned(),
-                    Granted {
-                        publisher,
-                        kind: resource.kind,
-                    },
-                )
-            })
-            .collect();
-        declared.revision = Some(revision);
     }
 
     /// Send the readings of the watched resources that moved.
@@ -225,10 +177,6 @@ impl Link {
 /// The session's services, as the broker's connections read them: a resource
 /// is named by its id, and what an app reaches is what the services publish.
 impl PublishedResources for Link {
-    fn granted(&self, resource: &str) -> Option<Granted> {
-        self.declared.lock_recover().granted.get(resource).cloned()
-    }
-
     fn snapshot(&self, _caller: &Caller, resource: &str) -> oneshot::Receiver<Reading> {
         let (reply, answered) = oneshot::channel();
         self.ask(Ask::Snapshot {
@@ -823,28 +771,6 @@ impl WorkspaceMemberships for SessionMemberships {
             .is_some_and(|room| self.engine.holds(room))
     }
 
-    /// An app opening in `workspace` is let author there when this device's
-    /// person administers the workspace and it does not let that app author
-    /// yet: the same decision the launch before it makes
-    /// ([`crate::membership::authorship`]). A member whose role only lets them
-    /// write asks nothing of the workspace's people.
-    fn app_opens_by_granting(
-        &self,
-        workspace: &str,
-        app: &str,
-        _certificate: &tilo_user_identity::DeviceCert,
-    ) -> bool {
-        if !self.engine.administers(workspace) {
-            return false;
-        }
-        self.engine.policy(workspace).is_ok_and(|policy| {
-            !policy.app_authors(
-                app,
-                &tilo_action_policy::Context::at_time(std::time::SystemTime::now()),
-            )
-        })
-    }
-
     fn health(&self) -> Result<(), String> {
         self.engine.owner().health()
     }
@@ -930,10 +856,10 @@ impl SessionGrants {
     }
 }
 
-impl tilo_action_broker::services::AppActionGrants for SessionGrants {
-    /// The person at this device grants where its engine holds the
+impl tilo_action_broker::services::WorkspaceGrants for SessionGrants {
+    /// The person at this device records where its engine holds the
     /// workspace's governance and the workspace lets this device administer it.
-    fn may_grant(&self, workspace: &str, person: &str) -> bool {
+    fn may_record(&self, workspace: &str, person: &str) -> bool {
         let names = &self.desk.names;
         (names.person == person || names.earlier.iter().any(|earlier| earlier == person))
             && tilo_desktop_model::WorkspaceId::parse(workspace)
@@ -1064,6 +990,14 @@ fn seams(
                 std::sync::Arc::clone(source),
                 &desk,
             )) as std::sync::Arc<dyn DisplayControlServices>
+        });
+    // The answers the person gave for one app using another app's action,
+    // kept in the settings this session holds.
+    let app_consents: Option<std::sync::Arc<dyn tilo_action_broker::services::AppConsents>> =
+        settings.as_ref().map(|source| {
+            std::sync::Arc::new(tilo_action_broker::services::PersonalAppConsents {
+                source: std::sync::Arc::clone(source),
+            }) as std::sync::Arc<dyn tilo_action_broker::services::AppConsents>
         });
     // What each installed app's signed manifest declares it may do on the
     // action door: a ceiling the broker decides an app's calls against.
@@ -1241,17 +1175,14 @@ fn seams(
         file_clipboard: Seam::served(file_clipboard),
         app_action_access: Seam::served(app_action_access),
         app_resource_kinds: Seam::served(app_resource_kinds),
-        // A grant for an app to take another app's action is kept in a
-        // workspace's own record, which this session's engine commits; the
-        // host records none of them for the door to ask.
-        // A grant the person gives an app for another app's action, on the
-        // sheet that asked them, is recorded in the workspace's own
-        // governance, which this session's engine writes.
-        app_action_grants: Seam::when(engine.clone().map(|engine| {
+        // An answer the person gives "allow for this issue" is recorded in the
+        // workspace's own governance, which this session's engine writes.
+        app_consents: Seam::when(app_consents),
+        workspace_grants: Seam::when(engine.clone().map(|engine| {
             std::sync::Arc::new(SessionGrants::new(
                 engine,
                 std::sync::Arc::clone(&grants_desk),
-            )) as std::sync::Arc<dyn tilo_action_broker::services::AppActionGrants>
+            )) as std::sync::Arc<dyn tilo_action_broker::services::WorkspaceGrants>
         })),
         launchable_catalogue: Seam::when(launchable_catalogue),
         record_content: Seam::when(record_content.map(|content| content.route())),

@@ -185,7 +185,6 @@ pub enum Grantee {
     Task(String),
     /// A Shortcut run for a person.
     Shortcut(String),
-    App(String),
 }
 
 impl Grantee {
@@ -224,11 +223,6 @@ impl Grantee {
         Self::Shortcut(id.into())
     }
 
-    #[must_use]
-    pub fn app(id: impl Into<String>) -> Self {
-        Self::App(id.into())
-    }
-
     /// The member, when a grant names one.
     #[must_use]
     pub fn as_member(&self) -> Option<&crate::MemberId> {
@@ -263,14 +257,6 @@ impl Grantee {
     }
 
     #[must_use]
-    pub fn app_id(&self) -> Option<&str> {
-        match self {
-            Self::App(app) => Some(app),
-            _ => None,
-        }
-    }
-
-    #[must_use]
     pub fn role_of(&self) -> Option<Role> {
         match self {
             Self::Role(role) => Some(*role),
@@ -286,7 +272,6 @@ impl fmt::Display for Grantee {
             Self::Role(role) => write!(f, "every {role}"),
             Self::Task(id) => write!(f, "task {id}"),
             Self::Shortcut(id) => write!(f, "Shortcut {id}"),
-            Self::App(id) => write!(f, "app {id}"),
         }
     }
 }
@@ -484,18 +469,10 @@ impl<'a> Context<'a> {
         }
     }
 
-    /// Whether a grant to `granted` speaks for one of `grantees`, an app's under its earlier ids
-    /// too.
+    /// Whether a grant to `granted` speaks for one of `grantees`.
     #[must_use]
     pub fn grantee_matches(&self, granted: &Grantee, grantees: &[Grantee]) -> bool {
-        match self.earlier {
-            Some(earlier) => earlier.grantee_matches(granted, grantees),
-            None => {
-                grantees.contains(granted)
-                    || crate::earlier::with_held(|held| held.grantee_matches(granted, grantees))
-                        .unwrap_or(false)
-            }
-        }
+        grantees.contains(granted)
     }
 
     #[must_use]

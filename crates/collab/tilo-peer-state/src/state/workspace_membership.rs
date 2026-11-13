@@ -332,47 +332,6 @@ impl PeerWorkspaceMut<'_> {
         if let WorkspaceMembershipCommand::Unshare { share } = command {
             return self.peer.apply_unshare(caller, share, key, now);
         }
-        self.peer
-            .apply_administered_command(caller, command, key, now)
-    }
-}
-
-impl StatePeer {
-    /// Apply a command only the workspace's administrators may give: letting a
-    /// person author apps.
-    fn apply_administered_command(
-        &mut self,
-        caller: &DeviceCert,
-        command: &WorkspaceMembershipCommand,
-        key: &dyn DeviceSigner,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        self.workspace()
-            .check_workspace_administration(caller.device_public_key, now)?;
-        let member = self.membership(caller.device_public_key, now)?;
-        if let WorkspaceMembershipCommand::GrantAppAuthorship { app } = command {
-            let grant =
-                roles::app_authorship(&self.core.workspace, app, Grantee::person(member.person));
-            if self
-                .require_governance_action(key, roles::governance::GRANT, now)
-                .is_ok()
-            {
-                return self
-                    .governance_mut()
-                    .put_governed_grants(&[grant], key, now);
-            }
-            // Anyone else gives it as a grant of their own, as every
-            // receiver admits it from them (`workspace::membership`).
-            if member.policy.grants.iter().any(|held| held.id == grant.id) {
-                return Ok(false);
-            }
-            return self.apply_governance_grant_command(
-                caller,
-                &WorkspaceMembershipCommand::Grant { grant },
-                key,
-                now,
-            );
-        }
         Ok(false)
     }
 }

@@ -831,7 +831,7 @@ mod tests {
                 Access::Read,
             )];
             let grants = LaunchGrants {
-                authors: vec!["so.tilo.books".into()],
+                author: true,
                 sandbox: caps,
             };
             std::fs::write(&path, serde_json::to_vec(&grants).unwrap()).unwrap();
@@ -1006,22 +1006,20 @@ mod tests {
         }
     }
 
-    /// A launch file names which apps author the workspace; an app reads its own entry and nothing of
-    /// another app's.
+    /// A launch file tells the app whether it may change the workspace; it
+    /// reads its own caps and nothing of another app's.
     #[test]
-    fn a_launch_file_tells_each_app_whether_it_authors() {
+    fn a_launch_file_tells_the_app_whether_it_may_change_the_workspace() {
         let grants = LaunchGrants {
-            authors: vec!["so.tilo.editor".into()],
+            author: true,
             sandbox: vec![fs_grant(
                 "so.tilo.viewer",
                 "/var/workspace/shared",
                 Access::Write,
             )],
         };
-        assert!(grants.authors("so.tilo.editor"));
-        assert!(!grants.authors("so.tilo.viewer"));
         let viewer = grants.for_app("so.tilo.viewer");
-        assert!(viewer.authors.is_empty());
+        assert!(viewer.author);
         assert_eq!(viewer.sandbox.len(), 1);
         assert!(grants.for_app("so.tilo.editor").sandbox.is_empty());
     }

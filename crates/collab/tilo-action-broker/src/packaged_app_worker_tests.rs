@@ -125,7 +125,7 @@ async fn an_app_the_shell_launched_is_the_worker_of_its_own_routes() {
             const APP_PEER: u64 = 905;
             let env = Environment::new();
             let mut services = env.membership.services();
-            services.app_action_grants = Some(Arc::new(LocalReportGrants(env.membership.clone())));
+            services.workspace_grants = Some(Arc::new(LocalReportGrants(env.membership.clone())));
             services.launcher = Some(Arc::new(LaunchedHere {
                 app: env.route.app_id.clone(),
                 workspace: env.route.cluster_id.clone(),
@@ -253,7 +253,7 @@ async fn a_session_with_many_windows_and_records_keeps_every_worker() {
             const RECORDS: usize = 6;
             let env = Environment::new();
             let mut services = env.membership.services();
-            services.app_action_grants = Some(Arc::new(LocalReportGrants(env.membership.clone())));
+            services.workspace_grants = Some(Arc::new(LocalReportGrants(env.membership.clone())));
             services.launcher = Some(Arc::new(LaunchedHere {
                 app: env.route.app_id.clone(),
                 workspace: env.route.cluster_id.clone(),
@@ -563,7 +563,7 @@ async fn a_renamed_app_keeps_the_record_of_the_id_it_had_before() {
             let mut earlier = tilo_action_policy::EarlierIds::new();
             earlier.insert(RENAMED, [env.route.app_id.clone()]);
             let mut services = env.membership.services();
-            services.app_action_grants = Some(Arc::new(LocalReportGrants(env.membership.clone())));
+            services.workspace_grants = Some(Arc::new(LocalReportGrants(env.membership.clone())));
             services.launcher = Some(Arc::new(RenamedHere {
                 launched: LaunchedHere {
                     app: RENAMED.to_owned(),
