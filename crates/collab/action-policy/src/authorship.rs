@@ -6,11 +6,11 @@
 //! chain of code that led to an action is a delegation bounding the person
 //! ([`crate::Authority::bounded_by`]), and the minimum wins. Code a person or
 //! an agent wrote (a block in a conversation) is that person or agent; an
-//! app's code is the person running it, and reaches as far as the kinds the
-//! app declares ([`crate::Authority::in_app`]).
+//! app's code is the person running it.
 //!
 //! What code may do on its own account depends on whether it is trusted
-//! (an agent's code its person admitted): trusted code reads and makes
+//! (an installed or built-in package, an agent's code its person admitted):
+//! trusted code reads and makes
 //! undoable changes and asks before reaching outside; code nobody trusts asks
 //! before everything.
 

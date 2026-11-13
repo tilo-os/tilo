@@ -5,9 +5,10 @@
 //! person's authority in the workspace ([`Standing`]), bounded by whoever acts for them (an agent, by
 //! its delegation and the answers the person gave it) and by every author of the code that led to
 //! the action ([`tilo_action_policy::authorship`]), the minimum winning. Code a package wrote is
-//! its person's, within what the app's kinds allow; code a person or an agent wrote (an embedded block) is
-//! that person or agent. Built-in and installed packages are trusted, an agent's code as far as
-//! its person admitted the agent; a stranger's code asks.
+//! the person running it, as trusted as the package; code a person or an agent wrote (an embedded
+//! block) is that person or agent. Built-in and installed packages are trusted, an agent's code as
+//! far as its person admitted the agent; a stranger's code asks. Trusted code still asks before
+//! reaching outside, unless the workspace grants the person that.
 //!
 //! Where the host has no standing for the person (a window outside a host, a test), the person's
 //! own part is not decided here, as a native window's detached dispatcher does not decide it: the
@@ -236,6 +237,28 @@ fn agent_id(actor: &str) -> &str {
     actor.strip_prefix("agent:").unwrap_or(actor)
 }
 
+/// Who wrote code in the chain that led to an action.
+#[derive(PartialEq, Eq)]
+enum Author {
+    /// A block a person or an agent wrote.
+    Block(Grantee),
+    /// The package of an app, by its id.
+    Package(String),
+}
+
+/// What a package's code holds of its own app's records, trusted or not: it reads and changes
+/// what the app keeps as `runner`, the person using it, and reaches nothing outside it.
+fn own_records(workspace: &str, app: &str, runner: &Grantee) -> Grant {
+    Grant::new(
+        format!("package-records:{app}"),
+        runner.clone(),
+        TreePath::workspace(workspace).app(app.to_owned()),
+        tilo_action_policy::KindSet::READ_UNDOABLE,
+        Answer::Allow,
+        runner.clone(),
+    )
+}
+
 const fn decision(answer: Answer) -> Decision {
     match answer {
         Answer::Allow => Decision::Allow,
@@ -315,22 +338,35 @@ impl Authority for TiloAuthority {
             )),
             _ => None,
         };
-        // Each author of the code that led here, once, with what it holds of its own.
-        // An app's module is the person running it, and reaches as far as the
-        // app's kinds ([`tilo_action_policy::Authority::in_app`]).
-        let mut authors: Vec<(Grantee, Vec<Grant>)> = Vec::new();
+        // Each author of the code that led here, once, with what it holds of its own. A block is
+        // its writer's code. A package's code is the person running it, as trusted as the package
+        // is: it asks before reaching outside unless the workspace grants the person that, and
+        // code nobody installed asks before everything but its own records.
+        let runner = person.map_or_else(|| Grantee::agent(agent_id(&invoker.0)), Grantee::person);
+        let mut authors: Vec<(Author, Vec<Grant>)> = Vec::new();
         for module in chain {
-            let Some(id) = module.0.strip_prefix("principal:") else {
-                continue;
-            };
-            let subject = principal_subject(id);
             let trusted = state.trusted.contains(module);
-            let own = authorship::code_grants(workspace, &subject, trusted);
-            match authors.iter_mut().find(|(known, _)| *known == subject) {
+            let (author, own) = if let Some(id) = module.0.strip_prefix("principal:") {
+                let subject = principal_subject(id);
+                let own = authorship::code_grants(workspace, &subject, trusted);
+                (Author::Block(subject), own)
+            } else {
+                let app = state
+                    .apps
+                    .get(module)
+                    .cloned()
+                    .unwrap_or_else(|| format!("tl-module:{}", module.0));
+                let mut own = authorship::code_grants(workspace, &runner, trusted);
+                if action.own && *module == action.module {
+                    own.push(own_records(workspace, &app, &runner));
+                }
+                (Author::Package(app), own)
+            };
+            match authors.iter_mut().find(|(known, _)| *known == author) {
                 Some((_, held)) if trusted => held.extend(own),
                 // An untrusted version of the same author asks for all of them.
                 Some((_, held)) => *held = own,
-                None => authors.push((subject, own)),
+                None => authors.push((author, own)),
             }
         }
         // A grant written under an id the app had before (`previously:`) is the app's.
@@ -342,9 +378,13 @@ impl Authority for TiloAuthority {
                     .with_grants(delegation),
             );
         }
-        for (subject, own) in &authors {
-            // A block's author holds only what its code may.
-            policy = policy.bounded_by(authorship::code_party(subject, own, &[]));
+        for (author, own) in &authors {
+            policy = policy.bounded_by(match author {
+                // A block's author holds only what its code may.
+                Author::Block(subject) => authorship::code_party(subject, own, &[]),
+                // The workspace's grants to the person running a package bound its code too.
+                Author::Package(_) => authorship::code_party(&runner, own, workspace_grants),
+            });
         }
         let cx = Context::at_time(std::time::SystemTime::now()).with_earlier_ids(&earlier);
         decision(policy.decide(&node, action_kind(action.class), &cx).answer)
@@ -465,46 +505,90 @@ mod tests {
     }
 
     #[test]
-    fn a_block_of_an_untrusted_author_asks() {
+    fn code_of_an_untrusted_author_asks() {
         let authority = authority(Vec::new());
         let me = Principal::new(PERSON);
         let stranger = ModuleHash::principal("person:stranger");
-        let change = info(EffectClass::Undoable, false);
+        let foreign = info(EffectClass::Undoable, false);
         assert_eq!(
-            authority.decide(&me, std::slice::from_ref(&stranger), &change),
+            authority.decide(&me, std::slice::from_ref(&stranger), &foreign),
             Decision::Ask
         );
+        let unknown = ModuleHash("someone-elses".to_owned());
+        assert_eq!(authority.decide(&me, &[unknown], &foreign), Decision::Ask);
         authority.trust(&stranger);
-        assert_eq!(authority.decide(&me, &[stranger], &change), Decision::Allow);
-    }
-
-    #[test]
-    fn a_packages_code_is_the_person_running_it() {
-        let authority = authority(Vec::new());
-        let me = Principal::new(PERSON);
-        let change = info(EffectClass::Undoable, true);
-        assert_eq!(authority.decide(&me, &[module()], &change), Decision::Allow);
-        // Revoking a package takes no authority from it: it is the person's own code.
-        authority.revoke(&module());
-        assert_eq!(authority.decide(&me, &[module()], &change), Decision::Allow);
-        // Nor does a block beside it add an author of its own.
         assert_eq!(
-            authority.decide(&me, &[module(), module()], &change),
+            authority.decide(&me, &[stranger], &foreign),
             Decision::Allow
         );
     }
 
     #[test]
-    fn code_reaches_outside_as_its_person_and_a_strangers_block_asks() {
+    fn a_trusted_modules_own_action_is_allowed() {
+        let authority = authority(Vec::new());
+        let me = Principal::new(PERSON);
+        let own = info(EffectClass::Undoable, true);
+        assert_eq!(authority.decide(&me, &[module()], &own), Decision::Allow);
+        // Nor does a block beside it add an author of its own.
+        assert_eq!(
+            authority.decide(&me, &[module(), module()], &own),
+            Decision::Allow
+        );
+        // Untrusted, it is still an author of its own records.
+        authority.revoke(&module());
+        assert_eq!(authority.decide(&me, &[module()], &own), Decision::Allow);
+        let foreign = info(EffectClass::Undoable, false);
+        assert_eq!(authority.decide(&me, &[module()], &foreign), Decision::Ask);
+    }
+
+    #[test]
+    fn outside_from_a_strangers_code_asks() {
         let authority = authority(Vec::new());
         let me = Principal::new(PERSON);
         let stranger = ModuleHash::principal("person:stranger");
         let outside = info(EffectClass::Outside, false);
         assert_eq!(authority.decide(&me, &[stranger], &outside), Decision::Ask);
-        // The person's own device reaches outside as the person does; what an app may
-        // reach is capped by the kinds it declares.
+        // Trusted code reaching outside asks too, unless the workspace grants the person that.
         assert_eq!(
             authority.decide(&me, &[module()], &info(EffectClass::Outside, true)),
+            Decision::Ask
+        );
+    }
+
+    #[test]
+    fn the_owners_own_package_asks_before_reaching_outside_until_the_workspace_grants_it() {
+        let me = Principal::new(PERSON);
+        let outside = info(EffectClass::Outside, true);
+        // Owning the workspace lets the person do anything there, but not their package's code
+        // reaching outside unasked.
+        assert_eq!(
+            authority(Vec::new()).decide(&me, &[module()], &outside),
+            Decision::Ask
+        );
+        // A grant to the person over the whole workspace does not answer for the code either.
+        let everything = Grant::new(
+            "ada-everything",
+            Grantee::person(PERSON),
+            TreePath::workspace(WORKSPACE),
+            tilo_action_policy::KindSet::ALL,
+            Answer::Allow,
+            Grantee::person(PERSON),
+        );
+        assert_eq!(
+            authority(vec![everything]).decide(&me, &[module()], &outside),
+            Decision::Ask
+        );
+        // The workspace letting the person reach outside from this app does.
+        let sends = Grant::new(
+            "ada-sends",
+            Grantee::person(PERSON),
+            TreePath::workspace(WORKSPACE).app(APP),
+            tilo_action_policy::KindSet::OUTSIDE,
+            Answer::Allow,
+            Grantee::person(PERSON),
+        );
+        assert_eq!(
+            authority(vec![sends]).decide(&me, &[module()], &outside),
             Decision::Allow
         );
     }
