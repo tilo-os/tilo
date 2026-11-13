@@ -322,6 +322,19 @@ impl WorkspaceStore {
             }
             Err(error) => return Err(error.into()),
         };
+        // A log an older build wrote is brought up on disk, its old bytes kept
+        // beside it, before it is read: a host keeps the workspaces it governs
+        // across every release.
+        if let Some(stored) = bytes
+            .strip_prefix(MAGIC.as_slice())
+            .and_then(|rest| rest.first_chunk::<4>())
+            .map(|version| u32::from_le_bytes(*version))
+            .filter(|stored| *stored < FORMAT.version)
+        {
+            bytes = FORMAT
+                .bring_up(&path, bytes, stored)
+                .map_err(|error| StoreError::Json(error.to_string()))?;
+        }
         let (access, valid) = read(&bytes)?;
         if valid < bytes.len() {
             let kept = u64::try_from(valid).unwrap_or(u64::MAX);
@@ -601,8 +614,21 @@ mod tests {
         v2.extend_from_slice(&u32::try_from(body.len()).unwrap().to_le_bytes());
         v2.extend_from_slice(&body);
         v2.extend_from_slice(&blake3::hash(&body).as_bytes()[..8]);
-        let brought_up = FORMAT.migrate(v2, 2).unwrap();
+        let brought_up = FORMAT.migrate(v2.clone(), 2).unwrap();
         assert_eq!(read(&brought_up).unwrap().0, access(&[1], &[2]));
+
+        // A workspace whose log a version 2 build wrote opens, and keeps the
+        // log as it was beside it.
+        let dir = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(dir.path(), 7, false).unwrap();
+        let path = dir.path().join("workspaces/7").join(GOVERNED_ACCESS_FILE);
+        fs::write(&path, &v2).unwrap();
+        assert_eq!(
+            store.load_governed_access().unwrap(),
+            Some(access(&[1], &[2]))
+        );
+        assert_eq!(fs::read(Format::snapshot_path(&path, 2)).unwrap(), v2);
+        assert_eq!(fs::read(&path).unwrap(), brought_up);
     }
 
     /// The bytes this build writes for a workspace's first access.
