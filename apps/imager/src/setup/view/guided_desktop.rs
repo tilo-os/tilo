@@ -129,42 +129,82 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
-    #[test]
-    fn desktop_only_records_intent_without_inventing_support_or_preparation() {
-        let app = SetupApp::for_desktop();
-        assert_eq!(app.experience, Some(Experience::Desktop));
-        assert!(!app.capabilities.platform.desktop_session);
-        assert!(!app.internal_install.is_probing());
-        assert!(app.guided_desktop.is_none());
-        assert!(!app.setup_projection().desktop.actions.install);
-    }
+    tilo_test_env::scenario! {
+        fn a_desktop_only_install_checks_its_packages_first;
 
-    #[test]
-    fn desktop_only_install_checks_packages_and_blocks_navigation_without_identity() {
-        let mut app = SetupApp::for_desktop();
-        app.desktop_flow = DesktopFlow::with_runtime_and_state(
-            crate::setup::desktop_flow::DesktopRuntime {
-                launch_probe: || {
-                    let (_sender, receiver) = mpsc::channel();
-                    Ok(receiver)
+        phase desktop_only_records_intent_without_inventing_support_or_preparation;
+        {
+            let app = SetupApp::for_desktop();
+            assert_eq!(app.experience, Some(Experience::Desktop));
+            assert!(!app.capabilities.platform.desktop_session);
+            assert!(!app.internal_install.is_probing());
+            assert!(app.guided_desktop.is_none());
+            assert!(!app.setup_projection().desktop.actions.install);
+        }
+
+        phase desktop_only_install_checks_packages_and_blocks_navigation_without_identity;
+        {
+            let mut app = SetupApp::for_desktop();
+            app.desktop_flow = DesktopFlow::with_runtime_and_state(
+                crate::setup::desktop_flow::DesktopRuntime {
+                    launch_probe: || {
+                        let (_sender, receiver) = mpsc::channel();
+                        Ok(receiver)
+                    },
+                    launch_download: |_, _| Err("unexpected download".into()),
+                    launch_install: |_| Err("unexpected native install".into()),
                 },
-                launch_download: |_, _| Err("unexpected download".into()),
-                launch_install: |_| Err("unexpected native install".into()),
-            },
-            DesktopFlowState::Ready(fixture_desktop_selection(false)),
-        );
-        assert!(!app.capabilities.platform.desktop_session);
-        assert!(app.setup_projection().desktop.actions.install);
-        app.answer(SetupEffect::InstallDesktop).unwrap();
-        assert!(app.desktop_flow.has_pending_operation());
-        assert!(matches!(
-            app.desktop_flow.state(),
-            DesktopFlowState::Checking
-        ));
-        assert!(!app.guided_navigation.get());
-        assert!(app.answer(SetupEffect::InstallDesktop).is_err());
-        assert!(app.guided_desktop.is_none());
-        assert!(!app.internal_install.is_probing());
+                DesktopFlowState::Ready(fixture_desktop_selection(false)),
+            );
+            assert!(!app.capabilities.platform.desktop_session);
+            assert!(app.setup_projection().desktop.actions.install);
+            app.answer(SetupEffect::InstallDesktop).unwrap();
+            assert!(app.desktop_flow.has_pending_operation());
+            assert!(matches!(
+                app.desktop_flow.state(),
+                DesktopFlowState::Checking
+            ));
+            assert!(!app.guided_navigation.get());
+            assert!(app.answer(SetupEffect::InstallDesktop).is_err());
+            assert!(app.guided_desktop.is_none());
+            assert!(!app.internal_install.is_probing());
+        }
+
+        phase guided_desktop_semantic_install_rechecks_canonical_package_flow_and_blocks_back;
+        {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+            let root = root();
+            let mut app =
+                SetupApp::from_guided_desktop(prepared(root.path()), root.path().join("home")).unwrap();
+            app.desktop_flow = DesktopFlow::with_runtime_and_state(
+                crate::setup::desktop_flow::DesktopRuntime {
+                    launch_probe: || {
+                        let (_sender, receiver) = mpsc::channel();
+                        Ok(receiver)
+                    },
+                    launch_download: |_, _| Err("unexpected download".into()),
+                    launch_install: |_| Err("unexpected native install".into()),
+                },
+                DesktopFlowState::Ready(fixture_desktop_selection(false)),
+            );
+            assert!(app.rows().iter().any(|row| {
+                row.clone()
+                    .into_resource()
+                    .children
+                    .iter()
+                    .any(|child| child.id.as_str() == "imager.setup.desktop")
+            }));
+            app.answer(SetupEffect::InstallDesktop).unwrap();
+            assert!(app.desktop_flow.has_pending_operation());
+            assert!(matches!(
+                app.desktop_flow.state(),
+                DesktopFlowState::Checking
+            ));
+            assert!(!app.guided_navigation.get());
+            assert!(app.answer(SetupEffect::InstallDesktop).is_err());
+            assert!(!root.path().join("home/.local").exists());
+        }
     }
 
     fn prepared(root: &Path) -> Arc<PreparedMedia> {
@@ -242,40 +282,5 @@ mod tests {
             app.status,
             crate::setup::strings::t("installer-desktop-ready")
         );
-    }
-    #[test]
-    fn guided_desktop_semantic_install_rechecks_canonical_package_flow_and_blocks_back() {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        let root = root();
-        let mut app =
-            SetupApp::from_guided_desktop(prepared(root.path()), root.path().join("home")).unwrap();
-        app.desktop_flow = DesktopFlow::with_runtime_and_state(
-            crate::setup::desktop_flow::DesktopRuntime {
-                launch_probe: || {
-                    let (_sender, receiver) = mpsc::channel();
-                    Ok(receiver)
-                },
-                launch_download: |_, _| Err("unexpected download".into()),
-                launch_install: |_| Err("unexpected native install".into()),
-            },
-            DesktopFlowState::Ready(fixture_desktop_selection(false)),
-        );
-        assert!(app.rows().iter().any(|row| {
-            row.clone()
-                .into_resource()
-                .children
-                .iter()
-                .any(|child| child.id.as_str() == "imager.setup.desktop")
-        }));
-        app.answer(SetupEffect::InstallDesktop).unwrap();
-        assert!(app.desktop_flow.has_pending_operation());
-        assert!(matches!(
-            app.desktop_flow.state(),
-            DesktopFlowState::Checking
-        ));
-        assert!(!app.guided_navigation.get());
-        assert!(app.answer(SetupEffect::InstallDesktop).is_err());
-        assert!(!root.path().join("home/.local").exists());
     }
 }

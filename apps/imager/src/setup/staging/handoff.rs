@@ -325,71 +325,75 @@ mod tests {
         }
     }
 
-    #[test]
-    fn shared_staging_contract_remains_the_wire_format() {
-        let handoff = sample();
-        let bytes = handoff.to_padded(4096).unwrap();
-        assert_eq!(
-            staging_handoff_model::Handoff::parse(&bytes).unwrap(),
-            handoff.staging
-        );
-        let json = serde_json::to_string(&handoff).unwrap();
-        let duplicated = json.replacen('{', "{\"schema\":1,", 1);
-        assert!(Handoff::parse(duplicated.as_bytes()).is_err());
-        assert!(Handoff::parse(&vec![b' '; staging_handoff_model::MAX_BYTES + 1]).is_err());
+    tilo_test_env::scenario! {
+        fn the_handoff_keeps_its_wire_format_and_maps_only_profile_keys;
 
-        let mut malformed = handoff.clone();
-        malformed.operation_id = "not-a-guid".into();
-        assert!(malformed.to_padded(4096).is_err());
-        let mut secret = handoff;
-        secret.profile.insert("password".into(), "secret".into());
-        assert!(secret.to_padded(4096).is_err());
-    }
-
-    #[test]
-    fn handoff_round_trips_validates_and_maps_only_profile_keys() {
+        phase shared_staging_contract_remains_the_wire_format;
         {
-            let h = sample();
-            let bytes = h.to_padded(4096).unwrap();
-            assert_eq!(bytes.len(), 4096);
-            assert!(bytes.ends_with(b"    "));
-            assert_eq!(Handoff::parse(&bytes).unwrap(), h);
-            assert!(h.to_padded(16).is_err());
-        }
-
-        {
-            let mut h = sample();
-            h.target_extent.last_lba += 1;
-            assert!(h.validate().is_err());
-            let mut h = sample();
-            h.profile
-                .insert("encryption_passphrase".into(), "hunter2".into());
-            assert!(validate_profile(&h.profile).is_err());
-            let mut h = sample();
-            h.owned_boot_entry = "boot".into();
-            assert!(h.validate().is_err());
-            let mut h = sample();
-            h.owned_boot_entry = "00ab".into();
-            assert!(h.validate().is_err(), "uppercase hex only");
-            let mut h = sample();
-            h.owned_boot_entry = "0001".into();
-            assert!(h.validate().is_err(), "never an entry already in BootOrder");
-            let mut unknown = serde_json::to_value(sample()).unwrap();
-            unknown["extra"] = 1.into();
-            assert!(Handoff::parse(&serde_json::to_vec(&unknown).unwrap()).is_err());
-        }
-
-        {
-            let mut profile = crate::model::InstallProfile::default();
-            profile.user.username = "ada".into();
-            profile.encryption_passphrase = "correct horse".into();
-            let map = profile_from_install(&profile).unwrap();
-            assert!(map.keys().all(|k| PROFILE_KEYS.contains(&k.as_str())));
-            assert!(
-                !serde_json::to_string(&map)
-                    .unwrap()
-                    .contains("correct horse")
+            let handoff = sample();
+            let bytes = handoff.to_padded(4096).unwrap();
+            assert_eq!(
+                staging_handoff_model::Handoff::parse(&bytes).unwrap(),
+                handoff.staging
             );
+            let json = serde_json::to_string(&handoff).unwrap();
+            let duplicated = json.replacen('{', "{\"schema\":1,", 1);
+            assert!(Handoff::parse(duplicated.as_bytes()).is_err());
+            assert!(Handoff::parse(&vec![b' '; staging_handoff_model::MAX_BYTES + 1]).is_err());
+
+            let mut malformed = handoff.clone();
+            malformed.operation_id = "not-a-guid".into();
+            assert!(malformed.to_padded(4096).is_err());
+            let mut secret = handoff;
+            secret.profile.insert("password".into(), "secret".into());
+            assert!(secret.to_padded(4096).is_err());
+        }
+
+        phase handoff_round_trips_validates_and_maps_only_profile_keys;
+        {
+            {
+                let h = sample();
+                let bytes = h.to_padded(4096).unwrap();
+                assert_eq!(bytes.len(), 4096);
+                assert!(bytes.ends_with(b"    "));
+                assert_eq!(Handoff::parse(&bytes).unwrap(), h);
+                assert!(h.to_padded(16).is_err());
+            }
+
+            {
+                let mut h = sample();
+                h.target_extent.last_lba += 1;
+                assert!(h.validate().is_err());
+                let mut h = sample();
+                h.profile
+                    .insert("encryption_passphrase".into(), "hunter2".into());
+                assert!(validate_profile(&h.profile).is_err());
+                let mut h = sample();
+                h.owned_boot_entry = "boot".into();
+                assert!(h.validate().is_err());
+                let mut h = sample();
+                h.owned_boot_entry = "00ab".into();
+                assert!(h.validate().is_err(), "uppercase hex only");
+                let mut h = sample();
+                h.owned_boot_entry = "0001".into();
+                assert!(h.validate().is_err(), "never an entry already in BootOrder");
+                let mut unknown = serde_json::to_value(sample()).unwrap();
+                unknown["extra"] = 1.into();
+                assert!(Handoff::parse(&serde_json::to_vec(&unknown).unwrap()).is_err());
+            }
+
+            {
+                let mut profile = crate::model::InstallProfile::default();
+                profile.user.username = "ada".into();
+                profile.encryption_passphrase = "correct horse".into();
+                let map = profile_from_install(&profile).unwrap();
+                assert!(map.keys().all(|k| PROFILE_KEYS.contains(&k.as_str())));
+                assert!(
+                    !serde_json::to_string(&map)
+                        .unwrap()
+                        .contains("correct horse")
+                );
+            }
         }
     }
 }

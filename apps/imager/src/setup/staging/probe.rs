@@ -58,76 +58,80 @@ pub fn space_blocker(facts: &HostFacts, requirements: Requirements) -> Option<Bl
 mod tests {
     use super::*;
 
-    #[test]
-    fn non_uefi_preparation_geometry_does_not_offer_installation() {
-        use super::super::plan;
-        let mut basis = plan::tests::linux_basis(512, 64 << 30, Vec::new());
-        basis.firmware.uefi = false;
-        basis.firmware.secure_boot = false;
-        basis.firmware.boot_current = None;
-        basis.firmware.boot_order.clear();
-        basis.firmware.boot_next = None;
-        let mut facts = HostFacts {
-            basis: Some(basis.clone()),
-            bitlocker_protected: false,
-            blockers: Vec::new(),
-        };
-        add_shared_blockers(&mut facts);
-        assert!(facts.blockers.contains(&Blocker::NotUefi));
-        assert!(!facts.offers_full_os());
-        let reviewed = plan::compute(
-            &basis,
-            Requirements {
-                staging_esp_bytes: 512 << 20,
-                staging_root_bytes: 4 << 30,
-                target_bytes: 35 << 30,
-            },
-        )
-        .unwrap();
-        assert_eq!(reviewed.basis, basis);
-        assert!(!reviewed.basis.firmware.uefi);
-        assert!(!facts.offers_full_os());
-    }
+    tilo_test_env::scenario! {
+        fn staging_is_offered_only_within_the_planners_bounds;
 
-    #[test]
-    fn staging_offer_blockers_and_remedies_follow_planner_bounds() {
+        phase non_uefi_preparation_geometry_does_not_offer_installation;
         {
-            let basis = super::super::plan::tests::linux_basis(512, 256 << 30, Vec::new());
+            use super::super::plan;
+            let mut basis = plan::tests::linux_basis(512, 64 << 30, Vec::new());
+            basis.firmware.uefi = false;
+            basis.firmware.secure_boot = false;
+            basis.firmware.boot_current = None;
+            basis.firmware.boot_order.clear();
+            basis.firmware.boot_next = None;
             let mut facts = HostFacts {
-                basis: Some(basis),
-                bitlocker_protected: false,
-                blockers: vec![Blocker::SecureBootOn, Blocker::OnBattery],
-            };
-            assert!(facts.offers_full_os());
-            facts.block(Blocker::NotGpt);
-            facts.block(Blocker::NotGpt);
-            assert_eq!(facts.blockers.len(), 3);
-            assert!(!facts.offers_full_os());
-            assert!(!HostFacts::unsupported(Blocker::NotUefi).offers_full_os());
-        }
-
-        {
-            let small = super::super::plan::tests::linux_basis(512, 60 << 30, Vec::new());
-            let facts = HostFacts {
-                basis: Some(small),
+                basis: Some(basis.clone()),
                 bitlocker_protected: false,
                 blockers: Vec::new(),
             };
-            let r = Requirements {
-                staging_esp_bytes: 600 << 20,
-                staging_root_bytes: 40 << 30,
-                target_bytes: 0,
-            };
-            assert_eq!(space_blocker(&facts, r), Some(Blocker::InsufficientSpace));
-            let big = HostFacts {
-                basis: Some(super::super::plan::tests::linux_basis(
-                    512,
-                    200 << 30,
-                    Vec::new(),
-                )),
-                ..facts
-            };
-            assert_eq!(space_blocker(&big, r), None);
+            add_shared_blockers(&mut facts);
+            assert!(facts.blockers.contains(&Blocker::NotUefi));
+            assert!(!facts.offers_full_os());
+            let reviewed = plan::compute(
+                &basis,
+                Requirements {
+                    staging_esp_bytes: 512 << 20,
+                    staging_root_bytes: 4 << 30,
+                    target_bytes: 35 << 30,
+                },
+            )
+            .unwrap();
+            assert_eq!(reviewed.basis, basis);
+            assert!(!reviewed.basis.firmware.uefi);
+            assert!(!facts.offers_full_os());
+        }
+
+        phase staging_offer_blockers_and_remedies_follow_planner_bounds;
+        {
+            {
+                let basis = super::super::plan::tests::linux_basis(512, 256 << 30, Vec::new());
+                let mut facts = HostFacts {
+                    basis: Some(basis),
+                    bitlocker_protected: false,
+                    blockers: vec![Blocker::SecureBootOn, Blocker::OnBattery],
+                };
+                assert!(facts.offers_full_os());
+                facts.block(Blocker::NotGpt);
+                facts.block(Blocker::NotGpt);
+                assert_eq!(facts.blockers.len(), 3);
+                assert!(!facts.offers_full_os());
+                assert!(!HostFacts::unsupported(Blocker::NotUefi).offers_full_os());
+            }
+
+            {
+                let small = super::super::plan::tests::linux_basis(512, 60 << 30, Vec::new());
+                let facts = HostFacts {
+                    basis: Some(small),
+                    bitlocker_protected: false,
+                    blockers: Vec::new(),
+                };
+                let r = Requirements {
+                    staging_esp_bytes: 600 << 20,
+                    staging_root_bytes: 40 << 30,
+                    target_bytes: 0,
+                };
+                assert_eq!(space_blocker(&facts, r), Some(Blocker::InsufficientSpace));
+                let big = HostFacts {
+                    basis: Some(super::super::plan::tests::linux_basis(
+                        512,
+                        200 << 30,
+                        Vec::new(),
+                    )),
+                    ..facts
+                };
+                assert_eq!(space_blocker(&big, r), None);
+            }
         }
     }
 }

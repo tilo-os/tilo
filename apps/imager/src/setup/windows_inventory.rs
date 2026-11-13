@@ -71,103 +71,107 @@ mod tests {
     use imager_backend::windows_inventory::{Inventory, RootRole, SelectedRoot};
     use std::{collections::BTreeMap, fs};
 
-    #[test]
-    fn category_rows_preserve_actual_files_sizes_decisions_and_export_layout() {
-        let fixture = tempfile::tempdir().unwrap();
-        let path = fixture.path().canonicalize().unwrap().join("granted");
-        fs::create_dir_all(path.join("userdata/account")).unwrap();
-        fs::create_dir_all(path.join("steamapps/common/Game")).unwrap();
-        let files: [(&str, &[u8]); 3] = [
-            ("userdata/account/save.dat", b"unique save"),
-            ("steamapps/common/Game/local-mod.bin", b"local modification"),
-            ("unclassified.bin", b"not regenerable"),
-        ];
-        for (relative, bytes) in files {
-            fs::write(path.join(relative), bytes).unwrap();
-        }
-        let mut inventory = Inventory::discover(&[SelectedRoot {
-            path: path.clone(),
-            role: RootRole::Steam,
-        }])
-        .unwrap();
-        let id = inventory.roots[0].source_id.clone();
-        inventory
-            .select_category(&id, Category::SteamUserdata, Decision::Copy, None)
+    tilo_test_env::scenario! {
+        fn the_windows_inventory_keeps_every_entry_visible;
+
+        phase category_rows_preserve_actual_files_sizes_decisions_and_export_layout;
+        {
+            let fixture = tempfile::tempdir().unwrap();
+            let path = fixture.path().canonicalize().unwrap().join("granted");
+            fs::create_dir_all(path.join("userdata/account")).unwrap();
+            fs::create_dir_all(path.join("steamapps/common/Game")).unwrap();
+            let files: [(&str, &[u8]); 3] = [
+                ("userdata/account/save.dat", b"unique save"),
+                ("steamapps/common/Game/local-mod.bin", b"local modification"),
+                ("unclassified.bin", b"not regenerable"),
+            ];
+            for (relative, bytes) in files {
+                fs::write(path.join(relative), bytes).unwrap();
+            }
+            let mut inventory = Inventory::discover(&[SelectedRoot {
+                path: path.clone(),
+                role: RootRole::Steam,
+            }])
             .unwrap();
-        let rows = review_categories(&inventory.roots[0], 2);
-        assert_eq!(rows.len(), 3);
-        let actual: BTreeMap<_, _> = rows
-            .iter()
-            .flat_map(|row| {
-                assert_eq!(row.source_id, id);
-                assert_eq!(row.source_path, path.to_string_lossy());
-                assert_eq!(row.destination, "source-2");
-                assert_eq!(row.entries, 1);
-                assert_eq!(row.unknown_sizes, 0);
-                assert_eq!(row.unavailable, 0);
-                assert_eq!(row.known_bytes, row.paths[0].bytes.unwrap());
-                assert_eq!(
-                    row.decision,
-                    if row.category == Category::SteamUserdata {
-                        Decision::Copy
-                    } else {
-                        Decision::RetainOriginal
-                    }
-                );
-                row.paths.iter().map(|entry| {
-                    assert_eq!(entry.availability, Availability::Local);
-                    assert!(entry.copy_eligible);
-                    (entry.path.clone(), (entry.bytes, entry.destination.clone()))
+            let id = inventory.roots[0].source_id.clone();
+            inventory
+                .select_category(&id, Category::SteamUserdata, Decision::Copy, None)
+                .unwrap();
+            let rows = review_categories(&inventory.roots[0], 2);
+            assert_eq!(rows.len(), 3);
+            let actual: BTreeMap<_, _> = rows
+                .iter()
+                .flat_map(|row| {
+                    assert_eq!(row.source_id, id);
+                    assert_eq!(row.source_path, path.to_string_lossy());
+                    assert_eq!(row.destination, "source-2");
+                    assert_eq!(row.entries, 1);
+                    assert_eq!(row.unknown_sizes, 0);
+                    assert_eq!(row.unavailable, 0);
+                    assert_eq!(row.known_bytes, row.paths[0].bytes.unwrap());
+                    assert_eq!(
+                        row.decision,
+                        if row.category == Category::SteamUserdata {
+                            Decision::Copy
+                        } else {
+                            Decision::RetainOriginal
+                        }
+                    );
+                    row.paths.iter().map(|entry| {
+                        assert_eq!(entry.availability, Availability::Local);
+                        assert!(entry.copy_eligible);
+                        (entry.path.clone(), (entry.bytes, entry.destination.clone()))
+                    })
                 })
-            })
-            .collect();
-        for (relative, bytes) in files {
-            assert_eq!(
-                actual[&path.join(relative).to_string_lossy().into_owned()],
-                (Some(bytes.len() as u64), format!("source-2/{relative}"))
+                .collect();
+            for (relative, bytes) in files {
+                assert_eq!(
+                    actual[&path.join(relative).to_string_lossy().into_owned()],
+                    (Some(bytes.len() as u64), format!("source-2/{relative}"))
+                );
+            }
+            // These are the existing review wire keys, not native handle state.
+            let wire = serde_json::to_value(&inventory).unwrap();
+            let root = &wire["roots"][0];
+            assert!(root.get("pin").is_none());
+            assert!(root.get("examined").is_none());
+            assert_eq!(root["role"], "steam");
+            assert_eq!(root["decision"], "retain-original");
+            assert_eq!(root["category_decisions"]["steam-userdata"], "copy");
+            assert!(
+                root["entries"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|entry| entry["sync_verified"] == false)
             );
         }
-        // These are the existing review wire keys, not native handle state.
-        let wire = serde_json::to_value(&inventory).unwrap();
-        let root = &wire["roots"][0];
-        assert!(root.get("pin").is_none());
-        assert!(root.get("examined").is_none());
-        assert_eq!(root["role"], "steam");
-        assert_eq!(root["decision"], "retain-original");
-        assert_eq!(root["category_decisions"]["steam-userdata"], "copy");
-        assert!(
-            root["entries"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|entry| entry["sync_verified"] == false)
-        );
-    }
 
-    #[test]
-    fn unknown_sizes_and_unavailable_entries_remain_visible_in_review() {
-        let fixture = tempfile::tempdir().unwrap();
-        let path = fixture.path().canonicalize().unwrap();
-        fs::write(path.join("local.bin"), b"potentially unique").unwrap();
-        let mut inventory = Inventory::discover(&[SelectedRoot {
-            path,
-            role: RootRole::Other,
-        }])
-        .unwrap();
-        let entry = &mut inventory.roots[0].entries[0];
-        entry.bytes = None;
-        entry.availability = Availability::Placeholder;
-        entry.copy_eligible = false;
-        let rows = review_categories(&inventory.roots[0], 0);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].entries, 1);
-        assert_eq!(rows[0].known_bytes, 0);
-        assert_eq!(rows[0].unknown_sizes, 1);
-        assert_eq!(rows[0].unavailable, 1);
-        assert_eq!(rows[0].decision, Decision::RetainOriginal);
-        assert_eq!(rows[0].paths.len(), 1);
-        assert_eq!(rows[0].paths[0].bytes, None);
-        assert_eq!(rows[0].paths[0].availability, Availability::Placeholder);
-        assert!(!rows[0].paths[0].copy_eligible);
+        phase unknown_sizes_and_unavailable_entries_remain_visible_in_review;
+        {
+            let fixture = tempfile::tempdir().unwrap();
+            let path = fixture.path().canonicalize().unwrap();
+            fs::write(path.join("local.bin"), b"potentially unique").unwrap();
+            let mut inventory = Inventory::discover(&[SelectedRoot {
+                path,
+                role: RootRole::Other,
+            }])
+            .unwrap();
+            let entry = &mut inventory.roots[0].entries[0];
+            entry.bytes = None;
+            entry.availability = Availability::Placeholder;
+            entry.copy_eligible = false;
+            let rows = review_categories(&inventory.roots[0], 0);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].entries, 1);
+            assert_eq!(rows[0].known_bytes, 0);
+            assert_eq!(rows[0].unknown_sizes, 1);
+            assert_eq!(rows[0].unavailable, 1);
+            assert_eq!(rows[0].decision, Decision::RetainOriginal);
+            assert_eq!(rows[0].paths.len(), 1);
+            assert_eq!(rows[0].paths[0].bytes, None);
+            assert_eq!(rows[0].paths[0].availability, Availability::Placeholder);
+            assert!(!rows[0].paths[0].copy_eligible);
+        }
     }
 }
