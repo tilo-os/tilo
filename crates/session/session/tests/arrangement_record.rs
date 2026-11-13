@@ -33,12 +33,27 @@ fn session() -> Session {
     session_in(None)
 }
 
+/// Options for a session on this device, whose workspaces it holds.
+fn options(state: Option<std::path::PathBuf>) -> Options {
+    Options {
+        person: ADA.to_owned(),
+        state: Some(state.unwrap_or_else(crate::common::seated_state)),
+        collab: false,
+        ..Options::default()
+    }
+}
+
+/// The person at this device, as the session's own seat reads it.
+fn person() -> String {
+    tilo_session::identity::seated_person(&options(None))
+}
+
 /// A session of `person` 's: the device's desk is a workspace's layout, so it is one that holds
 /// its workspaces.
-fn session_as(person: &str) -> Session {
+fn session_as(seat: &str) -> Session {
     crate::common::headless(Options {
-        person: person.to_owned(),
-        state: Some(crate::common::seated_state()),
+        person: seat.to_owned(),
+        state: None,
         collab: false,
         ..Options::default()
     })
@@ -46,12 +61,7 @@ fn session_as(person: &str) -> Session {
 
 /// A session that keeps its state in `state` when it is given, else in this test's own device.
 fn session_in(state: Option<std::path::PathBuf>) -> Session {
-    crate::common::headless(Options {
-        person: ADA.to_owned(),
-        state: Some(state.unwrap_or_else(crate::common::seated_state)),
-        collab: false,
-        ..Options::default()
-    })
+    crate::common::headless(options(state))
 }
 
 fn step(session: &mut Session) {
@@ -198,7 +208,7 @@ fn the_persons_drag_is_in_their_record_attributed_and_undone() {
         .borrow_mut()
         .last_step()
         .expect("the move is a step of the record's history");
-    assert_eq!(who, ADA, "attributed to the person");
+    assert_eq!(who, person(), "attributed to the person");
     assert_eq!(verb, "move");
 
     // Undo puts it back.
@@ -289,7 +299,7 @@ fn a_float_is_one_step_and_snapping_back_returns_it_exactly() {
         .borrow_mut()
         .last_step()
         .expect("floating is a step of the record's history");
-    assert_eq!(who, ADA, "attributed to the person");
+    assert_eq!(who, person(), "attributed to the person");
     assert_eq!(verb, "float");
 
     // Undo takes the one step back, and redo floats it again.
@@ -301,7 +311,7 @@ fn a_float_is_one_step_and_snapping_back_returns_it_exactly() {
     );
     session
         .invoke_with_actor(
-            ADA,
+            person(),
             tilo_session::arrangement::RECORD_RESOURCE,
             "redo",
             &serde_json::json!({}),
@@ -1100,7 +1110,7 @@ fn maximizing_a_window_is_one_step_and_undone() {
 fn salted_session() -> Session {
     crate::common::headless(Options {
         person: ADA.to_owned(),
-        state: Some(crate::common::seated_state()),
+        state: None,
         collab: false,
         salt: 0x8000,
         ..Options::default()

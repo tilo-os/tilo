@@ -1195,8 +1195,13 @@ mod tests {
         let (mut tree, _, _) = busy_workspace();
         let mut pane = pane_over(&mut tree);
         show_summary(&mut pane);
+        // A row of the desk's own document: a governed row is read-only, and offers neither.
         let idx = (0..pane.timeline.row_count())
-            .find(|&i| pane.timeline.row_entry(i).is_some())
+            .find(|&i| {
+                pane.timeline
+                    .row_entry(i)
+                    .is_some_and(|entry| !pane.governance_rows.contains(&entry.id))
+            })
             .expect("a change row");
         let index = pane.timeline.row_entry_index(idx).expect("entry");
         pane.timeline.set_selection(Some((index, index)));
@@ -1329,8 +1334,10 @@ mod tests {
             .collect();
         assert_eq!(named_rows.len(), 2, "both rows are here: {named_rows:?}");
         assert!(
-            named_rows.iter().all(|s| s.starts_with("Home")),
-            "a widened row names the workspace it happened in: {named_rows:?}"
+            named_rows
+                .iter()
+                .any(|s| s.contains("Home") && s.contains("/home/user/notes")),
+            "a governed row names the workspace it happened in: {named_rows:?}"
         );
         let _ = first;
     }

@@ -105,18 +105,25 @@ impl Published for Mailbox {
     }
 }
 
+/// What a session here is started with: a device that holds its workspaces, as a person's own does.
+fn options() -> Options {
+    Options {
+        person: ADA.to_owned(),
+        state: Some(crate::common::seated_state()),
+        collab: false,
+        ..Options::default()
+    }
+}
+
 /// A session on a device that holds its workspaces, as a person's own device does: the desk it
 /// shows is a workspace's, and what the arrangement does to it is that workspace's layout.
 fn session() -> Session {
-    crate::common::headless_on(
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-        Options {
-            person: ADA.to_owned(),
-            state: Some(crate::common::seated_state()),
-            collab: false,
-            ..Options::default()
-        },
-    )
+    crate::common::headless_on(&[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)], options())
+}
+
+/// The person at this device, as the session's own seat reads it: the identity it holds names them.
+fn person() -> String {
+    tilo_session::identity::seated_person(&options())
 }
 
 fn step(session: &mut Session) {
@@ -243,7 +250,7 @@ fn a_resource_a_view_and_a_point_make_an_arrangement_entry() {
         .borrow_mut()
         .last_step()
         .expect("it is a step of the record's history");
-    assert_eq!(who, ADA, "attributed to the person");
+    assert_eq!(who, person(), "attributed to the person");
     assert_eq!(verb, "place");
     session.undo_arrangement().expect("undo");
     settle(&mut session, |session| place_of(session, place).is_none());
@@ -432,7 +439,7 @@ fn text_typed_on_the_canvas_places_what_find_finds() {
         .borrow_mut()
         .last_step()
         .expect("it is a step of the record's history");
-    assert_eq!(who, ADA);
+    assert_eq!(who, person());
     assert_eq!(verb, "place");
     let id = number(&placed.key);
     session.undo_arrangement().expect("undo");
@@ -726,6 +733,6 @@ fn the_system_open_stands_a_new_place() {
         .borrow_mut()
         .last_step()
         .expect("a step of the history");
-    assert_eq!(who, ADA);
+    assert_eq!(who, person());
     assert_eq!(verb, "place", "opening is one arranging step");
 }

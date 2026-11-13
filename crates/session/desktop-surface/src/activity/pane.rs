@@ -2255,6 +2255,11 @@ impl WorkspaceActivityPane {
         if !self.host.mutations_available() {
             return false;
         }
+        // A row of another record, or of the workspace's own document, is not the desk's to
+        // rewind: the layout's document is this device's to write.
+        if self.governance_rows.contains(id) {
+            return false;
+        }
         let origin = self.projected_origins.get(id).cloned();
         if origin
             .as_ref()
