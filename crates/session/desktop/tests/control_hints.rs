@@ -393,8 +393,9 @@ fn painted_hint(
 
 /// A hint never stands over a window's content nor over an app's activity cards, whatever the desk
 /// holds: a gesture with no control on screen is taught in the bar, right beside its clock, inside
-/// the room the bar keeps there and clear of the controls it draws itself; and one beside a
-/// window's control hangs into the window it teaches and no other.
+/// the room the bar keeps there and clear of the controls it draws itself; and the one for a
+/// window's edge covers no window, the one it teaches included: it stands beside the edge where
+/// that is clear, else in the bar's room while the edge lights.
 #[test]
 fn no_hint_stands_over_a_window_or_an_apps_cards() {
     let mut crowded = 0;
@@ -454,18 +455,19 @@ fn no_hint_stands_over_a_window_or_an_apps_cards() {
         }
     }
     assert!(crowded >= 1, "a crowded bar leaves the pill no room whole");
-    // A hint beside a window's own control hangs into that window and no other, and clear of the
-    // cards its app stands in a corner. (A maximised window has no handle to take: no hint.)
+    // The resize hint covers no window's content, the window whose edge it teaches included, nor
+    // the cards its app stands in a corner: beside the edge where that is clear, else in the bar's
+    // room. (A maximised window has no handle to take: no hint.)
     for tree in [desk_tree(2), desk_tree(3)] {
-        let (painted, row, _) =
+        let (painted, row, room) =
             painted_hint(&tree, "resize-window", ui::time::Duration::ZERO, 1280);
-        let painted = painted.expect("the resize hint shows beside its handle");
-        let under = row
-            .windows_on_desk
-            .iter()
-            .filter(|(_, content)| content.overlaps(painted))
-            .count();
-        assert!(under <= 1, "over {under} windows: {painted:?}");
+        let painted = painted.expect("the resize hint shows");
+        for (_, content) in &row.windows_on_desk {
+            assert!(
+                !painted.overlaps(*content),
+                "the resize hint {painted:?} stands over a window's content {content:?}"
+            );
+        }
         for card in HintFrame::cards_over(&row) {
             assert!(
                 !painted.overlaps(card),
@@ -474,9 +476,10 @@ fn no_hint_stands_over_a_window_or_an_apps_cards() {
         }
         let (line, _) = row.focused_edge.expect("fixture: a handle to point at");
         let at = line.p0.lerp(line.p1, 0.5);
+        let in_room = room.is_some_and(|room| room.contains_rect(painted));
         assert!(
-            painted.inflate(16.0, 16.0).contains(at),
-            "the hint stays beside its handle {line:?}: {painted:?}"
+            in_room || painted.inflate(16.0, 16.0).contains(at),
+            "the hint stands beside its handle {line:?} or in the bar's room: {painted:?}"
         );
     }
 }

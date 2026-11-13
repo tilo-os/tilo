@@ -48,8 +48,14 @@ pub struct HintPlace {
     /// Another surface's content, as one rect each (a window's body, the
     /// cards standing over the desk and in a window's corners), which the
     /// hint's card never stands over. Where there is no side of its anchor
-    /// clear of them, the hint has nowhere to stand and does not show.
+    /// clear of them, the hint stands in [`Self::bar`], or has nowhere to
+    /// stand and does not show.
     pub clear: Vec<Rect>,
+    /// The room the top bar keeps beside its clock, for a hint beside a control whose sides are
+    /// all content (a window's edge between two windows, or at the screen's): the hint stands
+    /// there instead, as one for a gesture with no control on screen does, while [`Self::edge`]
+    /// lights where the gesture is done. `None`: it stands beside its anchor or not at all.
+    pub bar: Option<Rect>,
 }
 
 impl Stand {
@@ -84,6 +90,9 @@ struct Placed {
     /// The card as last drawn, and the side its anchor is on.
     card: Rect,
     notch: Option<(PopoverSide, f64)>,
+    /// Whether the card stands in the bar: one beside its anchor with no clear side stands in the
+    /// bar's room ([`HintPlace::bar`]).
+    in_bar: bool,
 }
 
 /// A host's set of control hints, scheduled and drawn.
@@ -154,6 +163,7 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
                     place,
                     card: Rect::ZERO,
                     notch: None,
+                    in_bar: false,
                 });
             }
             (slot, _) => *slot = None,
@@ -262,15 +272,27 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
             words: &spot.words,
             keys: &spot.keys,
         };
-        let in_bar = matches!(&spot.stand, Stand::InBar { .. });
         if matches!(current.phase, Phase::Shown(_))
             || self
                 .placed
                 .as_ref()
                 .is_some_and(|placed| placed.card.is_zero_area())
         {
+            let in_bar = matches!(&spot.stand, Stand::InBar { .. });
             let size = card::size(&contents, text, theme, in_bar);
-            let Some((rect, notch)) = place(&spot, size, look.area) else {
+            let beside = place(&spot, size, look.area).map(|(rect, notch)| (rect, notch, in_bar));
+            // No side of its anchor is clear of content: it stands in the bar's room, and its
+            // edge lights where the gesture is done.
+            let placement = beside.or_else(|| {
+                let band = spot.bar?;
+                let in_room = HintPlace {
+                    stand: Stand::InBar { band },
+                    ..spot.clone()
+                };
+                let size = card::size(&contents, text, theme, true);
+                place(&in_room, size, look.area).map(|(rect, notch)| (rect, notch, true))
+            });
+            let Some((rect, notch, in_bar)) = placement else {
                 // Nowhere clear of another surface's content, nor room in the bar beside its clock
                 // for the pill whole: the hint has no place to stand and covers nothing, so it
                 // goes, as one whose anchor did.
@@ -281,11 +303,13 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
             if let Some(placed) = self.placed.as_mut() {
                 placed.card = rect;
                 placed.notch = notch;
+                placed.in_bar = in_bar;
             }
         }
         let Some(placed) = self.placed.as_mut() else {
             return;
         };
+        let in_bar = placed.in_bar;
         let age = now.saturating_duration_since(since);
         let phase = Beckon::gesture_phase(age, motion);
         let (rect, notch) = (placed.card, placed.notch);
@@ -609,6 +633,7 @@ mod place_tests {
             keys: Vec::new(),
             touch: false,
             clear,
+            bar: None,
         }
     }
 
@@ -620,6 +645,7 @@ mod place_tests {
             keys: vec!["Ctrl".into(), "K".into()],
             touch: false,
             clear,
+            bar: None,
         }
     }
 
@@ -775,6 +801,63 @@ mod place_tests {
                 })
             ),
             "a hint with nowhere to stand goes"
+        );
+    }
+
+    /// A window's edge with content on both sides (the edge of a window beside another, or at the
+    /// screen's edge): the hint covers neither window. It stands in the bar's room beside the
+    /// clock, and the edge itself lights where the person drags it.
+    #[test]
+    fn a_hint_whose_anchor_has_no_clear_side_stands_in_the_bar_with_its_edge_lit() {
+        static RESIZE: &[HintSpec<()>] = &[HintSpec {
+            id: "resize",
+            when: &[Cue::Holds(())],
+            only_while: &[],
+            learned_by: &[],
+            gesture: Gesture::ResizeEdge,
+            words: "resize",
+            touch_words: None,
+        }];
+        let area = Rect::new(0.0, 40.0, 1440.0, 900.0);
+        let band = Rect::new(780.0, 0.0, 1300.0, 32.0);
+        let left = Rect::new(32.0, 80.0, 696.0, 888.0);
+        let right = Rect::new(704.0, 80.0, 1408.0, 888.0);
+        let edge = Line::new((700.0, 96.0), (700.0, 880.0));
+        let spot = HintPlace {
+            edge: Some(edge),
+            bar: Some(band),
+            ..place_at(PopoverSide::Right, vec![left, right])
+        };
+        let placed = |_spec: &HintSpec<()>| Some(spot.clone());
+        let mut hints = HintLayer::new(RESIZE, Learned::default());
+        let at = crate::time::now();
+        hints.update(at, &|()| true, None, &placed, EffectiveMotion::default());
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        hints.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::default(),
+            at,
+            &HintLook {
+                colour: None,
+                keep_at: None,
+                area,
+            },
+        );
+        let card = hints.card_rect().expect("it stands in the bar");
+        assert!(
+            band.contains_rect(card),
+            "{card:?} in the bar's room {band:?}"
+        );
+        for content in [left, right] {
+            assert!(!card.overlaps(content), "{card:?} over {content:?}");
+        }
+        let painted = hints.painted_rect().expect("it painted");
+        assert!(
+            painted.contains(edge.p0) && painted.contains(edge.p1),
+            "the edge lights where the gesture is done"
         );
     }
 }

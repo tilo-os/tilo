@@ -36,7 +36,7 @@ pub struct HintPlaces {
     pub over: Vec<Rect>,
     /// Each shown window of the strip, as its whole rect and the content
     /// below its bar: content no hint may stand over, save the window's own,
-    /// which a hint beside its bar or its edge teaches.
+    /// which a hint below its bar teaches (one beside its edge covers none).
     pub windows_on_desk: Vec<(Rect, Rect)>,
     /// Where the shown windows' apps stand cards of their own over their
     /// content (an agent's activity), as one rect each

@@ -452,7 +452,11 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
     {
         return None;
     }
-    let clear = clear_of(frame, &over, stand.anchor());
+    // A window's edge has a window's content on its inner side and another's (or the screen's
+    // edge) on its outer one: the card covers neither, and stands in the bar's room when no spot
+    // beside the edge is clear, the edge itself lit where the person drags it.
+    let resizing = matches!(spec.gesture, Gesture::ResizeEdge);
+    let clear = clear_of(frame, &over, stand.anchor().filter(|_| !resizing));
     Some(HintPlace {
         stand,
         edge,
@@ -460,12 +464,14 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
         keys,
         touch: frame.touch,
         clear,
+        bar: frame.hint_room.filter(|_| resizing),
     })
 }
 
 /// The content no hint may stand over: the cards standing over the desk, an app's activity cards
-/// in a window's corner, and every window's content but the one `anchor` teaches (a hint beside a
-/// window's bar or edge hangs into that window, never into another's).
+/// in a window's corner, and every window's content but the one `anchor` teaches (a hint below a
+/// window's bar hangs into that window, never into another's). With no `anchor`, every window's
+/// content.
 fn clear_of(frame: &HintFrame, over: &[Rect], anchor: Option<Rect>) -> Vec<Rect> {
     // Which of the desk's windows a hint points at: its bar or its edge stands in the window.
     let own = anchor.and_then(|anchor| {
@@ -702,6 +708,34 @@ mod tests {
             .unwrap();
         let hint = place(resize, &clear).expect("its handle is on screen");
         assert_eq!(hint.clear, clear.row.over, "the cards it keeps clear of");
+    }
+
+    /// The resize hint covers no window's content, the one whose edge it teaches included (it hid
+    /// the label of the theme Settings showed chosen): it keeps clear of every window's body and,
+    /// where the edge leaves no room clear of them, stands in the bar's room with the edge lit.
+    /// The move hint still hangs below its own window's bar.
+    #[test]
+    fn the_resize_hint_covers_no_windows_content_its_own_included() {
+        let mut frame = frame();
+        let left = (
+            Rect::new(32.0, 40.0, 700.0, 888.0),
+            Rect::new(32.0, 80.0, 700.0, 888.0),
+        );
+        let right = (
+            Rect::new(720.0, 40.0, 1408.0, 888.0),
+            Rect::new(720.0, 80.0, 1408.0, 888.0),
+        );
+        frame.row.windows_on_desk = vec![left, right];
+        let spec = |gesture| HINTS.iter().find(|s| s.gesture == gesture).unwrap();
+        let resize = place(spec(Gesture::ResizeEdge), &frame).expect("its edge is on screen");
+        assert!(resize.clear.contains(&left.1) && resize.clear.contains(&right.1));
+        assert_eq!(
+            resize.bar, frame.hint_room,
+            "the bar's room is where it stands instead"
+        );
+        let moving = place(spec(Gesture::MoveWindow), &frame).expect("its bar is on screen");
+        assert!(!moving.clear.contains(&left.1) && moving.clear.contains(&right.1));
+        assert_eq!(moving.bar, None);
     }
 
     // A window asking the person a question has no place for the hints anchored to it: the one that
