@@ -1086,12 +1086,23 @@ fn restoration(
         .as_ref()
         .and_then(|context| context.action.as_ref())
         .ok_or("verified redo action absent")?;
-    local(
-        registry
-            .decode(recorded)
-            .map_err(|error| error.to_string())?,
-    )
-    .map(Some)
+    local(recorded_action(registry, recorded)?).map(Some)
+}
+
+/// The action a recorded entry names, as it ran: its large parts, kept as
+/// content in the record's store, read back before it decodes, and asked of
+/// the record's route when this device lacks them.
+fn recorded_action(
+    registry: &tilo_actions::ActionRegistry,
+    recorded: &tilo_actions::EncodedAction,
+) -> Result<Box<dyn tilo_actions::Action>, String> {
+    let resolved = registry
+        .resolve(recorded)
+        .map_err(|error| error.to_string())?
+        .map_err(|missing| missing.to_string())?;
+    registry
+        .decode(&resolved)
+        .map_err(|error| error.to_string())
 }
 
 /// History applies only actions it may run here.

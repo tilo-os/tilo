@@ -3,13 +3,15 @@
 //! Every change records the action it ran ([`crate::ActionContext::action`])
 //! so a receiver can replay it. An action whose payload is larger than the
 //! history budget (a paste with images inline) still records it: each long
-//! text or byte run of its payload is kept, sealed, in the content store the
-//! host lends ([`keep_content_in`]) on the device that invokes the action, and
-//! the recorded payload names it by the reference that store answered. Only
-//! the record's readers hold the key a reference carries; whoever stores or
-//! carries the part holds ciphertext.
+//! text or byte run of its payload is kept, sealed, in the content store of
+//! the window whose code records the action ([`register`]), and the recorded
+//! payload names it by the reference that store answered. Only the record's
+//! readers hold the key a reference carries; whoever stores or carries the
+//! part holds ciphertext.
 //! A receiver resolves those references from its content store before it
-//! replays; until the content arrives the change is held, as a change whose
+//! replays. That store is the record's ([`crate::ActionRegistry`] keeps it),
+//! so the part is asked of the record's route and arrives as the record's
+//! other content does; until it does, the change is held, as a change whose
 //! app surface has not arrived is. A receiver that applies the action itself
 //! (its envelope carries it whole) keeps each part exactly as its writer
 //! sealed it: the reference carries the key, so the same bytes seal to the
@@ -24,6 +26,7 @@ use std::collections::BTreeMap;
 
 use serde_json::{Map, Value};
 use tilo_content::ContentStore;
+use tilo_wake::WakeHandle;
 
 use crate::{ActionError, EncodedAction};
 
@@ -81,69 +84,96 @@ impl IntoIterator for ContentParts {
 }
 
 thread_local! {
-    static STORE: std::cell::RefCell<Option<ContentStore>> = const { std::cell::RefCell::new(None) };
+    /// The content stores of this process's windows, by the wake scope their
+    /// code runs in.
+    static WINDOW_STORES: std::cell::RefCell<Vec<(WakeHandle, ContentStore)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// Keep the large parts of the actions this thread records in `store` (the
-/// window's content store, which seals what it keeps), and read the parts a
-/// received change names from it, so recorded actions replay wherever their
-/// content reaches. The host sets it once per thread that runs actions.
-pub fn keep_content_in(store: ContentStore) {
-    STORE.with(|current| *current.borrow_mut() = Some(store));
+/// Keep `store` as the content store of the window whose wake scope `window`
+/// names: where the large parts of the actions its code records are kept,
+/// sealed, and where a recorded action's parts are read from, so recorded
+/// actions replay wherever their content reaches. The host sets it once per
+/// window, with the store it lent the window
+/// ([`crate::ActionRegistry::connect_content`]); windows that closed are
+/// forgotten.
+pub fn register(window: &WakeHandle, store: ContentStore) {
+    WINDOW_STORES.with(|stores| {
+        let mut stores = stores.borrow_mut();
+        stores.retain(|(handle, _)| handle.is_active() && !handle.same_open_scope(window));
+        stores.push((window.clone(), store));
+    });
 }
 
-/// The content `reference` names, from this thread's store.
-pub(crate) fn read_here(reference: &str) -> Option<Vec<u8>> {
-    STORE.with(|store| {
-        store
+/// The content store of the window whose code is running: the one registered
+/// for the wake scope entered now. `None` outside a window, or for one whose
+/// host lent no store.
+#[must_use]
+pub fn current() -> Option<ContentStore> {
+    let here = WakeHandle::new();
+    WINDOW_STORES.with(|stores| {
+        stores
             .borrow()
-            .as_ref()
-            .and_then(|store| store.read(reference))
+            .iter()
+            .find(|(handle, _)| handle.same_open_scope(&here))
+            .map(|(_, store)| store.clone())
     })
 }
 
-/// Keep `bytes` in this thread's store, answering the reference the
-/// recorded action names them by: sealed under a key of their own when the
-/// store seals. Without a store, their plain address, and nothing keeps them.
+/// The store this thread's window records its actions in: the entered scope's
+/// ([`current`]), else the last one this thread registered for a window. A
+/// window's callback runs on its own thread and may dispatch an action
+/// outside the scope its toolkit enters for a pass; what it records is still
+/// that window's.
+pub(crate) fn recording_store() -> Option<ContentStore> {
+    current().or_else(|| {
+        WINDOW_STORES.with(|stores| stores.borrow().last().map(|(_, store)| store.clone()))
+    })
+}
+
+/// Keep `bytes` in the content store of the window whose code records them,
+/// answering the reference the recorded action names them by: sealed under a
+/// key of their own when the store seals. Without a store, their plain
+/// address, and nothing keeps them.
 fn put_here(bytes: &[u8]) -> Result<String, ActionError> {
-    STORE.with(|store| match store.borrow().as_ref() {
+    match recording_store() {
         Some(store) => store.put(bytes).map_err(|error| {
             ActionError::Refused(format!(
                 "a large part of the action could not be kept: {error}"
             ))
         }),
         None => Ok(tilo_content::hash_bytes(bytes)),
-    })
+    }
 }
 
-/// Keep, in this thread's store, the parts `env`'s recorded action names,
-/// sealed exactly as its writer sealed them: what a device that applies a
-/// received action holds of it afterwards.
-pub(crate) fn keep(env: &crate::ActionEnvelope) {
+/// Keep, in `store` — the content store of the record whose action `env`
+/// applies, or the running window's when none is named — the parts `env`'s
+/// recorded action names, sealed exactly as its writer sealed them: what a
+/// device that applies a received action holds of it afterwards.
+pub(crate) fn keep(env: &crate::ActionEnvelope, store: Option<&ContentStore>) {
     let Ok(content) = env.recorded_content() else {
         return;
     };
-    STORE.with(|store| {
-        let Some(store) = store.borrow().clone() else {
-            return;
-        };
-        for (reference, bytes) in content {
-            if store.has(&reference) {
-                continue;
-            }
-            if let Err(error) = store.put_as(&reference, &bytes) {
-                tracing::warn!(%error, "an action's content could not be kept");
-            }
+    let Some(store) = store.cloned().or_else(recording_store) else {
+        return;
+    };
+    for (reference, bytes) in content {
+        if store.has(&reference) {
+            continue;
         }
-    });
+        if let Err(error) = store.put_as(&reference, &bytes) {
+            tracing::warn!(%error, "an action's content could not be kept");
+        }
+    }
 }
 
 impl EncodedAction {
     /// This action as its change records it: every text or byte run of at
     /// least `threshold` bytes, and every long list of small parts, kept as
-    /// content in this thread's store ([`keep_content_in`]) and named by the
-    /// reference it answered. Run once, where the action is invoked: a
-    /// sealing store draws a fresh key for each part.
+    /// content in the store of the window whose code records it
+    /// ([`register`]) and named by the reference it answered. Run once,
+    /// where the action is invoked: a sealing store draws a fresh key for
+    /// each part.
     pub(crate) fn with_content_parts(&self, threshold: usize) -> Result<Self, ActionError> {
         self.with_content_parts_in(threshold, &mut put_here)
     }

@@ -700,8 +700,8 @@ impl HostContext {
             tracing::warn!(%error, "the app's surface could not be kept");
         }
         // The large parts of the actions this window records, and of those
-        // it replays, live here too, sealed as the window's record content is.
-        tilo_actions::keep_content_in(store.clone());
+        // it replays, live here too, sealed as the window's record content
+        // is: [`tilo_resource::content::register`] above keeps it for them.
         self.content = Some(store);
     }
     pub fn content(&self) -> Option<&tilo_content::ContentStore> {
@@ -1591,7 +1591,7 @@ impl AppComponent {
     pub fn new(
         context: HostContext,
         mut root: Box<dyn AppWidget>,
-        registry: tilo_actions::ActionRegistry,
+        mut registry: tilo_actions::ActionRegistry,
     ) -> Self {
         // The actual root already exists. Retire before its destructor if its
         // first SDK control-install callback unwinds, even before Self exists.
@@ -1605,6 +1605,13 @@ impl AppComponent {
             crate::control_custody::CustodyAttachment::Initial,
         );
         context.control_domain().finish_initial_installation();
+        // The large parts of the actions this window records, and of those it
+        // replays from another device, live in its record's content store:
+        // the registry keeps it, so a change decodes on any thread, fetching
+        // what this device lacks on the record's route.
+        if let Some(content) = context.content() {
+            registry.connect_content(content.clone());
+        }
         let registry_owner = context.construction.clone();
         construction.disarm();
         Self {
@@ -1639,7 +1646,11 @@ impl AppComponent {
     #[cfg(feature = "native")]
     pub(crate) fn install_reloaded(&mut self, root: crate::app::DevRoot) {
         self.root = Some(root.view);
-        self.registry = Some(root.registry);
+        let mut registry = root.registry;
+        if let Some(content) = self.context.content() {
+            registry.connect_content(content.clone());
+        }
+        self.registry = Some(registry);
     }
 
     /// Return only weak proxies; payload ownership remains with this component.

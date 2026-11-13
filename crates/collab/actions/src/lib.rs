@@ -163,7 +163,7 @@ pub use action::{
 pub use agent_disclosure::hidden_from_agents;
 pub use appearance::{Appearance, AppearanceError, Persona};
 pub use content::{
-    CONTENT_PART_THRESHOLD, CONTENT_REFERENCE_KEY, ContentParts, MissingContent, keep_content_in,
+    CONTENT_PART_THRESHOLD, CONTENT_REFERENCE_KEY, ContentParts, MissingContent, current, register,
 };
 pub use context::{
     AGENT_TASK_PARTICIPANT_PREFIX, ActionApp, ActionContext, ActionFacet, ActionInvoker,
