@@ -3,3 +3,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 dist/
+# The native part, copied in for a run against a built one (tools/ci/sdk-native.sh).
+src/tilo/_native.*.so
+src/tilo/_native.so
+src/tilo/tilo-automerge-worker

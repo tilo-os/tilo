@@ -10,6 +10,12 @@ dependencies = ["httpx>=0.27"]
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.24"]
 
+# The published wheel is the HTTP client alone, pure Python. The SDK's native part,
+# `tilo._native` (native/, a crate of the Tilo workspace; `AsyncTilo.host(...)`), is built
+# by tools/ci/sdk-native.sh beside it; a checkout or wheel without it raises ImportError from
+# `AsyncTilo.host` only. Platform wheels that carry it, with the `tilo-automerge-worker`
+# program it starts its sandboxed workers as, come from a maturin build in the workspace
+# (docs/publishing.md#native-packages).
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -17,7 +23,13 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/tilo"]
 
+# uv runs the suite against src/ as it is (pytest's `pythonpath`) and never builds the project:
+# building it compiles the native part, which the HTTP client's suite does not need.
+[tool.uv]
+package = false
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+pythonpath = ["src"]

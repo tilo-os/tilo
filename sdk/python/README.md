@@ -45,9 +45,9 @@ The sync client has the same surface without `await`: `from tilo import Tilo`.
 
 - **One key, one transport.** `AsyncTilo(url=None, key=None)` reads
   `TILO_API_URL` (default `https://api.tilo.sh`) and `TILO_API_KEY`, and sends
-  them as `Authorization: Bearer` over httpx. `AsyncTilo.host(origin,
-  key_file=…)` instead serves the same `/v1` routes in process, against a Tilo
-  host, through the `tilo._native` extension.
+  them as `Authorization: Bearer` over httpx. `AsyncTilo.host(key_file)`
+  instead serves the same `/v1` routes in process, through the `tilo._native`
+  extension, reaching the host the key file names as a device of the person.
 - **Account and workspaces.** `GET /v1/workspaces` lists what the key reaches,
   `POST /v1/workspaces` makes one, `DELETE /v1/workspaces/{id}` deletes one
   with everything in it. `GET /v1/account` is the person's plan and what each

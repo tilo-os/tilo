@@ -35,7 +35,7 @@ class FakeNative:
 
 def module(native: FakeNative) -> types.ModuleType:
     made = types.ModuleType("tilo._native")
-    made.connect = lambda origin, key_file=None: native  # type: ignore[attr-defined]
+    made.Host = lambda key_file: native  # type: ignore[attr-defined]
     return made
 
 
@@ -43,7 +43,7 @@ async def test_host_without_the_extension_says_what_to_install(monkeypatch):
     monkeypatch.setitem(sys.modules, "tilo._native", None)
 
     with pytest.raises(ImportError) as raised:
-        AsyncTilo.host("/srv/tilo", key_file="/home/jane/.config/tilo/key")
+        AsyncTilo.host("/home/jane/.config/tilo/key.json")
 
     assert "tilo-sdk[native]" in str(raised.value)
 
@@ -53,7 +53,7 @@ async def test_host_serves_the_same_routes_in_process(monkeypatch):
     native = FakeNative(api)
     monkeypatch.setitem(sys.modules, "tilo._native", module(native))
 
-    client = AsyncTilo.host("/srv/tilo", key_file="/home/jane/.config/tilo/key")
+    client = AsyncTilo.host("/home/jane/.config/tilo/key.json")
     try:
         listing = await client.workspaces.list()
         apps = await client.workspace(WORKSPACE_ID).ls()

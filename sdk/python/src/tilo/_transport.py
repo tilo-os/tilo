@@ -237,8 +237,11 @@ class NativeTransport(Transport):
             await close()
 
 
-def native_transport(origin: str, key_file: Any = None) -> NativeTransport:
-    """The in-process transport of the Tilo host at `origin`, as the key in `key_file`.
+def native_transport(key_file: Any) -> NativeTransport:
+    """The in-process transport of the Tilo host `key_file` names, as its key.
+
+    `key_file` is a key file's path, or its contents (`{"host", "name", "key",
+    "cert"}`): `tilo key export` writes one for a device of the person.
 
     It is the Rust extension `tilo-sdk[native]` installs, which serves the
     same `/v1` routes in process: without it, a client reaches a host only
@@ -252,9 +255,7 @@ def native_transport(origin: str, key_file: Any = None) -> NativeTransport:
             'extension, which this install does not have: install it with `uv add "tilo-sdk[native]"`, '
             "or reach the host over HTTP instead: AsyncTilo(url=..., key=...)"
         ) from error
-    return NativeTransport(
-        _native.connect(origin, key_file=None if key_file is None else str(key_file))
-    )
+    return NativeTransport(_native.Host(key_file if isinstance(key_file, dict) else str(key_file)))
 
 
 @dataclass(frozen=True)

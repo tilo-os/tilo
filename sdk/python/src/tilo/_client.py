@@ -187,15 +187,15 @@ class AsyncTilo:
         self.loop: Any = None
 
     @classmethod
-    def host(cls, origin: str, key_file: Any = None) -> AsyncTilo:
-        """A client of the Tilo host at `origin`, served in process.
+    def host(cls, key_file: Any) -> AsyncTilo:
+        """A client of the Tilo host `key_file` names, reached directly.
 
-        It is the same `/v1` a server answers over HTTP, served by the host
-        itself from the Rust extension `tilo._native`: no socket, and no key
-        over the wire. `key_file` names this client's key, a device of the
-        person: the host makes one there the first time.
+        It is the same `/v1` an API server answers over HTTP, served in this
+        process by the Rust extension `tilo._native`, which dials the host as
+        a device of the person with the key the file holds (`tilo key export`
+        writes one). `key_file` is the file's path, or its contents.
         """
-        return cls(transport=native_transport(origin, key_file))
+        return cls(transport=native_transport(key_file))
 
     # -- what the sync client and this one share -------------------------
 

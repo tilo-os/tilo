@@ -317,6 +317,9 @@ def execute(block: Block, repository: Path, api: Path, tilo: Path | None, timeou
         if block.lang == "typescript":
             (directory / TYPESCRIPT_CONFIG).write_text(typescript_configuration(repository), encoding="utf-8")
         environment = dict(os.environ)
+        if block.lang == "python":
+            # `import tilo` is the tree's: uv syncs the SDK's dependencies, not the SDK.
+            environment["PYTHONPATH"] = str(repository / "sdk/python/src")
         if block.lang == "sh":
             # `tilo` on PATH, as the command is installed.
             assert tilo is not None
