@@ -53,7 +53,10 @@ view canvas(a: Arrangement, name: Text, framed: Bool, lists: Bool) {
                         y: s.canvas_y,
                         width: pin_width(s),
                         height: pin_height(s),
+                        band: framed and composed(p),
                     ) {
+                        // A place's handle shows in a band over its view: the pin stands that
+                        // much higher, so the view's top is where the place was put.
                         if framed {
                             canvas_place(a, p, lists and p.key == front_place(a), fill)
                         } else {

@@ -29,8 +29,8 @@ use crate::widget::{Decorator, Element, EventCtx, Widget};
 enum Stands {
     /// Centred on the row's top edge at its trailing corner.
     Straddling,
-    /// In a band of their own over the row, at its trailing end.
-    Above,
+    /// In a band of their own this tall over the row, at its trailing end.
+    Above(f64),
 }
 
 /// How the toolbar is shown, shared by the row that decides and the toolbar that draws.
@@ -66,16 +66,17 @@ impl HoverToolbar {
         )
     }
 
-    /// `row` filling the room it is given under a band its controls are shown in — content
-    /// standing at a size of its own, a place on a canvas — with `controls` at the band's trailing
-    /// end, over the content's top edge rather than on it, on hover and focus: the band is kept
-    /// whether they are shown or not, so showing them covers nothing of the content and moves
-    /// nothing, and the pointer that went to them is still over what they belong to.
+    /// `row` filling the room it is given under a band `band` logical pixels tall its controls
+    /// are shown in — content standing at a size of its own, a place on a canvas — with
+    /// `controls` at the band's trailing end, over the content's top edge rather than on it, on
+    /// hover and focus: the band is kept whether they are shown or not, so showing them covers
+    /// nothing of the content and moves nothing, and the pointer that went to them is still over
+    /// what they belong to.
     #[must_use]
-    pub fn above(row: Element, controls: Vec<Element>) -> Self {
+    pub fn above(row: Element, controls: Vec<Element>, band: f64) -> Self {
         let mut slot = crate::widget::arrange::Slot::new(row);
         slot.fit = crate::widget::arrange::Fit::fill(1.0);
-        Self::around(slot, controls, Stands::Above)
+        Self::around(slot, controls, Stands::Above(band))
     }
 
     /// The row in `row`, with `controls` shown on hover and focus where `stands` says.
@@ -101,13 +102,28 @@ impl HoverToolbar {
                 .push_straddling(Box::new(face), At::TopTrailing),
             // The band over the content, the controls at its trailing end, a tight step above
             // the content's edge.
-            Stands::Above => {
-                let mut band = crate::widget::arrange::Slot::new(Box::new(face));
-                band.fit = crate::widget::arrange::Fit::hug().align(Align::End);
+            Stands::Above(height) => {
+                // The band is as tall as it is told whatever the controls are, so the content
+                // under it stands where its pin says; the controls sit at its trailing end, on
+                // its foot.
+                let bar = Stack::row()
+                    .fill_width()
+                    .fill_height()
+                    .distribute(crate::widget::arrange::Distribute::End)
+                    .align(Align::End)
+                    .push(Box::new(face));
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "a band a few dozen pixels tall"
+                )]
+                let tall = crate::widget::arrange::Length::Dp(height as f32);
+                let mut band = crate::widget::arrange::Slot::new(Box::new(bar));
+                band.fit = crate::widget::arrange::Fit::fill(1.0)
+                    .height(crate::widget::arrange::Sizing::hug().min(tall).max(tall));
                 let column = Stack::stack()
                     .fill_width()
                     .fill_height()
-                    .gap(Rhythm::Tight)
+                    .gap(Rhythm::None)
                     .push_slot(band)
                     .push_slot(row);
                 let mut whole = crate::widget::arrange::Slot::new(Box::new(column));

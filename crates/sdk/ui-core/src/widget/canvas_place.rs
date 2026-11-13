@@ -26,8 +26,8 @@ use crate::tokens::{Rhythm, SpacingStep, TextRole};
 use crate::widget::arrange::{Align, Fit, Slot, Stack};
 use crate::widget::primitives::{SurfaceLevel, paint_surface};
 use crate::widget::{
-    ContextMenuArea, Decorator, DragSource, Element, HoverToolbar, MenuItemProps, Spacer, Text,
-    Widget,
+    ContextMenuArea, Decorator, DragSource, DrawChild, Element, HoverToolbar, MenuItemProps,
+    Spacer, Text, Widget,
 };
 
 /// A resource's view standing on a canvas: the view on the window surface, with a handle shown
@@ -57,6 +57,11 @@ pub struct PlaceProps {
     #[component(slot)]
     pub items: Vec<MenuItemProps>,
 }
+
+/// How tall the band a place keeps over its view for its handle stands, in logical pixels: a
+/// control's row in a floating surface, a tight step above the view. The canvas stands a place's
+/// pin this much over the point it was put at, so the view's own top is at the point.
+pub const PLACE_BAND: f64 = 44.0;
 
 /// See the module docs.
 pub struct CanvasPlace {
@@ -88,7 +93,7 @@ impl Described for CanvasPlace {
         let items = Rc::new(RefCell::new(items));
         let props_name = name.clone();
         let props_carries = carries.clone().unwrap_or_default();
-        let title = title_of(&name);
+        let title = title_of(name.as_deref());
         let mut label = Text::new(&title).with_role(TextRole::Label).dimmed();
         label = label.with_truncate(true);
         let handle = Stack::row()
@@ -110,6 +115,7 @@ impl Described for CanvasPlace {
         let mut slot = Slot::new(body.unwrap_or_else(empty));
         slot.fit = Fit::fill(1.0);
         let ground = PlaceGround {
+            name: name.clone(),
             column: Stack::stack()
                 .fill_width()
                 .fill_height()
@@ -120,7 +126,7 @@ impl Described for CanvasPlace {
         // is true then. It stands around the view and the handle both, so a right-click on the
         // handle — or on a part of the view that has no menu of its own — opens it.
         let offered = Rc::clone(&items);
-        let toolbar = HoverToolbar::above(Box::new(ground), vec![handle]);
+        let toolbar = HoverToolbar::above(Box::new(ground), vec![handle], PLACE_BAND);
         let menu = ContextMenuArea::new(Box::new(toolbar), move |_| {
             offered
                 .borrow()
@@ -131,7 +137,7 @@ impl Described for CanvasPlace {
         });
         Self {
             menu,
-            name: title_of(&props_name),
+            name: title_of(props_name.as_deref()),
             carries: props_carries,
             items,
         }
@@ -142,7 +148,7 @@ impl Described for CanvasPlace {
     fn set_props(&mut self, props: PlaceProps) -> bool {
         let kept = props.controls.is_none()
             && props.body.is_none()
-            && title_of(&props.name) == self.name
+            && title_of(props.name.as_deref()) == self.name
             && props.carries.unwrap_or_default() == self.carries;
         if kept {
             *self.items.borrow_mut() = props.items;
@@ -152,8 +158,8 @@ impl Described for CanvasPlace {
 }
 
 /// The name a place's handle shows.
-fn title_of(name: &Option<String>) -> String {
-    name.clone().unwrap_or_default()
+fn title_of(name: Option<&str>) -> String {
+    name.unwrap_or_default().to_owned()
 }
 
 impl Decorator for CanvasPlace {
@@ -170,20 +176,13 @@ impl Decorator for CanvasPlace {
     fn name(&self) -> &'static str {
         "Place"
     }
-
-    /// The place is the group assistive technology reads, named for what it shows: the whole of
-    /// it, the band its handle shows in and the view under it.
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        Some(
-            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
-                .with_optional_name((!self.name.is_empty()).then(|| self.name.clone())),
-        )
-    }
 }
 
 /// The place's ground: the window surface under its view, which is cut at the surface's rounded
-/// edge so nothing it holds is seen past it.
+/// edge so nothing it holds is seen past it. It is the place as assistive technology reads it,
+/// named for what it shows: the place's surface, where it was put, its handle's band over it.
 struct PlaceGround {
+    name: Option<String>,
     column: Stack,
 }
 
@@ -200,6 +199,13 @@ impl Decorator for PlaceGround {
 
     fn name(&self) -> &'static str {
         "PlaceGround"
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        Some(
+            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+                .with_optional_name(self.name.clone()),
+        )
     }
 
     fn child_clip_rect(&self) -> Option<Rect> {
@@ -228,7 +234,8 @@ impl Decorator for PlaceGround {
             transform,
             &RoundedRect::from_rect(rect, radius),
         );
-        self.column.draw(scene, transform, text, &on, presence);
+        self.column
+            .draw_child(scene, transform, text, &on, presence);
         scene.pop_layer();
     }
 }

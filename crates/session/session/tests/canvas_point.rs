@@ -205,9 +205,10 @@ fn escape_lets_go_of_the_words_typed_at_the_caret() {
     );
 }
 
-/// A rectangle dragged on free ground and "my mails" said in it: the inbox fills the rectangle.
-#[test]
-fn a_dragged_rectangle_is_filled_by_what_is_found() {
+/// Drag a rectangle on free ground and say `text` in it: what it finds, by `needle` in its record,
+/// fills the rectangle on screen — its surface at the rectangle's corner and its size, the
+/// handle's band standing over it.
+fn the_rectangle_is_filled(text: &str, needle: &str) {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
@@ -222,27 +223,63 @@ fn a_dragged_rectangle_is_filled_by_what_is_found() {
         "the caret stands a step inside the rectangle's top left: {:?} for {from:?}",
         (cx, cy)
     );
-    crate::common::say(&mut session, "my mails");
+    crate::common::say(&mut session, text);
 
+    let found = wait_for(&mut session, "what it finds placed", |session| {
+        places(session)
+            .into_iter()
+            .find(|place| place.record.contains(needle))
+    });
+    let (px, py, pw, ph) = wait_for(
+        &mut session,
+        format!("{needle} filling the rectangle {from:?}..{to:?} on screen"),
+        |session| {
+            place_on_screen(session, &found)
+                .filter(|(_, _, pw, ph)| near(*pw, to.0 - from.0) && near(*ph, to.1 - from.1))
+        },
+    );
+    assert!(
+        near(px, from.0) && near(py, from.1),
+        "its surface stands at the rectangle's corner: {:?} for {from:?}; {found:?}",
+        (px, py, pw, ph),
+    );
+}
+
+/// A rectangle dragged on free ground and "my mails" said in it: the inbox fills the rectangle.
+#[test]
+fn a_dragged_rectangle_is_filled_by_what_is_found() {
+    the_rectangle_is_filled("my mails", "so.tilo.lang.mail");
+}
+
+/// The notes found in a rectangle fill it, as the inbox does: the place is the rectangle's
+/// height, never the height its view would hug.
+#[test]
+fn a_dragged_rectangle_is_filled_by_the_notes() {
+    the_rectangle_is_filled("my notes", "so.tilo.lang.notes");
+}
+
+/// A click and what is found there: its surface's top-left stands at the point clicked, the
+/// handle's band over it.
+#[test]
+fn what_is_found_at_a_click_stands_at_the_point() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
+    let at = (x + w * 0.1, y + h * 0.2);
+    point_and_say(&mut session, at, "my mails");
     let inbox = wait_for(&mut session, "the inbox placed", |session| {
         places(session)
             .into_iter()
             .find(|place| place.record.contains("so.tilo.lang.mail"))
     });
-    let (px, py, pw, ph) = wait_for(&mut session, "the inbox on screen", |session| {
+    let (px, py, _, _) = wait_for(&mut session, "the inbox on screen", |session| {
         place_on_screen(session, &inbox)
     });
     assert!(
-        near(px, from.0) && near(py, from.1),
-        "the inbox stands at the rectangle's corner: {:?} for {from:?}; {inbox:?} named {:?}",
-        (px, py, pw, ph),
-        session.shell_controls(&inbox.name)
-    );
-    assert!(
-        near(pw, to.0 - from.0) && near(ph, to.1 - from.1),
-        "the inbox fills the rectangle: {:?} for {:?}",
-        (pw, ph),
-        (to.0 - from.0, to.1 - from.1)
+        near(px, at.0) && near(py, at.1),
+        "its surface's top-left is where the person clicked: {:?} for {at:?}",
+        (px, py)
     );
 }
 

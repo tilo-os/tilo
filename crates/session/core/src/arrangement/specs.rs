@@ -1,7 +1,10 @@
 //! The actions that float a place and snap it back, and a strip's own actions, as the
 //! arrangement publishes them (`super::resources`).
 
-use super::*;
+use super::{
+    ActionSpec, ArrangementAction, FLOAT_HEIGHT, FLOAT_INSET, FLOAT_WIDTH, FloatCorner, FloatPlace,
+    Item, PLACE_KIND, ParamType, ROW_KIND, action, count_of, named, optional, required,
+};
 
 /// The actions that float a place and snap it back, its key bound into each as every place action's
 /// is.

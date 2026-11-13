@@ -2,7 +2,11 @@
 //! (`super::resources`): by naming it and one of its views, by what a text finds, and the
 //! system's `open`.
 
-use super::*;
+use super::{
+    ActionSpec, ArrangementAction, DEFAULT_HEIGHT, DEFAULT_WIDTH, FLOAT_HEIGHT, FLOAT_INSET,
+    FLOAT_WIDTH, FloatCorner, FloatPlace, Item, PLACE_KIND, ParamType, action, count, float_coord,
+    float_side, id_text, named, optional, required, text,
+};
 
 /// The actions that put a resource on the canvas: by naming it and one of its views, or by what a
 /// text finds (shell.md §8).

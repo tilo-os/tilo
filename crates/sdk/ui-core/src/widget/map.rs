@@ -58,6 +58,15 @@ const ZOOM_PER_DETENT: f64 = 1.1;
 /// one section step.
 const ARRIVAL_MARGIN: f64 = crate::tokens::Spacing::BASE.rhythm.section as f64;
 
+/// The band a pin keeps over its view: a place's handle band, or none.
+fn band_of(band: bool) -> f64 {
+    if band {
+        crate::widget::canvas_place::PLACE_BAND
+    } else {
+        0.0
+    }
+}
+
 /// A pin's place, in canvas pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PinPlace {
@@ -67,6 +76,10 @@ pub struct PinPlace {
     /// How tall it stands, when the arrangement says (a window on a desktop); `None` lets its
     /// view say, as a note on a canvas is as tall as what it holds.
     pub height: Option<f64>,
+    /// The room over the pin's top edge its view keeps for a handle, in screen pixels: the pin
+    /// stands that much higher and taller, so its view's own top stays at `y` (a place on a
+    /// canvas, whose handle shows over it). Zero for a pin with nothing over it.
+    pub band: f64,
 }
 
 /// The camera: which canvas point stands at the viewport's top-leading corner, and how many
@@ -187,6 +200,10 @@ pub struct MapPinProps {
     pub width: Option<i64>,
     /// How tall it stands, in canvas pixels; without it, as tall as its view asks.
     pub height: Option<i64>,
+    /// Whether its view keeps a place's handle band over its top edge
+    /// ([`crate::widget::canvas_place::PLACE_BAND`]): the pin stands that much higher, so the
+    /// view's own top is at `y`.
+    pub band: bool,
     /// What the pin stands for, as the view names it: what pointing at the pin (`context`) and
     /// sizing it (`resize`) report. Without it, the pin's key.
     #[component(data)]
@@ -868,15 +885,18 @@ impl Map {
                         Size {
                             width: MeasureConstraint::Exact(f32_of(width)),
                             height: place.height.map_or(MeasureConstraint::Intrinsic, |height| {
-                                MeasureConstraint::Exact(f32_of((height * camera.zoom).max(1.0)))
+                                MeasureConstraint::Exact(f32_of(
+                                    (height * camera.zoom).max(1.0) + place.band,
+                                ))
                             }),
                         },
                     )?
                     .size;
                 let left = (place.x - camera.origin.x) * camera.zoom;
-                let top = (place.y - camera.origin.y) * camera.zoom;
+                // A band over the view stands above the pin's point, so the view's top is there.
+                let top = (place.y - camera.origin.y) * camera.zoom - place.band;
                 let height = place.height.map_or(f64::from(size.height), |height| {
-                    (height * camera.zoom).max(1.0)
+                    (height * camera.zoom).max(1.0) + place.band
                 });
                 let mut rect = Rect::from_origin_size((left, top), (width, height));
                 // The pin is laid out where its motion has come to this frame, so what stands
@@ -940,6 +960,7 @@ impl Described for Map {
                 y: pin.y.unwrap_or(0) as f64,
                 width: (pin.width.unwrap_or(360) as f64).max(1.0),
                 height: pin.height.map(|height| (height as f64).max(1.0)),
+                band: band_of(pin.band),
             };
             if let Some(item) = pin.item.filter(|item| !item.is_empty()) {
                 map.items.insert(pin.key.clone(), item);
@@ -1001,6 +1022,7 @@ impl Described for Map {
                 y: pin.y.unwrap_or(0) as f64,
                 width: (pin.width.unwrap_or(360) as f64).max(1.0),
                 height: pin.height.map(|height| (height as f64).max(1.0)),
+                band: band_of(pin.band),
             };
         }
         *self.places_cell.borrow_mut() = self.pins.iter().map(|(_, place, _)| *place).collect();
@@ -1073,6 +1095,7 @@ impl SlotViews for Map {
                     y: 0.0,
                     width: 360.0,
                     height: None,
+                    band: 0.0,
                 },
                 Box::new(crate::widget::Spacer::token(crate::tokens::SpacingStep::S0)),
             ),
@@ -1432,12 +1455,20 @@ impl Map {
                 if let Some(drag) = self.edge_drag.take() {
                     let rect = drag.rect();
                     let zoom = self.camera.zoom.max(f64::EPSILON);
+                    // The band over a place's view is the handle's, not the place's size.
+                    let band = self
+                        .pins
+                        .iter()
+                        .find(|(key, _, _)| *key == drag.key)
+                        .map_or(0.0, |(_, place, _)| place.band);
                     if rect != drag.from {
                         self.resize.fire(Some(crate::component::Value::List(vec![
                             crate::component::Value::Text(self.item_of(drag.key)),
                             crate::component::Value::List(vec![
                                 crate::component::Value::Int((rect.width() / zoom).round() as i64),
-                                crate::component::Value::Int((rect.height() / zoom).round() as i64),
+                                crate::component::Value::Int(
+                                    ((rect.height() - band) / zoom).round() as i64,
+                                ),
                             ]),
                         ])));
                     }

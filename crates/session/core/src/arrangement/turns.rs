@@ -2,7 +2,7 @@
 //! view stands where the person asked, and the places the agent's steps in it make fill the
 //! rectangle the person dragged, or stand beside the turn.
 
-use super::*;
+use super::{Arrangement, ArrangementAction, Asked, Busy, locate};
 
 /// The view a turn stands on the canvas through (canvas.md §3): the person's line, the agent's
 /// reply under it, its steps folded.
@@ -90,7 +90,7 @@ impl Arrangement {
     /// asked (canvas.md §3); the others keep waiting. Answers how many stood.
     pub fn stand_asked(&mut self, find: FindTurn<'_>, busy: Busy) -> usize {
         let awaiting = std::mem::take(&mut *self.awaiting.borrow_mut());
-        let mut stood = 0;
+        let mut stood: usize = 0;
         for ask in awaiting {
             let Some((turn, published)) = find(ask.sent) else {
                 self.awaiting.borrow_mut().push(ask);
@@ -101,9 +101,9 @@ impl Arrangement {
                 self.catalog.borrow_mut().remember_resource(resource);
             }
             match self.place_turn(&ask.asked, &turn, ask.strip, ask.at, ask.size, busy) {
-                Ok(_) => stood += 1,
+                Ok(_) => stood = stood.saturating_add(1),
                 Err(why) => {
-                    tracing::warn!(%why, turn = %turn.turn, "the asked turn does not stand")
+                    tracing::warn!(%why, turn = %turn.turn, "the asked turn does not stand");
                 }
             }
         }
@@ -133,12 +133,12 @@ impl Arrangement {
             None => (TURN_WIDTH, TURN_HEIGHT, None),
             Some((width, height)) => {
                 let band = TURN_HEIGHT.min(height);
-                let left = height - band - TURN_GAP;
+                let left = height.saturating_sub(band).saturating_sub(TURN_GAP);
                 // The room under the turn's band is what the answer's views fill; a rectangle
                 // with too little of it under the band leaves them to stand beside the turn.
                 let room = (left >= LEAST_ROOM).then_some(CanvasRect {
                     x: at.0,
-                    y: at.1 + band + TURN_GAP,
+                    y: at.1.saturating_add(band).saturating_add(TURN_GAP),
                     width,
                     height: left,
                 });

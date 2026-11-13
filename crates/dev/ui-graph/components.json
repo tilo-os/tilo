@@ -6899,6 +6899,11 @@
           }
         },
         {
+          "name": "band",
+          "doc": "Whether its view keeps a place's handle band over its top edge ([`crate::widget::canvas_place::PLACE_BAND`]): the pin stands that much higher, so the view's own top is at `y`.",
+          "type": "bool"
+        },
+        {
           "name": "item",
           "doc": "What the pin stands for, as the view names it: what pointing at the pin (`context`) and sizing it (`resize`) report. Without it, the pin's key.",
           "type": {
