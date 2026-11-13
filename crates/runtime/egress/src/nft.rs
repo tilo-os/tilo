@@ -1111,10 +1111,13 @@ fn socklen<T>() -> libc::socklen_t {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_ruleset_renders_as_nft_would_print_it() {
-        let text = render(&rules());
-        let expected = "\
+    tilo_test_env::scenario! {
+        fn the_namespace_ruleset_and_its_netlink_batches;
+
+        phase the_ruleset_renders_as_nft_would_print_it;
+        {
+            let text = render(&rules());
+            let expected = "\
 table inet tilo_egress {
 \tset allowed4 { type ipv4_addr; flags timeout; }
 \tset allowed6 { type ipv6_addr; flags timeout; }
@@ -1134,30 +1137,164 @@ table inet tilo_egress {
 \t}
 }
 ";
-        assert_eq!(text, expected);
-    }
-
-    #[test]
-    fn nothing_but_the_set_lookup_accepts_traffic_leaving_the_namespace() {
-        for r in rules().iter().filter(|r| r.verdict == Verdict::Accept) {
-            let ok = r.matches.contains(&Match::ToLoopback)
-                || r.matches.contains(&Match::Established)
-                || r.matches.iter().any(|m| matches!(m, Match::DestAllowed(_)))
-                || r.matches
-                    .iter()
-                    .any(|m| matches!(m, Match::Icmpv6Types(133, 136)));
-            assert!(ok, "{r:?} accepts more than it should");
+            assert_eq!(text, expected);
         }
-        let all = rules();
-        let dns = all
-            .iter()
-            .rposition(|r| r.matches.contains(&Match::DestPort(53)))
-            .unwrap();
-        let first_set = all
-            .iter()
-            .position(|r| r.matches.iter().any(|m| matches!(m, Match::DestAllowed(_))))
-            .unwrap();
-        assert!(dns < first_set);
+
+        phase nothing_but_the_set_lookup_accepts_traffic_leaving_the_namespace;
+        {
+            for r in rules().iter().filter(|r| r.verdict == Verdict::Accept) {
+                let ok = r.matches.contains(&Match::ToLoopback)
+                    || r.matches.contains(&Match::Established)
+                    || r.matches.iter().any(|m| matches!(m, Match::DestAllowed(_)))
+                    || r.matches
+                        .iter()
+                        .any(|m| matches!(m, Match::Icmpv6Types(133, 136)));
+                assert!(ok, "{r:?} accepts more than it should");
+            }
+            let all = rules();
+            let dns = all
+                .iter()
+                .rposition(|r| r.matches.contains(&Match::DestPort(53)))
+                .unwrap();
+            let first_set = all
+                .iter()
+                .position(|r| r.matches.iter().any(|m| matches!(m, Match::DestAllowed(_))))
+                .unwrap();
+            assert!(dns < first_set);
+        }
+
+        phase the_install_batch_is_one_transaction_of_table_sets_chain_and_rules;
+        {
+            let mut b = Batch::new(100);
+            add_table_messages(&mut b, &rules());
+            let (bytes, acked, next) = b.finish();
+            let msgs = messages(&bytes);
+            let kinds: Vec<u16> = msgs.iter().map(|m| m.0).collect();
+            let nft = |m: u16| (NFNL_SUBSYS_NFTABLES << 8) | m;
+            let mut expected = vec![
+                NFNL_MSG_BATCH_BEGIN,
+                nft(NFT_MSG_NEWTABLE),
+                nft(NFT_MSG_NEWSET),
+                nft(NFT_MSG_NEWSET),
+                nft(NFT_MSG_NEWCHAIN),
+            ];
+            expected.extend(std::iter::repeat_n(nft(NFT_MSG_NEWRULE), rules().len()));
+            expected.push(NFNL_MSG_BATCH_END);
+            assert_eq!(kinds, expected);
+            assert_eq!(acked.len(), msgs.len() - 2);
+            assert_eq!(acked.first(), Some(&101));
+            assert_eq!(next, 100 + u32::try_from(msgs.len()).unwrap());
+            let chain = attrs(&msgs[4].3);
+            assert!(chain.contains(&(NFTA_CHAIN_POLICY, NF_DROP.to_be_bytes().to_vec())));
+            let hook = chain
+                .iter()
+                .find(|(k, _)| *k == NFTA_CHAIN_HOOK | NLA_F_NESTED)
+                .unwrap();
+            assert!(
+                attrs(&hook.1).contains(&(NFTA_HOOK_HOOKNUM, NF_INET_LOCAL_OUT.to_be_bytes().to_vec()))
+            );
+            let set = attrs(&msgs[2].3);
+            assert!(set.contains(&(NFTA_SET_FLAGS, NFT_SET_TIMEOUT.to_be_bytes().to_vec())));
+            assert!(set.contains(&(NFTA_SET_KEY_LEN, 4_u32.to_be_bytes().to_vec())));
+            assert!(msgs[1..msgs.len() - 1].iter().all(|m| m.2 == NFPROTO_INET));
+        }
+
+        phase a_rule_encodes_its_expressions_in_order;
+        {
+            let mut b = Batch::new(1);
+            add_table_messages(&mut b, &rules());
+            let (bytes, ..) = b.finish();
+            let msgs = messages(&bytes);
+            // The v4 TCP set rule: nfproto, l4proto, payload daddr, lookup, accept.
+            let set_rule = &msgs[5 + 5];
+            let exprs_attr = attrs(&set_rule.3)
+                .into_iter()
+                .find(|(k, _)| *k == NFTA_RULE_EXPRESSIONS | NLA_F_NESTED)
+                .unwrap();
+            let names: Vec<String> = attrs(&exprs_attr.1)
+                .iter()
+                .map(|(_, e)| {
+                    let name = &attrs(e)[0].1;
+                    String::from_utf8(name[..name.len() - 1].to_vec()).unwrap()
+                })
+                .collect();
+            assert_eq!(
+                names,
+                [
+                    "meta",
+                    "cmp",
+                    "meta",
+                    "cmp",
+                    "payload",
+                    "lookup",
+                    "immediate"
+                ]
+            );
+        }
+
+        phase admitting_replaces_refreshed_elements_in_the_same_transaction;
+        {
+            let mut b = Batch::new(1);
+            let v4: IpAddr = "192.0.2.1".parse().unwrap();
+            let v6: IpAddr = "2001:db8::1".parse().unwrap();
+            for set in [SET4, SET6] {
+                let gone: Vec<_> = [(v6, None)]
+                    .into_iter()
+                    .filter(|(a, _)| set_of(*a) == set)
+                    .collect();
+                element_message(&mut b, NFT_MSG_DELSETELEM, 0, set, &gone);
+                let put: Vec<_> = [
+                    (v4, Some(Duration::from_secs(60))),
+                    (v6, Some(Duration::from_secs(300))),
+                ]
+                .into_iter()
+                .filter(|(a, _)| set_of(*a) == set)
+                .collect();
+                element_message(&mut b, NFT_MSG_NEWSETELEM, NLM_F_CREATE, set, &put);
+            }
+            let (bytes, ..) = b.finish();
+            let msgs = messages(&bytes);
+            let nft = |m: u16| (NFNL_SUBSYS_NFTABLES << 8) | m;
+            let kinds: Vec<u16> = msgs.iter().map(|m| m.0).collect();
+            assert_eq!(
+                kinds,
+                [
+                    NFNL_MSG_BATCH_BEGIN,
+                    nft(NFT_MSG_NEWSETELEM),
+                    nft(NFT_MSG_DELSETELEM),
+                    nft(NFT_MSG_NEWSETELEM),
+                    NFNL_MSG_BATCH_END
+                ]
+            );
+            // The v4 element carries its key and a 60 000 ms timeout.
+            let list = attrs(&msgs[1].3)
+                .into_iter()
+                .find(|(k, _)| *k == NFTA_SET_ELEM_LIST_ELEMENTS | NLA_F_NESTED)
+                .unwrap();
+            let elem = attrs(&attrs(&list.1)[0].1);
+            assert!(elem.contains(&(NFTA_SET_ELEM_TIMEOUT, 60_000_u64.to_be_bytes().to_vec())));
+            let key = elem
+                .iter()
+                .find(|(k, _)| *k == NFTA_SET_ELEM_KEY | NLA_F_NESTED)
+                .unwrap();
+            assert_eq!(attrs(&key.1), vec![(NFTA_DATA_VALUE, vec![192, 0, 2, 1])]);
+        }
+
+        phase errors_are_read_from_a_datagram_of_acks;
+        {
+            let mut dgram = Vec::new();
+            for (seq, code) in [(5_u32, 0_i32), (6, -1)] {
+                dgram.extend_from_slice(&36_u32.to_ne_bytes());
+                dgram.extend_from_slice(&NLMSG_ERROR.to_ne_bytes());
+                dgram.extend_from_slice(&0_u16.to_ne_bytes());
+                dgram.extend_from_slice(&seq.to_ne_bytes());
+                dgram.extend_from_slice(&0_u32.to_ne_bytes());
+                dgram.extend_from_slice(&code.to_ne_bytes());
+                dgram.extend_from_slice(&[0; 16]);
+            }
+            assert_eq!(errors_in(&dgram), vec![(5, 0), (6, -1)]);
+            assert!(errors_in(&dgram[..10]).is_empty());
+        }
     }
 
     fn attrs(mut buf: &[u8]) -> Vec<(u16, Vec<u8>)> {
@@ -1182,42 +1319,6 @@ table inet tilo_egress {
             buf = &buf[len..];
         }
         out
-    }
-
-    #[test]
-    fn the_install_batch_is_one_transaction_of_table_sets_chain_and_rules() {
-        let mut b = Batch::new(100);
-        add_table_messages(&mut b, &rules());
-        let (bytes, acked, next) = b.finish();
-        let msgs = messages(&bytes);
-        let kinds: Vec<u16> = msgs.iter().map(|m| m.0).collect();
-        let nft = |m: u16| (NFNL_SUBSYS_NFTABLES << 8) | m;
-        let mut expected = vec![
-            NFNL_MSG_BATCH_BEGIN,
-            nft(NFT_MSG_NEWTABLE),
-            nft(NFT_MSG_NEWSET),
-            nft(NFT_MSG_NEWSET),
-            nft(NFT_MSG_NEWCHAIN),
-        ];
-        expected.extend(std::iter::repeat_n(nft(NFT_MSG_NEWRULE), rules().len()));
-        expected.push(NFNL_MSG_BATCH_END);
-        assert_eq!(kinds, expected);
-        assert_eq!(acked.len(), msgs.len() - 2);
-        assert_eq!(acked.first(), Some(&101));
-        assert_eq!(next, 100 + u32::try_from(msgs.len()).unwrap());
-        let chain = attrs(&msgs[4].3);
-        assert!(chain.contains(&(NFTA_CHAIN_POLICY, NF_DROP.to_be_bytes().to_vec())));
-        let hook = chain
-            .iter()
-            .find(|(k, _)| *k == NFTA_CHAIN_HOOK | NLA_F_NESTED)
-            .unwrap();
-        assert!(
-            attrs(&hook.1).contains(&(NFTA_HOOK_HOOKNUM, NF_INET_LOCAL_OUT.to_be_bytes().to_vec()))
-        );
-        let set = attrs(&msgs[2].3);
-        assert!(set.contains(&(NFTA_SET_FLAGS, NFT_SET_TIMEOUT.to_be_bytes().to_vec())));
-        assert!(set.contains(&(NFTA_SET_KEY_LEN, 4_u32.to_be_bytes().to_vec())));
-        assert!(msgs[1..msgs.len() - 1].iter().all(|m| m.2 == NFPROTO_INET));
     }
 
     fn guest_filter() -> GuestFilter {
@@ -1255,48 +1356,51 @@ table inet tilo_egress {
         false
     }
 
-    #[test]
-    fn a_vm_reaches_the_one_endpoint_it_is_given_and_no_other_private_address() {
-        let filter = guest_filter();
-        let endpoint = std::net::Ipv4Addr::new(10, 0, 2, 4);
-        for proto in [Proto::Tcp, Proto::Udp] {
-            assert!(
-                passes(&filter, endpoint, 7704, proto),
-                "the relay's endpoint passes, {proto:?}"
-            );
-            assert!(
-                !passes(&filter, endpoint, 7705, proto),
-                "and no other port on it"
-            );
-        }
-        for address in ["10.0.2.5", "10.244.1.5", "169.254.169.254", "127.0.0.1"] {
-            let address: std::net::Ipv4Addr = address.parse().unwrap();
-            assert!(!passes(&filter, address, 7704, Proto::Udp), "{address}");
-        }
-        assert!(
-            passes(&filter, "1.1.1.1".parse().unwrap(), 443, Proto::Tcp),
-            "the internet still passes"
-        );
-        assert!(
-            passes(
-                &filter,
-                std::net::Ipv4Addr::new(10, 0, 2, 3),
-                53,
-                Proto::Udp
-            ),
-            "and so does DNS to the uplink's forwarder"
-        );
-        let linux = GuestFilter {
-            endpoint: None,
-            ..guest_filter()
-        };
-        assert!(!passes(&linux, endpoint, 7704, Proto::Udp));
-        assert!(!linux.render().contains("dport 7704"));
-    }
+    tilo_test_env::scenario! {
+        fn the_guest_filter_of_a_vm;
 
-    #[test]
-    fn a_vms_bridge_passes_answers_dns_and_the_internet_and_drops_blocked_networks() {
-        let expected = "\
+        phase a_vm_reaches_the_one_endpoint_it_is_given_and_no_other_private_address;
+        {
+            let filter = guest_filter();
+            let endpoint = std::net::Ipv4Addr::new(10, 0, 2, 4);
+            for proto in [Proto::Tcp, Proto::Udp] {
+                assert!(
+                    passes(&filter, endpoint, 7704, proto),
+                    "the relay's endpoint passes, {proto:?}"
+                );
+                assert!(
+                    !passes(&filter, endpoint, 7705, proto),
+                    "and no other port on it"
+                );
+            }
+            for address in ["10.0.2.5", "10.244.1.5", "169.254.169.254", "127.0.0.1"] {
+                let address: std::net::Ipv4Addr = address.parse().unwrap();
+                assert!(!passes(&filter, address, 7704, Proto::Udp), "{address}");
+            }
+            assert!(
+                passes(&filter, "1.1.1.1".parse().unwrap(), 443, Proto::Tcp),
+                "the internet still passes"
+            );
+            assert!(
+                passes(
+                    &filter,
+                    std::net::Ipv4Addr::new(10, 0, 2, 3),
+                    53,
+                    Proto::Udp
+                ),
+                "and so does DNS to the uplink's forwarder"
+            );
+            let linux = GuestFilter {
+                endpoint: None,
+                ..guest_filter()
+            };
+            assert!(!passes(&linux, endpoint, 7704, Proto::Udp));
+            assert!(!linux.render().contains("dport 7704"));
+        }
+
+        phase a_vms_bridge_passes_answers_dns_and_the_internet_and_drops_blocked_networks;
+        {
+            let expected = "\
 table bridge tilo_guest {
 \tchain forward {
 \t\ttype filter hook forward priority 0; policy drop;
@@ -1314,133 +1418,37 @@ table bridge tilo_guest {
 \t}
 }
 ";
-        assert_eq!(guest_filter().render(), expected);
-        assert_eq!(
-            guest_exprs(GuestMatch::DestNet(
-                std::net::Ipv4Addr::new(169, 254, 169, 254),
-                16
-            )),
-            [
-                Expr::Payload {
-                    base: NFT_PAYLOAD_NETWORK_HEADER,
-                    offset: 16,
-                    len: 4
-                },
-                Expr::Bitwise {
-                    mask: vec![255, 255, 0, 0],
-                    xor: vec![0; 4]
-                },
-                Expr::Cmp(NFT_CMP_EQ, vec![169, 254, 0, 0]),
-            ]
-        );
-        let mut b = Batch::of_family(1, NFPROTO_BRIDGE);
-        add_guest_messages(&mut b, &guest_filter());
-        let (bytes, _, _) = b.finish();
-        let msgs = messages(&bytes);
-        assert_eq!(msgs.len(), 2 + 2 + guest_filter().rules().len());
-        assert!(
-            msgs[1..msgs.len() - 1]
-                .iter()
-                .all(|m| m.2 == NFPROTO_BRIDGE)
-        );
-        let chain = attrs(&msgs[2].3);
-        assert!(chain.contains(&(NFTA_CHAIN_POLICY, NF_DROP.to_be_bytes().to_vec())));
-    }
-
-    #[test]
-    fn a_rule_encodes_its_expressions_in_order() {
-        let mut b = Batch::new(1);
-        add_table_messages(&mut b, &rules());
-        let (bytes, ..) = b.finish();
-        let msgs = messages(&bytes);
-        // The v4 TCP set rule: nfproto, l4proto, payload daddr, lookup, accept.
-        let set_rule = &msgs[5 + 5];
-        let exprs_attr = attrs(&set_rule.3)
-            .into_iter()
-            .find(|(k, _)| *k == NFTA_RULE_EXPRESSIONS | NLA_F_NESTED)
-            .unwrap();
-        let names: Vec<String> = attrs(&exprs_attr.1)
-            .iter()
-            .map(|(_, e)| {
-                let name = &attrs(e)[0].1;
-                String::from_utf8(name[..name.len() - 1].to_vec()).unwrap()
-            })
-            .collect();
-        assert_eq!(
-            names,
-            [
-                "meta",
-                "cmp",
-                "meta",
-                "cmp",
-                "payload",
-                "lookup",
-                "immediate"
-            ]
-        );
-    }
-
-    #[test]
-    fn admitting_replaces_refreshed_elements_in_the_same_transaction() {
-        let mut b = Batch::new(1);
-        let v4: IpAddr = "192.0.2.1".parse().unwrap();
-        let v6: IpAddr = "2001:db8::1".parse().unwrap();
-        for set in [SET4, SET6] {
-            let gone: Vec<_> = [(v6, None)]
-                .into_iter()
-                .filter(|(a, _)| set_of(*a) == set)
-                .collect();
-            element_message(&mut b, NFT_MSG_DELSETELEM, 0, set, &gone);
-            let put: Vec<_> = [
-                (v4, Some(Duration::from_secs(60))),
-                (v6, Some(Duration::from_secs(300))),
-            ]
-            .into_iter()
-            .filter(|(a, _)| set_of(*a) == set)
-            .collect();
-            element_message(&mut b, NFT_MSG_NEWSETELEM, NLM_F_CREATE, set, &put);
+            assert_eq!(guest_filter().render(), expected);
+            assert_eq!(
+                guest_exprs(GuestMatch::DestNet(
+                    std::net::Ipv4Addr::new(169, 254, 169, 254),
+                    16
+                )),
+                [
+                    Expr::Payload {
+                        base: NFT_PAYLOAD_NETWORK_HEADER,
+                        offset: 16,
+                        len: 4
+                    },
+                    Expr::Bitwise {
+                        mask: vec![255, 255, 0, 0],
+                        xor: vec![0; 4]
+                    },
+                    Expr::Cmp(NFT_CMP_EQ, vec![169, 254, 0, 0]),
+                ]
+            );
+            let mut b = Batch::of_family(1, NFPROTO_BRIDGE);
+            add_guest_messages(&mut b, &guest_filter());
+            let (bytes, _, _) = b.finish();
+            let msgs = messages(&bytes);
+            assert_eq!(msgs.len(), 2 + 2 + guest_filter().rules().len());
+            assert!(
+                msgs[1..msgs.len() - 1]
+                    .iter()
+                    .all(|m| m.2 == NFPROTO_BRIDGE)
+            );
+            let chain = attrs(&msgs[2].3);
+            assert!(chain.contains(&(NFTA_CHAIN_POLICY, NF_DROP.to_be_bytes().to_vec())));
         }
-        let (bytes, ..) = b.finish();
-        let msgs = messages(&bytes);
-        let nft = |m: u16| (NFNL_SUBSYS_NFTABLES << 8) | m;
-        let kinds: Vec<u16> = msgs.iter().map(|m| m.0).collect();
-        assert_eq!(
-            kinds,
-            [
-                NFNL_MSG_BATCH_BEGIN,
-                nft(NFT_MSG_NEWSETELEM),
-                nft(NFT_MSG_DELSETELEM),
-                nft(NFT_MSG_NEWSETELEM),
-                NFNL_MSG_BATCH_END
-            ]
-        );
-        // The v4 element carries its key and a 60 000 ms timeout.
-        let list = attrs(&msgs[1].3)
-            .into_iter()
-            .find(|(k, _)| *k == NFTA_SET_ELEM_LIST_ELEMENTS | NLA_F_NESTED)
-            .unwrap();
-        let elem = attrs(&attrs(&list.1)[0].1);
-        assert!(elem.contains(&(NFTA_SET_ELEM_TIMEOUT, 60_000_u64.to_be_bytes().to_vec())));
-        let key = elem
-            .iter()
-            .find(|(k, _)| *k == NFTA_SET_ELEM_KEY | NLA_F_NESTED)
-            .unwrap();
-        assert_eq!(attrs(&key.1), vec![(NFTA_DATA_VALUE, vec![192, 0, 2, 1])]);
-    }
-
-    #[test]
-    fn errors_are_read_from_a_datagram_of_acks() {
-        let mut dgram = Vec::new();
-        for (seq, code) in [(5_u32, 0_i32), (6, -1)] {
-            dgram.extend_from_slice(&36_u32.to_ne_bytes());
-            dgram.extend_from_slice(&NLMSG_ERROR.to_ne_bytes());
-            dgram.extend_from_slice(&0_u16.to_ne_bytes());
-            dgram.extend_from_slice(&seq.to_ne_bytes());
-            dgram.extend_from_slice(&0_u32.to_ne_bytes());
-            dgram.extend_from_slice(&code.to_ne_bytes());
-            dgram.extend_from_slice(&[0; 16]);
-        }
-        assert_eq!(errors_in(&dgram), vec![(5, 0), (6, -1)]);
-        assert!(errors_in(&dgram[..10]).is_empty());
     }
 }

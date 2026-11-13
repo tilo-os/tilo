@@ -446,44 +446,70 @@ mod tests {
         (addr, asked)
     }
 
-    #[test]
-    fn a_name_that_is_not_granted_never_leaves_the_machine() {
-        let (resolver, asked) = fake_resolver();
-        let s = shared(EgressPolicy::from_grants(["github.com"]), vec![resolver]);
-        let q = dns::query(1, "example.com", dns::TYPE_A);
-        let reply = answer(&s, &q, Transport::Udp).unwrap();
-        assert_eq!(dns::rcode(&reply), Some(3), "NXDOMAIN");
-        assert_eq!(asked.load(Ordering::SeqCst), 0, "the resolver was asked");
+    tilo_test_env::scenario! {
+        fn an_answer_follows_the_policy;
 
-        let q = dns::query(2, "github.com", dns::TYPE_A);
-        let reply = answer(&s, &q, Transport::Udp).unwrap();
-        assert_eq!(dns::rcode(&reply), Some(0));
-        assert_eq!(
-            dns::answered_addresses(&reply)[0].addr,
-            "192.0.2.1".parse::<IpAddr>().unwrap()
-        );
-        assert_eq!(asked.load(Ordering::SeqCst), 1);
-        // No filter is installed here, so nothing was mirrored either.
-        assert!(s.filter.lock().unwrap().allowed.is_empty());
-    }
+        phase a_name_that_is_not_granted_never_leaves_the_machine;
+        {
+            let (resolver, asked) = fake_resolver();
+            let s = shared(EgressPolicy::from_grants(["github.com"]), vec![resolver]);
+            let q = dns::query(1, "example.com", dns::TYPE_A);
+            let reply = answer(&s, &q, Transport::Udp).unwrap();
+            assert_eq!(dns::rcode(&reply), Some(3), "NXDOMAIN");
+            assert_eq!(asked.load(Ordering::SeqCst), 0, "the resolver was asked");
 
-    #[test]
-    fn no_grants_means_every_name_is_refused_and_any_forwards_everything() {
-        let (resolver, asked) = fake_resolver();
-        let none = shared(EgressPolicy::none(), vec![resolver]);
-        for name in ["github.com", "localhost", "1.1.1.1.in-addr.arpa"] {
-            let reply = answer(&none, &dns::query(3, name, dns::TYPE_A), Transport::Tcp).unwrap();
-            assert_eq!(dns::rcode(&reply), Some(3), "{name}");
+            let q = dns::query(2, "github.com", dns::TYPE_A);
+            let reply = answer(&s, &q, Transport::Udp).unwrap();
+            assert_eq!(dns::rcode(&reply), Some(0));
+            assert_eq!(
+                dns::answered_addresses(&reply)[0].addr,
+                "192.0.2.1".parse::<IpAddr>().unwrap()
+            );
+            assert_eq!(asked.load(Ordering::SeqCst), 1);
+            // No filter is installed here, so nothing was mirrored either.
+            assert!(s.filter.lock().unwrap().allowed.is_empty());
         }
-        assert_eq!(asked.load(Ordering::SeqCst), 0);
-        let any = shared(EgressPolicy::Any, vec![resolver]);
-        let reply = answer(
-            &any,
-            &dns::query(4, "anything.example", dns::TYPE_A),
-            Transport::Udp,
-        )
-        .unwrap();
-        assert_eq!(dns::rcode(&reply), Some(0));
+
+        phase no_grants_means_every_name_is_refused_and_any_forwards_everything;
+        {
+            let (resolver, asked) = fake_resolver();
+            let none = shared(EgressPolicy::none(), vec![resolver]);
+            for name in ["github.com", "localhost", "1.1.1.1.in-addr.arpa"] {
+                let reply = answer(&none, &dns::query(3, name, dns::TYPE_A), Transport::Tcp).unwrap();
+                assert_eq!(dns::rcode(&reply), Some(3), "{name}");
+            }
+            assert_eq!(asked.load(Ordering::SeqCst), 0);
+            let any = shared(EgressPolicy::Any, vec![resolver]);
+            let reply = answer(
+                &any,
+                &dns::query(4, "anything.example", dns::TYPE_A),
+                Transport::Udp,
+            )
+            .unwrap();
+            assert_eq!(dns::rcode(&reply), Some(0));
+        }
+
+        phase a_silent_resolver_is_a_servfail_and_junk_is_refused;
+        {
+            let s = shared(
+                EgressPolicy::from_grants(["github.com"]),
+                vec!["127.0.0.1:9".parse().unwrap()],
+            );
+            let reply = answer(
+                &s,
+                &dns::query(5, "github.com", dns::TYPE_A),
+                Transport::Udp,
+            )
+            .unwrap();
+            assert_eq!(dns::rcode(&reply), Some(2));
+            let mut junk = dns::query(6, "github.com", dns::TYPE_A);
+            junk[5] = 2;
+            assert_eq!(
+                dns::rcode(&answer(&s, &junk, Transport::Udp).unwrap()),
+                Some(5)
+            );
+            assert!(answer(&s, &[1, 2], Transport::Udp).is_none());
+        }
     }
 
     /// Tests that start a stub hold this, so a thread name is one stub's.
@@ -529,103 +555,85 @@ mod tests {
         read_framed(client).unwrap()
     }
 
-    #[test]
-    fn an_idle_stub_does_not_wake() {
-        let _one = STUBS.lock_recover();
-        let shared = Arc::new(shared(
-            EgressPolicy::from_grants(["github.com"]),
-            Vec::new(),
-        ));
-        let running = start(&shared);
-        idle::assert_stays_asleep(&running.udp_thread, "egress-dns-udp");
-        idle::assert_stays_asleep(&running.tcp_thread, "egress-dns-tcp");
-        drop(running.stub);
-    }
+    tilo_test_env::scenario! {
+        fn a_running_stub;
 
-    #[test]
-    fn dropping_the_stub_wakes_and_ends_both_threads() {
-        let _one = STUBS.lock_recover();
-        let shared = Arc::new(shared(EgressPolicy::none(), Vec::new()));
-        let running = start(&shared);
-        // Both threads parked in poll(2), as on an idle desktop, where
-        // nothing but the stop wakes them (`an_idle_stub_does_not_wake`).
-        for tid in [&running.udp_thread, &running.tcp_thread] {
-            tilo_test_env::wait_until(format!("thread {tid} to park"), || idle::blocked(tid));
+        phase an_idle_stub_does_not_wake;
+        {
+            let _one = STUBS.lock_recover();
+            let shared = Arc::new(shared(
+                EgressPolicy::from_grants(["github.com"]),
+                Vec::new(),
+            ));
+            let running = start(&shared);
+            idle::assert_stays_asleep(&running.udp_thread, "egress-dns-udp");
+            idle::assert_stays_asleep(&running.tcp_thread, "egress-dns-tcp");
+            drop(running.stub);
         }
-        // Drop joins both threads, so returning at all means they ended.
-        drop(running.stub);
-        for tid in [running.udp_thread, running.tcp_thread] {
-            let task = format!("/proc/self/task/{tid}");
-            tilo_test_env::wait_until(format!("{task} to end with the stub"), || {
-                !std::path::Path::new(&task).exists()
-            });
+
+        phase dropping_the_stub_wakes_and_ends_both_threads;
+        {
+            let _one = STUBS.lock_recover();
+            let shared = Arc::new(shared(EgressPolicy::none(), Vec::new()));
+            let running = start(&shared);
+            // Both threads parked in poll(2), as on an idle desktop, where
+            // nothing but the stop wakes them (`an_idle_stub_does_not_wake`).
+            for tid in [&running.udp_thread, &running.tcp_thread] {
+                tilo_test_env::wait_until(format!("thread {tid} to park"), || idle::blocked(tid));
+            }
+            // Drop joins both threads, so returning at all means they ended.
+            drop(running.stub);
+            for tid in [running.udp_thread, running.tcp_thread] {
+                let task = format!("/proc/self/task/{tid}");
+                tilo_test_env::wait_until(format!("{task} to end with the stub"), || {
+                    !std::path::Path::new(&task).exists()
+                });
+            }
         }
-    }
 
-    #[test]
-    fn queries_over_both_sockets_resolve_or_are_refused_as_before() {
-        let _one = STUBS.lock_recover();
-        let (resolver, asked) = fake_resolver();
-        let shared = Arc::new(shared(
-            EgressPolicy::from_grants(["github.com"]),
-            vec![resolver],
-        ));
-        let running = start(&shared);
-        let granted = "192.0.2.1".parse::<IpAddr>().unwrap();
+        phase queries_over_both_sockets_resolve_or_are_refused_as_before;
+        {
+            let _one = STUBS.lock_recover();
+            let (resolver, asked) = fake_resolver();
+            let shared = Arc::new(shared(
+                EgressPolicy::from_grants(["github.com"]),
+                vec![resolver],
+            ));
+            let running = start(&shared);
+            let granted = "192.0.2.1".parse::<IpAddr>().unwrap();
 
-        // Over UDP: the same bytes `answer` gives, which the decision tests
-        // above pin down.
-        let denied = dns::query(11, "example.com", dns::TYPE_A);
-        let reply = ask_udp(running.udp, &denied);
-        assert_eq!(dns::rcode(&reply), Some(3), "NXDOMAIN");
-        assert_eq!(asked.load(Ordering::SeqCst), 0, "the resolver was asked");
-        assert_eq!(Some(reply), answer(&shared, &denied, Transport::Udp));
-        let allowed = dns::query(12, "github.com", dns::TYPE_A);
-        let reply = ask_udp(running.udp, &allowed);
-        assert_eq!(dns::rcode(&reply), Some(0));
-        assert_eq!(dns::answered_addresses(&reply)[0].addr, granted);
-        assert_eq!(asked.load(Ordering::SeqCst), 1);
-        assert_eq!(Some(reply), answer(&shared, &allowed, Transport::Udp));
-        assert_eq!(asked.load(Ordering::SeqCst), 2);
+            // Over UDP: the same bytes `answer` gives, which the decision tests
+            // above pin down.
+            let denied = dns::query(11, "example.com", dns::TYPE_A);
+            let reply = ask_udp(running.udp, &denied);
+            assert_eq!(dns::rcode(&reply), Some(3), "NXDOMAIN");
+            assert_eq!(asked.load(Ordering::SeqCst), 0, "the resolver was asked");
+            assert_eq!(Some(reply), answer(&shared, &denied, Transport::Udp));
+            let allowed = dns::query(12, "github.com", dns::TYPE_A);
+            let reply = ask_udp(running.udp, &allowed);
+            assert_eq!(dns::rcode(&reply), Some(0));
+            assert_eq!(dns::answered_addresses(&reply)[0].addr, granted);
+            assert_eq!(asked.load(Ordering::SeqCst), 1);
+            assert_eq!(Some(reply), answer(&shared, &allowed, Transport::Udp));
+            assert_eq!(asked.load(Ordering::SeqCst), 2);
 
-        let mut client = TcpStream::connect(running.tcp).unwrap();
-        client
-            .set_read_timeout(Some(tilo_test_env::hang_bound()))
-            .unwrap();
-        let denied = dns::query(13, "example.com", dns::TYPE_A);
-        let reply = ask_tcp(&mut client, &denied);
-        assert_eq!(dns::rcode(&reply), Some(3), "NXDOMAIN");
-        assert_eq!(asked.load(Ordering::SeqCst), 2, "the resolver was asked");
-        assert_eq!(Some(reply), answer(&shared, &denied, Transport::Tcp));
-        let allowed = dns::query(14, "github.com", dns::TYPE_A);
-        let reply = ask_tcp(&mut client, &allowed);
-        assert_eq!(dns::rcode(&reply), Some(0));
-        assert_eq!(dns::answered_addresses(&reply)[0].addr, granted);
-        assert_eq!(asked.load(Ordering::SeqCst), 3);
-        assert_eq!(Some(reply), answer(&shared, &allowed, Transport::Tcp));
-        drop(client);
-        drop(running.stub);
-    }
-
-    #[test]
-    fn a_silent_resolver_is_a_servfail_and_junk_is_refused() {
-        let s = shared(
-            EgressPolicy::from_grants(["github.com"]),
-            vec!["127.0.0.1:9".parse().unwrap()],
-        );
-        let reply = answer(
-            &s,
-            &dns::query(5, "github.com", dns::TYPE_A),
-            Transport::Udp,
-        )
-        .unwrap();
-        assert_eq!(dns::rcode(&reply), Some(2));
-        let mut junk = dns::query(6, "github.com", dns::TYPE_A);
-        junk[5] = 2;
-        assert_eq!(
-            dns::rcode(&answer(&s, &junk, Transport::Udp).unwrap()),
-            Some(5)
-        );
-        assert!(answer(&s, &[1, 2], Transport::Udp).is_none());
+            let mut client = TcpStream::connect(running.tcp).unwrap();
+            client
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            let denied = dns::query(13, "example.com", dns::TYPE_A);
+            let reply = ask_tcp(&mut client, &denied);
+            assert_eq!(dns::rcode(&reply), Some(3), "NXDOMAIN");
+            assert_eq!(asked.load(Ordering::SeqCst), 2, "the resolver was asked");
+            assert_eq!(Some(reply), answer(&shared, &denied, Transport::Tcp));
+            let allowed = dns::query(14, "github.com", dns::TYPE_A);
+            let reply = ask_tcp(&mut client, &allowed);
+            assert_eq!(dns::rcode(&reply), Some(0));
+            assert_eq!(dns::answered_addresses(&reply)[0].addr, granted);
+            assert_eq!(asked.load(Ordering::SeqCst), 3);
+            assert_eq!(Some(reply), answer(&shared, &allowed, Transport::Tcp));
+            drop(client);
+            drop(running.stub);
+        }
     }
 }
