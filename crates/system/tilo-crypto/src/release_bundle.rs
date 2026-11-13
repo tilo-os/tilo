@@ -759,80 +759,51 @@ mod tests {
         case_with(&leaf, now() - 50 * DAY).verify().unwrap();
     }
 
+    /// A good bundle checked against another root, trust, content or log than it was made with
+    /// is refused, and the refusal says which. Each row was a test of its own and keeps that
+    /// test's name: what is changed, and the phrases one of which the refusal says.
     #[test]
-    fn a_certificate_expired_when_logged_is_refused() {
-        let leaf = Leaf {
-            not_after: now() + DAY,
-            ..Leaf::default()
-        };
-        let error = case_with(&leaf, now() + 2 * DAY).error();
-        assert!(error.contains("had expired"), "{error}");
-    }
-
-    #[test]
-    fn a_certificate_not_yet_valid_when_logged_is_refused() {
-        let leaf = Leaf {
-            not_before: now() + DAY,
-            ..Leaf::default()
-        };
-        let error = case_with(&leaf, now()).error();
-        assert!(error.contains("not yet valid"), "{error}");
-    }
-
-    #[test]
-    fn another_root_is_refused() {
-        let mut case = case();
-        case.root = root("Tilo Release Root").pem;
-        let error = case.error();
-        assert!(
-            error.contains("not issued by the root") || error.contains("did not sign"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn a_revoked_epoch_is_refused() {
-        let mut case = case();
-        case.trust = ReleaseTrust::parse(&TRUST.replace("EPOCH=1", "EPOCH=2")).unwrap();
-        let error = case.error();
-        assert!(error.contains("not the current"), "{error}");
-    }
-
-    #[test]
-    fn another_purpose_is_refused() {
-        let leaf = Leaf {
-            purpose: "os-images",
-            ..Leaf::default()
-        };
-        let error = case_with(&leaf, now()).error();
-        assert!(
-            error.contains("does not name extension-manifests@"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn other_content_is_refused() {
-        let mut case = case();
-        case.input = b"{\"schema\":2}\n".to_vec();
-        let error = case.error();
-        assert!(error.contains("other content"), "{error}");
-    }
-
-    #[test]
-    fn a_timestamp_from_another_log_key_is_refused() {
-        let mut case = case();
-        case.rekor = Log::new().pem();
-        let error = case.error();
-        assert!(error.contains("another log"), "{error}");
-    }
-
-    #[test]
-    fn a_forged_timestamp_is_refused() {
-        let mut case = case();
-        case.bundle["rekorBundle"]["Payload"]["integratedTime"] = serde_json::json!(now() - DAY);
-        let error = case.error();
-        assert!(error.contains("does not verify"), "{error}");
+    fn a_bundle_checked_against_something_else_is_refused() {
+        let rows: [(&str, fn(&mut Case), &[&str]); 5] = [
+            (
+                "another_root_is_refused",
+                |case| case.root = root("Tilo Release Root").pem,
+                &["not issued by the root", "did not sign"],
+            ),
+            (
+                "a_revoked_epoch_is_refused",
+                |case| {
+                    case.trust = ReleaseTrust::parse(&TRUST.replace("EPOCH=1", "EPOCH=2")).unwrap();
+                },
+                &["not the current"],
+            ),
+            (
+                "other_content_is_refused",
+                |case| case.input = b"{\"schema\":2}\n".to_vec(),
+                &["other content"],
+            ),
+            (
+                "a_timestamp_from_another_log_key_is_refused",
+                |case| case.rekor = Log::new().pem(),
+                &["another log"],
+            ),
+            (
+                "a_forged_timestamp_is_refused",
+                |case| {
+                    case.bundle["rekorBundle"]["Payload"]["integratedTime"] =
+                        serde_json::json!(now() - DAY);
+                },
+                &["does not verify"],
+            ),
+        ];
+        for (row, change, says) in rows {
+            let mut case = case();
+            change(&mut case);
+            let Err(error) = case.verify() else {
+                panic!("{row}: the bundle must be refused");
+            };
+            assert!(says.iter().any(|say| error.contains(say)), "{row}: {error}");
+        }
     }
 
     #[test]
@@ -866,24 +837,64 @@ mod tests {
         assert!(error.contains("another certificate"), "{error}");
     }
 
+    /// A certificate the root issued that may not sign this release is refused, and the refusal
+    /// says why. Each row was a test of its own and keeps that test's name: the leaf, when the
+    /// log took its signature, and what the refusal says.
     #[test]
-    fn a_ca_certificate_cannot_sign() {
-        let leaf = Leaf {
-            ca: true,
-            ..Leaf::default()
-        };
-        let error = case_with(&leaf, now()).error();
-        assert!(error.contains("CA certificate"), "{error}");
-    }
-
-    #[test]
-    fn a_certificate_without_code_signing_is_refused() {
-        let leaf = Leaf {
-            code_signing: false,
-            ..Leaf::default()
-        };
-        let error = case_with(&leaf, now()).error();
-        assert!(error.contains("may not sign code"), "{error}");
+    fn a_leaf_that_may_not_sign_the_release_is_refused() {
+        let rows: [(&str, Leaf, i64, &str); 5] = [
+            (
+                "a_certificate_expired_when_logged_is_refused",
+                Leaf {
+                    not_after: now() + DAY,
+                    ..Leaf::default()
+                },
+                now() + 2 * DAY,
+                "had expired",
+            ),
+            (
+                "a_certificate_not_yet_valid_when_logged_is_refused",
+                Leaf {
+                    not_before: now() + DAY,
+                    ..Leaf::default()
+                },
+                now(),
+                "not yet valid",
+            ),
+            (
+                "another_purpose_is_refused",
+                Leaf {
+                    purpose: "os-images",
+                    ..Leaf::default()
+                },
+                now(),
+                "does not name extension-manifests@",
+            ),
+            (
+                "a_ca_certificate_cannot_sign",
+                Leaf {
+                    ca: true,
+                    ..Leaf::default()
+                },
+                now(),
+                "CA certificate",
+            ),
+            (
+                "a_certificate_without_code_signing_is_refused",
+                Leaf {
+                    code_signing: false,
+                    ..Leaf::default()
+                },
+                now(),
+                "may not sign code",
+            ),
+        ];
+        for (row, leaf, logged, says) in rows {
+            let Err(error) = case_with(&leaf, logged).verify() else {
+                panic!("{row}: the bundle must be refused");
+            };
+            assert!(error.contains(says), "{row}: {error}");
+        }
     }
 
     #[test]
