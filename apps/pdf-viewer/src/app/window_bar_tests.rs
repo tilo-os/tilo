@@ -299,6 +299,12 @@ fn a_drive_of_a_scenario_zooms_and_fits_by_address() {
 #[test]
 #[serial(pdfium)]
 fn a_drive_of_every_scenario_reaches_every_published_action() {
+    // The check drives the scenarios the shell names: all of this package's.
+    assert_eq!(
+        <PdfViewerShell as ui::framework::ResourceApp>::scenarios(),
+        crate::scenarios::SCENARIOS,
+        "the reach check drives every scenario of the package"
+    );
     // One drive of each scenario answers both questions: which published
     // actions an agent is never shown, asked of the scenario as it opens,
     // and which a drive cannot invoke.
