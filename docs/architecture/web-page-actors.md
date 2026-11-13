@@ -381,16 +381,20 @@ run keeps the device its connection's certificate names, the broker tells an
 application that device and never one the caller names, and the Browser's
 record, its field review and its review screen keep and show it. A further
 step has one device of the person share the Browser's window by its tab and
-another, whose desk listed that window as open elsewhere, hold its picture
-in that tab.
+another hold its picture in a tab of its own, as a window that runs on the
+sharing device, whatever its desk lists as its own view of that window.
 
 On three booted machines the three tab steps pass: two machines, then three,
 answer one form in one tab, and the record and the review name each remote
 agent's device by its key and its name and none beside the tab's own agent.
-The share step does not pass there yet. The sharing device takes the share
-by its tab and its workspace's governance names it; that write does not
-arrive on the other device's desk, so no picture is held there (see "Not
-built yet").
+The share step has not passed there. When it last ran, the sharing device
+said it shared the window, the other said it watched it, and no picture
+crossed. Two causes were found, and both are closed in the session and held
+by tests that run two real sessions (`window_share_live`): a device that did
+not reach the device relaying the workspace's live plane when its session
+started never asked again, and a desk that listed the window as its own view
+of it had no tab to picture the shared window in. The step has not been run
+on booted machines since (see "Not built yet").
 
 ## The cases
 
@@ -470,11 +474,12 @@ down.
 - **Several machines in one tab: what is left.** Three machines answer one
   form in one tab on the machines the remote end-to-end run boots, and the
   record names their devices. Two things are not shown there. A window
-  shared with the workspace is not pictured on the person's other device:
-  the share stands in the sharing device's copy of the workspace and does
-  not reach the desk of the device that hosts it, on a local network with no
-  relay; whether a device's writes are meant to reach a device host there
-  is not settled. And nothing has run more than three machines. The door
+  shared with the workspace has not been pictured on the person's other
+  device on those machines: what kept its pictures from crossing when the
+  step last ran is closed in the session, and the step has not been run on
+  machines since. Each session says how far its live plane came and what a
+  share waits for, which is what the step reads when no picture arrives.
+  And nothing has run more than three machines. The door
   serves sixteen connections at once and refuses the next as busy; a tab
   keeps track of sixty-four actors and forgets the oldest beyond that
   without saying so, which no test reaches.

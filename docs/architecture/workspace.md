@@ -391,6 +391,19 @@ and shows the window from there. A desk takes the grants into its own copy of
 a workspace only when the device holds no governance of that workspace: one
 that lives on that desk alone, which has no other device to tell.
 
+Every other device shows the shared window in a tab of its own, as a window
+that runs on the sharing device, and asks that device for its pictures. Where
+a desk already lists the window under the window's own id, that tab is the
+device's own view of it, which it opened itself: it is left as it is, and the
+shared window stands beside it in a tab the viewing device mints. That tab is
+the viewing desk's alone, and never goes into the desk's record: a window that
+runs on another device is that device's to add there. The two are different
+things. The view is what the viewing device opened; the shared window is what
+runs on the sharer's device, which is what someone reviewing it has to see.
+When the share ends the shared window's tab goes, and the view stays. The
+share's reading names the tab on the row of the window it watches
+(`shown_in`).
+
 The window's pictures travel the workspace's live plane, which the device
 hosting the workspace relays for its members, or the members certified to
 host where there are any. A device is in the plane once it holds the keys of
