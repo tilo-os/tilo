@@ -265,6 +265,14 @@ inputs = ["os/containers/tilo-lounge/integration/"]
 suites = ["os/containers/tilo-lounge/integration/waits.test.mjs"]
 
 [[group]]
+name = "tilo-sh-owner-link"
+# The page `stack.sh owner` prints: the token it serves under, the key it keeps
+# and the content type that keeps another origin's page out. Driven against the
+# helper alone, so it needs no stack, no image and no browser.
+inputs = ["os/containers/tilo-sh/owner-link.mjs"]
+suites = ["os/containers/tilo-sh/owner-link.test.mjs"]
+
+[[group]]
 name = "native-store-autoclear"
 inputs = ["tools/ci/native-store-autoclear.py"]
 suites = ["tools/ci/test_native_store_autoclear.py"]

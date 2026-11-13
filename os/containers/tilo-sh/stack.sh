@@ -56,7 +56,10 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
                          key it then approves: an export TILO_API_KEY=… line
                          in $state/operator.env, with which
                          tilo members invite -w Lounge prints an invite link.
-                         `up` does this on its own (TILO_SH_OWNER=0 not)
+                         It then prints a link to open in the browser you use
+                         for the Lounge, which makes that person an owner too.
+                         `up` declares the operator's identity on its own
+                         (TILO_SH_OWNER=0 not)
   stack.sh browser       a Chromium on a fresh profile, opened on the local site
   stack.sh check
                          bring the stack up and run the end-to-end check on it
@@ -147,6 +150,7 @@ site_port=$((base + 20))       # Caddy: the site's public origin (tilo.sh, Cloud
 web_port=$((base + 21))        # the web entry's own plain listener (8080), behind it
 releases_port=$((base + 22))   # this checkout's tilo command, as the site's /releases serves it
 mail_port=$((base + 23))       # the mail sink the door's mail goes to instead of Resend
+owner_port=$((base + 24))      # stack.sh owner's page, at the site's origin (Caddy routes /owner)
 discord_rest_port=$((base + 40))
 discord_gateway_port=$((base + 41))
 discord_control_port=$((base + 42))
@@ -443,24 +447,33 @@ start_mail() {
   done
 }
 
-# owner KEY: declare the person whose user public key (hex) is KEY an owner of
-# the Lounge: the door lets them in without an invitation, and the workspace
-# makes them an administrator once they are a member. On a fresh stack nobody
-# is a member yet, so this is how the first person gets in to invite the
-# others. The workspace answers at once, or says why it did not.
+# owner [KEY] [--no-link]: declare the person whose user public key (hex) is
+# KEY an owner of the Lounge: the door lets them in without an invitation, and
+# the workspace makes them an administrator once they are a member. On a fresh
+# stack nobody is a member yet, so this is how the first person gets in to
+# invite the others. The workspace answers at once, or says why it did not.
+#
+# Without KEY it declares the identity this computer's tilo command holds, and
+# then prints a link that makes the browser someone opens it in an owner too:
+# `--no-link` stops after the identity, since `up` runs this with nobody there
+# to open one.
 declare_owner() {
-  local key=${1:-}
+  local key=''
+  local linked=1
+  local arg
+  for arg in "$@"; do
+    case $arg in
+      --no-link) linked='' ;;
+      *) key=$arg ;;
+    esac
+  done
   local tilo=''
   if [[ -z $key ]]; then
     tilo=$(find_tilo)
     key=$("$tilo" login --new-identity) || die "the tilo command made no identity ($tilo login --new-identity)"
   fi
   [[ $key =~ ^[0-9a-f]{64}$ ]] || die 'owner KEY: the person'"'"'s user public key, 64 hex characters (a tab that opened the site names it in its localStorage key tilo-own-workspace-named:ORIGIN:KEY)'
-  local socket=$state/relay/lounge/operator.sock
-  [[ -S $socket ]] || die "the Lounge is not running ($socket); stack.sh up first"
-  python3 -I "$repo/os/containers/tilo-lounge/declare-owner" "$socket" "$key" \
-    || die "the Lounge did not make $key an owner"
-  say "$key is an owner of the Lounge: its door lets them in, and it makes them an administrator once they join"
+  declare_owner_at_lounge "$key"
   [[ -n $tilo ]] || return 0
   # The identity approves its own key, as its Tilo on the web would: the
   # door lets it in now that the workspace counts it an owner.
@@ -471,6 +484,65 @@ declare_owner() {
     (umask 077 && printf '%s\n# %s\n' "$made" "$key" > "$state/operator.env")
   fi
   say "its key: eval \"\$(head -1 $state/operator.env)\"; then TILO_API_URL=$api_origin tilo members invite -w Lounge prints an invite link"
+  [[ -z $linked ]] || declare_owner_by_link
+}
+
+# The running Lounge declares KEY an owner, as production's operator does: its
+# door lets them in, and its governance makes them an administrator once they
+# are a member.
+declare_owner_at_lounge() {
+  local key=$1
+  local socket=$state/relay/lounge/operator.sock
+  [[ -S $socket ]] || die "the Lounge is not running ($socket); stack.sh up first"
+  python3 -I "$repo/os/containers/tilo-lounge/declare-owner" "$socket" "$key" \
+    || die "the Lounge did not make $key an owner"
+  say "$key is an owner of the Lounge: its door lets them in, and it makes them an administrator once they join"
+}
+
+# How long `owner` waits for its link to be opened.
+owner_wait_secs=${TILO_SH_OWNER_WAIT:-600}
+
+# `owner`'s link: the page under the site's origin that reads the browser's own
+# user key and hands it over, and the wait for whoever opens it.
+declare_owner_by_link() {
+  local work token log pid key
+  local deadline
+  token=$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')
+  # This link's own place, so two of these never share one.
+  work=$state/owner/$token
+  rm -rf "$work"
+  mkdir -p "$work"
+  log=$state/logs/owner.log
+  mkdir -p "$state/logs"
+  : > "$log"
+  node "$here/owner-link.mjs" "$work" "$owner_port" "$token" >> "$log" 2>&1 < /dev/null 9>&- &
+  pid=$!
+  deadline=$((SECONDS + 15))
+  until grep -q '"url"' "$log" 2>/dev/null; do
+    ((SECONDS < deadline)) || die "the owner page did not start: $(cat "$log")"
+    kill -0 "$pid" 2>/dev/null || die "the owner page stopped: $(cat "$log")"
+    sleep 0.1
+  done
+  # The key arrives when it does: the page keeps it once it has answered the
+  # browser, so a key here is one the browser was told about.
+  say "opening this in a browser that uses the Lounge makes that person an owner too:"
+  say "  $site_origin/owner/$token"
+  say "waiting up to $((owner_wait_secs / 60)) minutes for it (Ctrl-C leaves the operator's identity the owner)"
+  deadline=$((SECONDS + owner_wait_secs))
+  until [[ -s $work/$token.key ]]; do
+    if ((SECONDS >= deadline)); then
+      kill "$pid" 2>/dev/null || true
+      rm -rf "$work"
+      say "nobody opened the link: the operator's identity stays the only owner (stack.sh owner KEY declares a key)"
+      return 0
+    fi
+    sleep 0.2
+  done
+  key=$(tr -d ' \n' < "$work/$token.key")
+  rm -rf "$work"
+  kill "$pid" 2>/dev/null || true
+  [[ $key =~ ^[0-9a-f]{64}$ ]] || die 'the owner page handed over no user public key'
+  declare_owner_at_lounge "$key"
 }
 
 # The mails the door sent, oldest first: who to, the subject and the links in
@@ -964,7 +1036,8 @@ start_native_tls() {
     printf '%s\n' "XDG_DATA_HOME=$state/tls" "XDG_CONFIG_HOME=$state/tls/config" \
       "TILO_SH_RELAY_PORT=$relay_port" "TILO_SH_LIVE_PORT=$live_port" "TILO_SH_PACKET_PORT=$packet_port" \
       "TILO_SH_ROUTES_PORT=$routes_port" "TILO_SH_PLAIN_PORT=$plain_port" "TILO_SH_CADDY_HTTP_PORT=$caddy_http_port" \
-      "TILO_SH_SITE_PORT=$site_port" "TILO_SH_WEB_PORT=$web_port"
+      "TILO_SH_SITE_PORT=$site_port" "TILO_SH_WEB_PORT=$web_port" \
+      "TILO_SH_OWNER_PORT=$owner_port"
   } > "$runs/tls.env"
   [[ -f $state/trust-bundle.pem ]] || trust_bundle
   run_native tls "$state/tls" "$caddy" run --config "$state/tls/Caddyfile" --adapter caddyfile
@@ -1243,7 +1316,7 @@ up() {
   # The operator is the Lounge's owner from the start, as this computer's tilo
   # identity: one command away from an invite link.
   if [[ ${TILO_SH_OWNER:-1} != 0 ]]; then
-    (declare_owner) || say 'no tilo identity declared an owner (stack.sh owner KEY declares one)'
+    (declare_owner --no-link) || say 'no tilo identity declared an owner (stack.sh owner KEY declares one)'
   fi
   status
 }
@@ -1304,6 +1377,7 @@ up_images() {
     --env "TILO_SH_ROUTES_PORT=$routes_port" --env "TILO_SH_PLAIN_PORT=$plain_port" \
     --env "TILO_SH_CADDY_HTTP_PORT=$caddy_http_port" \
     --env "TILO_SH_SITE_PORT=$site_port" --env "TILO_SH_WEB_PORT=$web_port" \
+    --env "TILO_SH_OWNER_PORT=$owner_port" \
     -v "$state/tls/Caddyfile:/etc/caddy/Caddyfile:ro,Z" \
     -v "$state/tls/caddy:/data/caddy:Z" -v "$state/tls/config:/config:Z" \
     "$caddy_image" caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
@@ -1399,8 +1473,8 @@ down() {
   if [[ -n $wipe ]]; then
     # The volumes belong to the containers' users (10001, 65532) inside this
     # account's user namespace: only that namespace removes them.
-    podman_ unshare rm -rf "$state/relay" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail" 2>/dev/null \
-      || rm -rf "$state/relay" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail"
+    podman_ unshare rm -rf "$state/relay" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail" "$state/owner" 2>/dev/null \
+      || rm -rf "$state/relay" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail" "$state/owner"
     rm -rf "${runs:?}" "$state/trust-bundle.pem" "$state/mode"
     say "stopped, and its state is gone (builds kept in $native, images in $state/images)"
   else
