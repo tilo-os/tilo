@@ -167,14 +167,14 @@ impl Published {
         if let Some(spec) = self.holding(resource)
             && let Some(named) = named_by(spec, action, declared)
         {
-            return Some(tilo_actions::ActionAddress::naming(spec, named).encode());
+            return Some(named_address(spec, named, declared).encode());
         }
         if let Some((spec, named)) = self
             .resources
             .iter()
             .find_map(|spec| named_by(spec, action, declared).map(|named| (spec, named)))
         {
-            return Some(tilo_actions::ActionAddress::naming(spec, named).encode());
+            return Some(named_address(spec, named, declared).encode());
         }
         // A reading of another app's record: the id the control names is the resource that app
         // publishes it under, and its own door resolves it there.
@@ -203,6 +203,22 @@ impl Published {
         let kind = binding.kind.as_deref()?;
         Some(tilo_actions::ActionAddress::on(kind, target, field).encode())
     }
+}
+
+/// The address a control running `named` on `spec` publishes
+/// ([`tilo_actions::ActionAddress::naming`]), with `declared` — the id the control's event names —
+/// in place of the one the action carries here: a window holds the app's actions as their catalogue
+/// describes them, which says what an action is published as and not the id its declaration keeps.
+fn named_address(
+    spec: &tilo_actions::ResourceSpec,
+    named: &tilo_actions::ActionSpec,
+    declared: &str,
+) -> tilo_actions::ActionAddress {
+    let mut address = tilo_actions::ActionAddress::naming(spec, named);
+    if !declared.is_empty() {
+        address.action = declared.to_owned();
+    }
+    address
 }
 
 /// The action of `spec` a control runs when it runs `action`, published as `declared`: the one it
