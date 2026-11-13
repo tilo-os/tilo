@@ -1,16 +1,4 @@
 //! One early-boot unlock attempt, from the token to the answered prompt.
-//!
-//! 1. The caller reads the token from the volume's header and opens its
-//!    material (the TPM unseals it where there is one), and brings up the
-//!    network.
-//! 2. [`attempt`] asks the siblings ([`Siblings`]) for their half, for this
-//!    boot, signing each sibling's fresh challenge with the boot key.
-//! 3. It derives the slot passphrase, checks it against the slot, and answers
-//!    systemd-cryptsetup's passphrase request with it.
-//!
-//! The passphrase prompt is up the whole time and is never touched unless
-//! the derived passphrase opens the slot. Any failure ends the attempt at
-//! that prompt.
 
 use crate::askpass;
 use crate::material::Material;
@@ -26,13 +14,10 @@ use tilo_unlock_protocol::{BootId, BootKeyCert, Half, RefusalReason, derive_slot
 /// sibling's side too.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
-    /// The owner denied the request, or nobody decided in time.
     Denied,
     /// A sibling refused before asking the owner.
     Refused(RefusalReason),
-    /// What was released does not open the slot.
     WrongHalf,
-    /// No sibling could be reached.
     Unreachable(String),
 }
 
@@ -47,7 +32,6 @@ impl std::fmt::Display for Refusal {
     }
 }
 
-/// The person's other devices, as early boot reaches them.
 pub trait Siblings {
     /// Asks the token's siblings for the sibling half of `cert`'s slot, for
     /// boot `boot_id`.
@@ -60,17 +44,13 @@ pub trait Siblings {
     ) -> impl Future<Output = Result<Half, Refusal>> + Send;
 }
 
-/// Checks a derived passphrase against the slot. A seam for tests.
 pub trait Volume {
     fn opens(&self, keyslot: u32, passphrase: &str) -> bool;
 }
 
-/// How the attempt ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
-    /// A sibling's half opened the slot, and the prompt was answered.
     Unlocked,
-    /// No sibling released the half; the prompt stays for the person.
     Refused(Refusal),
 }
 
@@ -131,7 +111,6 @@ pub async fn attempt(
     }
 }
 
-/// The real ask directory.
 pub fn ask_dir() -> PathBuf {
     PathBuf::from(askpass::ASK_DIR)
 }

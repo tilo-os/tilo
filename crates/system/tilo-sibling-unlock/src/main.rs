@@ -1,19 +1,5 @@
 //! `tilo-sibling-unlock`: unlock an encrypted root with another of the
 //! owner's devices.
-//!
-//! * `probe DEVICE`: exit 0 when the volume carries a sibling-unlock token.
-//! * `unlock DEVICE`: one early-boot attempt (the initramfs runs it as
-//!   `tilo-sibling-unlock@.service`, started by tilo-root-discover).
-//! * `enrol DEVICE`: add the sibling key slot and register it with the
-//!   owner's devices (`tilo-disk-encrypt enrol --sibling` runs it).
-//! * `remove DEVICE`: remove the slot and its token.
-//! * `status DEVICE`: what is enrolled, without secrets.
-//! * `volumes`: every volume enrolled on this machine, without secrets
-//!   (Settings reads it through polkit; the description is root's alone).
-//! * `replay TRANSCRIPT`: send a kept exchange's frames to its sibling again
-//!   and print the answers (verification: a replay must be refused).
-//!
-//! Secrets never travel on `argv`.
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -40,14 +26,17 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Exit 0 when DEVICE carries a sibling-unlock token, 1 otherwise.
-    Probe { device: PathBuf },
+    Probe {
+        device: PathBuf,
+    },
     /// Ask the owner's other devices to unlock DEVICE for this boot, and
     /// answer its passphrase prompt with the result.
-    Unlock { device: PathBuf },
+    Unlock {
+        device: PathBuf,
+    },
     /// Add a key slot opened with a sibling's consent, and register it with
     /// the owner's devices.
     Enrol(enrol::Args),
-    /// Remove the sibling key slot and its token.
     Remove {
         device: PathBuf,
         /// A key file holding an existing passphrase of the volume; without
@@ -55,9 +44,9 @@ enum Command {
         #[arg(long)]
         key_file: Option<PathBuf>,
     },
-    /// Print what is enrolled on DEVICE, without secrets.
-    Status { device: PathBuf },
-    /// Print every volume enrolled on this machine, without secrets.
+    Status {
+        device: PathBuf,
+    },
     Volumes,
     /// Send the frames of a kept exchange to its siblings again and print
     /// what they answer.
@@ -78,14 +67,12 @@ fn say(message: &str) {
 
 struct BootScreen;
 
-/// Show `message` on the boot screen, where plymouth is up.
 fn screen(message: &str) {
     let _ = std::process::Command::new("plymouth")
         .args(["display-message", &format!("--text={message}")])
         .status();
 }
 
-/// How the boot screen names the device that answered.
 fn device_name(sibling: &Sibling) -> &str {
     if sibling.label.is_empty() {
         "your other device"
