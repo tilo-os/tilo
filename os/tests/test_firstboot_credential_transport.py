@@ -4,6 +4,8 @@
 import json
 import os
 from pathlib import Path
+import shlex
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -12,6 +14,58 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "os/usr/libexec/tilo-firstboot-user"
 FILES_BINARY = Path(os.environ.get('TILO_FIRSTBOOT_FILES_BINARY', ROOT / 'target/debug/tilo-firstboot-files'))
 SYNTHETIC_HASH = "$6$fixture$" + "A" * 86
+
+# Account tools and the seed producer are inert in this credential boundary
+# fixture; production parsing and unlock ordering run unchanged. They are Bash,
+# like the script that runs them: a boot starts about ten, and a Python
+# interpreter for each was most of this suite's time.
+STAND_IN = r"""set -u
+LC_ALL=C
+root=${FIXTURE_ROOT:?}
+die() { printf '%s\n' "$1" >&2; exit 1; }
+put() { printf %s "$2" > "$1" || exit 1; }
+# The arguments as json.dumps writes a list of printable ASCII strings; an
+# argument it would escape any other way is refused instead.
+json() {
+  local arg c i out= sep=
+  for arg; do
+    case $arg in *[!\ -~]*) die 'argument outside printable ASCII' ;; esac
+    out+=$sep\"
+    for ((i = 0; i < ${#arg}; i++)); do
+      c=${arg:i:1}
+      case $c in '"' | '\') out+='\' ;; esac
+      out+=$c
+    done
+    out+=\"
+    sep=', '
+  done
+  REPLY=[$out]
+}
+"""
+TOOLS = {
+    "bin/id": "exit 1",
+    "bin/stat": r"""case ${2?} in
+  %u:%a:%h) echo 0:600:1 ;;
+  *) exec "$real_stat" -L -c %s -- "${@: -1}" ;;
+esac""",
+    "bin/useradd": r"""json "$@"; put "$root/useradd.json" "$REPLY" """,
+    "bin/getent": r"""printf '%s\n' "fixtureuser:x:$uid:$gid::$root/home/fixtureuser:/bin/bash" """,
+    "bin/chpasswd": r"""json "$@"; put "$root/chpasswd.json" "$REPLY"
+IFS= read -r -d '' input || :
+put "$root/password-stdin" "$input"
+exit "${FIXTURE_PASSWORD_FAILURE-0}" """,
+    "bin/chage": r"""[ $# -eq 3 ] && [ "$1" = -E ] && [ "$2" = -1 ] && [ "$3" = fixtureuser ] \
+  || die 'unexpected chage arguments'
+put "$root/expiry-release" released""",
+    "bin/shred": r"""exec rm -- "${@: -1}" """,
+    "bin/chown": ":",
+    "bin/cp": ":",
+    # This inert helper covers unlock ordering only. The separate native
+    # seed/adoption fixture uses the actual native executable and real NSS.
+    "home-seeds": r"""[ $# -eq 1 ] && [ "$1" = fixtureuser ] || die 'unexpected seed arguments'
+put "$root/seeds-called" called
+exit "${FIXTURE_SEEDS_FAILURE-0}" """,
+}
 
 
 class CredentialTransportTests(unittest.TestCase):
@@ -27,11 +81,7 @@ class CredentialTransportTests(unittest.TestCase):
         if seeded_home:
             home.mkdir(parents=True)
         (root / "home").mkdir(exist_ok=True)
-        # This inert helper covers unlock ordering only. The separate native
-        # seed/adoption fixture uses the actual native executable and real NSS.
-        seeds = root / "home-seeds.py"
-        seeds.write_text("#!/usr/bin/env python3\nimport os, sys\nfrom pathlib import Path\nassert sys.argv[1:] == ['fixtureuser']\nPath(os.environ['FIXTURE_ROOT'], 'seeds-called').write_text('called')\nraise SystemExit(int(os.environ.get('FIXTURE_SEEDS_FAILURE', '0')))\n")
-        seeds.chmod(0o755)
+        seeds = root / "home-seeds"
         source = SOURCE.read_text()
         replacements = {
             "CONF=/etc/tilo/install-user.conf": f"CONF={credential}",
@@ -53,27 +103,22 @@ class CredentialTransportTests(unittest.TestCase):
         script.write_text(source)
         tools = root / "bin"
         tools.mkdir()
-        # Account tools and the seed producer are inert in this credential
-        # boundary fixture; production parsing and unlock ordering run unchanged.
-        stubs = {
-            "sync": "fd = os.open(sys.argv[-1], os.O_RDONLY); os.fsync(fd); os.close(fd)",
-            "id": "raise SystemExit(1)",
-            "stat": "print('0:600:1' if sys.argv[2] == '%u:%a:%h' else Path(sys.argv[-1]).stat().st_size)",
-            "useradd": "(root / 'useradd.json').write_text(json.dumps(sys.argv[1:]))",
-            "getent": "print('fixtureuser:x:' + str(os.getuid()) + ':' + str(os.getgid()) + '::' + str(root / 'home/fixtureuser') + ':/bin/bash')",
-            "chpasswd": "(root / 'chpasswd.json').write_text(json.dumps(sys.argv[1:])); (root / 'password-stdin').write_text(sys.stdin.read()); raise SystemExit(int(os.environ.get('FIXTURE_PASSWORD_FAILURE', '0')))",
-            "chage": "assert sys.argv[1:] == ['-E', '-1', 'fixtureuser']; (root / 'expiry-release').write_text('released')",
-            "shred": "Path(sys.argv[-1]).unlink()",
-            "chown": "pass",
-            "cp": "pass",
-        }
-        for tool, body in stubs.items():
-            path = tools / tool
-            path.write_text(
-                "#!/usr/bin/env python3\nimport json, os, sys\nfrom pathlib import Path\n"
-                "root = Path(os.environ['FIXTURE_ROOT'])\n" + body + "\n"
-            )
+        values = {"real_stat": shutil.which("stat"), "uid": os.getuid(), "gid": os.getgid()}
+        self.assertTrue(values["real_stat"], "the stat stand-in asks the real stat for a size")
+        prelude = "#!/usr/bin/env bash\n" + "".join(
+            f"{name}={shlex.quote(str(value))}\n" for name, value in values.items()) + STAND_IN
+        for tool, body in TOOLS.items():
+            path = root / tool
+            path.write_text(prelude + body + "\n")
             path.chmod(0o755)
+        # Nothing in the script runs sync today; its stand-in is as it was.
+        path = tools / "sync"
+        path.write_text(
+            "#!/usr/bin/env python3\nimport json, os, sys\nfrom pathlib import Path\n"
+            "root = Path(os.environ['FIXTURE_ROOT'])\n"
+            "fd = os.open(sys.argv[-1], os.O_RDONLY); os.fsync(fd); os.close(fd)\n"
+        )
+        path.chmod(0o755)
         environment = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}",
                            FIXTURE_ROOT=str(root), FIXTURE_PASSWORD_FAILURE=str(int(fail_password)),
                            FIXTURE_SEEDS_FAILURE=str(int(fail_seeds)))

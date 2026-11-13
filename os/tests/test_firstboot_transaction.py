@@ -6,6 +6,8 @@ The native seed namespace suite separately exercises the shipped executable.
 import json
 import os
 from pathlib import Path
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -17,6 +19,103 @@ from hang import HANG_BOUND  # noqa: E402
 SOURCE = ROOT / 'os/usr/libexec/tilo-firstboot-user'
 FILES_BINARY = Path(os.environ.get('TILO_FIRSTBOOT_FILES_BINARY', ROOT / 'target/debug/tilo-firstboot-files'))
 HASH = '$6$fixture$' + 'A' * 86
+
+# The tool stand-ins are Bash, like the script that runs them: a boot starts
+# about twenty-five, and a Python interpreter for each was most of this suite's
+# time. Every one begins with this, after the fixture's values.
+STAND_IN = r'''set -u
+r=${FIXTURE_ROOT:?}
+stage=${FAIL_STAGE-}
+die() { printf '%s\n' "$1" >&2; exit 1; }
+fail() {
+  [ "$stage" = "$1" ] || return 0
+  [ "${TERMINATE-}" != 1 ] || kill -TERM "$PPID"
+  [ "$stage" != crash ] || kill -KILL "$PPID"
+  exit 1
+}
+# A file's exact text in REPLY; a missing file fails, as reading it would.
+text() { [ -f "$1" ] || die "no $1"; IFS= read -r -d '' REPLY < "$1" || :; }
+put() { printf %s "$2" > "$1" || exit 1; }
+expired() { text "$r/expiry"; [ "$REPLY" = 1970-01-02 ] || die 'delivery ran unexpired'; }
+locked() { expired; text "$r/shadow"; [[ $REPLY == '!'* ]] || die 'delivery ran unlocked'; }
+'''
+TOOLS = {
+    # The built helper, unless the case fails the intent's publication,
+    # whose own syncs (record, then directory) make the intent durable.
+    'bin/files-helper': r'''[ "${1?}" != intent ] || fail intent
+exec "$files_binary" "$@"''',
+    'bin/id': r'''[ -e "$r/shadow" ]''',
+    'bin/stat': r'''case ${2?} in
+  %u:%a:%h) echo 0:600:1 ;;
+  %u:%a) echo 0:700 ;;
+  *) exec "$real_stat" -L -c %s -- "${@: -1}" ;;
+esac''',
+    'bin/getent': r'''field=x
+if [ "${1?}" = shadow ]; then text "$r/shadow"; field=$REPLY; fi
+printf '%s\n' "fixtureuser:$field:$uid:$gid::$r/home/fixtureuser:/bin/bash"''',
+    'bin/useradd': r'''LC_ALL=C
+# The argument after the first "$1".
+after() {
+  local flag=$1
+  shift
+  while [ $# -gt 1 ]; do
+    if [ "$1" = "$flag" ]; then REPLY=$2; return 0; fi
+    shift
+  done
+  die "useradd without a value for $flag"
+}
+# The arguments as json.dumps writes a list of printable ASCII strings; an
+# argument it would escape any other way is refused instead.
+json() {
+  local arg c i out= sep=
+  for arg; do
+    case $arg in *[!\ -~]*) die 'useradd argument outside printable ASCII' ;; esac
+    out+=$sep\"
+    for ((i = 0; i < ${#arg}; i++)); do
+      c=${arg:i:1}
+      case $c in '"' | '\') out+='\' ;; esac
+      out+=$c
+    done
+    out+=\"
+    sep=', '
+  done
+  REPLY=[$out]
+}
+fail useradd-before
+[ ! -e "$r/shadow" ] || die 'useradd ran for an existing account'
+after -e "$@"; put "$r/expiry" "$REPLY"
+expired
+after -p "$@"; put "$r/shadow" "$REPLY"
+json "$@"; put "$r/useradd" "$REPLY"
+fail useradd
+fail crash''',
+    'bin/chpasswd': r'''expired
+IFS= read -r -d '' line || :
+line=${line#"${line%%[![:space:]]*}"}
+line=${line%"${line##*[![:space:]]}"}
+[[ $line == *:* ]] || die 'chpasswd reads name:password'
+fail password
+put "$r/shadow" "${line#*:}"''',
+    'bin/chage': r'''[ "${1?}" = -E ] && [ "${3?}" = fixtureuser ] || die 'unexpected chage arguments'
+if [ "$2" = -1 ]; then fail expiry-release; else fail expiry-retry; fi
+if [ "$2" = -1 ]; then
+  text "$r/shadow"
+  [ "$REPLY" = "$password_hash" ] || die 'expiry released before the password was installed'
+fi
+put "$r/expiry" "$2"''',
+    'bin/chgrp': 'locked; fail key-repair',
+    'bin/chmod': 'locked; fail key-mode',
+    'bin/chown': 'locked; fail chown',
+    'bin/shred': r'''exec rm -- "${@: -1}"''',
+    'handoff': r'''if [ "${1?}" = required-user-id ]; then
+  [ ! -e "$r/shadow" ] || die 'retry repeated UID availability query'
+  echo 1000
+else
+  locked
+  fail plan
+fi''',
+    'etc/prepared-setup-transport': r'''locked; fail "${1?}"''',
+}
 
 
 class TransactionTests(unittest.TestCase):
@@ -42,6 +141,16 @@ class TransactionTests(unittest.TestCase):
             (r / 'state' / name).write_text('fixture')
         # Every external tool is inert, but maintains shadow/account state across
         # separate real Bash invocations. A delivery observes actual mock shadow.
+        values = {'files_binary': FILES_BINARY, 'real_stat': shutil.which('stat'),
+                  'uid': os.getuid(), 'gid': os.getgid(), 'password_hash': HASH}
+        self.assertTrue(values['real_stat'], 'the stat stand-in asks the real stat for a size')
+        prelude = '#!/usr/bin/env bash\n' + ''.join(
+            f'{name}={shlex.quote(str(value))}\n' for name, value in values.items()) + STAND_IN
+        for name, body in TOOLS.items():
+            p = r / name
+            p.write_text(prelude + body + '\n')
+            p.chmod(0o755)
+        # The seed oracle is Python, so its stand-in is too.
         common = """import json, os, signal, sys
 from pathlib import Path
 r = Path(os.environ['FIXTURE_ROOT'])
@@ -59,25 +168,6 @@ def locked():
     expired()
     assert (r / 'shadow').read_text().startswith('!'), 'delivery ran unlocked'
 """
-        tools = {
-            # The built helper, unless the case fails the intent's publication,
-            # whose own syncs (record, then directory) make the intent durable.
-            'files-helper': f"fail('intent') if sys.argv[1] == 'intent' else None; os.execv({str(FILES_BINARY)!r}, [{str(FILES_BINARY)!r}] + sys.argv[1:])",
-            'id': "raise SystemExit(0 if (r / 'shadow').exists() else 1)",
-            'stat': "print('0:600:1' if sys.argv[2] == '%u:%a:%h' else '0:700' if sys.argv[2] == '%u:%a' else Path(sys.argv[-1]).stat().st_size)",
-            'getent': "print('fixtureuser:' + ((r / 'shadow').read_text() if sys.argv[1] == 'shadow' else 'x') + ':' + str(os.getuid()) + ':' + str(os.getgid()) + '::' + str(r / 'home/fixtureuser') + ':/bin/bash')",
-            'useradd': "fail('useradd-before'); assert not (r / 'shadow').exists(); (r / 'expiry').write_text(sys.argv[sys.argv.index('-e') + 1]); expired(); (r / 'shadow').write_text(sys.argv[sys.argv.index('-p') + 1]); (r / 'useradd').write_text(json.dumps(sys.argv[1:])); fail('useradd'); fail('crash')",
-            'chpasswd': "expired(); value = sys.stdin.read().strip().split(':', 1)[1]; fail('password'); (r / 'shadow').write_text(value)",
-            'chage': "assert sys.argv[1] == '-E' and sys.argv[3] == 'fixtureuser'; value = sys.argv[2]; fail('expiry-release' if value == '-1' else 'expiry-retry'); assert value != '-1' or (r / 'shadow').read_text() == '$6$fixture$' + 'A' * 86; (r / 'expiry').write_text(value)",
-            'chgrp': "locked(); fail('key-repair')",
-            'chmod': "locked(); fail('key-mode')",
-            'chown': "locked(); fail('chown')",
-            'shred': "Path(sys.argv[-1]).unlink()",
-        }
-        for name, body in tools.items():
-            p = r / 'bin' / name
-            p.write_text('#!/usr/bin/env python3\n' + common + body + '\n')
-            p.chmod(0o755)
         (r / 'skel').mkdir()
         (r / 'skel/default').write_text('generated')
         (r / 'skel/seeded').write_text('skel')
@@ -105,16 +195,6 @@ with patch.object(helper.os, 'geteuid', return_value=0), \\
 fail('seeds-after')
 """)
         (r / 'seeds.py').chmod(0o755)
-        (r / 'handoff').write_text('#!/usr/bin/env python3\n' + common + """if sys.argv[1] == 'required-user-id':
-    assert not (r / 'shadow').exists(), 'retry repeated UID availability query'
-    print('1000')
-else:
-    locked()
-    fail('plan')
-""")
-        (r / 'handoff').chmod(0o755)
-        (r / 'etc/prepared-setup-transport').write_text('#!/usr/bin/env python3\n' + common + "locked(); fail(sys.argv[1])\n")
-        (r / 'etc/prepared-setup-transport').chmod(0o755)
         s = SOURCE.read_text()
         for old, new in {
             '/etc/tilo': str(r / 'etc'),
@@ -140,6 +220,60 @@ else:
                                 capture_output=True, text=True, timeout=HANG_BOUND)
         self.assertNotIn(HASH, result.stdout + result.stderr)
         return result
+
+    def test_stand_ins_refuse_what_the_boots_rely_on_them_to_refuse(self):
+        # The boots below show a delivery never ran unlocked or unexpired only
+        # because the stand-in it reached would have refused. Each must.
+        lock = '!tilo-firstboot-' + 'a' * 32
+        add = ['-e', '1970-01-02', '-p', lock, 'fixtureuser']
+        rows = [
+            # stand-in and arguments, expiry, shadow, its refusal (None: it accepts)
+            (['bin/chgrp', 'tilo-identity', 'key'], '1970-01-02', lock, None),
+            (['bin/chgrp', 'tilo-identity', 'key'], '1970-01-02', HASH, 'delivery ran unlocked'),
+            (['bin/chmod', '0640', 'key'], '-1', lock, 'delivery ran unexpired'),
+            (['bin/chown', '0:0', 'run'], None, lock, 'expiry'),
+            (['bin/chown', '0:0', 'run'], '1970-01-02', None, 'shadow'),
+            (['handoff', 'deliver-user-plan'], '1970-01-02', lock, None),
+            (['handoff', 'deliver-user-plan'], '1970-01-02', HASH, 'delivery ran unlocked'),
+            (['handoff', 'required-user-id'], None, lock, 'retry repeated UID availability query'),
+            (['etc/prepared-setup-transport', 'deliver-user'], '1970-01-02', '', 'delivery ran unlocked'),
+            (['etc/prepared-setup-transport', 'deliver-home-user'], '', lock, 'delivery ran unexpired'),
+            (['seeds.py', 'fixtureuser'], '1970-01-02', HASH, 'delivery ran unlocked'),
+            (['seeds.py', 'fixtureuser'], '-1', lock, 'delivery ran unexpired'),
+            (['bin/useradd'] + add, None, lock, 'existing account'),
+            (['bin/useradd', '-e', '2038-01-19', '-p', lock, 'fixtureuser'], None, None, 'delivery ran unexpired'),
+            (['bin/useradd', '-p', lock, 'fixtureuser'], None, None, 'without a value for -e'),
+            (['bin/useradd'] + add + ['caf\u00e9'], None, None, 'outside printable ASCII'),
+            (['bin/chpasswd'], '-1', lock, 'delivery ran unexpired'),
+            (['bin/chpasswd'], None, lock, 'expiry'),
+            (['bin/chage', '-E', '-1', 'fixtureuser'], '1970-01-02', HASH, None),
+            (['bin/chage', '-E', '-1', 'fixtureuser'], '1970-01-02', lock, 'before the password'),
+            (['bin/chage', '-E', '-1', 'other'], '1970-01-02', HASH, 'unexpected chage arguments'),
+            (['bin/chage', '-M', '-1', 'fixtureuser'], '1970-01-02', HASH, 'unexpected chage arguments'),
+        ]
+        env = dict(os.environ, FIXTURE_ROOT=str(self.root), FAIL_STAGE='', TERMINATE='0')
+        for argv, expiry, shadow, refusal in rows:
+            with self.subTest(argv=argv, expiry=expiry, shadow=shadow):
+                for name, value in [('expiry', expiry), ('shadow', shadow)]:
+                    (self.root / name).unlink(missing_ok=True)
+                    if value is not None:
+                        (self.root / name).write_text(value)
+                result = subprocess.run([str(self.root / argv[0])] + argv[1:], env=env, input='',
+                                        capture_output=True, text=True, timeout=HANG_BOUND)
+                if refusal is None:
+                    self.assertEqual((result.returncode, result.stderr), (0, ''))
+                else:
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn(refusal, result.stderr)
+                self.assertEqual(result.stdout, '')
+        # The record a retry is compared against is what json.dumps wrote.
+        (self.root / 'shadow').unlink()
+        awkward = add[:-1] + ['-c', 'A "quoted" \\ name', '', ' ', "it's $HOME `x` ~ * ? & | ; < > ( ) { } [ ] # ! %", 'fixtureuser']
+        result = subprocess.run([str(self.root / 'bin/useradd')] + awkward, env=env, capture_output=True, text=True)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '', ''))
+        self.assertEqual((self.root / 'useradd').read_text(), json.dumps(awkward))
+        self.assertEqual((self.root / 'shadow').read_text(), lock)
+        self.assertEqual((self.root / 'expiry').read_text(), '1970-01-02')
 
     def test_every_failed_delivery_is_locked_and_retryable(self):
         for stage in ['useradd', 'crash', 'seeds', 'seeds-after', 'key-repair', 'key-mode', 'plan', 'deliver-user', 'deliver-home-user', 'password', 'expiry-release']:
