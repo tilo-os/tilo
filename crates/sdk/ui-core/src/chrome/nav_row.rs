@@ -1352,159 +1352,163 @@ mod tests {
         Rect::new(0.0, 0.0, 280.0, nav_row_height(theme))
     }
 
-    #[test]
-    fn rows_inset_the_list_and_give_the_label_the_rest() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let face = NavRowFace::new(row(&theme), "Inbox")
-            .icon(Icon::Inbox)
-            .count(NavCount::Neutral(12));
-        let layout = nav_row_layout(&theme, &mut text, &face);
-        let s2 = f64::from(theme.tokens.spacing.s2);
-        assert!((layout.selection.x0 - s2).abs() < 1e-9);
-        assert!((layout.selection.x1 - (280.0 - s2)).abs() < 1e-9);
-        let icon = layout.icon.expect("icon");
-        assert!(icon.x0 > layout.selection.x0);
-        assert!(layout.label_x0 > icon.x1);
-        let count = layout.count.expect("count");
-        assert!(
-            layout.label_x1 < count.x0,
-            "the label elides before the count"
-        );
-        let nested = nav_row_layout(&theme, &mut text, &face.clone().depth(1));
-        let s4 = f64::from(theme.tokens.spacing.s4);
-        assert!((nested.label_x0 - layout.label_x0 - s4).abs() < 1e-9);
-        let actions = [Icon::MoreHorizontal];
-        let hovered = nav_row_layout(&theme, &mut text, &face.clone().actions(&actions, None));
-        assert!(hovered.count.is_none());
-        assert_eq!(hovered.actions.len(), 1);
-        assert!(hovered.label_x1 < hovered.actions[0].x0);
-    }
+    tilo_test_env::scenario! {
+        fn nav_rows_lay_out_count_grow_and_lift;
 
-    #[test]
-    fn a_zero_count_is_no_count_at_all() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        for count in [NavCount::Neutral(0), NavCount::Live(0)] {
-            let face = NavRowFace::new(row(&theme), "Inbox").count(count);
-            assert_eq!(face.count, None, "{count:?}");
-            assert_eq!(
-                nav_row_layout(&theme, &mut text, &face).count,
-                None,
-                "{count:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn section_inset_is_quiet_and_preserves_real_tree_depth_and_targets() {
-        for scale in [1.0, 2.0] {
-            let theme = Theme::dark().with_text_scale(scale);
+        phase rows_inset_the_list_and_give_the_label_the_rest;
+        {
+            let theme = Theme::dark();
             let mut text = TextRenderer::new();
-            let face = NavRowFace::new(row(&theme), "Request").icon(Icon::File);
-            let plain = nav_row_layout(&theme, &mut text, &face);
-            let grouped = nav_row_layout(&theme, &mut text, &face.clone().under_section());
-            assert_eq!(plain.selection, grouped.selection);
-            assert_eq!(plain.label_x1, grouped.label_x1);
-            assert_eq!(
-                grouped.label_x0 - plain.label_x0,
-                f64::from(theme.tokens.spacing.s1)
+            let face = NavRowFace::new(row(&theme), "Inbox")
+                .icon(Icon::Inbox)
+                .count(NavCount::Neutral(12));
+            let layout = nav_row_layout(&theme, &mut text, &face);
+            let s2 = f64::from(theme.tokens.spacing.s2);
+            assert!((layout.selection.x0 - s2).abs() < 1e-9);
+            assert!((layout.selection.x1 - (280.0 - s2)).abs() < 1e-9);
+            let icon = layout.icon.expect("icon");
+            assert!(icon.x0 > layout.selection.x0);
+            assert!(layout.label_x0 > icon.x1);
+            let count = layout.count.expect("count");
+            assert!(
+                layout.label_x1 < count.x0,
+                "the label elides before the count"
             );
-            let nested = nav_row_layout(&theme, &mut text, &face.under_section().depth(1));
-            assert_eq!(
-                nested.label_x0 - grouped.label_x0,
-                f64::from(theme.tokens.spacing.s4)
-            );
+            let nested = nav_row_layout(&theme, &mut text, &face.clone().depth(1));
+            let s4 = f64::from(theme.tokens.spacing.s4);
+            assert!((nested.label_x0 - layout.label_x0 - s4).abs() < 1e-9);
+            let actions = [Icon::MoreHorizontal];
+            let hovered = nav_row_layout(&theme, &mut text, &face.clone().actions(&actions, None));
+            assert!(hovered.count.is_none());
+            assert_eq!(hovered.actions.len(), 1);
+            assert!(hovered.label_x1 < hovered.actions[0].x0);
         }
-    }
 
-    #[test]
-    fn rows_grow_with_the_text() {
-        let theme = Theme::dark();
-        let big = Theme::dark().with_text_scale(2.0);
-        assert!((nav_row_height(&theme) - 32.0).abs() < 1e-9);
-        assert!(nav_row_height(&big) > nav_row_height(&theme));
-        assert!(nav_section_height(&theme, false) > nav_section_height(&theme, true));
-    }
-
-    // From the coordinator (2026-10-19): at high contrast and double text a
-    // fragment such as "Cha…" is worse than both alternatives, so the shared
-    // rail grows with the text, up to a cap, to fit its longest single word;
-    // only past that cap is a word shortened. A word is never hyphenated.
-    #[test]
-    fn hc200_rail_grows_to_keep_a_short_destination_whole() {
-        let theme = Theme::high_contrast().with_text_scale(2.0);
-        let mut text = TextRenderer::new();
-        text.set_text_scale(theme.text_scale);
-        let floor = f64::from(theme.tokens.metrics.rail_width);
-        let cap = (floor * f64::from(theme.text_growth()))
-            .min(f64::from(theme.tokens.metrics.rail_max_width));
-        let width = rail_width_fitting(&theme, &mut text, ["Chat", "Channels", "People"]);
-        assert!(
-            width > floor && width <= cap,
-            "the rail grows past {floor} to fit \"Channels\", up to {cap}: {width}"
-        );
-        let lines = rail_caption_lines(
-            &theme,
-            &mut text,
-            "Channels",
-            rail_caption_width(&theme, width),
-        );
-        assert_eq!(lines, ["Channels"], "a short destination stays whole");
-        assert!(
-            nav_rail_item_height(&theme, &mut text, "Channels", width)
-                >= nav_rail_row_height(&theme),
-            "the shared measured height reserves the caption"
-        );
-        // Past the cap, and only there, a single word is shortened, never cut
-        // with a hyphen.
-        let long = "Internationalisation";
-        let width = rail_width_fitting(&theme, &mut text, [long]);
-        assert!(
-            (width - cap).abs() < 1.0,
-            "a word wider than the cap stops the rail at it: {width}"
-        );
-        let lines = rail_caption_lines(&theme, &mut text, long, rail_caption_width(&theme, width));
-        assert_eq!(lines.len(), 1, "{lines:?}");
-        assert!(
-            lines[0].ends_with('\u{2026}') && !lines[0].contains('-'),
-            "{lines:?}"
-        );
-        let stock = Theme::high_contrast();
-        let mut text = TextRenderer::new();
-        assert!((rail_width_fitting(&stock, &mut text, ["Channels"]) - floor).abs() < 1e-9);
-    }
-
-    #[test]
-    fn a_selected_row_is_a_visible_lift_in_the_accents_faint_tint() {
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            for region in [
-                crate::surface::Region::Content,
-                crate::surface::Region::Sidebar,
-                crate::surface::Region::Inspector,
-            ] {
-                let local = theme.in_region(region);
-                let ground = local.tokens.colors.surfaces.content;
-                let lift =
-                    crate::chrome::selection_tier_on(&local, SelectionState::active(true), ground)
-                        .fill;
-                assert!(
-                    lightness_step(lift, ground) >= SELECTION_MIN_STEP,
-                    "{} {region:?}",
-                    theme.name
+        phase a_zero_count_is_no_count_at_all;
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            for count in [NavCount::Neutral(0), NavCount::Live(0)] {
+                let face = NavRowFace::new(row(&theme), "Inbox").count(count);
+                assert_eq!(face.count, None, "{count:?}");
+                assert_eq!(
+                    nav_row_layout(&theme, &mut text, &face).count,
+                    None,
+                    "{count:?}"
                 );
-                let lift = crate::color::Oklch::from_color(lift);
-                let tint = if local.tokens.colors.accent_hue().is_some() {
-                    crate::tokens::palette::TINTED_LIFT_CHROMA
-                } else {
-                    0.0
-                };
-                assert!(
-                    lift.c <= tint + 0.011,
-                    "{} {region:?}: the lift carries more than the accent's faint tint (C {})",
-                    theme.name,
-                    lift.c
+            }
+        }
+
+        phase section_inset_is_quiet_and_preserves_real_tree_depth_and_targets;
+        {
+            for scale in [1.0, 2.0] {
+                let theme = Theme::dark().with_text_scale(scale);
+                let mut text = TextRenderer::new();
+                let face = NavRowFace::new(row(&theme), "Request").icon(Icon::File);
+                let plain = nav_row_layout(&theme, &mut text, &face);
+                let grouped = nav_row_layout(&theme, &mut text, &face.clone().under_section());
+                assert_eq!(plain.selection, grouped.selection);
+                assert_eq!(plain.label_x1, grouped.label_x1);
+                assert_eq!(
+                    grouped.label_x0 - plain.label_x0,
+                    f64::from(theme.tokens.spacing.s1)
                 );
+                let nested = nav_row_layout(&theme, &mut text, &face.under_section().depth(1));
+                assert_eq!(
+                    nested.label_x0 - grouped.label_x0,
+                    f64::from(theme.tokens.spacing.s4)
+                );
+            }
+        }
+
+        phase rows_grow_with_the_text;
+        {
+            let theme = Theme::dark();
+            let big = Theme::dark().with_text_scale(2.0);
+            assert!((nav_row_height(&theme) - 32.0).abs() < 1e-9);
+            assert!(nav_row_height(&big) > nav_row_height(&theme));
+            assert!(nav_section_height(&theme, false) > nav_section_height(&theme, true));
+        }
+
+        // From the coordinator (2026-10-19): at high contrast and double text a
+        // fragment such as "Cha…" is worse than both alternatives, so the shared
+        // rail grows with the text, up to a cap, to fit its longest single word;
+        // only past that cap is a word shortened. A word is never hyphenated.
+        phase hc200_rail_grows_to_keep_a_short_destination_whole;
+        {
+            let theme = Theme::high_contrast().with_text_scale(2.0);
+            let mut text = TextRenderer::new();
+            text.set_text_scale(theme.text_scale);
+            let floor = f64::from(theme.tokens.metrics.rail_width);
+            let cap = (floor * f64::from(theme.text_growth()))
+                .min(f64::from(theme.tokens.metrics.rail_max_width));
+            let width = rail_width_fitting(&theme, &mut text, ["Chat", "Channels", "People"]);
+            assert!(
+                width > floor && width <= cap,
+                "the rail grows past {floor} to fit \"Channels\", up to {cap}: {width}"
+            );
+            let lines = rail_caption_lines(
+                &theme,
+                &mut text,
+                "Channels",
+                rail_caption_width(&theme, width),
+            );
+            assert_eq!(lines, ["Channels"], "a short destination stays whole");
+            assert!(
+                nav_rail_item_height(&theme, &mut text, "Channels", width)
+                    >= nav_rail_row_height(&theme),
+                "the shared measured height reserves the caption"
+            );
+            // Past the cap, and only there, a single word is shortened, never cut
+            // with a hyphen.
+            let long = "Internationalisation";
+            let width = rail_width_fitting(&theme, &mut text, [long]);
+            assert!(
+                (width - cap).abs() < 1.0,
+                "a word wider than the cap stops the rail at it: {width}"
+            );
+            let lines = rail_caption_lines(&theme, &mut text, long, rail_caption_width(&theme, width));
+            assert_eq!(lines.len(), 1, "{lines:?}");
+            assert!(
+                lines[0].ends_with('\u{2026}') && !lines[0].contains('-'),
+                "{lines:?}"
+            );
+            let stock = Theme::high_contrast();
+            let mut text = TextRenderer::new();
+            assert!((rail_width_fitting(&stock, &mut text, ["Channels"]) - floor).abs() < 1e-9);
+        }
+
+        phase a_selected_row_is_a_visible_lift_in_the_accents_faint_tint;
+        {
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                for region in [
+                    crate::surface::Region::Content,
+                    crate::surface::Region::Sidebar,
+                    crate::surface::Region::Inspector,
+                ] {
+                    let local = theme.in_region(region);
+                    let ground = local.tokens.colors.surfaces.content;
+                    let lift =
+                        crate::chrome::selection_tier_on(&local, SelectionState::active(true), ground)
+                            .fill;
+                    assert!(
+                        lightness_step(lift, ground) >= SELECTION_MIN_STEP,
+                        "{} {region:?}",
+                        theme.name
+                    );
+                    let lift = crate::color::Oklch::from_color(lift);
+                    let tint = if local.tokens.colors.accent_hue().is_some() {
+                        crate::tokens::palette::TINTED_LIFT_CHROMA
+                    } else {
+                        0.0
+                    };
+                    assert!(
+                        lift.c <= tint + 0.011,
+                        "{} {region:?}: the lift carries more than the accent's faint tint (C {})",
+                        theme.name,
+                        lift.c
+                    );
+                }
             }
         }
     }

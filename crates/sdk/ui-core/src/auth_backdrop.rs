@@ -190,115 +190,119 @@ mod tests {
         assert_eq!(a.resources.color_stops, b.resources.color_stops);
     }
 
-    #[test]
-    fn backdrop_animates_only_when_allowed_and_stays_opaque() {
+    tilo_test_env::scenario! {
+        fn the_auth_backdrop_animates_only_when_allowed_and_stays_bounded;
+
+        phase backdrop_animates_only_when_allowed_and_stays_opaque;
         {
-            for theme in [Theme::dark(), Theme::light()] {
-                assert!(needs_animation(&theme));
-                let (first, later) = (frame(&theme, 0.0), frame(&theme, 7.0));
-                assert_ne!(first.encoding().path_data, later.encoding().path_data);
-                assert!(!first.encoding().resources.color_stops.is_empty());
-                assert!(first.encoding().n_paths > 1);
+            {
+                for theme in [Theme::dark(), Theme::light()] {
+                    assert!(needs_animation(&theme));
+                    let (first, later) = (frame(&theme, 0.0), frame(&theme, 7.0));
+                    assert_ne!(first.encoding().path_data, later.encoding().path_data);
+                    assert!(!first.encoding().resources.color_stops.is_empty());
+                    assert!(first.encoding().n_paths > 1);
+                }
             }
-        }
 
-        {
-            let theme = Theme::dark().with_reduce_motion(true);
-            assert!(!needs_animation(&theme));
-            let first = frame(&theme, 0.0);
-            assert!(
-                first.encoding().n_paths > 1,
-                "keep the artwork when motion is disabled"
-            );
-            assert_same_scene(&first, &frame(&theme, 29.0));
-        }
+            {
+                let theme = Theme::dark().with_reduce_motion(true);
+                assert!(!needs_animation(&theme));
+                let first = frame(&theme, 0.0);
+                assert!(
+                    first.encoding().n_paths > 1,
+                    "keep the artwork when motion is disabled"
+                );
+                assert_same_scene(&first, &frame(&theme, 29.0));
+            }
 
-        {
-            let theme = Theme::high_contrast();
-            assert!(!needs_animation(&theme));
-            let mut expected = Scene::new();
-            expected.fill(
-                Fill::NonZero,
-                Affine::IDENTITY,
-                theme.tokens.colors.surfaces.base.with_alpha(1.0),
-                None,
-                &BOUNDS,
-            );
-            assert_same_scene(&frame(&theme, 0.0), &expected);
-            assert_same_scene(&frame(&theme, 45.0), &expected);
-        }
-
-        {
-            let mut transparent_theme = Theme::dark();
-            let ground = &mut transparent_theme.tokens.colors.surfaces.base;
-            *ground = ground.with_alpha(0.2);
-            for theme in [Theme::dark(), Theme::light(), transparent_theme] {
-                let scene = frame(&theme, 7.0);
-                let mut cover = Scene::new();
-                cover.fill(
+            {
+                let theme = Theme::high_contrast();
+                assert!(!needs_animation(&theme));
+                let mut expected = Scene::new();
+                expected.fill(
                     Fill::NonZero,
                     Affine::IDENTITY,
                     theme.tokens.colors.surfaces.base.with_alpha(1.0),
                     None,
                     &BOUNDS,
                 );
-                assert!(
-                    scene
-                        .encoding()
-                        .path_data
-                        .starts_with(&cover.encoding().path_data)
-                );
-                assert!(
-                    scene
-                        .encoding()
-                        .draw_data
-                        .starts_with(&cover.encoding().draw_data)
-                );
+                assert_same_scene(&frame(&theme, 0.0), &expected);
+                assert_same_scene(&frame(&theme, 45.0), &expected);
             }
-        }
-    }
 
-    #[test]
-    fn backdrop_scenes_stay_seamless_small_and_finite_for_any_input() {
-        {
-            let theme = Theme::dark();
-            assert_same_scene(&frame(&theme, 0.0), &frame(&theme, 120.0));
-            assert_same_scene(&frame(&theme, 3.5), &frame(&theme, 123.5));
-        }
-
-        {
-            let theme = Theme::dark();
-            for time in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
-                assert_same_scene(&frame(&theme, time), &frame(&theme, 0.0));
-            }
-        }
-
-        {
-            for time in [0.0, 7.0, 120.0, 10_000_000.0, f64::MAX] {
-                let scene = frame(&Theme::dark(), time);
-                let encoded = scene.encoding();
-                assert!(encoded.n_paths > 1);
-                assert!(encoded.n_paths < 64);
-                assert!(encoded.path_data.len() < 4096);
-                assert!(
-                    encoded
-                        .path_data
-                        .iter()
-                        .all(|bits| f32::from_bits(*bits).is_finite())
-                );
-                assert_eq!(encoded.n_open_clips, 0);
+            {
+                let mut transparent_theme = Theme::dark();
+                let ground = &mut transparent_theme.tokens.colors.surfaces.base;
+                *ground = ground.with_alpha(0.2);
+                for theme in [Theme::dark(), Theme::light(), transparent_theme] {
+                    let scene = frame(&theme, 7.0);
+                    let mut cover = Scene::new();
+                    cover.fill(
+                        Fill::NonZero,
+                        Affine::IDENTITY,
+                        theme.tokens.colors.surfaces.base.with_alpha(1.0),
+                        None,
+                        &BOUNDS,
+                    );
+                    assert!(
+                        scene
+                            .encoding()
+                            .path_data
+                            .starts_with(&cover.encoding().path_data)
+                    );
+                    assert!(
+                        scene
+                            .encoding()
+                            .draw_data
+                            .starts_with(&cover.encoding().draw_data)
+                    );
+                }
             }
         }
 
+        phase backdrop_scenes_stay_seamless_small_and_finite_for_any_input;
         {
-            for bounds in [
-                Rect::ZERO,
-                Rect::new(10.0, 0.0, 0.0, 10.0),
-                Rect::new(0.0, 0.0, f64::NAN, 900.0),
-            ] {
-                let mut scene = Scene::new();
-                draw(&mut scene, &Theme::dark(), Affine::IDENTITY, bounds, 0.0);
-                assert!(scene.encoding().is_empty());
+            {
+                let theme = Theme::dark();
+                assert_same_scene(&frame(&theme, 0.0), &frame(&theme, 120.0));
+                assert_same_scene(&frame(&theme, 3.5), &frame(&theme, 123.5));
+            }
+
+            {
+                let theme = Theme::dark();
+                for time in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+                    assert_same_scene(&frame(&theme, time), &frame(&theme, 0.0));
+                }
+            }
+
+            {
+                for time in [0.0, 7.0, 120.0, 10_000_000.0, f64::MAX] {
+                    let scene = frame(&Theme::dark(), time);
+                    let encoded = scene.encoding();
+                    assert!(encoded.n_paths > 1);
+                    assert!(encoded.n_paths < 64);
+                    assert!(encoded.path_data.len() < 4096);
+                    assert!(
+                        encoded
+                            .path_data
+                            .iter()
+                            .all(|bits| f32::from_bits(*bits).is_finite())
+                    );
+                    assert_eq!(encoded.n_open_clips, 0);
+                }
+            }
+
+            {
+                for bounds in [
+                    Rect::ZERO,
+                    Rect::new(10.0, 0.0, 0.0, 10.0),
+                    Rect::new(0.0, 0.0, f64::NAN, 900.0),
+                ] {
+                    let mut scene = Scene::new();
+                    draw(&mut scene, &Theme::dark(), Affine::IDENTITY, bounds, 0.0);
+                    assert!(scene.encoding().is_empty());
+                }
             }
         }
     }

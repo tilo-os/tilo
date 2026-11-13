@@ -748,333 +748,521 @@ mod tests {
         ]
     }
 
-    /// A secondary button or field on a floating panel has the same visible step off the panel in dark
-    /// as in light: the panel hands its contents a theme whose ground is the panel, so `raised` steps
-    /// off the panel instead of the window (the dark overlay rung sits right under the raised one).
-    #[test]
-    fn a_panels_contents_stand_on_the_panel() {
-        use crate::color::Oklch;
-        let l = |c: Color| Oklch::from_color(c).l;
-        for (name, theme) in themes() {
-            let colors = &theme.tokens.colors;
-            let window_step = (l(colors.surfaces.raised) - l(colors.surfaces.content)).abs();
-            let mut scene = Scene::new();
-            let painted = paint_panel(
-                &mut scene,
-                Affine::IDENTITY,
-                Rect::new(0.0, 0.0, 320.0, 200.0),
-                &theme,
-                1.0,
-            );
-            let ground = panel_ground(&theme);
-            let on = &painted.theme.tokens.colors;
-            assert_eq!(
-                on.surfaces.content, ground,
-                "{name}: contents stand on the panel"
-            );
-            let panel_step = (l(on.surfaces.raised) - l(ground)).abs();
-            assert!(
-                panel_step + 1e-4 >= window_step / 2.0,
-                "{name}: a secondary face stands {panel_step:.3} off the panel, \
-                 {window_step:.3} off the window"
-            );
-        }
-    }
+    tilo_test_env::scenario! {
+        fn chrome_surfaces_selection_and_scrim_follow_the_theme;
 
-    #[test]
-    fn selection_tiers_register_progressively_without_the_accent() {
+        // A secondary button or field on a floating panel has the same visible step off the panel in dark
+        // as in light: the panel hands its contents a theme whose ground is the panel, so `raised` steps
+        // off the panel instead of the window (the dark overlay rung sits right under the raised one).
+        phase a_panels_contents_stand_on_the_panel;
         {
-            for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
-                let name = theme.name.clone();
+            use crate::color::Oklch;
+            let l = |c: Color| Oklch::from_color(c).l;
+            for (name, theme) in themes() {
                 let colors = &theme.tokens.colors;
-                let grounds = [
-                    ("base", colors.surfaces.base),
-                    ("content", colors.surfaces.content),
-                    ("sidebar", colors.surfaces.sidebar),
-                    ("inspector", colors.surfaces.inspector),
-                    ("raised", colors.surfaces.raised),
-                    ("panel_ground", panel_ground(&theme)),
-                    ("white", Color::WHITE),
-                    ("black", Color::BLACK),
-                ];
-                for (ground_name, ground) in grounds {
-                    let active =
-                        selection_tier_on(&theme, SelectionState::active(true), ground).fill;
-                    let hover =
-                        selection_tier_on(&theme, SelectionState::new(false, true, false), ground)
-                            .fill;
-                    let idle =
-                        selection_tier_on(&theme, SelectionState::new(false, false, false), ground)
-                            .fill;
-                    assert_eq!(
-                        idle.components[3], 0.0,
-                        "{name}/{ground_name}: idle is transparent"
-                    );
-                    let step = lightness_step(active, ground);
-                    assert!(
-                        step >= SELECTION_MIN_STEP,
-                        "{name}/{ground_name}: active lift must read on its ground (ΔL {step:.3})"
-                    );
-                    // Half a step can round to the ground itself in 8-bit
-                    // sRGB at the black end; it never passes the full step.
-                    let half = lightness_step(hover, ground);
-                    assert!(
-                        half < step,
-                        "{name}/{ground_name}: hover sits between the ground and the active tier"
-                    );
-                    let ramp =
-                        |state| lightness_step(selection_floor_ramp(&theme, state, ground), ground);
-                    let rest = ramp(SelectionState::default());
-                    let hovered = ramp(SelectionState::new(false, true, false));
-                    let chosen = ramp(SelectionState::active(true));
-                    // Like any half step, the floor can round to the ground
-                    // itself in 8-bit sRGB at the black end; it never passes
-                    // the hovered rung.
-                    assert!(
-                        rest <= hovered && hovered < chosen,
-                        "{name}/{ground_name}: floor ramp {rest} {hovered} {chosen}"
-                    );
-                }
-            }
-        }
-
-        {
-            for (name, theme) in themes() {
-                let ground = relative_luminance(theme.tokens.colors.surfaces.base);
-                let dist = |s: SelectionState| {
-                    let t = selection_tier(&theme, s);
-                    let f = t.fill;
-                    let a = f.components[3];
-                    let over = |c: f32, g: f32| c * a + g * (1.0 - a);
-                    let g = theme.tokens.colors.surfaces.base.components;
-                    let composited = Color::new([
-                        over(f.components[0], g[0]),
-                        over(f.components[1], g[1]),
-                        over(f.components[2], g[2]),
-                        1.0,
-                    ]);
-                    (relative_luminance(composited) - ground).abs()
-                };
-                let idle = dist(SelectionState::default());
-                let hover = dist(SelectionState::new(false, true, false));
-                let active = dist(SelectionState::active(true));
-                assert!(
-                    hover > idle,
-                    "{name}: hover ({hover:.4}) must read as lifted off idle ({idle:.4})"
+                let window_step = (l(colors.surfaces.raised) - l(colors.surfaces.content)).abs();
+                let mut scene = Scene::new();
+                let painted = paint_panel(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    Rect::new(0.0, 0.0, 320.0, 200.0),
+                    &theme,
+                    1.0,
                 );
-                assert!(
-                    active > hover,
-                    "{name}: active ({active:.4}) must read as lifted off hover ({hover:.4})"
-                );
-            }
-        }
-
-        {
-            for (name, theme) in themes() {
-                let accent = theme.tokens.colors.intent.accent;
-                for state in [
-                    SelectionState::active(true),
-                    SelectionState::new(false, true, false),
-                    SelectionState::new(true, true, true),
-                ] {
-                    let tier = selection_tier(&theme, state);
-                    assert_ne!(
-                        tier.fill.to_rgba8().to_u32(),
-                        accent.to_rgba8().to_u32(),
-                        "{name}: {state:?} filled with the accent"
-                    );
-                }
-            }
-        }
-
-        {
-            for (name, theme) in themes() {
-                let a = selection_tier(&theme, SelectionState::active(true));
-                let ah = selection_tier(&theme, SelectionState::new(true, true, false));
-                assert_eq!(
-                    a.fill.to_rgba8().to_u32(),
-                    ah.fill.to_rgba8().to_u32(),
-                    "{name}: an active control brightened on hover"
-                );
-                assert_eq!(
-                    a.scale, ah.scale,
-                    "{name}: an active control resized on hover"
-                );
-            }
-        }
-    }
-
-    /// A control with its floor (an idle tile, a list row on a panel)
-    /// must never look louder at rest than it does under the pointer, and
-    /// every other control answers the pointer with the hover tier. So the
-    /// floor's rest face is measured against that tier on the same ground —
-    /// including for a theme whose own hover is quieter than the stock one.
-    #[test]
-    fn a_floored_rest_face_is_quieter_than_a_hovered_one() {
-        use crate::theme::Preset;
-        use crate::tokens::{Response, ResponseStep};
-        let quiet = {
-            let mut document = Preset::Dark.document();
-            document.response = Some(Response {
-                hover: ResponseStep {
-                    lift: *ResponseStep::LIFT_ADMITTED.start(),
-                    ..Response::STOCK.hover
-                },
-                ..Response::STOCK
-            });
-            Theme::from_document(&document).expect("a hover lift inside its admitted band")
-        };
-        for (name, theme) in themes().into_iter().chain([("quiet_hover", quiet)]) {
-            let colors = &theme.tokens.colors;
-            let hover_state = SelectionState::new(false, true, false);
-            for (ground_name, ground) in [
-                ("base", colors.surfaces.base),
-                ("content", colors.surfaces.content),
-                ("panel", panel_ground(&theme)),
-                ("white", Color::WHITE),
-                ("black", Color::BLACK),
-            ] {
-                let dist = |c: Color| (relative_luminance(c) - relative_luminance(ground)).abs();
-                let rest = selection_floor(&theme, ground);
-                for (tier_name, hovered) in [
-                    (
-                        "floor ramp",
-                        selection_floor_ramp(&theme, hover_state, ground),
-                    ),
-                    (
-                        "hover tier",
-                        selection_tier_on(&theme, hover_state, ground).fill,
-                    ),
-                ] {
-                    // At the black end a half step can round to the ground
-                    // itself; the rest face still never passes it.
-                    assert!(
-                        dist(rest) <= dist(hovered),
-                        "{name}/{ground_name}: rest ({:.4}) must stay under the {tier_name} \
-                         ({:.4}) from its ground",
-                        dist(rest),
-                        dist(hovered)
-                    );
-                    assert!(
-                        dist(hovered) <= 0.0 || dist(rest) < dist(hovered),
-                        "{name}/{ground_name}: a {tier_name} that registers ({:.4}) must read \
-                         above the rest face ({:.4})",
-                        dist(hovered),
-                        dist(rest)
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn chrome_radii_and_surfaces_follow_the_theme() {
-        {
-            let theme = Theme::dark();
-            for h in [12.0_f64, 28.0, 44.0, 120.0] {
-                let r = ChromeRole::Selector.radius(&theme, h);
-                assert!(
-                    (r - h / 2.0).abs() < f64::EPSILON,
-                    "height {h} resolved to radius {r}, not a capsule"
-                );
-                assert!(r <= h / 2.0, "radius {r} exceeds half of height {h}");
-            }
-        }
-
-        // Case `no_role_resolves_to_an_off_scale_radius`:
-        // 16 px is deliberately absent from the radius scale (`tokens::radii`);
-        // no role may resolve to it.
-        {
-            let theme = Theme::dark();
-            let radii = &theme.tokens.radii;
-            let on_scale = [
-                0.0,
-                f64::from(radii.detail),
-                f64::from(radii.control),
-                f64::from(radii.tile),
-                f64::from(radii.panel),
-            ];
-            for role in [
-                ChromeRole::Bar,
-                ChromeRole::Panel,
-                ChromeRole::Control,
-                ChromeRole::Object,
-            ] {
-                let r = role.radius(&theme, 44.0);
-                assert!(
-                    on_scale.iter().any(|s| (s - r).abs() < f64::EPSILON),
-                    "{role:?} resolved to {r}, which is not on the radius scale"
-                );
-                assert!(
-                    (r - 16.0).abs() > f64::EPSILON,
-                    "{role:?} resolved to the absent 16 px step"
-                );
-            }
-        }
-
-        {
-            for (name, theme) in themes() {
-                let bar = ChromeRole::Bar.surface(&theme);
-                let panel = ChromeRole::Panel.surface(&theme);
-                assert_eq!(
-                    bar.to_rgba8().to_u32(),
-                    panel.to_rgba8().to_u32(),
-                    "{name}: the bar and a panel are painted in different materials"
-                );
-            }
-        }
-
-        // Case `a_panel_separates_from_the_shell_on_every_theme`:
-        // A panel is the floating level, a visible lightness step off the
-        // shell (over a light window, where both are near white, its
-        // shadow and hairline separate it); on high contrast, where the
-        // levels are one colour, fill *or* edge must carry the separation.
-        {
-            for (name, theme) in themes() {
-                let base = theme.tokens.colors.surfaces.base;
-                let content = theme.tokens.colors.surfaces.content;
                 let ground = panel_ground(&theme);
-                if !theme.tokens.colors.palette.high_contrast {
-                    assert_eq!(ground, theme.tokens.colors.surfaces.overlay, "{name}");
-                    assert!(
-                        lightness_step(ground, base) >= 0.03,
-                        "{name}: a panel is not a step off the shell"
-                    );
-                    if theme.tokens.colors.palette.dark {
+                let on = &painted.theme.tokens.colors;
+                assert_eq!(
+                    on.surfaces.content, ground,
+                    "{name}: contents stand on the panel"
+                );
+                let panel_step = (l(on.surfaces.raised) - l(ground)).abs();
+                assert!(
+                    panel_step + 1e-4 >= window_step / 2.0,
+                    "{name}: a secondary face stands {panel_step:.3} off the panel, \
+                     {window_step:.3} off the window"
+                );
+            }
+        }
+
+        phase selection_tiers_register_progressively_without_the_accent;
+        {
+            {
+                for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+                    let name = theme.name.clone();
+                    let colors = &theme.tokens.colors;
+                    let grounds = [
+                        ("base", colors.surfaces.base),
+                        ("content", colors.surfaces.content),
+                        ("sidebar", colors.surfaces.sidebar),
+                        ("inspector", colors.surfaces.inspector),
+                        ("raised", colors.surfaces.raised),
+                        ("panel_ground", panel_ground(&theme)),
+                        ("white", Color::WHITE),
+                        ("black", Color::BLACK),
+                    ];
+                    for (ground_name, ground) in grounds {
+                        let active =
+                            selection_tier_on(&theme, SelectionState::active(true), ground).fill;
+                        let hover =
+                            selection_tier_on(&theme, SelectionState::new(false, true, false), ground)
+                                .fill;
+                        let idle =
+                            selection_tier_on(&theme, SelectionState::new(false, false, false), ground)
+                                .fill;
+                        assert_eq!(
+                            idle.components[3], 0.0,
+                            "{name}/{ground_name}: idle is transparent"
+                        );
+                        let step = lightness_step(active, ground);
                         assert!(
-                            lightness_step(ground, content) >= 0.03,
-                            "{name}: a panel is not a step off the window"
+                            step >= SELECTION_MIN_STEP,
+                            "{name}/{ground_name}: active lift must read on its ground (ΔL {step:.3})"
+                        );
+                        // Half a step can round to the ground itself in 8-bit
+                        // sRGB at the black end; it never passes the full step.
+                        let half = lightness_step(hover, ground);
+                        assert!(
+                            half < step,
+                            "{name}/{ground_name}: hover sits between the ground and the active tier"
+                        );
+                        let ramp =
+                            |state| lightness_step(selection_floor_ramp(&theme, state, ground), ground);
+                        let rest = ramp(SelectionState::default());
+                        let hovered = ramp(SelectionState::new(false, true, false));
+                        let chosen = ramp(SelectionState::active(true));
+                        // Like any half step, the floor can round to the ground
+                        // itself in 8-bit sRGB at the black end; it never passes
+                        // the hovered rung.
+                        assert!(
+                            rest <= hovered && hovered < chosen,
+                            "{name}/{ground_name}: floor ramp {rest} {hovered} {chosen}"
                         );
                     }
-                    continue;
                 }
-                let border = panel_border(&theme);
-                let fill_delta = (relative_luminance(ground) - relative_luminance(base)).abs();
-                let a = border.components[3];
-                let g = ground.components;
-                let edge = Color::new([
-                    border.components[0] * a + g[0] * (1.0 - a),
-                    border.components[1] * a + g[1] * (1.0 - a),
-                    border.components[2] * a + g[2] * (1.0 - a),
-                    1.0,
-                ]);
-                let edge_delta = (relative_luminance(edge) - relative_luminance(ground)).abs();
-                assert!(
-                    fill_delta >= PANEL_MIN_DELTA || edge_delta >= PANEL_MIN_DELTA,
-                    "{name}: a panel is indistinguishable from the shell \
-                 (fill delta {fill_delta:.4}, edge delta {edge_delta:.4})"
+            }
+
+            {
+                for (name, theme) in themes() {
+                    let ground = relative_luminance(theme.tokens.colors.surfaces.base);
+                    let dist = |s: SelectionState| {
+                        let t = selection_tier(&theme, s);
+                        let f = t.fill;
+                        let a = f.components[3];
+                        let over = |c: f32, g: f32| c * a + g * (1.0 - a);
+                        let g = theme.tokens.colors.surfaces.base.components;
+                        let composited = Color::new([
+                            over(f.components[0], g[0]),
+                            over(f.components[1], g[1]),
+                            over(f.components[2], g[2]),
+                            1.0,
+                        ]);
+                        (relative_luminance(composited) - ground).abs()
+                    };
+                    let idle = dist(SelectionState::default());
+                    let hover = dist(SelectionState::new(false, true, false));
+                    let active = dist(SelectionState::active(true));
+                    assert!(
+                        hover > idle,
+                        "{name}: hover ({hover:.4}) must read as lifted off idle ({idle:.4})"
+                    );
+                    assert!(
+                        active > hover,
+                        "{name}: active ({active:.4}) must read as lifted off hover ({hover:.4})"
+                    );
+                }
+            }
+
+            {
+                for (name, theme) in themes() {
+                    let accent = theme.tokens.colors.intent.accent;
+                    for state in [
+                        SelectionState::active(true),
+                        SelectionState::new(false, true, false),
+                        SelectionState::new(true, true, true),
+                    ] {
+                        let tier = selection_tier(&theme, state);
+                        assert_ne!(
+                            tier.fill.to_rgba8().to_u32(),
+                            accent.to_rgba8().to_u32(),
+                            "{name}: {state:?} filled with the accent"
+                        );
+                    }
+                }
+            }
+
+            {
+                for (name, theme) in themes() {
+                    let a = selection_tier(&theme, SelectionState::active(true));
+                    let ah = selection_tier(&theme, SelectionState::new(true, true, false));
+                    assert_eq!(
+                        a.fill.to_rgba8().to_u32(),
+                        ah.fill.to_rgba8().to_u32(),
+                        "{name}: an active control brightened on hover"
+                    );
+                    assert_eq!(
+                        a.scale, ah.scale,
+                        "{name}: an active control resized on hover"
+                    );
+                }
+            }
+        }
+
+        // A control with its floor (an idle tile, a list row on a panel)
+        // must never look louder at rest than it does under the pointer, and
+        // every other control answers the pointer with the hover tier. So the
+        // floor's rest face is measured against that tier on the same ground —
+        // including for a theme whose own hover is quieter than the stock one.
+        phase a_floored_rest_face_is_quieter_than_a_hovered_one;
+        {
+            use crate::theme::Preset;
+            use crate::tokens::{Response, ResponseStep};
+            let quiet = {
+                let mut document = Preset::Dark.document();
+                document.response = Some(Response {
+                    hover: ResponseStep {
+                        lift: *ResponseStep::LIFT_ADMITTED.start(),
+                        ..Response::STOCK.hover
+                    },
+                    ..Response::STOCK
+                });
+                Theme::from_document(&document).expect("a hover lift inside its admitted band")
+            };
+            for (name, theme) in themes().into_iter().chain([("quiet_hover", quiet)]) {
+                let colors = &theme.tokens.colors;
+                let hover_state = SelectionState::new(false, true, false);
+                for (ground_name, ground) in [
+                    ("base", colors.surfaces.base),
+                    ("content", colors.surfaces.content),
+                    ("panel", panel_ground(&theme)),
+                    ("white", Color::WHITE),
+                    ("black", Color::BLACK),
+                ] {
+                    let dist = |c: Color| (relative_luminance(c) - relative_luminance(ground)).abs();
+                    let rest = selection_floor(&theme, ground);
+                    for (tier_name, hovered) in [
+                        (
+                            "floor ramp",
+                            selection_floor_ramp(&theme, hover_state, ground),
+                        ),
+                        (
+                            "hover tier",
+                            selection_tier_on(&theme, hover_state, ground).fill,
+                        ),
+                    ] {
+                        // At the black end a half step can round to the ground
+                        // itself; the rest face still never passes it.
+                        assert!(
+                            dist(rest) <= dist(hovered),
+                            "{name}/{ground_name}: rest ({:.4}) must stay under the {tier_name} \
+                             ({:.4}) from its ground",
+                            dist(rest),
+                            dist(hovered)
+                        );
+                        assert!(
+                            dist(hovered) <= 0.0 || dist(rest) < dist(hovered),
+                            "{name}/{ground_name}: a {tier_name} that registers ({:.4}) must read \
+                             above the rest face ({:.4})",
+                            dist(hovered),
+                            dist(rest)
+                        );
+                    }
+                }
+            }
+        }
+
+        phase chrome_radii_and_surfaces_follow_the_theme;
+        {
+            {
+                let theme = Theme::dark();
+                for h in [12.0_f64, 28.0, 44.0, 120.0] {
+                    let r = ChromeRole::Selector.radius(&theme, h);
+                    assert!(
+                        (r - h / 2.0).abs() < f64::EPSILON,
+                        "height {h} resolved to radius {r}, not a capsule"
+                    );
+                    assert!(r <= h / 2.0, "radius {r} exceeds half of height {h}");
+                }
+            }
+
+            // Case `no_role_resolves_to_an_off_scale_radius`:
+            // 16 px is deliberately absent from the radius scale (`tokens::radii`);
+            // no role may resolve to it.
+            {
+                let theme = Theme::dark();
+                let radii = &theme.tokens.radii;
+                let on_scale = [
+                    0.0,
+                    f64::from(radii.detail),
+                    f64::from(radii.control),
+                    f64::from(radii.tile),
+                    f64::from(radii.panel),
+                ];
+                for role in [
+                    ChromeRole::Bar,
+                    ChromeRole::Panel,
+                    ChromeRole::Control,
+                    ChromeRole::Object,
+                ] {
+                    let r = role.radius(&theme, 44.0);
+                    assert!(
+                        on_scale.iter().any(|s| (s - r).abs() < f64::EPSILON),
+                        "{role:?} resolved to {r}, which is not on the radius scale"
+                    );
+                    assert!(
+                        (r - 16.0).abs() > f64::EPSILON,
+                        "{role:?} resolved to the absent 16 px step"
+                    );
+                }
+            }
+
+            {
+                for (name, theme) in themes() {
+                    let bar = ChromeRole::Bar.surface(&theme);
+                    let panel = ChromeRole::Panel.surface(&theme);
+                    assert_eq!(
+                        bar.to_rgba8().to_u32(),
+                        panel.to_rgba8().to_u32(),
+                        "{name}: the bar and a panel are painted in different materials"
+                    );
+                }
+            }
+
+            // Case `a_panel_separates_from_the_shell_on_every_theme`:
+            // A panel is the floating level, a visible lightness step off the
+            // shell (over a light window, where both are near white, its
+            // shadow and hairline separate it); on high contrast, where the
+            // levels are one colour, fill *or* edge must carry the separation.
+            {
+                for (name, theme) in themes() {
+                    let base = theme.tokens.colors.surfaces.base;
+                    let content = theme.tokens.colors.surfaces.content;
+                    let ground = panel_ground(&theme);
+                    if !theme.tokens.colors.palette.high_contrast {
+                        assert_eq!(ground, theme.tokens.colors.surfaces.overlay, "{name}");
+                        assert!(
+                            lightness_step(ground, base) >= 0.03,
+                            "{name}: a panel is not a step off the shell"
+                        );
+                        if theme.tokens.colors.palette.dark {
+                            assert!(
+                                lightness_step(ground, content) >= 0.03,
+                                "{name}: a panel is not a step off the window"
+                            );
+                        }
+                        continue;
+                    }
+                    let border = panel_border(&theme);
+                    let fill_delta = (relative_luminance(ground) - relative_luminance(base)).abs();
+                    let a = border.components[3];
+                    let g = ground.components;
+                    let edge = Color::new([
+                        border.components[0] * a + g[0] * (1.0 - a),
+                        border.components[1] * a + g[1] * (1.0 - a),
+                        border.components[2] * a + g[2] * (1.0 - a),
+                        1.0,
+                    ]);
+                    let edge_delta = (relative_luminance(edge) - relative_luminance(ground)).abs();
+                    assert!(
+                        fill_delta >= PANEL_MIN_DELTA || edge_delta >= PANEL_MIN_DELTA,
+                        "{name}: a panel is indistinguishable from the shell \
+                     (fill delta {fill_delta:.4}, edge delta {edge_delta:.4})"
+                    );
+                }
+            }
+
+            {
+                let dark = ChromeRole::Panel.surface(&Theme::dark());
+                let light = ChromeRole::Panel.surface(&Theme::light());
+                assert_ne!(
+                    dark.to_rgba8().to_u32(),
+                    light.to_rgba8().to_u32(),
+                    "the panel surface is identical on light and dark"
                 );
             }
         }
 
+        phase a_dark_theme_scrim_dims_the_mid_tones_of_dark_content;
         {
-            let dark = ChromeRole::Panel.surface(&Theme::dark());
-            let light = ChromeRole::Panel.surface(&Theme::light());
-            assert_ne!(
-                dark.to_rgba8().to_u32(),
-                light.to_rgba8().to_u32(),
-                "the panel surface is identical on light and dark"
-            );
+            // Over dark content the grounds are near black and cannot give up
+            // much; a sheet reads as lifted only when the rows, panels and map
+            // roads in the mid tones move. The dark theme's strength makes them.
+            let dark = Theme::dark();
+            let light = Theme::light();
+            let strength = |t: &Theme| t.tokens.colors.surfaces.scrim_strength;
+            assert!(strength(&dark) > strength(&light));
+            for v in [64u8, 96, 128] {
+                let drop = lstar(v) - lstar(scrim_maps(v, strength(&dark), &dark));
+                assert!(
+                    drop >= 15.0,
+                    "a dark-theme scrim takes only {drop:.1} L* off a mid tone at {v}"
+                );
+            }
+        }
+
+        phase scrim_dims_every_ground_while_keeping_its_structure;
+        {
+            {
+                for (name, theme) in themes() {
+                    let drops: Vec<(u8, f64)> = [255u8, 252, 240, 220, 180, 128]
+                        .iter()
+                        .map(|&v| (v, lstar(v) - lstar(scrim_maps(v, 0.45, &theme))))
+                        .collect();
+                    let lo = drops.iter().map(|d| d.1).fold(f64::MAX, f64::min);
+                    let hi = drops.iter().map(|d| d.1).fold(f64::MIN, f64::max);
+                    assert!(
+                        hi - lo <= 4.0,
+                        "on {name} the scrim takes between {lo:.1} and {hi:.1} L* off \
+                     grounds that are all bright enough to give it up, so it is \
+                     not one gesture — it is a different one per app: {drops:?}"
+                    );
+                    assert!(
+                        lo >= 15.0,
+                        "on {name} the scrim only takes {lo:.1} L* off the ground it \
+                     moves least, which is not a dim, it is a tint: {drops:?}"
+                    );
+                }
+            }
+
+            {
+                for (name, theme) in themes() {
+                    let page = scrim_maps(252, 0.45, &theme);
+                    let drop = lstar(252) - lstar(page);
+                    assert!(
+                        drop <= 28.0,
+                        "on {name} the scrim takes {drop:.1} L* off a bg-white page \
+                     (252 -> {page}); past about 28 the page stops reading as a \
+                     page and starts reading as a grey slab"
+                    );
+                }
+            }
+
+            // Case `a_scrim_keeps_the_structure_of_what_is_behind_it`:
+            // A scrim must lower what's behind it without flattening it — a flat
+            // wash closed the 12 code values between a page and a rule on it down
+            // to 7. Squaring the backdrop trades the opposite way at the dark end,
+            // bounded here so that can't quietly become a collapse either.
+            {
+                for (name, theme) in themes() {
+                    for (hi, lo) in [(252u8, 240u8), (255, 245)] {
+                        let span_before = i32::from(hi) - i32::from(lo);
+                        let span_after = i32::from(scrim_maps(hi, 0.45, &theme))
+                            - i32::from(scrim_maps(lo, 0.45, &theme));
+                        let flat_after = i32::from(flat_wash(hi, 0.45, &theme))
+                            - i32::from(flat_wash(lo, 0.45, &theme));
+                        assert!(
+                            span_after >= flat_after,
+                            "on {name} the scrim compresses {lo}..{hi} harder than the \
+                         flat wash it replaced ({span_before} -> {span_after}, flat \
+                         managed {flat_after}) — the bright end is exactly where a \
+                         wash goes flat and where this must not"
+                        );
+                    }
+                    for (hi, lo) in [(64u8, 52u8), (40, 28)] {
+                        let span_before = i32::from(hi) - i32::from(lo);
+                        let span_after = i32::from(scrim_maps(hi, 0.45, &theme))
+                            - i32::from(scrim_maps(lo, 0.45, &theme));
+                        assert!(
+                            span_after * 2 >= span_before,
+                            "on {name} a dark span {lo}..{hi} came out at {span_after} \
+                         from {span_before}; the tone pass is allowed to cost the \
+                         dark end a code value, not half of it"
+                        );
+                    }
+                }
+            }
+
+            // Case `a_scrim_reaches_the_dark_grounds_a_flat_wash_could_not`:
+            // Relative, not absolute: a ground at L\* 6 cannot lose 20 L\*, but it
+            // must move further than the flat wash moved it.
+            {
+                for (name, theme) in themes() {
+                    for v in [96u8, 64, 40, 32, 23, 20, 10] {
+                        let now = lstar(v) - lstar(scrim_maps(v, 0.45, &theme));
+                        let was = lstar(v) - lstar(flat_wash(v, 0.45, &theme));
+                        assert!(
+                            now > was,
+                            "on {name} a ground at {v} loses {now:.1} L* to the scrim \
+                         where the flat wash it replaced took {was:.1} — the dark \
+                         half of the screen is the half that never showed the dim"
+                        );
+                    }
+                }
+            }
+
+            // Case `a_scrim_fades_monotonically_with_its_openness`:
+            // Both fills must fade with the surface's openness, or the dim arrives
+            // before the panel does.
+            {
+                for (name, theme) in themes() {
+                    let mut last = 253u8;
+                    for step in 0..=8 {
+                        #[allow(
+                            clippy::cast_precision_loss,
+                            reason = "step ranges 0..=8, far below where f32 loses integer precision"
+                        )]
+                        let openness = step as f32 / 8.0;
+                        let page = scrim_maps(252, 0.45 * openness, &theme);
+                        assert!(
+                            page <= last,
+                            "on {name} the scrim got *lighter* between openness steps \
+                         ({last} -> {page} at {openness})"
+                        );
+                        last = page;
+                    }
+                    assert!(
+                        scrim_maps(252, 0.0, &theme) == 252,
+                        "on {name} a closed scrim still moved the page"
+                    );
+                }
+            }
+
+            // Case `a_scrim_leaves_high_contrast_high_contrast`:
+            // White on black must not drop below the 7:1 (AAA) that palette exists
+            // to clear.
+            {
+                let theme = Theme::high_contrast();
+                let ink = scrim_maps(255, 0.45, &theme);
+                let ground = scrim_maps(0, 0.45, &theme);
+                let lum = |v: u8| {
+                    let s = f64::from(v) / 255.0;
+                    if s <= 0.03928 {
+                        s / 12.92
+                    } else {
+                        ((s + 0.055) / 1.055).powf(2.4)
+                    }
+                };
+                let ratio = (lum(ink) + 0.05) / (lum(ground) + 0.05);
+                assert!(
+                    ratio >= 7.0,
+                    "white ink behind the scrim is {ink} on {ground} = {ratio:.1}:1; \
+                 the high-contrast palette is chosen to clear AAA (7:1) and a \
+                 scrim must not take that away"
+                );
+            }
+
+            // Case `a_scrim_paints_the_two_stages_the_model_describes`:
+            // The paint path and [`scrim_maps`] must agree on the fill count, or
+            // the model describes something nobody sees.
+            {
+                let rect = Rect::new(0.0, 0.0, 200.0, 120.0);
+                for (name, theme) in themes() {
+                    let mut scene = Scene::new();
+                    fill_scrim(&mut scene, Affine::IDENTITY, rect, 0.45, &theme);
+                    let n = scene.encoding().draw_tags.len();
+                    assert!(
+                        n >= 3,
+                        "on {name} the scrim encoded {n} draws; it is a soft-light \
+                     layer, the tone fill inside it, and the level fill after it"
+                    );
+                    let mut closed = Scene::new();
+                    fill_scrim(&mut closed, Affine::IDENTITY, rect, 0.0, &theme);
+                    assert_eq!(
+                        closed.encoding().draw_tags.len(),
+                        0,
+                        "on {name} a scrim at zero strength still painted something"
+                    );
+                }
+            }
         }
     }
 
@@ -1113,190 +1301,6 @@ mod tests {
             / 255.0;
         let out = (f64::from(v) / 255.0) * (1.0 - a) + grey * a;
         (out.clamp(0.0, 1.0) * 255.0).round() as u8
-    }
-
-    #[test]
-    fn a_dark_theme_scrim_dims_the_mid_tones_of_dark_content() {
-        // Over dark content the grounds are near black and cannot give up
-        // much; a sheet reads as lifted only when the rows, panels and map
-        // roads in the mid tones move. The dark theme's strength makes them.
-        let dark = Theme::dark();
-        let light = Theme::light();
-        let strength = |t: &Theme| t.tokens.colors.surfaces.scrim_strength;
-        assert!(strength(&dark) > strength(&light));
-        for v in [64u8, 96, 128] {
-            let drop = lstar(v) - lstar(scrim_maps(v, strength(&dark), &dark));
-            assert!(
-                drop >= 15.0,
-                "a dark-theme scrim takes only {drop:.1} L* off a mid tone at {v}"
-            );
-        }
-    }
-
-    #[test]
-    fn scrim_dims_every_ground_while_keeping_its_structure() {
-        {
-            for (name, theme) in themes() {
-                let drops: Vec<(u8, f64)> = [255u8, 252, 240, 220, 180, 128]
-                    .iter()
-                    .map(|&v| (v, lstar(v) - lstar(scrim_maps(v, 0.45, &theme))))
-                    .collect();
-                let lo = drops.iter().map(|d| d.1).fold(f64::MAX, f64::min);
-                let hi = drops.iter().map(|d| d.1).fold(f64::MIN, f64::max);
-                assert!(
-                    hi - lo <= 4.0,
-                    "on {name} the scrim takes between {lo:.1} and {hi:.1} L* off \
-                 grounds that are all bright enough to give it up, so it is \
-                 not one gesture — it is a different one per app: {drops:?}"
-                );
-                assert!(
-                    lo >= 15.0,
-                    "on {name} the scrim only takes {lo:.1} L* off the ground it \
-                 moves least, which is not a dim, it is a tint: {drops:?}"
-                );
-            }
-        }
-
-        {
-            for (name, theme) in themes() {
-                let page = scrim_maps(252, 0.45, &theme);
-                let drop = lstar(252) - lstar(page);
-                assert!(
-                    drop <= 28.0,
-                    "on {name} the scrim takes {drop:.1} L* off a bg-white page \
-                 (252 -> {page}); past about 28 the page stops reading as a \
-                 page and starts reading as a grey slab"
-                );
-            }
-        }
-
-        // Case `a_scrim_keeps_the_structure_of_what_is_behind_it`:
-        // A scrim must lower what's behind it without flattening it — a flat
-        // wash closed the 12 code values between a page and a rule on it down
-        // to 7. Squaring the backdrop trades the opposite way at the dark end,
-        // bounded here so that can't quietly become a collapse either.
-        {
-            for (name, theme) in themes() {
-                for (hi, lo) in [(252u8, 240u8), (255, 245)] {
-                    let span_before = i32::from(hi) - i32::from(lo);
-                    let span_after = i32::from(scrim_maps(hi, 0.45, &theme))
-                        - i32::from(scrim_maps(lo, 0.45, &theme));
-                    let flat_after = i32::from(flat_wash(hi, 0.45, &theme))
-                        - i32::from(flat_wash(lo, 0.45, &theme));
-                    assert!(
-                        span_after >= flat_after,
-                        "on {name} the scrim compresses {lo}..{hi} harder than the \
-                     flat wash it replaced ({span_before} -> {span_after}, flat \
-                     managed {flat_after}) — the bright end is exactly where a \
-                     wash goes flat and where this must not"
-                    );
-                }
-                for (hi, lo) in [(64u8, 52u8), (40, 28)] {
-                    let span_before = i32::from(hi) - i32::from(lo);
-                    let span_after = i32::from(scrim_maps(hi, 0.45, &theme))
-                        - i32::from(scrim_maps(lo, 0.45, &theme));
-                    assert!(
-                        span_after * 2 >= span_before,
-                        "on {name} a dark span {lo}..{hi} came out at {span_after} \
-                     from {span_before}; the tone pass is allowed to cost the \
-                     dark end a code value, not half of it"
-                    );
-                }
-            }
-        }
-
-        // Case `a_scrim_reaches_the_dark_grounds_a_flat_wash_could_not`:
-        // Relative, not absolute: a ground at L\* 6 cannot lose 20 L\*, but it
-        // must move further than the flat wash moved it.
-        {
-            for (name, theme) in themes() {
-                for v in [96u8, 64, 40, 32, 23, 20, 10] {
-                    let now = lstar(v) - lstar(scrim_maps(v, 0.45, &theme));
-                    let was = lstar(v) - lstar(flat_wash(v, 0.45, &theme));
-                    assert!(
-                        now > was,
-                        "on {name} a ground at {v} loses {now:.1} L* to the scrim \
-                     where the flat wash it replaced took {was:.1} — the dark \
-                     half of the screen is the half that never showed the dim"
-                    );
-                }
-            }
-        }
-
-        // Case `a_scrim_fades_monotonically_with_its_openness`:
-        // Both fills must fade with the surface's openness, or the dim arrives
-        // before the panel does.
-        {
-            for (name, theme) in themes() {
-                let mut last = 253u8;
-                for step in 0..=8 {
-                    #[allow(
-                        clippy::cast_precision_loss,
-                        reason = "step ranges 0..=8, far below where f32 loses integer precision"
-                    )]
-                    let openness = step as f32 / 8.0;
-                    let page = scrim_maps(252, 0.45 * openness, &theme);
-                    assert!(
-                        page <= last,
-                        "on {name} the scrim got *lighter* between openness steps \
-                     ({last} -> {page} at {openness})"
-                    );
-                    last = page;
-                }
-                assert!(
-                    scrim_maps(252, 0.0, &theme) == 252,
-                    "on {name} a closed scrim still moved the page"
-                );
-            }
-        }
-
-        // Case `a_scrim_leaves_high_contrast_high_contrast`:
-        // White on black must not drop below the 7:1 (AAA) that palette exists
-        // to clear.
-        {
-            let theme = Theme::high_contrast();
-            let ink = scrim_maps(255, 0.45, &theme);
-            let ground = scrim_maps(0, 0.45, &theme);
-            let lum = |v: u8| {
-                let s = f64::from(v) / 255.0;
-                if s <= 0.03928 {
-                    s / 12.92
-                } else {
-                    ((s + 0.055) / 1.055).powf(2.4)
-                }
-            };
-            let ratio = (lum(ink) + 0.05) / (lum(ground) + 0.05);
-            assert!(
-                ratio >= 7.0,
-                "white ink behind the scrim is {ink} on {ground} = {ratio:.1}:1; \
-             the high-contrast palette is chosen to clear AAA (7:1) and a \
-             scrim must not take that away"
-            );
-        }
-
-        // Case `a_scrim_paints_the_two_stages_the_model_describes`:
-        // The paint path and [`scrim_maps`] must agree on the fill count, or
-        // the model describes something nobody sees.
-        {
-            let rect = Rect::new(0.0, 0.0, 200.0, 120.0);
-            for (name, theme) in themes() {
-                let mut scene = Scene::new();
-                fill_scrim(&mut scene, Affine::IDENTITY, rect, 0.45, &theme);
-                let n = scene.encoding().draw_tags.len();
-                assert!(
-                    n >= 3,
-                    "on {name} the scrim encoded {n} draws; it is a soft-light \
-                 layer, the tone fill inside it, and the level fill after it"
-                );
-                let mut closed = Scene::new();
-                fill_scrim(&mut closed, Affine::IDENTITY, rect, 0.0, &theme);
-                assert_eq!(
-                    closed.encoding().draw_tags.len(),
-                    0,
-                    "on {name} a scrim at zero strength still painted something"
-                );
-            }
-        }
     }
 }
 
@@ -1708,152 +1712,156 @@ mod rail_tests {
         }
     }
 
-    #[test]
-    fn rail_segments_are_ordered_weighted_and_hittable() {
-        {
-            assert!(!rail(0, 0, vec![]).is_meaningful());
-            assert!(rail(1, 0, vec![0]).is_meaningful());
-            let lone = rail(1, 0, vec![0]);
-            let seg = lone.segment_rect(0).unwrap();
-            assert!(
-                (seg.center().x - 800.0).abs() < 0.5,
-                "a lone segment sits on the centre line: {seg:?}"
-            );
-            assert_eq!(lone.hit(seg.center()), Some(0));
-            assert!(rail(0, 0, vec![]).hit(Point::new(800.0, 897.0)).is_none());
-        }
+    tilo_test_env::scenario! {
+        fn the_strip_rail_orders_its_segments_and_slides_focus;
 
+        phase rail_segments_are_ordered_weighted_and_hittable;
         {
-            let r = rail(4, 2, vec![1, 2]);
-            let rects: Vec<Rect> = (0..4).map(|i| r.segment_rect(i).unwrap()).collect();
-            for pair in rects.windows(2) {
+            {
+                assert!(!rail(0, 0, vec![]).is_meaningful());
+                assert!(rail(1, 0, vec![0]).is_meaningful());
+                let lone = rail(1, 0, vec![0]);
+                let seg = lone.segment_rect(0).unwrap();
                 assert!(
-                    pair[0].x1 <= pair[1].x0,
-                    "segments must not overlap: {:?} then {:?}",
-                    pair[0],
-                    pair[1]
+                    (seg.center().x - 800.0).abs() < 0.5,
+                    "a lone segment sits on the centre line: {seg:?}"
                 );
+                assert_eq!(lone.hit(seg.center()), Some(0));
+                assert!(rail(0, 0, vec![]).hit(Point::new(800.0, 897.0)).is_none());
             }
-            assert!(
-                rects[2].width() > rects[0].width(),
-                "the focused segment must be longer than an unfocused one"
-            );
-            assert!(
-                rects
-                    .iter()
-                    .all(|s| (s.y1 - (r.content.y1 - RAIL_MARGIN)).abs() < f64::EPSILON),
-                "every segment keeps RAIL_MARGIN inside the bottom edge, never on it"
-            );
-            assert!(
-                (0..4).all(|i| r
-                    .hit_rect(i)
-                    .is_some_and(|h| (h.y1 - r.content.y1).abs() < f64::EPSILON)),
-                "each target runs to the edge, so the pointer pinned there hits it"
-            );
-        }
 
-        {
-            let r = rail(3, 1, vec![0, 1, 2]);
-            let gutter = crate::widget::STRIP_BOTTOM_GUTTER_PX;
-            for i in 0..3 {
-                let seg = r.segment_rect(i).unwrap();
-                assert!(
-                    seg.y1 <= r.content.y1 - RAIL_MARGIN,
-                    "segment {i} ends {} past its inset",
-                    seg.y1 - (r.content.y1 - RAIL_MARGIN)
-                );
-                assert!(
-                    seg.y0 >= r.content.y1 - gutter,
-                    "segment {i} starts {} above the gutter's ceiling, over the windows",
-                    (r.content.y1 - gutter) - seg.y0
-                );
-                assert!(
-                    r.content.y1 - seg.y1 >= RAIL_MARGIN,
-                    "segment {i} leaves less than its own inset below"
-                );
-            }
-        }
-
-        {
-            for (name, theme) in [
-                ("dark", Theme::dark()),
-                ("light", Theme::light()),
-                ("high-contrast", Theme::high_contrast()),
-            ] {
-                let weights = [
-                    ("off-screen", rail_fill(&theme, 0.0, false, false)),
-                    ("on-screen", rail_fill(&theme, 0.0, false, true)),
-                    ("hover", rail_fill(&theme, 0.0, true, true)),
-                    ("focused", rail_fill(&theme, 1.0, false, true)),
-                ];
-                let rgb = |c: Color| {
-                    let p = c.to_rgba8();
-                    (p.r, p.g, p.b)
-                };
-                for (label, c) in &weights[1..] {
-                    assert_eq!(
-                        rgb(*c),
-                        rgb(weights[0].1),
-                        "{name}: the {label} weight resolved to a different colour than \
-                     off-screen, so the four are not one ramp"
+            {
+                let r = rail(4, 2, vec![1, 2]);
+                let rects: Vec<Rect> = (0..4).map(|i| r.segment_rect(i).unwrap()).collect();
+                for pair in rects.windows(2) {
+                    assert!(
+                        pair[0].x1 <= pair[1].x0,
+                        "segments must not overlap: {:?} then {:?}",
+                        pair[0],
+                        pair[1]
                     );
                 }
-                let alphas: Vec<u8> = weights.iter().map(|(_, c)| c.to_rgba8().a).collect();
                 assert!(
-                    alphas.windows(2).all(|w| w[0] < w[1]),
-                    "{name}: rail weights must rise off-screen < on-screen < hover < focused, \
-                 got {alphas:?}"
+                    rects[2].width() > rects[0].width(),
+                    "the focused segment must be longer than an unfocused one"
                 );
+                assert!(
+                    rects
+                        .iter()
+                        .all(|s| (s.y1 - (r.content.y1 - RAIL_MARGIN)).abs() < f64::EPSILON),
+                    "every segment keeps RAIL_MARGIN inside the bottom edge, never on it"
+                );
+                assert!(
+                    (0..4).all(|i| r
+                        .hit_rect(i)
+                        .is_some_and(|h| (h.y1 - r.content.y1).abs() < f64::EPSILON)),
+                    "each target runs to the edge, so the pointer pinned there hits it"
+                );
+            }
+
+            {
+                let r = rail(3, 1, vec![0, 1, 2]);
+                let gutter = crate::widget::STRIP_BOTTOM_GUTTER_PX;
+                for i in 0..3 {
+                    let seg = r.segment_rect(i).unwrap();
+                    assert!(
+                        seg.y1 <= r.content.y1 - RAIL_MARGIN,
+                        "segment {i} ends {} past its inset",
+                        seg.y1 - (r.content.y1 - RAIL_MARGIN)
+                    );
+                    assert!(
+                        seg.y0 >= r.content.y1 - gutter,
+                        "segment {i} starts {} above the gutter's ceiling, over the windows",
+                        (r.content.y1 - gutter) - seg.y0
+                    );
+                    assert!(
+                        r.content.y1 - seg.y1 >= RAIL_MARGIN,
+                        "segment {i} leaves less than its own inset below"
+                    );
+                }
+            }
+
+            {
+                for (name, theme) in [
+                    ("dark", Theme::dark()),
+                    ("light", Theme::light()),
+                    ("high-contrast", Theme::high_contrast()),
+                ] {
+                    let weights = [
+                        ("off-screen", rail_fill(&theme, 0.0, false, false)),
+                        ("on-screen", rail_fill(&theme, 0.0, false, true)),
+                        ("hover", rail_fill(&theme, 0.0, true, true)),
+                        ("focused", rail_fill(&theme, 1.0, false, true)),
+                    ];
+                    let rgb = |c: Color| {
+                        let p = c.to_rgba8();
+                        (p.r, p.g, p.b)
+                    };
+                    for (label, c) in &weights[1..] {
+                        assert_eq!(
+                            rgb(*c),
+                            rgb(weights[0].1),
+                            "{name}: the {label} weight resolved to a different colour than \
+                         off-screen, so the four are not one ramp"
+                        );
+                    }
+                    let alphas: Vec<u8> = weights.iter().map(|(_, c)| c.to_rgba8().a).collect();
+                    assert!(
+                        alphas.windows(2).all(|w| w[0] < w[1]),
+                        "{name}: rail weights must rise off-screen < on-screen < hover < focused, \
+                     got {alphas:?}"
+                    );
+                }
+            }
+
+            {
+                let r = rail(5, 0, vec![0, 1]);
+                for i in 0..5 {
+                    let hit = r.hit_rect(i).unwrap();
+                    assert!(
+                        hit.height() >= RAIL_HIT_H,
+                        "segment {i}'s target is {} tall, below the minimum {RAIL_HIT_H}",
+                        hit.height()
+                    );
+                    let c = hit.center();
+                    assert_eq!(r.hit(c), Some(i), "segment {i} must claim its own centre");
+                }
             }
         }
 
+        phase a_sliding_focus_moves_the_long_segment_and_keeps_the_run_in_place;
         {
-            let r = rail(5, 0, vec![0, 1]);
-            for i in 0..5 {
-                let hit = r.hit_rect(i).unwrap();
+            let r = rail(4, 1, vec![1]);
+            let run = |focus: f64| -> Vec<Rect> {
+                (0..4)
+                    .map(|i| r.segment_rect_at(i, focus).unwrap())
+                    .collect()
+            };
+            let resting: Vec<Rect> = (0..4).map(|i| r.segment_rect(i).unwrap()).collect();
+            assert_eq!(run(1.0), resting, "at rest it is the resting run");
+            let half = run(1.5);
+            assert!((half[1].width() - half[2].width()).abs() < 1e-9);
+            assert!(half[1].width() > RAIL_SEG_W && half[1].width() < RAIL_SEG_W_FOCUSED);
+            for focus in [1.0, 1.25, 1.5, 2.0] {
+                let rects = run(focus);
+                let extent = rects[3].x1 - rects[0].x0;
+                assert!((extent - r.extent()).abs() < 1e-9, "extent kept at {focus}");
                 assert!(
-                    hit.height() >= RAIL_HIT_H,
-                    "segment {i}'s target is {} tall, below the minimum {RAIL_HIT_H}",
-                    hit.height()
+                    ((rects[0].x0 + rects[3].x1) / 2.0 - 800.0).abs() < 1e-9,
+                    "centre kept at {focus}"
                 );
-                let c = hit.center();
-                assert_eq!(r.hit(c), Some(i), "segment {i} must claim its own centre");
             }
-        }
-    }
-
-    #[test]
-    fn a_sliding_focus_moves_the_long_segment_and_keeps_the_run_in_place() {
-        let r = rail(4, 1, vec![1]);
-        let run = |focus: f64| -> Vec<Rect> {
-            (0..4)
-                .map(|i| r.segment_rect_at(i, focus).unwrap())
-                .collect()
-        };
-        let resting: Vec<Rect> = (0..4).map(|i| r.segment_rect(i).unwrap()).collect();
-        assert_eq!(run(1.0), resting, "at rest it is the resting run");
-        let half = run(1.5);
-        assert!((half[1].width() - half[2].width()).abs() < 1e-9);
-        assert!(half[1].width() > RAIL_SEG_W && half[1].width() < RAIL_SEG_W_FOCUSED);
-        for focus in [1.0, 1.25, 1.5, 2.0] {
-            let rects = run(focus);
-            let extent = rects[3].x1 - rects[0].x0;
-            assert!((extent - r.extent()).abs() < 1e-9, "extent kept at {focus}");
-            assert!(
-                ((rects[0].x0 + rects[3].x1) / 2.0 - 800.0).abs() < 1e-9,
-                "centre kept at {focus}"
+            let ribbon = StripRibbon {
+                content: Rect::new(0.0, 40.0, 1600.0, 900.0),
+                count: 3,
+                focused: 0,
+            };
+            let half = (
+                ribbon.segment_rect_at(0, 0.5).unwrap(),
+                ribbon.segment_rect_at(1, 0.5).unwrap(),
             );
+            assert!((half.0.height() - half.1.height()).abs() < 1e-9);
         }
-        let ribbon = StripRibbon {
-            content: Rect::new(0.0, 40.0, 1600.0, 900.0),
-            count: 3,
-            focused: 0,
-        };
-        let half = (
-            ribbon.segment_rect_at(0, 0.5).unwrap(),
-            ribbon.segment_rect_at(1, 0.5).unwrap(),
-        );
-        assert!((half.0.height() - half.1.height()).abs() < 1e-9);
     }
 }
 
@@ -1870,150 +1878,154 @@ mod ribbon_tests {
         }
     }
 
-    #[test]
-    fn ribbon_segments_are_ordered_centred_and_prominent_when_focused() {
+    tilo_test_env::scenario! {
+        fn the_strip_ribbon_orders_its_segments_and_targets;
+
+        phase ribbon_segments_are_ordered_centred_and_prominent_when_focused;
         {
-            let r = ribbon(4, 2);
-            let rects: Vec<Rect> = (0..4).map(|i| r.segment_rect(i).unwrap()).collect();
-            for w in rects.windows(2) {
-                assert!(
-                    w[1].y0 >= w[0].y1,
-                    "segments overlap: {:?} then {:?}",
-                    w[0],
-                    w[1]
-                );
+            {
+                let r = ribbon(4, 2);
+                let rects: Vec<Rect> = (0..4).map(|i| r.segment_rect(i).unwrap()).collect();
+                for w in rects.windows(2) {
+                    assert!(
+                        w[1].y0 >= w[0].y1,
+                        "segments overlap: {:?} then {:?}",
+                        w[0],
+                        w[1]
+                    );
+                }
+            }
+
+            {
+                let r = ribbon(3, 1);
+                let focused = r.segment_rect(1).unwrap().height();
+                for i in [0usize, 2] {
+                    assert!(
+                        focused > r.segment_rect(i).unwrap().height(),
+                        "focused segment is not longer than segment {i}"
+                    );
+                }
+            }
+
+            {
+                let content = Rect::new(0.0, 40.0, 1600.0, 900.0);
+                for focused in 0..4 {
+                    let r = StripRibbon {
+                        content,
+                        count: 4,
+                        focused,
+                    };
+                    let first = r.segment_rect(0).unwrap();
+                    let last = r.segment_rect(3).unwrap();
+                    let mid = f64::midpoint(first.y0, last.y1);
+                    assert!(
+                        (mid - content.center().y).abs() < 0.001,
+                        "focus {focused}: ribbon centre {mid} drifted off {}",
+                        content.center().y
+                    );
+                }
+            }
+
+            {
+                use crate::a11y::relative_luminance;
+                for (name, theme) in [
+                    ("dark", Theme::dark()),
+                    ("light", Theme::light()),
+                    ("high_contrast", Theme::high_contrast()),
+                ] {
+                    let base = theme.tokens.colors.surfaces.base;
+                    let g = relative_luminance(base);
+                    let contrast = |c: Color| {
+                        let a = c.components[3];
+                        let b = base.components;
+                        let over = Color::new([
+                            c.components[0] * a + b[0] * (1.0 - a),
+                            c.components[1] * a + b[1] * (1.0 - a),
+                            c.components[2] * a + b[2] * (1.0 - a),
+                            1.0,
+                        ]);
+                        (relative_luminance(over) - g).abs()
+                    };
+                    let idle = contrast(ribbon_fill(&theme, 0.0, false));
+                    let hover = contrast(ribbon_fill(&theme, 0.0, true));
+                    let focused = contrast(ribbon_fill(&theme, 1.0, false));
+                    assert!(
+                        idle > 0.0,
+                        "{name}: an unfocused segment is invisible, so a second strip \
+                     cannot be discovered by looking"
+                    );
+                    assert!(
+                        hover > idle,
+                        "{name}: hover ({hover:.4}) does not lift off idle ({idle:.4})"
+                    );
+                    assert!(
+                        focused > hover,
+                        "{name}: the focused segment ({focused:.4}) is less prominent than a \
+                     merely hovered one ({hover:.4}) — the ribbon reads inverted"
+                    );
+                }
+            }
+
+            {
+                let r = ribbon(1, 0);
+                assert!(r.segment_rect(0).is_some());
+                assert!(r.extent() > 0.0);
             }
         }
 
+        phase ribbon_pointer_targets_are_disjoint_and_minimum_sized;
         {
-            let r = ribbon(3, 1);
-            let focused = r.segment_rect(1).unwrap().height();
-            for i in [0usize, 2] {
-                assert!(
-                    focused > r.segment_rect(i).unwrap().height(),
-                    "focused segment is not longer than segment {i}"
-                );
+            {
+                let r = ribbon(3, 0);
+                for i in 0..3 {
+                    let hit = r.hit_rect(i).unwrap();
+                    assert!(
+                        hit.width() >= 32.0 && hit.height() >= 32.0,
+                        "segment {i} target is {}x{}, under the 32 px minimum",
+                        hit.width(),
+                        hit.height()
+                    );
+                    assert_eq!(
+                        r.hit(hit.center()),
+                        Some(i),
+                        "segment {i} is not hittable at its centre"
+                    );
+                }
             }
-        }
 
-        {
-            let content = Rect::new(0.0, 40.0, 1600.0, 900.0);
-            for focused in 0..4 {
-                let r = StripRibbon {
-                    content,
-                    count: 4,
-                    focused,
-                };
-                let first = r.segment_rect(0).unwrap();
-                let last = r.segment_rect(3).unwrap();
-                let mid = f64::midpoint(first.y0, last.y1);
-                assert!(
-                    (mid - content.center().y).abs() < 0.001,
-                    "focus {focused}: ribbon centre {mid} drifted off {}",
-                    content.center().y
-                );
+            {
+                let r = ribbon(4, 2);
+                let hits: Vec<Rect> = (0..4).map(|i| r.hit_rect(i).unwrap()).collect();
+                for (i, w) in hits.windows(2).enumerate() {
+                    assert!(
+                        w[1].y0 >= w[0].y1 - 0.001,
+                        "targets {i} and {} overlap: {:?} then {:?}",
+                        i + 1,
+                        w[0],
+                        w[1]
+                    );
+                }
             }
-        }
 
-        {
-            use crate::a11y::relative_luminance;
-            for (name, theme) in [
-                ("dark", Theme::dark()),
-                ("light", Theme::light()),
-                ("high_contrast", Theme::high_contrast()),
-            ] {
-                let base = theme.tokens.colors.surfaces.base;
-                let g = relative_luminance(base);
-                let contrast = |c: Color| {
-                    let a = c.components[3];
-                    let b = base.components;
-                    let over = Color::new([
-                        c.components[0] * a + b[0] * (1.0 - a),
-                        c.components[1] * a + b[1] * (1.0 - a),
-                        c.components[2] * a + b[2] * (1.0 - a),
-                        1.0,
-                    ]);
-                    (relative_luminance(over) - g).abs()
-                };
-                let idle = contrast(ribbon_fill(&theme, 0.0, false));
-                let hover = contrast(ribbon_fill(&theme, 0.0, true));
-                let focused = contrast(ribbon_fill(&theme, 1.0, false));
-                assert!(
-                    idle > 0.0,
-                    "{name}: an unfocused segment is invisible, so a second strip \
-                 cannot be discovered by looking"
-                );
-                assert!(
-                    hover > idle,
-                    "{name}: hover ({hover:.4}) does not lift off idle ({idle:.4})"
-                );
-                assert!(
-                    focused > hover,
-                    "{name}: the focused segment ({focused:.4}) is less prominent than a \
-                 merely hovered one ({hover:.4}) — the ribbon reads inverted"
-                );
+            {
+                let r = ribbon(3, 1);
+                assert_eq!(r.hit(Point::new(400.0, 470.0)), None);
             }
-        }
 
-        {
-            let r = ribbon(1, 0);
-            assert!(r.segment_rect(0).is_some());
-            assert!(r.extent() > 0.0);
-        }
-    }
-
-    #[test]
-    fn ribbon_pointer_targets_are_disjoint_and_minimum_sized() {
-        {
-            let r = ribbon(3, 0);
-            for i in 0..3 {
-                let hit = r.hit_rect(i).unwrap();
-                assert!(
-                    hit.width() >= 32.0 && hit.height() >= 32.0,
-                    "segment {i} target is {}x{}, under the 32 px minimum",
-                    hit.width(),
-                    hit.height()
-                );
-                assert_eq!(
-                    r.hit(hit.center()),
-                    Some(i),
-                    "segment {i} is not hittable at its centre"
-                );
-            }
-        }
-
-        {
-            let r = ribbon(4, 2);
-            let hits: Vec<Rect> = (0..4).map(|i| r.hit_rect(i).unwrap()).collect();
-            for (i, w) in hits.windows(2).enumerate() {
-                assert!(
-                    w[1].y0 >= w[0].y1 - 0.001,
-                    "targets {i} and {} overlap: {:?} then {:?}",
-                    i + 1,
-                    w[0],
-                    w[1]
-                );
-            }
-        }
-
-        {
-            let r = ribbon(3, 1);
-            assert_eq!(r.hit(Point::new(400.0, 470.0)), None);
-        }
-
-        {
-            let r = ribbon(3, 1);
-            for i in 0..3 {
-                let seg = r.segment_rect(i).unwrap();
-                let hit = r.hit_rect(i).unwrap();
-                assert!(
-                    (seg.x1 - r.content.x1).abs() < f64::EPSILON,
-                    "segment {i} {seg:?}"
-                );
-                assert!(
-                    (hit.x1 - r.content.x1).abs() < f64::EPSILON,
-                    "target {i} {hit:?}"
-                );
+            {
+                let r = ribbon(3, 1);
+                for i in 0..3 {
+                    let seg = r.segment_rect(i).unwrap();
+                    let hit = r.hit_rect(i).unwrap();
+                    assert!(
+                        (seg.x1 - r.content.x1).abs() < f64::EPSILON,
+                        "segment {i} {seg:?}"
+                    );
+                    assert!(
+                        (hit.x1 - r.content.x1).abs() < f64::EPSILON,
+                        "target {i} {hit:?}"
+                    );
+                }
             }
         }
     }

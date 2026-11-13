@@ -474,156 +474,160 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_bridged_person_reads_via_their_service_and_a_bot_as_a_bot() {
-        let alice = alice();
-        // Discord shows its mark, which says where they are when hovered.
-        assert_eq!(bridge(Some(&alice)).chip_label(), None);
-        assert!(bridge(Some(&alice)).service_mark().is_some());
-        assert_eq!(bridge(Some(&alice)).service_tip().unwrap(), "From Discord");
-        let mut handled = alice.clone();
-        if let Some(persona) = handled.persona.as_mut() {
-            persona.account = "dana_k".into();
+    tilo_test_env::scenario! {
+        fn an_author_reads_as_person_bot_or_bridged_persona;
+
+        phase a_bridged_person_reads_via_their_service_and_a_bot_as_a_bot;
+        {
+            let alice = alice();
+            // Discord shows its mark, which says where they are when hovered.
+            assert_eq!(bridge(Some(&alice)).chip_label(), None);
+            assert!(bridge(Some(&alice)).service_mark().is_some());
+            assert_eq!(bridge(Some(&alice)).service_tip().unwrap(), "From Discord");
+            let mut handled = alice.clone();
+            if let Some(persona) = handled.persona.as_mut() {
+                persona.account = "dana_k".into();
+            }
+            assert_eq!(
+                bridge(Some(&handled)).service_tip().unwrap(),
+                "From Discord as @dana_k"
+            );
+            let elsewhere = Appearance::new(
+                "alice",
+                None,
+                Some(Persona {
+                    service: "matrix".into(),
+                    account: "@alice:example.org".into(),
+                    linked: None,
+                }),
+            )
+            .unwrap();
+            assert_eq!(bridge(Some(&elsewhere)).chip_label().unwrap(), "via Matrix");
+            assert_eq!(bridge(None).chip_label().unwrap(), "Bot");
+            let person = Author::Person {
+                name: "Ada",
+                identity: "ada",
+                avatar: None,
+                color: None,
+            };
+            assert_eq!(person.chip_label(), None);
         }
-        assert_eq!(
-            bridge(Some(&handled)).service_tip().unwrap(),
-            "From Discord as @dana_k"
-        );
-        let elsewhere = Appearance::new(
-            "alice",
-            None,
-            Some(Persona {
-                service: "matrix".into(),
-                account: "@alice:example.org".into(),
-                linked: None,
-            }),
-        )
-        .unwrap();
-        assert_eq!(bridge(Some(&elsewhere)).chip_label().unwrap(), "via Matrix");
-        assert_eq!(bridge(None).chip_label().unwrap(), "Bot");
-        let person = Author::Person {
-            name: "Ada",
-            identity: "ada",
-            avatar: None,
-            color: None,
-        };
-        assert_eq!(person.chip_label(), None);
-    }
 
-    #[test]
-    fn a_bot_shows_its_appearance_name_or_its_own() {
-        let alice = alice();
-        assert_eq!(bridge(Some(&alice)).shown_name(), "alice");
-        assert_eq!(bridge(None).shown_name(), "Discord Bridge");
-        assert!(bridge(None).is_bot());
-    }
+        phase a_bot_shows_its_appearance_name_or_its_own;
+        {
+            let alice = alice();
+            assert_eq!(bridge(Some(&alice)).shown_name(), "alice");
+            assert_eq!(bridge(None).shown_name(), "Discord Bridge");
+            assert!(bridge(None).is_bot());
+        }
 
-    #[test]
-    fn the_details_name_the_bot_and_who_added_it() {
-        let alice = alice();
-        assert_eq!(
-            bridge(Some(&alice)).details().unwrap(),
-            "alice, via Discord Bridge (bot, added by Ada)"
-        );
-        assert_eq!(
-            bridge(None).details().unwrap(),
-            "Discord Bridge (bot, added by Ada)"
-        );
-        let person = Author::Person {
-            name: "Ada",
-            identity: "ada",
-            avatar: None,
-            color: None,
-        };
-        assert_eq!(person.details(), None);
-    }
+        phase the_details_name_the_bot_and_who_added_it;
+        {
+            let alice = alice();
+            assert_eq!(
+                bridge(Some(&alice)).details().unwrap(),
+                "alice, via Discord Bridge (bot, added by Ada)"
+            );
+            assert_eq!(
+                bridge(None).details().unwrap(),
+                "Discord Bridge (bot, added by Ada)"
+            );
+            let person = Author::Person {
+                name: "Ada",
+                identity: "ada",
+                avatar: None,
+                color: None,
+            };
+            assert_eq!(person.details(), None);
+        }
 
-    #[test]
-    fn a_name_that_looks_like_a_members_carries_its_service() {
-        let alice = alice();
-        assert_eq!(bridge(Some(&alice)).label(&["Bo"]), "alice");
-        assert_eq!(bridge(Some(&alice)).label(&["Alice"]), "alice, via Discord");
-        let cyrillic = Appearance::new("\u{430}lice", None, alice.persona.clone()).unwrap();
-        assert_eq!(
-            bridge(Some(&cyrillic)).label(&["alice"]),
-            "\u{430}lice, via Discord"
-        );
-        let bare = Appearance::new("alice", None, None).unwrap();
-        assert_eq!(
-            bridge(Some(&bare)).label(&["Alice"]),
-            "alice, via Discord Bridge"
-        );
-        // Linked to the member it looks like, it is that member.
-        let linked = |person| Author::Bot {
-            bot_name: "Discord Bridge",
-            installed_by: "Ada",
-            appearance: Some(&alice),
-            linked: Some(person),
-            linked_color: None,
-            image: None,
-        };
-        assert_eq!(linked("Alice").label(&["Alice"]), "alice");
-        assert_eq!(
-            linked("Bo").label(&["Alice", "Bo"]),
-            "alice, via Discord",
-            "a persona linked to one member still may not look like another"
-        );
-        assert!(looks_alike("paypal", "pаypаl"));
-        assert!(!looks_alike("alice", "bob"));
-        assert!(looks_alike("Iris", "1ris"));
-        assert!(looks_alike("modern", "modem"));
-        assert!(looks_alike("Ren\u{e9}", "rene"));
-        assert!(looks_alike("ＡＤＡ", "ada"));
-    }
+        phase a_name_that_looks_like_a_members_carries_its_service;
+        {
+            let alice = alice();
+            assert_eq!(bridge(Some(&alice)).label(&["Bo"]), "alice");
+            assert_eq!(bridge(Some(&alice)).label(&["Alice"]), "alice, via Discord");
+            let cyrillic = Appearance::new("\u{430}lice", None, alice.persona.clone()).unwrap();
+            assert_eq!(
+                bridge(Some(&cyrillic)).label(&["alice"]),
+                "\u{430}lice, via Discord"
+            );
+            let bare = Appearance::new("alice", None, None).unwrap();
+            assert_eq!(
+                bridge(Some(&bare)).label(&["Alice"]),
+                "alice, via Discord Bridge"
+            );
+            // Linked to the member it looks like, it is that member.
+            let linked = |person| Author::Bot {
+                bot_name: "Discord Bridge",
+                installed_by: "Ada",
+                appearance: Some(&alice),
+                linked: Some(person),
+                linked_color: None,
+                image: None,
+            };
+            assert_eq!(linked("Alice").label(&["Alice"]), "alice");
+            assert_eq!(
+                linked("Bo").label(&["Alice", "Bo"]),
+                "alice, via Discord",
+                "a persona linked to one member still may not look like another"
+            );
+            assert!(looks_alike("paypal", "pаypаl"));
+            assert!(!looks_alike("alice", "bob"));
+            assert!(looks_alike("Iris", "1ris"));
+            assert!(looks_alike("modern", "modem"));
+            assert!(looks_alike("Ren\u{e9}", "rene"));
+            assert!(looks_alike("ＡＤＡ", "ada"));
+        }
 
-    #[test]
-    fn the_bot_chip_stays_whole_inside_the_column_when_the_name_is_elided() {
-        let mut text = TextRenderer::new();
-        let theme = Theme::dark();
-        let long = Appearance::new(
-            "Alexandria Ocasio-Smithington the Third of Somewhere",
-            None,
-            None,
-        )
-        .unwrap();
-        let author = bridge(Some(&long));
-        let max = 160.0;
-        let line = author.layout(&[], Point::ZERO, max, &mut text, &theme);
-        let chip = line.chip.expect("a bot always has its chip");
-        assert!(chip.x1 <= max + 0.5, "{chip:?}");
-        assert!(chip.width() > 0.0);
-        assert_ne!(line.shown, long.name, "the name is elided, not the chip");
-        assert!(line.name.x1 <= chip.x0);
+        phase the_bot_chip_stays_whole_inside_the_column_when_the_name_is_elided;
+        {
+            let mut text = TextRenderer::new();
+            let theme = Theme::dark();
+            let long = Appearance::new(
+                "Alexandria Ocasio-Smithington the Third of Somewhere",
+                None,
+                None,
+            )
+            .unwrap();
+            let author = bridge(Some(&long));
+            let max = 160.0;
+            let line = author.layout(&[], Point::ZERO, max, &mut text, &theme);
+            let chip = line.chip.expect("a bot always has its chip");
+            assert!(chip.x1 <= max + 0.5, "{chip:?}");
+            assert!(chip.width() > 0.0);
+            assert_ne!(line.shown, long.name, "the name is elided, not the chip");
+            assert!(line.name.x1 <= chip.x0);
 
-        let person = Author::Person {
-            name: "Ada",
-            identity: "ada",
-            avatar: None,
-            color: None,
-        };
-        assert!(
-            person
-                .layout(&[], Point::ZERO, max, &mut text, &theme)
-                .chip
-                .is_none()
-        );
-    }
+            let person = Author::Person {
+                name: "Ada",
+                identity: "ada",
+                avatar: None,
+                color: None,
+            };
+            assert!(
+                person
+                    .layout(&[], Point::ZERO, max, &mut text, &theme)
+                    .chip
+                    .is_none()
+            );
+        }
 
-    #[test]
-    fn a_linked_persona_is_said_on_the_profile() {
-        let alice = alice();
-        let linked = Author::Bot {
-            bot_name: "Discord Bridge",
-            installed_by: "Ada",
-            appearance: Some(&alice),
-            linked: Some("Alice Smith"),
-            linked_color: None,
-            image: None,
-        };
-        assert_eq!(
-            linked.linked_line().unwrap(),
-            "Linked to Alice Smith on Tilo"
-        );
-        assert_eq!(linked.shown_name(), "alice", "the author is still the bot");
+        phase a_linked_persona_is_said_on_the_profile;
+        {
+            let alice = alice();
+            let linked = Author::Bot {
+                bot_name: "Discord Bridge",
+                installed_by: "Ada",
+                appearance: Some(&alice),
+                linked: Some("Alice Smith"),
+                linked_color: None,
+                image: None,
+            };
+            assert_eq!(
+                linked.linked_line().unwrap(),
+                "Linked to Alice Smith on Tilo"
+            );
+            assert_eq!(linked.shown_name(), "alice", "the author is still the bot");
+        }
     }
 }

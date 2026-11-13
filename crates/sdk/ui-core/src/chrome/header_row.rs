@@ -505,77 +505,81 @@ pub fn paint_history_control(
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_face_is_the_shell_metrics() {
-        let theme = Theme::dark();
-        let area = Rect::new(0.0, 0.0, 1000.0, 700.0);
-        let face = HeaderRowFace::new(area, &theme)
-            .with_toggle()
-            .with_back()
-            .with_history();
-        let m = face.metrics();
-        assert_eq!(face.row.height(), m.height);
-        assert!(m.height >= f64::from(theme.tokens.metrics.header_height));
-        assert_eq!(face.toggle.x0, m.inset);
-        assert_eq!(face.back.x0, face.toggle.x1 + m.gap);
-        assert_eq!(
-            face.history.x1,
-            1000.0 - m.gutter,
-            "a content row's trailing control keeps the gutter its title starts at"
-        );
-        assert!(face.title.x0 > face.back.x1);
-        assert!(face.title.x1 <= face.history.x0);
-        assert_eq!(face.body_of(area).y0, m.height);
-        assert_eq!(face.rule.y0, m.height);
-        let plain = HeaderRowFace::new(area, &theme);
-        assert_eq!(
-            plain.title.x0, m.gutter,
-            "a title with no leading button starts at the content gutter"
-        );
-        assert_eq!(
-            plain.actions.x1,
-            area.x1 - m.gutter,
-            "the actions end at the gutter the title starts at"
-        );
-        let sidebar = HeaderRowFace::new(area, &theme).with_inset_title();
-        assert_eq!(
-            sidebar.actions.x1,
-            area.x1 - m.inset,
-            "a sidebar's row keeps its inset on both edges"
-        );
-        let (title, actions) = plain.split(200.0);
-        assert_eq!(title.width(), 200.0);
-        assert_eq!(actions.x0, title.x1 + m.gap);
-    }
+    tilo_test_env::scenario! {
+        fn a_header_row_follows_the_shell_metrics_and_tokens;
 
-    #[test]
-    fn titles_and_the_history_control_paint_from_tokens() {
-        let theme = Theme::light();
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        let face = HeaderRowFace::new(Rect::new(0.0, 0.0, 600.0, 400.0), &theme).with_history();
-        face.paint_rule(&mut scene, Affine::IDENTITY, &theme);
-        face.paint_title(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            "Quarterly report",
-            Some(12),
-            None,
-        );
-        paint_history_control(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            face.history_rect(),
-            HistoryControl::Open,
-            false,
-        );
-        assert!(scene.encoding().draw_tags.len() >= 4);
-        let (w, _) = measure_title(&mut text, &theme, "Quarterly report", Some(12));
-        let (bare, _) = measure_title(&mut text, &theme, "Quarterly report", None);
-        assert!(w > bare, "the count takes area after the title");
+        phase the_face_is_the_shell_metrics;
+        {
+            let theme = Theme::dark();
+            let area = Rect::new(0.0, 0.0, 1000.0, 700.0);
+            let face = HeaderRowFace::new(area, &theme)
+                .with_toggle()
+                .with_back()
+                .with_history();
+            let m = face.metrics();
+            assert_eq!(face.row.height(), m.height);
+            assert!(m.height >= f64::from(theme.tokens.metrics.header_height));
+            assert_eq!(face.toggle.x0, m.inset);
+            assert_eq!(face.back.x0, face.toggle.x1 + m.gap);
+            assert_eq!(
+                face.history.x1,
+                1000.0 - m.gutter,
+                "a content row's trailing control keeps the gutter its title starts at"
+            );
+            assert!(face.title.x0 > face.back.x1);
+            assert!(face.title.x1 <= face.history.x0);
+            assert_eq!(face.body_of(area).y0, m.height);
+            assert_eq!(face.rule.y0, m.height);
+            let plain = HeaderRowFace::new(area, &theme);
+            assert_eq!(
+                plain.title.x0, m.gutter,
+                "a title with no leading button starts at the content gutter"
+            );
+            assert_eq!(
+                plain.actions.x1,
+                area.x1 - m.gutter,
+                "the actions end at the gutter the title starts at"
+            );
+            let sidebar = HeaderRowFace::new(area, &theme).with_inset_title();
+            assert_eq!(
+                sidebar.actions.x1,
+                area.x1 - m.inset,
+                "a sidebar's row keeps its inset on both edges"
+            );
+            let (title, actions) = plain.split(200.0);
+            assert_eq!(title.width(), 200.0);
+            assert_eq!(actions.x0, title.x1 + m.gap);
+        }
+
+        phase titles_and_the_history_control_paint_from_tokens;
+        {
+            let theme = Theme::light();
+            let mut scene = Scene::new();
+            let mut text = TextRenderer::new();
+            let face = HeaderRowFace::new(Rect::new(0.0, 0.0, 600.0, 400.0), &theme).with_history();
+            face.paint_rule(&mut scene, Affine::IDENTITY, &theme);
+            face.paint_title(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                "Quarterly report",
+                Some(12),
+                None,
+            );
+            paint_history_control(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                face.history_rect(),
+                HistoryControl::Open,
+                false,
+            );
+            assert!(scene.encoding().draw_tags.len() >= 4);
+            let (w, _) = measure_title(&mut text, &theme, "Quarterly report", Some(12));
+            let (bare, _) = measure_title(&mut text, &theme, "Quarterly report", None);
+            assert!(w > bare, "the count takes area after the title");
+        }
     }
 }

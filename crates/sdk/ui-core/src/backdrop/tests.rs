@@ -43,244 +43,248 @@ fn close(a: [u8; 4], b: [u8; 4], tolerance: u8) -> bool {
     a.iter().zip(b).all(|(a, b)| a.abs_diff(b) <= tolerance)
 }
 
-#[test]
-fn outside_a_recording_the_material_is_the_opaque_panel_ground() {
-    let mut scene = Scene::new();
-    layer_scene(&scene, 0);
-    floating(&mut scene, Affine::IDENTITY, &Theme::dark());
-    assert!(
-        scene.encoding().resources.patches.is_empty(),
-        "no recording, so no placeholder image is drawn"
-    );
-}
+tilo_test_env::scenario! {
+    fn a_backdrop_recording_registers_floating_surfaces;
 
-#[test]
-fn a_recording_registers_each_floating_surface_with_what_is_below_it() {
-    let theme = Theme::dark();
-    let mut scene = stripes(256, 192);
-    let below_len = scene.encoding().draw_tags.len();
-    let recording = BackdropRecording::begin();
-    layer_scene(&scene, 2);
-    floating(&mut scene, Affine::translate((10.0, 5.0)), &theme);
-    let mut scratch = Scene::new();
-    floating(&mut scratch, Affine::IDENTITY, &theme);
-    fill(
-        &mut scene,
-        Affine::IDENTITY,
-        &panel(),
-        Material::Opaque,
-        &theme,
-    );
-    let surfaces = recording.finish();
-    assert_eq!(surfaces.len(), 1, "only the floating material records");
-    let surface = &surfaces[0];
-    assert_eq!(surface.layer, 2);
-    assert_eq!(surface.bounds, PANEL + Vec2::new(10.0, 5.0));
-    assert_eq!(surface.below.encoding().draw_tags.len(), below_len);
-    assert_eq!((surface.image.width, surface.image.height), (64, 48));
-    assert!(
-        (surface.blur_px - f64::from(theme.tokens.colors.surfaces.material_blur_px)).abs()
-            < f64::EPSILON
-    );
-    assert!(
-        scratch.encoding().resources.patches.is_empty(),
-        "an unnamed scene paints the opaque material"
-    );
-    let mut after = Scene::new();
-    floating(&mut after, Affine::IDENTITY, &theme);
-    assert!(after.encoding().resources.patches.is_empty());
-}
+    phase outside_a_recording_the_material_is_the_opaque_panel_ground;
+    {
+        let mut scene = Scene::new();
+        layer_scene(&scene, 0);
+        floating(&mut scene, Affine::IDENTITY, &Theme::dark());
+        assert!(
+            scene.encoding().resources.patches.is_empty(),
+            "no recording, so no placeholder image is drawn"
+        );
+    }
 
-#[test]
-fn reduced_transparency_and_forced_colours_keep_floating_chrome_opaque() {
-    for theme in [
-        Theme::dark().with_reduce_transparency(true),
-        Theme::high_contrast(),
-    ] {
+    phase a_recording_registers_each_floating_surface_with_what_is_below_it;
+    {
+        let theme = Theme::dark();
+        let mut scene = stripes(256, 192);
+        let below_len = scene.encoding().draw_tags.len();
+        let recording = BackdropRecording::begin();
+        layer_scene(&scene, 2);
+        floating(&mut scene, Affine::translate((10.0, 5.0)), &theme);
+        let mut scratch = Scene::new();
+        floating(&mut scratch, Affine::IDENTITY, &theme);
+        fill(
+            &mut scene,
+            Affine::IDENTITY,
+            &panel(),
+            Material::Opaque,
+            &theme,
+        );
+        let surfaces = recording.finish();
+        assert_eq!(surfaces.len(), 1, "only the floating material records");
+        let surface = &surfaces[0];
+        assert_eq!(surface.layer, 2);
+        assert_eq!(surface.bounds, PANEL + Vec2::new(10.0, 5.0));
+        assert_eq!(surface.below.encoding().draw_tags.len(), below_len);
+        assert_eq!((surface.image.width, surface.image.height), (64, 48));
+        assert!(
+            (surface.blur_px - f64::from(theme.tokens.colors.surfaces.material_blur_px)).abs()
+                < f64::EPSILON
+        );
+        assert!(
+            scratch.encoding().resources.patches.is_empty(),
+            "an unnamed scene paints the opaque material"
+        );
+        let mut after = Scene::new();
+        floating(&mut after, Affine::IDENTITY, &theme);
+        assert!(after.encoding().resources.patches.is_empty());
+    }
+
+    phase reduced_transparency_and_forced_colours_keep_floating_chrome_opaque;
+    {
+        for theme in [
+            Theme::dark().with_reduce_transparency(true),
+            Theme::high_contrast(),
+        ] {
+            let mut scene = Scene::new();
+            let recording = BackdropRecording::begin();
+            layer_scene(&scene, 0);
+            floating(&mut scene, Affine::IDENTITY, &theme);
+            assert!(recording.finish().is_empty(), "{}", theme.name);
+        }
+    }
+
+    phase a_frame_blurs_at_most_its_region_budget;
+    {
+        let theme = Theme::dark();
         let mut scene = Scene::new();
         let recording = BackdropRecording::begin();
         layer_scene(&scene, 0);
-        floating(&mut scene, Affine::IDENTITY, &theme);
-        assert!(recording.finish().is_empty(), "{}", theme.name);
+        for _ in 0..MAX_BACKDROP_REGIONS + 2 {
+            floating(&mut scene, Affine::IDENTITY, &theme);
+        }
+        let surfaces = recording.finish();
+        assert_eq!(surfaces.len(), MAX_BACKDROP_REGIONS);
+        let ids: std::collections::HashSet<u64> = surfaces
+            .iter()
+            .map(|surface| surface.image.data.id())
+            .collect();
+        assert_eq!(
+            ids.len(),
+            MAX_BACKDROP_REGIONS,
+            "each region has its own placeholder"
+        );
     }
-}
 
-#[test]
-fn a_frame_blurs_at_most_its_region_budget() {
-    let theme = Theme::dark();
-    let mut scene = Scene::new();
-    let recording = BackdropRecording::begin();
-    layer_scene(&scene, 0);
-    for _ in 0..MAX_BACKDROP_REGIONS + 2 {
-        floating(&mut scene, Affine::IDENTITY, &theme);
-    }
-    let surfaces = recording.finish();
-    assert_eq!(surfaces.len(), MAX_BACKDROP_REGIONS);
-    let ids: std::collections::HashSet<u64> = surfaces
-        .iter()
-        .map(|surface| surface.image.data.id())
-        .collect();
-    assert_eq!(
-        ids.len(),
-        MAX_BACKDROP_REGIONS,
-        "each region has its own placeholder"
-    );
-}
-
-#[test]
-fn a_continued_recording_keeps_the_frames_regions_distinct() {
-    let theme = Theme::dark();
-    let mut scene = Scene::new();
-    let first = BackdropRecording::begin();
-    layer_scene(&scene, 0);
-    floating(&mut scene, Affine::IDENTITY, &theme);
-    let main_pass = first.finish();
-    let second = BackdropRecording::continuing(main_pass);
-    layer_scene(&scene, 0);
-    floating(&mut scene, Affine::IDENTITY, &theme);
-    let surfaces = second.finish();
-    assert_eq!(surfaces.len(), 2);
-    assert_ne!(
-        surfaces[0].image.data.id(),
-        surfaces[1].image.data.id(),
-        "the second pass takes the next region slot"
-    );
-}
-
-/// A subtree cache (a `Column`'s) is drawn on its and appended later: a surface inside it takes
-/// what the frame held before the cache, plus the cache's content under it, at the cache's place in the
-/// frame.
-#[test]
-fn a_surface_in_a_nested_cache_lands_where_the_cache_is_appended() {
-    let theme = Theme::dark();
-    let mut frame = stripes(256, 192);
-    let frame_len = frame.encoding().draw_tags.len();
-    let recording = BackdropRecording::begin();
-    layer_scene(&frame, 1);
-    let mut outer = Scene::new();
-    nest_scene(&outer);
-    let mut inner = Scene::new();
-    nest_scene(&inner);
-    inner.fill(
-        Fill::NonZero,
-        Affine::IDENTITY,
-        Color::WHITE,
-        None,
-        &Rect::new(0.0, 0.0, 4.0, 4.0),
-    );
-    let inner_len = inner.encoding().draw_tags.len();
-    floating(&mut inner, Affine::IDENTITY, &theme);
-    assert_eq!(
-        append_nested(&mut outer, &inner, Affine::translate((4.0, 2.0))),
-        1
-    );
-    assert_eq!(
-        append_nested(&mut frame, &outer, Affine::translate((6.0, 3.0))),
-        1,
-        "a cache inside a cache carries its child's surface up"
-    );
-    let mut lost = Scene::new();
-    nest_scene(&lost);
-    floating(&mut lost, Affine::IDENTITY, &theme);
-    let mut scratch = Scene::new();
-    assert_eq!(append_nested(&mut scratch, &lost, Affine::IDENTITY), 1);
-    let surfaces = recording.finish();
-    assert_eq!(surfaces.len(), 1);
-    let surface = &surfaces[0];
-    assert_eq!(surface.layer, 1);
-    assert_eq!(surface.bounds, PANEL + Vec2::new(10.0, 5.0));
-    assert_eq!(
-        surface.below.encoding().draw_tags.len(),
-        frame_len + inner_len,
-        "below is the frame so far plus the cache's own content"
-    );
-    let mut plain = Scene::new();
-    assert_eq!(append_nested(&mut plain, &inner, Affine::IDENTITY), 0);
-}
-
-/// The render service draws a backdrop's scene by itself and refuses a frame
-/// whose backdrop leaves a clip open ("invalid scene: a clip is left open"),
-/// which froze every window showing a menu, toast or notice drawn inside a
-/// clip or a fade. What lies below a surface must pass the service
-/// validator, wherever the surface was drawn.
-#[test]
-fn what_lies_below_a_surface_drawn_inside_open_layers_is_a_balanced_scene() {
-    use tilo_render_protocol::Limits;
-    use tilo_render_protocol::validate::validate;
-    use vello::peniko::BlendMode;
-
-    let theme = Theme::dark();
-    let mut frame = stripes(256, 192);
-    let recording = BackdropRecording::begin();
-    layer_scene(&frame, 0);
-    frame.push_clip_layer(
-        Fill::NonZero,
-        Affine::IDENTITY,
-        &Rect::new(0.0, 0.0, 256.0, 192.0),
-    );
-    frame.push_layer(
-        Fill::NonZero,
-        BlendMode::default(),
-        0.5,
-        Affine::IDENTITY,
-        &Rect::new(0.0, 0.0, 256.0, 192.0),
-    );
-    floating(&mut frame, Affine::IDENTITY, &theme);
-    frame.pop_layer();
-    let mut cache = Scene::new();
-    nest_scene(&cache);
-    cache.push_clip_layer(
-        Fill::NonZero,
-        Affine::IDENTITY,
-        &Rect::new(0.0, 0.0, 128.0, 96.0),
-    );
-    floating(&mut cache, Affine::IDENTITY, &theme);
-    cache.pop_layer();
-    append_nested(&mut frame, &cache, Affine::translate((8.0, 8.0)));
-    frame.pop_layer();
-    let surfaces = recording.finish();
-    assert_eq!(surfaces.len(), 2);
-    validate(frame.encoding(), &Limits::default()).expect("the frame itself is balanced");
-    for surface in &surfaces {
-        assert_eq!(surface.below.encoding().n_open_clips, 0);
-        validate(surface.below.encoding(), &Limits::default())
-            .expect("the render service accepts what lies below a surface");
-    }
-}
-
-#[test]
-fn a_nested_recording_never_shares_a_placeholder_with_its_host() {
-    let theme = Theme::dark();
-    let mut outer_scene = Scene::new();
-    let mut inner_scene = Scene::new();
-    let outer = BackdropRecording::begin();
-    layer_scene(&outer_scene, 0);
-    floating(&mut outer_scene, Affine::IDENTITY, &theme);
-    let inner = BackdropRecording::begin();
-    layer_scene(&inner_scene, 0);
-    floating(&mut inner_scene, Affine::IDENTITY, &theme);
-    let inner_surfaces = inner.finish();
-    let outer_surfaces = outer.finish();
-    assert_eq!((outer_surfaces.len(), inner_surfaces.len()), (1, 1));
-    assert_ne!(
-        outer_surfaces[0].image.data.id(),
-        inner_surfaces[0].image.data.id(),
-        "the host's blur must not be substituted into the inner surface"
-    );
-}
-
-#[test]
-fn an_unchanged_surface_encodes_identically_frame_to_frame() {
-    let theme = Theme::dark();
-    let frame = || {
+    phase a_continued_recording_keeps_the_frames_regions_distinct;
+    {
+        let theme = Theme::dark();
         let mut scene = Scene::new();
-        let recording = BackdropRecording::begin();
+        let first = BackdropRecording::begin();
         layer_scene(&scene, 0);
         floating(&mut scene, Affine::IDENTITY, &theme);
-        drop(recording.finish());
-        scene
-    };
-    assert!(frame().encoding_eq(&frame()));
+        let main_pass = first.finish();
+        let second = BackdropRecording::continuing(main_pass);
+        layer_scene(&scene, 0);
+        floating(&mut scene, Affine::IDENTITY, &theme);
+        let surfaces = second.finish();
+        assert_eq!(surfaces.len(), 2);
+        assert_ne!(
+            surfaces[0].image.data.id(),
+            surfaces[1].image.data.id(),
+            "the second pass takes the next region slot"
+        );
+    }
+
+    // A subtree cache (a `Column`'s) is drawn on its and appended later: a surface inside it takes
+    // what the frame held before the cache, plus the cache's content under it, at the cache's place in the
+    // frame.
+    phase a_surface_in_a_nested_cache_lands_where_the_cache_is_appended;
+    {
+        let theme = Theme::dark();
+        let mut frame = stripes(256, 192);
+        let frame_len = frame.encoding().draw_tags.len();
+        let recording = BackdropRecording::begin();
+        layer_scene(&frame, 1);
+        let mut outer = Scene::new();
+        nest_scene(&outer);
+        let mut inner = Scene::new();
+        nest_scene(&inner);
+        inner.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::WHITE,
+            None,
+            &Rect::new(0.0, 0.0, 4.0, 4.0),
+        );
+        let inner_len = inner.encoding().draw_tags.len();
+        floating(&mut inner, Affine::IDENTITY, &theme);
+        assert_eq!(
+            append_nested(&mut outer, &inner, Affine::translate((4.0, 2.0))),
+            1
+        );
+        assert_eq!(
+            append_nested(&mut frame, &outer, Affine::translate((6.0, 3.0))),
+            1,
+            "a cache inside a cache carries its child's surface up"
+        );
+        let mut lost = Scene::new();
+        nest_scene(&lost);
+        floating(&mut lost, Affine::IDENTITY, &theme);
+        let mut scratch = Scene::new();
+        assert_eq!(append_nested(&mut scratch, &lost, Affine::IDENTITY), 1);
+        let surfaces = recording.finish();
+        assert_eq!(surfaces.len(), 1);
+        let surface = &surfaces[0];
+        assert_eq!(surface.layer, 1);
+        assert_eq!(surface.bounds, PANEL + Vec2::new(10.0, 5.0));
+        assert_eq!(
+            surface.below.encoding().draw_tags.len(),
+            frame_len + inner_len,
+            "below is the frame so far plus the cache's own content"
+        );
+        let mut plain = Scene::new();
+        assert_eq!(append_nested(&mut plain, &inner, Affine::IDENTITY), 0);
+    }
+
+    // The render service draws a backdrop's scene by itself and refuses a frame
+    // whose backdrop leaves a clip open ("invalid scene: a clip is left open"),
+    // which froze every window showing a menu, toast or notice drawn inside a
+    // clip or a fade. What lies below a surface must pass the service
+    // validator, wherever the surface was drawn.
+    phase what_lies_below_a_surface_drawn_inside_open_layers_is_a_balanced_scene;
+    {
+        use tilo_render_protocol::Limits;
+        use tilo_render_protocol::validate::validate;
+        use vello::peniko::BlendMode;
+
+        let theme = Theme::dark();
+        let mut frame = stripes(256, 192);
+        let recording = BackdropRecording::begin();
+        layer_scene(&frame, 0);
+        frame.push_clip_layer(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &Rect::new(0.0, 0.0, 256.0, 192.0),
+        );
+        frame.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            0.5,
+            Affine::IDENTITY,
+            &Rect::new(0.0, 0.0, 256.0, 192.0),
+        );
+        floating(&mut frame, Affine::IDENTITY, &theme);
+        frame.pop_layer();
+        let mut cache = Scene::new();
+        nest_scene(&cache);
+        cache.push_clip_layer(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &Rect::new(0.0, 0.0, 128.0, 96.0),
+        );
+        floating(&mut cache, Affine::IDENTITY, &theme);
+        cache.pop_layer();
+        append_nested(&mut frame, &cache, Affine::translate((8.0, 8.0)));
+        frame.pop_layer();
+        let surfaces = recording.finish();
+        assert_eq!(surfaces.len(), 2);
+        validate(frame.encoding(), &Limits::default()).expect("the frame itself is balanced");
+        for surface in &surfaces {
+            assert_eq!(surface.below.encoding().n_open_clips, 0);
+            validate(surface.below.encoding(), &Limits::default())
+                .expect("the render service accepts what lies below a surface");
+        }
+    }
+
+    phase a_nested_recording_never_shares_a_placeholder_with_its_host;
+    {
+        let theme = Theme::dark();
+        let mut outer_scene = Scene::new();
+        let mut inner_scene = Scene::new();
+        let outer = BackdropRecording::begin();
+        layer_scene(&outer_scene, 0);
+        floating(&mut outer_scene, Affine::IDENTITY, &theme);
+        let inner = BackdropRecording::begin();
+        layer_scene(&inner_scene, 0);
+        floating(&mut inner_scene, Affine::IDENTITY, &theme);
+        let inner_surfaces = inner.finish();
+        let outer_surfaces = outer.finish();
+        assert_eq!((outer_surfaces.len(), inner_surfaces.len()), (1, 1));
+        assert_ne!(
+            outer_surfaces[0].image.data.id(),
+            inner_surfaces[0].image.data.id(),
+            "the host's blur must not be substituted into the inner surface"
+        );
+    }
+
+    phase an_unchanged_surface_encodes_identically_frame_to_frame;
+    {
+        let theme = Theme::dark();
+        let frame = || {
+            let mut scene = Scene::new();
+            let recording = BackdropRecording::begin();
+            layer_scene(&scene, 0);
+            floating(&mut scene, Affine::IDENTITY, &theme);
+            drop(recording.finish());
+            scene
+        };
+        assert!(frame().encoding_eq(&frame()));
+    }
 }
 
 #[test]
@@ -480,74 +484,171 @@ fn cost_at_1080p() {
     );
 }
 
-#[test]
-fn a_surface_over_the_published_shell_is_an_image_fill_under_the_tint() {
-    let theme = Theme::dark();
-    let ground = crate::chrome::panel_ground(&theme);
-    let mut wallpaper = Vec::new();
-    for y in 0..64_u32 {
-        for x in 0..64_u32 {
-            let v = if (x / 8 + y / 8) % 2 == 0 { 0 } else { 255 };
-            wallpaper.extend_from_slice(&[v, v, v, 255]);
+tilo_test_env::scenario! {
+    fn published_and_provided_backdrops_stand_in_for_the_placeholder;
+
+    phase a_surface_over_the_published_shell_is_an_image_fill_under_the_tint;
+    {
+        let theme = Theme::dark();
+        let ground = crate::chrome::panel_ground(&theme);
+        let mut wallpaper = Vec::new();
+        for y in 0..64_u32 {
+            for x in 0..64_u32 {
+                let v = if (x / 8 + y / 8) % 2 == 0 { 0 } else { 255 };
+                wallpaper.extend_from_slice(&[v, v, v, 255]);
+            }
         }
-    }
-    let wallpaper = crate::raster::rgba8(wallpaper, 64, 64);
-    let display = Rect::new(0.0, 0.0, 256.0, 192.0);
-    let draw = |theme: &Theme| {
-        let mut scene = Scene::new();
-        wallpaper::fill(
-            &mut scene,
-            (Affine::IDENTITY, Affine::IDENTITY),
-            &panel(),
-            Material::Floating,
-            theme,
-            ground,
+        let wallpaper = crate::raster::rgba8(wallpaper, 64, 64);
+        let display = Rect::new(0.0, 0.0, 256.0, 192.0);
+        let draw = |theme: &Theme| {
+            let mut scene = Scene::new();
+            wallpaper::fill(
+                &mut scene,
+                (Affine::IDENTITY, Affine::IDENTITY),
+                &panel(),
+                Material::Floating,
+                theme,
+                ground,
+            );
+            scene
+        };
+        wallpaper::publish(Vec::new());
+        assert!(
+            draw(&theme).encoding().resources.patches.is_empty(),
+            "nothing published: opaque"
         );
-        scene
-    };
-    wallpaper::publish(Vec::new());
-    assert!(
-        draw(&theme).encoding().resources.patches.is_empty(),
-        "nothing published: opaque"
-    );
-    let blurred = wallpaper::blurred_cover(&wallpaper, display, 24.0).expect("pixels in memory");
-    let again = wallpaper::blurred_cover(&wallpaper, display, 24.0).expect("cached");
-    assert_eq!(
-        blurred.0.data.id(),
-        again.0.data.id(),
-        "made once per wallpaper and size"
-    );
-    // Blurred by 24 px, 8 px checks average out to grey.
-    let pixels = blurred.0.data.data();
-    let mid = (blurred.0.height as usize / 2 * blurred.0.width as usize
-        + blurred.0.width as usize / 2)
-        * 4;
-    let grey = pixels[mid];
-    assert!((100..=155).contains(&grey), "the checks still show: {grey}");
-    wallpaper::publish(vec![wallpaper::image_piece(
-        Affine::IDENTITY,
-        display,
-        blurred,
-    )]);
-    let frosted = draw(&theme);
-    assert_eq!(
-        frosted.encoding().resources.patches.len(),
-        1,
-        "one image fill"
-    );
-    assert!(
-        frosted.encoding_eq(&draw(&theme)),
-        "the same shell encodes the same"
-    );
-    assert!(
-        draw(&theme.clone().with_reduce_transparency(true))
-            .encoding()
-            .resources
-            .patches
-            .is_empty(),
-        "reduced transparency is opaque"
-    );
-    wallpaper::publish(Vec::new());
+        let blurred = wallpaper::blurred_cover(&wallpaper, display, 24.0).expect("pixels in memory");
+        let again = wallpaper::blurred_cover(&wallpaper, display, 24.0).expect("cached");
+        assert_eq!(
+            blurred.0.data.id(),
+            again.0.data.id(),
+            "made once per wallpaper and size"
+        );
+        // Blurred by 24 px, 8 px checks average out to grey.
+        let pixels = blurred.0.data.data();
+        let mid = (blurred.0.height as usize / 2 * blurred.0.width as usize
+            + blurred.0.width as usize / 2)
+            * 4;
+        let grey = pixels[mid];
+        assert!((100..=155).contains(&grey), "the checks still show: {grey}");
+        wallpaper::publish(vec![wallpaper::image_piece(
+            Affine::IDENTITY,
+            display,
+            blurred,
+        )]);
+        let frosted = draw(&theme);
+        assert_eq!(
+            frosted.encoding().resources.patches.len(),
+            1,
+            "one image fill"
+        );
+        assert!(
+            frosted.encoding_eq(&draw(&theme)),
+            "the same shell encodes the same"
+        );
+        assert!(
+            draw(&theme.clone().with_reduce_transparency(true))
+                .encoding()
+                .resources
+                .patches
+                .is_empty(),
+            "reduced transparency is opaque"
+        );
+        wallpaper::publish(Vec::new());
+    }
+
+    phase a_provided_backdrop_of_the_right_size_is_drawn_in_place_of_the_placeholder;
+    {
+        let theme = Theme::dark();
+        let (width, height) = backdrop_texels(PANEL, Sampling::Smooth, 0.0);
+        assert_eq!((width, height), (64, 48));
+        let blurred = crate::raster::rgba8_premultiplied(
+            [200_u8, 10, 10, 255].repeat((width * height) as usize),
+            width,
+            height,
+        );
+        provide_backdrops(vec![(0, blurred.clone())]);
+        let mut scene = Scene::new();
+        let recording = BackdropRecording::begin();
+        layer_scene(&scene, 0);
+        floating(&mut scene, Affine::IDENTITY, &theme);
+        let surfaces = recording.finish();
+        assert_eq!(surfaces.len(), 1);
+        assert_eq!(
+            surfaces[0].image.data.id(),
+            blurred.data.id(),
+            "the provided image, not the opaque placeholder"
+        );
+
+        provide_backdrops(vec![(
+            0,
+            crate::raster::rgba8_premultiplied(vec![0; 4], 1, 1),
+        )]);
+        let mut scene = Scene::new();
+        let recording = BackdropRecording::begin();
+        layer_scene(&scene, 0);
+        floating(&mut scene, Affine::IDENTITY, &theme);
+        let surfaces = recording.finish();
+        assert_ne!(surfaces[0].image.data.id(), blurred.data.id());
+        assert_eq!(
+            (surfaces[0].image.width, surfaces[0].image.height),
+            (64, 48)
+        );
+        provide_backdrops(Vec::new());
+    }
+
+    // A cell-sampled surface (Pixelated) takes one texel per cell, and the
+    // size a host is told to provide is that size: a host that hands back an
+    // image at any other size leaves the surface showing its opaque
+    // placeholder, so its cells never appear — which is what the live shell
+    // did while the request was sized for a smooth sample.
+    phase a_blocky_surface_asks_for_one_texel_per_cell;
+    {
+        let theme = Theme::preset(crate::theme::Preset::Pixelated);
+        let mut scene = Scene::new();
+        let recording = BackdropRecording::begin();
+        layer_scene(&scene, 0);
+        floating(&mut scene, Affine::IDENTITY, &theme);
+        let surfaces = recording.finish();
+        assert_eq!(surfaces.len(), 1, "the panel samples");
+        let surface = &surfaces[0];
+        assert_eq!(
+            surface.sampling,
+            Sampling::Blocky,
+            "Pixelated's floating surface is shown as cells"
+        );
+        let cell = surface.cell_px;
+        assert!(cell >= 2.0, "a cell of {cell} px shows no pixels");
+        let requested = backdrop_texels(surface.bounds, surface.sampling, cell);
+        assert_eq!(
+            (surface.image.width, surface.image.height),
+            requested,
+            "the texels the host is asked for are the placeholder's own"
+        );
+        let smooth = backdrop_texels(surface.bounds, Sampling::Smooth, 0.0);
+        assert!(
+            requested.0 * 2 <= smooth.0,
+            "one texel per {cell} px cell ({requested:?}) is coarser than a smooth \
+             sample ({smooth:?})"
+        );
+        let image = crate::raster::rgba8_premultiplied(
+            [90_u8, 140, 200, 255].repeat((requested.0 * requested.1) as usize),
+            requested.0,
+            requested.1,
+        );
+        provide_backdrops(vec![(0, image.clone())]);
+        let mut scene = Scene::new();
+        let recording = BackdropRecording::begin();
+        layer_scene(&scene, 0);
+        floating(&mut scene, Affine::IDENTITY, &theme);
+        let surfaces = recording.finish();
+        assert_eq!(
+            surfaces[0].image.data.id(),
+            image.data.id(),
+            "the provided cells are drawn, not the opaque placeholder"
+        );
+        provide_backdrops(Vec::new());
+    }
 }
 
 /// What frosting the window strips costs at 1080p on this machine's
@@ -662,99 +763,6 @@ fn frost_cost_at_1080p() {
     );
 }
 
-#[test]
-fn a_provided_backdrop_of_the_right_size_is_drawn_in_place_of_the_placeholder() {
-    let theme = Theme::dark();
-    let (width, height) = backdrop_texels(PANEL, Sampling::Smooth, 0.0);
-    assert_eq!((width, height), (64, 48));
-    let blurred = crate::raster::rgba8_premultiplied(
-        [200_u8, 10, 10, 255].repeat((width * height) as usize),
-        width,
-        height,
-    );
-    provide_backdrops(vec![(0, blurred.clone())]);
-    let mut scene = Scene::new();
-    let recording = BackdropRecording::begin();
-    layer_scene(&scene, 0);
-    floating(&mut scene, Affine::IDENTITY, &theme);
-    let surfaces = recording.finish();
-    assert_eq!(surfaces.len(), 1);
-    assert_eq!(
-        surfaces[0].image.data.id(),
-        blurred.data.id(),
-        "the provided image, not the opaque placeholder"
-    );
-
-    provide_backdrops(vec![(
-        0,
-        crate::raster::rgba8_premultiplied(vec![0; 4], 1, 1),
-    )]);
-    let mut scene = Scene::new();
-    let recording = BackdropRecording::begin();
-    layer_scene(&scene, 0);
-    floating(&mut scene, Affine::IDENTITY, &theme);
-    let surfaces = recording.finish();
-    assert_ne!(surfaces[0].image.data.id(), blurred.data.id());
-    assert_eq!(
-        (surfaces[0].image.width, surfaces[0].image.height),
-        (64, 48)
-    );
-    provide_backdrops(Vec::new());
-}
-
-/// A cell-sampled surface (Pixelated) takes one texel per cell, and the
-/// size a host is told to provide is that size: a host that hands back an
-/// image at any other size leaves the surface showing its opaque
-/// placeholder, so its cells never appear — which is what the live shell
-/// did while the request was sized for a smooth sample.
-#[test]
-fn a_blocky_surface_asks_for_one_texel_per_cell() {
-    let theme = Theme::preset(crate::theme::Preset::Pixelated);
-    let mut scene = Scene::new();
-    let recording = BackdropRecording::begin();
-    layer_scene(&scene, 0);
-    floating(&mut scene, Affine::IDENTITY, &theme);
-    let surfaces = recording.finish();
-    assert_eq!(surfaces.len(), 1, "the panel samples");
-    let surface = &surfaces[0];
-    assert_eq!(
-        surface.sampling,
-        Sampling::Blocky,
-        "Pixelated's floating surface is shown as cells"
-    );
-    let cell = surface.cell_px;
-    assert!(cell >= 2.0, "a cell of {cell} px shows no pixels");
-    let requested = backdrop_texels(surface.bounds, surface.sampling, cell);
-    assert_eq!(
-        (surface.image.width, surface.image.height),
-        requested,
-        "the texels the host is asked for are the placeholder's own"
-    );
-    let smooth = backdrop_texels(surface.bounds, Sampling::Smooth, 0.0);
-    assert!(
-        requested.0 * 2 <= smooth.0,
-        "one texel per {cell} px cell ({requested:?}) is coarser than a smooth \
-         sample ({smooth:?})"
-    );
-    let image = crate::raster::rgba8_premultiplied(
-        [90_u8, 140, 200, 255].repeat((requested.0 * requested.1) as usize),
-        requested.0,
-        requested.1,
-    );
-    provide_backdrops(vec![(0, image.clone())]);
-    let mut scene = Scene::new();
-    let recording = BackdropRecording::begin();
-    layer_scene(&scene, 0);
-    floating(&mut scene, Affine::IDENTITY, &theme);
-    let surfaces = recording.finish();
-    assert_eq!(
-        surfaces[0].image.data.id(),
-        image.data.id(),
-        "the provided cells are drawn, not the opaque placeholder"
-    );
-    provide_backdrops(Vec::new());
-}
-
 fn render_floating_over_stripes(theme: &Theme) -> Vec<u8> {
     let (width, height) = (256, 192);
     let mut scene = stripes(width, height);
@@ -847,91 +855,146 @@ fn liquid_theme(refraction: f32, dispersion: f32) -> Theme {
     Theme::from_document(&document).unwrap()
 }
 
-/// A lens moves what a pixel shows inward along the outline's normal: by nearly its whole strength at
-/// the rim, easing to nothing at the band's inner side, and not at all in the flat middle.
-#[test]
-fn a_lens_displaces_at_the_rim_and_leaves_the_middle_straight() {
-    let lens = Refraction {
-        strength: 10.0,
-        band: 20.0,
-        radius: 12.0,
-        dispersion: 0.0,
-    };
-    let size = Size::new(200.0, 100.0);
-    let at = |x: f64, y: f64| lens.displacement(Point::new(x, y), size);
-    let near = |a: Vec2, b: Vec2| (a - b).hypot() < 1e-9;
-    // Half a pixel in from the left rim: 0.975² of the strength, inward.
-    assert!(near(at(0.5, 50.0), Vec2::new(10.0 * 0.975 * 0.975, 0.0)));
-    assert!(near(at(199.5, 50.0), Vec2::new(-10.0 * 0.975 * 0.975, 0.0)));
-    assert!(near(at(100.0, 0.5), Vec2::new(0.0, 10.0 * 0.975 * 0.975)));
-    assert!(near(at(10.0, 50.0), Vec2::new(2.5, 0.0)));
-    assert!(near(at(25.0, 50.0), Vec2::ZERO));
-    assert!(near(at(100.0, 50.0), Vec2::ZERO));
-    let corner = at(3.0, 3.0);
-    assert!(
-        corner.x > 0.0 && (corner.x - corner.y).abs() < 1e-9,
-        "{corner:?}"
-    );
-    // No strength, no bend; a lens with no band eases across 2.5 times it.
-    assert!(near(
-        Refraction::NONE.displacement(Point::new(0.5, 50.0), size),
-        Vec2::ZERO
-    ));
-    let lens = Lens {
-        refraction: 8.0,
-        ..Lens::default()
-    };
-    assert!((Refraction::of(lens, 4.0).band - 20.0).abs() < 1e-9);
-    let doubled = Refraction {
-        dispersion: 0.2,
-        ..Refraction::of(lens, 4.0)
-    }
-    .scaled(2.0);
-    assert!((doubled.strength - 16.0).abs() < 1e-9 && (doubled.radius - 8.0).abs() < 1e-9);
-    assert!((doubled.dispersion - 0.2).abs() < 1e-9);
-}
+tilo_test_env::scenario! {
+    fn a_surface_samples_only_what_its_finish_asks_for;
 
-/// A Liquid panel records its lens with the backdrop it samples, in the recording's pixels, and a
-/// frame's region has it to the pass.
-#[test]
-fn a_liquid_panel_records_its_lens_with_its_backdrop() {
-    let theme = liquid_theme(14.0, 0.1);
-    let mut scene = stripes(256, 192);
-    let recording = BackdropRecording::begin();
-    layer_scene(&scene, 0);
-    crate::surface::panel(&mut scene, Affine::IDENTITY, PANEL, 12.0, &theme);
-    let surfaces = recording.finish();
-    assert_eq!(surfaces.len(), 1);
-    let refraction = surfaces[0].refraction;
-    assert!(refraction.bends());
-    assert!((refraction.strength - 14.0).abs() < 1e-6, "{refraction:?}");
-    assert!((refraction.band - 22.0).abs() < 1e-6);
-    assert!((refraction.radius - 12.0).abs() < 1e-6);
-    assert!((refraction.dispersion - 0.1).abs() < 1e-6);
-    let region = surfaces
-        .into_iter()
-        .next()
-        .unwrap()
-        .into_region(PANEL, 2.0, |below| below);
-    assert!((region.refraction.strength - 28.0).abs() < 1e-6);
-    assert!((region.refraction.band - 44.0).abs() < 1e-6);
-    let mut scene = stripes(256, 192);
-    let recording = BackdropRecording::begin();
-    layer_scene(&scene, 0);
-    crate::surface::panel(
-        &mut scene,
-        Affine::IDENTITY,
-        PANEL,
-        12.0,
-        &liquid_theme(0.0, 0.0),
-    );
-    let surfaces = recording.finish();
-    assert_eq!(
-        surfaces.len(),
-        1,
-        "an unblurred lens of nothing still samples"
-    );
-    assert!(!surfaces[0].refraction.bends());
+    // A lens moves what a pixel shows inward along the outline's normal: by nearly its whole strength at
+    // the rim, easing to nothing at the band's inner side, and not at all in the flat middle.
+    phase a_lens_displaces_at_the_rim_and_leaves_the_middle_straight;
+    {
+        let lens = Refraction {
+            strength: 10.0,
+            band: 20.0,
+            radius: 12.0,
+            dispersion: 0.0,
+        };
+        let size = Size::new(200.0, 100.0);
+        let at = |x: f64, y: f64| lens.displacement(Point::new(x, y), size);
+        let near = |a: Vec2, b: Vec2| (a - b).hypot() < 1e-9;
+        // Half a pixel in from the left rim: 0.975² of the strength, inward.
+        assert!(near(at(0.5, 50.0), Vec2::new(10.0 * 0.975 * 0.975, 0.0)));
+        assert!(near(at(199.5, 50.0), Vec2::new(-10.0 * 0.975 * 0.975, 0.0)));
+        assert!(near(at(100.0, 0.5), Vec2::new(0.0, 10.0 * 0.975 * 0.975)));
+        assert!(near(at(10.0, 50.0), Vec2::new(2.5, 0.0)));
+        assert!(near(at(25.0, 50.0), Vec2::ZERO));
+        assert!(near(at(100.0, 50.0), Vec2::ZERO));
+        let corner = at(3.0, 3.0);
+        assert!(
+            corner.x > 0.0 && (corner.x - corner.y).abs() < 1e-9,
+            "{corner:?}"
+        );
+        // No strength, no bend; a lens with no band eases across 2.5 times it.
+        assert!(near(
+            Refraction::NONE.displacement(Point::new(0.5, 50.0), size),
+            Vec2::ZERO
+        ));
+        let lens = Lens {
+            refraction: 8.0,
+            ..Lens::default()
+        };
+        assert!((Refraction::of(lens, 4.0).band - 20.0).abs() < 1e-9);
+        let doubled = Refraction {
+            dispersion: 0.2,
+            ..Refraction::of(lens, 4.0)
+        }
+        .scaled(2.0);
+        assert!((doubled.strength - 16.0).abs() < 1e-9 && (doubled.radius - 8.0).abs() < 1e-9);
+        assert!((doubled.dispersion - 0.2).abs() < 1e-9);
+    }
+
+    // A Liquid panel records its lens with the backdrop it samples, in the recording's pixels, and a
+    // frame's region has it to the pass.
+    phase a_liquid_panel_records_its_lens_with_its_backdrop;
+    {
+        let theme = liquid_theme(14.0, 0.1);
+        let mut scene = stripes(256, 192);
+        let recording = BackdropRecording::begin();
+        layer_scene(&scene, 0);
+        crate::surface::panel(&mut scene, Affine::IDENTITY, PANEL, 12.0, &theme);
+        let surfaces = recording.finish();
+        assert_eq!(surfaces.len(), 1);
+        let refraction = surfaces[0].refraction;
+        assert!(refraction.bends());
+        assert!((refraction.strength - 14.0).abs() < 1e-6, "{refraction:?}");
+        assert!((refraction.band - 22.0).abs() < 1e-6);
+        assert!((refraction.radius - 12.0).abs() < 1e-6);
+        assert!((refraction.dispersion - 0.1).abs() < 1e-6);
+        let region = surfaces
+            .into_iter()
+            .next()
+            .unwrap()
+            .into_region(PANEL, 2.0, |below| below);
+        assert!((region.refraction.strength - 28.0).abs() < 1e-6);
+        assert!((region.refraction.band - 44.0).abs() < 1e-6);
+        let mut scene = stripes(256, 192);
+        let recording = BackdropRecording::begin();
+        layer_scene(&scene, 0);
+        crate::surface::panel(
+            &mut scene,
+            Affine::IDENTITY,
+            PANEL,
+            12.0,
+            &liquid_theme(0.0, 0.0),
+        );
+        let surfaces = recording.finish();
+        assert_eq!(
+            surfaces.len(),
+            1,
+            "an unblurred lens of nothing still samples"
+        );
+        assert!(!surfaces[0].refraction.bends());
+    }
+
+    // Glass and Pixelated keep a window's ground their fill: only their floating chrome and bars sample
+    // what lies below.
+    phase a_glass_or_pixelated_window_ground_samples_nothing;
+    {
+        for preset in [crate::theme::Preset::Glass, crate::theme::Preset::Pixelated] {
+            let theme = Theme::preset(preset);
+            let mut scene = stripes(256, 192);
+            let recording = BackdropRecording::begin();
+            layer_scene(&scene, 0);
+            let window = RoundedRect::from_rect(Rect::new(8.0, 30.0, 120.0, 186.0), 12.0);
+            let ground = theme.tokens.colors.surfaces.content;
+            fill_role(
+                &mut scene,
+                Affine::IDENTITY,
+                &window,
+                SurfaceRole::Window,
+                &theme,
+                ground,
+            );
+            assert!(recording.finish().is_empty(), "{preset:?}'s window sampled");
+        }
+    }
+
+    phase the_legible_range_compresses_luminance_and_keeps_hue;
+    {
+        let theme = Theme::preset(crate::theme::Preset::LiquidGlass);
+        let legible = Legible::of(&theme, crate::chrome::panel_ground(&theme));
+        assert!(legible.compresses());
+        let luminance = |[r, g, b]: [f64; 3]| {
+            crate::color::relative_luminance(Color::new([r as f32, g as f32, b as f32, 1.0]))
+        };
+        let close = |a: f64, b: f64| (a - b).abs() < 2e-3;
+        assert!(close(luminance(legible.tone([1.0; 3])), legible.light));
+        assert!(close(luminance(legible.tone([0.0; 3])), legible.dark));
+        let greys: Vec<f64> = (0..=10)
+            .map(|step| luminance(legible.tone([f64::from(step) / 10.0; 3])))
+            .collect();
+        assert!(greys.windows(2).all(|pair| pair[0] < pair[1]), "{greys:?}");
+        let [r, g, b] = legible.tone([0.9, 0.1, 0.1]);
+        assert!(r > 2.0 * g && r > 2.0 * b, "red became {r} {g} {b}");
+        let [r, g, b] = legible.tone([0.1, 0.8, 0.2]);
+        assert!(g > 2.0 * r && g > 2.0 * b, "green became {r} {g} {b}");
+        assert_eq!(Legible::ANY.tone([0.9, 0.1, 0.3]), [0.9, 0.1, 0.3]);
+        let light = Theme::preset(crate::theme::Preset::LiquidGlassLight);
+        let lifted = Legible::of(&light, crate::chrome::panel_ground(&light));
+        let [r, g, b] = lifted.tone([14.0 / 255.0, 16.0 / 255.0, 22.0 / 255.0]);
+        assert!(b - r < 0.03 && b - g < 0.03, "the page turned {r} {g} {b}");
+        let [r, g, b] = lifted.tone([0.9, 0.1, 0.1]);
+        assert!(r > g + 0.1 && r > b + 0.1, "red became {r} {g} {b}");
+    }
 }
 
 #[test]
@@ -993,57 +1056,6 @@ fn a_liquid_bar_window_and_panel_in_one_frame_all_show_what_lies_below() {
     assert!(spread(40..120, 12) >= 12, "the bar shows nothing below");
     assert!(spread(20..60, 120) >= 12, "the window shows nothing below");
     assert!(spread(130..180, 100) >= 12, "the panel shows nothing below");
-}
-
-/// Glass and Pixelated keep a window's ground their fill: only their floating chrome and bars sample
-/// what lies below.
-#[test]
-fn a_glass_or_pixelated_window_ground_samples_nothing() {
-    for preset in [crate::theme::Preset::Glass, crate::theme::Preset::Pixelated] {
-        let theme = Theme::preset(preset);
-        let mut scene = stripes(256, 192);
-        let recording = BackdropRecording::begin();
-        layer_scene(&scene, 0);
-        let window = RoundedRect::from_rect(Rect::new(8.0, 30.0, 120.0, 186.0), 12.0);
-        let ground = theme.tokens.colors.surfaces.content;
-        fill_role(
-            &mut scene,
-            Affine::IDENTITY,
-            &window,
-            SurfaceRole::Window,
-            &theme,
-            ground,
-        );
-        assert!(recording.finish().is_empty(), "{preset:?}'s window sampled");
-    }
-}
-
-#[test]
-fn the_legible_range_compresses_luminance_and_keeps_hue() {
-    let theme = Theme::preset(crate::theme::Preset::LiquidGlass);
-    let legible = Legible::of(&theme, crate::chrome::panel_ground(&theme));
-    assert!(legible.compresses());
-    let luminance = |[r, g, b]: [f64; 3]| {
-        crate::color::relative_luminance(Color::new([r as f32, g as f32, b as f32, 1.0]))
-    };
-    let close = |a: f64, b: f64| (a - b).abs() < 2e-3;
-    assert!(close(luminance(legible.tone([1.0; 3])), legible.light));
-    assert!(close(luminance(legible.tone([0.0; 3])), legible.dark));
-    let greys: Vec<f64> = (0..=10)
-        .map(|step| luminance(legible.tone([f64::from(step) / 10.0; 3])))
-        .collect();
-    assert!(greys.windows(2).all(|pair| pair[0] < pair[1]), "{greys:?}");
-    let [r, g, b] = legible.tone([0.9, 0.1, 0.1]);
-    assert!(r > 2.0 * g && r > 2.0 * b, "red became {r} {g} {b}");
-    let [r, g, b] = legible.tone([0.1, 0.8, 0.2]);
-    assert!(g > 2.0 * r && g > 2.0 * b, "green became {r} {g} {b}");
-    assert_eq!(Legible::ANY.tone([0.9, 0.1, 0.3]), [0.9, 0.1, 0.3]);
-    let light = Theme::preset(crate::theme::Preset::LiquidGlassLight);
-    let lifted = Legible::of(&light, crate::chrome::panel_ground(&light));
-    let [r, g, b] = lifted.tone([14.0 / 255.0, 16.0 / 255.0, 22.0 / 255.0]);
-    assert!(b - r < 0.03 && b - g < 0.03, "the page turned {r} {g} {b}");
-    let [r, g, b] = lifted.tone([0.9, 0.1, 0.1]);
-    assert!(r > g + 0.1 && r > b + 0.1, "red became {r} {g} {b}");
 }
 
 fn colour_stripes(width: u32, height: u32) -> Scene {

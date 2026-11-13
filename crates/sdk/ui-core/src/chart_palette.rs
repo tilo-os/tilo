@@ -95,53 +95,57 @@ impl ChartPalette {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_first_six_categories_are_distinct_hues() {
-        use crate::color::Oklch;
-        for theme in [Theme::dark(), Theme::light()] {
-            let palette = ChartPalette::from_theme(&theme);
-            let hues: Vec<f32> = (0..6)
-                .map(|i| Oklch::from_color(palette.categorical(i)).h)
-                .collect();
-            for (i, a) in hues.iter().enumerate() {
-                for b in hues.iter().skip(i + 1) {
-                    let d = (a - b).rem_euclid(360.0);
-                    let d = d.min(360.0 - d);
-                    assert!(
-                        d >= 55.0,
-                        "{}: hues {a} and {b} are only {d}° apart",
-                        theme.name
-                    );
+    tilo_test_env::scenario! {
+        fn chart_palettes_keep_distinct_hues_and_wrap_or_clamp;
+
+        phase the_first_six_categories_are_distinct_hues;
+        {
+            use crate::color::Oklch;
+            for theme in [Theme::dark(), Theme::light()] {
+                let palette = ChartPalette::from_theme(&theme);
+                let hues: Vec<f32> = (0..6)
+                    .map(|i| Oklch::from_color(palette.categorical(i)).h)
+                    .collect();
+                for (i, a) in hues.iter().enumerate() {
+                    for b in hues.iter().skip(i + 1) {
+                        let d = (a - b).rem_euclid(360.0);
+                        let d = d.min(360.0 - d);
+                        assert!(
+                            d >= 55.0,
+                            "{}: hues {a} and {b} are only {d}° apart",
+                            theme.name
+                        );
+                    }
                 }
             }
         }
-    }
 
-    #[test]
-    fn chart_palettes_wrap_categories_and_clamp_ramps() {
+        phase chart_palettes_wrap_categories_and_clamp_ramps;
         {
-            let first = Color::from_rgb8(1, 2, 3);
-            let second = Color::from_rgb8(4, 5, 6);
-            let palette = ChartPalette::new(first, [second]);
-            assert_eq!(palette.len(), 2);
-            assert!(!palette.is_empty());
-            assert_eq!(palette.categorical(0), first);
-            assert_eq!(palette.categorical(2), first);
-            assert_eq!(palette.categorical(usize::MAX), second);
-        }
+            {
+                let first = Color::from_rgb8(1, 2, 3);
+                let second = Color::from_rgb8(4, 5, 6);
+                let palette = ChartPalette::new(first, [second]);
+                assert_eq!(palette.len(), 2);
+                assert!(!palette.is_empty());
+                assert_eq!(palette.categorical(0), first);
+                assert_eq!(palette.categorical(2), first);
+                assert_eq!(palette.categorical(usize::MAX), second);
+            }
 
-        {
-            let low = Color::from_rgb8(10, 20, 30);
-            let mid = Color::from_rgb8(100, 110, 120);
-            let high = Color::from_rgb8(220, 230, 240);
-            let palette = ChartPalette::new(low, [])
-                .with_sequential(low, high)
-                .with_diverging(low, mid, high);
-            assert_eq!(palette.sequential(-10.0), low);
-            assert_eq!(palette.sequential(10.0), high);
-            assert_eq!(palette.diverging(-1.0), low);
-            assert_eq!(palette.diverging(0.0), mid);
-            assert_eq!(palette.diverging(1.0), high);
+            {
+                let low = Color::from_rgb8(10, 20, 30);
+                let mid = Color::from_rgb8(100, 110, 120);
+                let high = Color::from_rgb8(220, 230, 240);
+                let palette = ChartPalette::new(low, [])
+                    .with_sequential(low, high)
+                    .with_diverging(low, mid, high);
+                assert_eq!(palette.sequential(-10.0), low);
+                assert_eq!(palette.sequential(10.0), high);
+                assert_eq!(palette.diverging(-1.0), low);
+                assert_eq!(palette.diverging(0.0), mid);
+                assert_eq!(palette.diverging(1.0), high);
+            }
         }
     }
 }
