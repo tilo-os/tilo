@@ -3,6 +3,7 @@
 //! apps are laid out by the `layout-check` t checks, which read the allow-list
 //! (`tests/layout_check/allowed`) and keep every size's dump and shots.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -699,6 +700,121 @@ fn a_run_the_command_cannot_read_is_refused_with_what_is_wrong_with_it() {
             output.stdout.is_empty(),
             "{args:?} lays nothing out: {}",
             String::from_utf8_lossy(&output.stdout)
+        );
+    }
+}
+
+/// The allow-list holds in both directions. A finding it names is allowed and no longer fails the
+/// run, one it does not name stays new, and an id it names that no finding has is called stale, so
+/// the list never keeps a problem that is gone.
+#[test]
+fn an_allow_list_allows_the_findings_it_names_and_says_which_of_them_are_gone() {
+    let broken = manifest().join("tests/layout_check/broken");
+    let unlisted = layout_check::check(&Options {
+        dirs: vec![broken.clone()],
+        ..Options::default()
+    })
+    .expect("the fixture lays out");
+    assert!(
+        unlisted.stale.is_empty() && unlisted.findings.iter().all(|finding| !finding.allowed),
+        "a run with no allow-list allows nothing and calls nothing stale:\n{}",
+        layout_check::render(&unlisted)
+    );
+    let ids: BTreeSet<&str> = unlisted
+        .findings
+        .iter()
+        .map(|finding| finding.id.as_str())
+        .collect();
+    assert!(
+        ids.len() >= 2,
+        "the fixture breaks in more than one way: {ids:?}"
+    );
+    let named = *ids.first().expect("a finding");
+    let gone = "overflow layoutbroken › no_such_view [Text]";
+    assert!(!ids.contains(gone), "no finding is `{gone}`: {ids:?}");
+
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let list = scratch.path().join("allowed");
+    std::fs::write(
+        &list,
+        format!("# one that shows, one that is gone\n{named}\n{gone}\n"),
+    )
+    .expect("the list writes");
+    let report = layout_check::check(&Options {
+        dirs: vec![broken],
+        allow: Some(list),
+        ..Options::default()
+    })
+    .expect("the fixture lays out");
+    let said = layout_check::render(&report);
+    for finding in &report.findings {
+        assert_eq!(
+            finding.allowed,
+            finding.id == named,
+            "the list allows `{named}` and nothing else, and `{}` is judged otherwise:\n{said}",
+            finding.id
+        );
+    }
+    assert!(
+        report.findings.iter().any(|finding| finding.allowed),
+        "the finding the list names still shows, allowed:\n{said}"
+    );
+    let new: BTreeSet<&str> = report
+        .new_findings()
+        .map(|finding| finding.id.as_str())
+        .collect();
+    let mut unnamed = ids.clone();
+    unnamed.remove(named);
+    assert_eq!(
+        new, unnamed,
+        "every finding the list does not name is still new:\n{said}"
+    );
+    assert_eq!(
+        report.stale,
+        [gone],
+        "the id no finding has is the one stale id:\n{said}"
+    );
+    assert!(
+        said.contains(&format!("allowed {named}: ")),
+        "the report marks the finding it allows:\n{said}"
+    );
+    assert!(
+        said.contains(&format!(
+            "note: the allow-list names `{gone}`, which no longer shows: take it out"
+        )),
+        "the report says which id to take out of the list:\n{said}"
+    );
+}
+
+/// A state the run cannot stage stops it at the first window, saying what is wrong with it and
+/// which unit it stopped: one written without a value, and one no view of the app declares.
+#[test]
+fn a_state_with_no_value_or_that_no_view_declares_is_refused_at_the_unit_it_stops() {
+    let rows = [
+        (
+            "place",
+            "--state place names no value: write `--state place=Task.today`",
+        ),
+        (
+            "place=Sample.first",
+            "--state place=Sample.first: no view of `so.tilo.lang.layoutbroken` declares the state \
+             `place`",
+        ),
+    ];
+    for (state, said) in rows {
+        let refused = layout_check::check(&Options {
+            dirs: vec![manifest().join("tests/layout_check/broken")],
+            states: vec![state.to_owned()],
+            ..Options::default()
+        })
+        .expect_err("a run that stages a state no window can take is refused");
+        assert!(
+            refused.contains(said),
+            "`--state {state}` says what is wrong with it: {refused}"
+        );
+        assert!(
+            refused.starts_with("layoutbroken: the scenario `a sample` "),
+            "`--state {state}` names the unit it stopped: {refused}"
         );
     }
 }
