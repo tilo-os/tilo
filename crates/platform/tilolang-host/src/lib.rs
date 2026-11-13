@@ -586,6 +586,13 @@ impl TilolangHost {
             Some(records) => records.clone(),
             None => request.app.clone(),
         };
+        // The ids the session believes each app had before are the ones this host honours: a
+        // module's own `previously:` is a claim the installed catalogue decides on.
+        for (app, under) in std::iter::once((&request.app, &records)).chain(&request.installed) {
+            if under != app {
+                tilolang_tilo::schema::register_previously(app, std::slice::from_ref(under));
+            }
+        }
         let workspace = uuid::Uuid::parse_str(&request.room)
             .map_err(|_| AdmitError::Workspace(request.room.clone()))?;
         let identity =

@@ -870,14 +870,12 @@ fn call_of(
             from,
             ..
         } => {
-            let subject = meta.subject_of(
-                &meta
-                    .actions
-                    .iter()
-                    .find(|declared| declared.id == *action)
-                    .ok_or_else(|| format!("{app} declares no action {action}"))?
-                    .params,
-            );
+            let declared = meta
+                .actions
+                .iter()
+                .find(|declared| declared.id == *action)
+                .ok_or_else(|| format!("{app} declares no action {action}"))?;
+            let subject = meta.subject_of(&declared.params);
             let subject = subject.and_then(|_| args.first());
             let resource = match subject {
                 Some((_, Value::Ref(r))) => resource_id(app, &r.target.id_string()),
@@ -890,7 +888,8 @@ fn call_of(
             Ok(json!({
                 "app": app,
                 "resource": resource,
-                "action": action,
+                // As the app's door publishes it: by its name.
+                "action": declared.name,
                 "arguments": arguments,
             }))
         }

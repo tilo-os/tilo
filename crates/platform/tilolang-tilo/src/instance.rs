@@ -1764,23 +1764,14 @@ impl Instance {
         let Some(host) = self.host() else {
             return false;
         };
+        let Some(action) = host.published_action(&address.resource, &address.action) else {
+            return false;
+        };
         let Some(meta) = host
             .packages()
             .into_iter()
             .map(|package| package.meta)
-            .find(|meta| {
-                meta.actions
-                    .iter()
-                    .any(|action| action.id == address.action)
-            })
-        else {
-            return false;
-        };
-        let Some(action) = meta
-            .actions
-            .iter()
-            .find(|action| action.id == address.action)
-            .cloned()
+            .find(|meta| crate::publish::app_of(&address.resource) == Some(meta.app.as_str()))
         else {
             return false;
         };

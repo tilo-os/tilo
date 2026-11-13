@@ -623,6 +623,8 @@ fn todo_as_tasks() -> (String, &'static str) {
     let (app, previously, _) = PackageSource::single(source).header_with_previously();
     assert_eq!(app.as_deref(), Some("so.tilo.lang.tasks"), "{source}");
     assert_eq!(previously, vec!["so.tilo.lang.todo".to_owned()], "{source}");
+    // As the installed catalogue believes it, which loading the package does not decide.
+    tilolang_tilo::schema::register_previously("so.tilo.lang.tasks", &previously);
     (source.to_owned(), ids)
 }
 

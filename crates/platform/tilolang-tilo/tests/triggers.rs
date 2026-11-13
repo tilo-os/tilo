@@ -16,7 +16,7 @@ use tilolang_tilo::host::{Host, RootView};
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
 use tilolang_tilo::runtime::NameHost;
 
-use crate::fixtures::Replica;
+use crate::fixtures::{Replica, action_id};
 
 const APP: &str = "t.trig";
 
@@ -107,16 +107,6 @@ fn type_id(replica: &Replica, ty: &str) -> String {
         .iter()
         .find(|declared| declared.name == ty)
         .map(|declared| declared.id.clone())
-        .unwrap()
-}
-
-/// The id of the action `name`.
-fn action_id(replica: &Replica, name: &str) -> String {
-    meta(replica)
-        .actions
-        .iter()
-        .find(|action| action.name == name)
-        .map(|action| action.id.clone())
         .unwrap()
 }
 
@@ -221,7 +211,7 @@ fn turn(replica: &mut Replica, now: i64) -> usize {
 
 /// Invoke the action `name` of the package on `args`, as a person at the window, and commit.
 fn run(replica: &mut Replica, name: &str, args: Vec<Value>) {
-    let id = action_id(replica, name);
+    let id = action_id(&meta(replica), name);
     let done = replica
         .host
         .runtime()

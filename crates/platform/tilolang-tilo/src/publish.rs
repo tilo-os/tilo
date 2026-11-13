@@ -123,6 +123,14 @@ pub fn resource_id(app: &str, id: &str) -> String {
     format!("tl:{app}:{id}")
 }
 
+/// The app whose published resource `resource` is: a record's or item's (`tl:<app>:<id>`,
+/// [`resource_id`]) or its package's own (`tl:<app>`, [`package_resource_id`]).
+#[must_use]
+pub fn app_of(resource: &str) -> Option<&str> {
+    let rest = resource.strip_prefix("tl:")?;
+    Some(rest.split_once(':').map_or(rest, |(app, _)| app))
+}
+
 /// What a resource of `schema` in the package `meta` is called while none of its own text names
 /// it: what its type declares (`(untitled: "Untitled")`, in the reader's words), else a
 /// package's root by the app's title ("Notes"), anything else by its type ("Todo list").
@@ -213,14 +221,12 @@ pub fn action_type(
                 payload: message.into_bytes(),
             })
     };
-    // What the platform calls the action, as the compiler derived it; a package compiled before
-    // labels existed is named by its action.
-    let label = if action.label.is_empty() {
-        action.name.clone()
-    } else {
-        action.label.clone()
-    };
-    let label = label_of(words, &action.id, &label);
+    // What the platform calls the action, as the compiler derived it, in the reader's words.
+    let label = label_of(
+        words,
+        &action.id,
+        &tilolang_runtime::platform::label_of(action),
+    );
     let placeholder = if action.doc.is_empty() {
         label.clone()
     } else {
@@ -242,9 +248,11 @@ pub fn action_type(
     // An action without parameters is planned when it runs, not when it is published: planning
     // is a trial run of the action, and publishing every item's actions must not run them all.
     let no_params = params.is_empty();
+    // Published by its name, as a native verb is: what an agent at the door lists and calls. The
+    // build above plans it by its id, which is what its records keep.
     let spec = if no_params {
         ActionSpec::deferred_on(
-            action.id.clone(),
+            action.name.clone(),
             label,
             ExecutionLocus::ClientLocal,
             crate::action::ACTION_TYPE,
@@ -252,7 +260,7 @@ pub fn action_type(
         )
     } else {
         ActionSpec::typed_on(
-            action.id.clone(),
+            action.name.clone(),
             label,
             placeholder,
             ExecutionLocus::ClientLocal,
@@ -458,12 +466,12 @@ fn views_of(
     meta.views_showing(type_name)
         .into_iter()
         .map(|view| {
-            let label = if view.name.is_empty() {
+            let name = if view.name.is_empty() {
                 view.id.clone()
             } else {
                 view.name.clone()
             };
-            let label = label_of(words, &view.id, &label);
+            let label = label_of(words, &view.id, &name);
             let description = view
                 .doc
                 .lines()
@@ -471,8 +479,8 @@ fn views_of(
                 .find(|line| !line.is_empty())
                 .map(|line| said_of(words, &view.id, "doc", None, line));
             let is_primary = primary == Some(view.id.as_str());
-            let opens =
-                (!is_primary).then(|| open_with_type(&view.id, &label, description.as_deref()));
+            let opens = (!is_primary)
+                .then(|| open_with_type(&view.id, &name, &label, description.as_deref()));
             let open_action = opens.as_ref().map_or("open", |opens| opens.id.as_str());
             let mut spec = ResourceViewSpec::new(view.id.clone(), label, open_action);
             if let Some(line) = description {
@@ -483,17 +491,23 @@ fn views_of(
         .collect()
 }
 
-/// The id of the action that opens a resource through the view `view` (an id).
+/// The id of the action that opens a resource through the view named `view`: published by its
+/// name, as an action is ([`action_type`]).
 #[must_use]
 pub fn open_with_id(view: &str) -> String {
     format!("open-{view}")
 }
 
 /// The action type that opens a resource through the view `view`, labelled as the view is: the
-/// [`OpenEffect::OpenWith`](crate::effects::OpenEffect::OpenWith) effect under an id of the
-/// view's own, so each view's open action is its alone. Built once per type and view; each
-/// resource binds it ([`open_with_spec`]).
-fn open_with_type(view: &str, label: &str, description: Option<&str>) -> Arc<ActionType> {
+/// [`OpenEffect::OpenWith`](crate::effects::OpenEffect::OpenWith) effect of the view `view` (an
+/// id) under its name `name`, so each view's open action is its alone. Built once per type and
+/// view; each resource binds it ([`open_with_spec`]).
+fn open_with_type(
+    view: &str,
+    name: &str,
+    label: &str,
+    description: Option<&str>,
+) -> Arc<ActionType> {
     use tilo_resource::Effect as _;
     let mut spec = crate::effects::OpenEffect::OpenWith {
         anchor: String::new(),
@@ -502,7 +516,7 @@ fn open_with_type(view: &str, label: &str, description: Option<&str>) -> Arc<Act
     .bound();
     let ty = spec.type_mut();
     // The payload names the effect by its own id, so the action's id is free to be the view's.
-    ty.id = open_with_id(view);
+    ty.id = open_with_id(name);
     label.clone_into(&mut ty.label);
     ty.description = description.map(str::to_owned);
     Arc::clone(spec.action_type())

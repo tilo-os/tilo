@@ -2137,13 +2137,12 @@ fn a_change_of_any_root_no_window_made_yet_makes_that_root_first() {
         Some(&shell),
         "not the root the shell opens with"
     );
-    let hide = &bundle
-        .meta
-        .actions
-        .iter()
-        .find(|action| action.name == "hide_app_menus")
-        .expect("the shell's top bar has its actions")
-        .id;
+    // As the door publishes it: by its name.
+    let hide = "hide_app_menus";
+    assert!(
+        bundle.meta.actions.iter().any(|action| action.name == hide),
+        "the shell's top bar has its actions"
+    );
     let (mut applier, connection, sent) =
         applier_of("ada", &app, &bundle, automerge::AutoCommit::new());
     let answer = apply(
@@ -2151,7 +2150,7 @@ fn a_change_of_any_root_no_window_made_yet_makes_that_root_first() {
         &connection,
         &runtime_portal::tilolang_host::Change {
             resource: tilolang_tilo::publish::resource_id(&app, &format!("root-{shell}")),
-            action: hide.clone(),
+            action: hide.to_owned(),
             arguments: serde_json::Map::new(),
             invoker: task_invoker(),
             context: None,

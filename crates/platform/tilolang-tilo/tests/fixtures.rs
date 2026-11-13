@@ -250,6 +250,16 @@ pub fn type_id(meta: &Meta, ty: &str) -> String {
         .unwrap()
 }
 
+/// The id the action `name` of `meta` is stored and planned by.
+pub fn action_id(meta: &Meta, name: &str) -> String {
+    meta.actions
+        .iter()
+        .find(|action| action.name == name)
+        .unwrap_or_else(|| panic!("the action `{name}`"))
+        .id
+        .clone()
+}
+
 pub fn field_id(meta: &Meta, ty: &str, field: &str) -> String {
     meta.types
         .iter()

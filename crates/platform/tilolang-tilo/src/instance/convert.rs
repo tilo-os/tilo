@@ -413,19 +413,20 @@ pub(crate) fn invokes(
         .iter()
         .position(|arg| *arg == Value::Missing)
         .unwrap_or(aref.args.len());
-    let asks = host.find_in_packages(|package| {
+    // As the app publishes it: by its name.
+    let (asks, published) = host.find_in_packages(|package| {
         package
             .meta
             .actions
             .iter()
             .find(|action| action.id == aref.action)
-            .map(|action| action.unbound(given).next().is_some())
+            .map(|action| (action.unbound(given).next().is_some(), action.name.clone()))
     })?;
     if asks {
         return None;
     }
     match aref.args.first() {
-        Some(Value::Ref(subject)) => Some((ResourceRef::clone(&subject.target), aref.action)),
+        Some(Value::Ref(subject)) => Some((ResourceRef::clone(&subject.target), published)),
         _ => None,
     }
 }

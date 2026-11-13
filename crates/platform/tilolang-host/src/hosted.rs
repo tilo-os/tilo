@@ -1968,20 +1968,8 @@ impl Hosted {
     fn is_primary(&self, address: &ActionAddress) -> bool {
         self.instance
             .host()
-            .and_then(|host| {
-                host.find_in_packages(|package| {
-                    package
-                        .meta
-                        .actions
-                        .iter()
-                        .find(|action| {
-                            action.id == address.action
-                                && tilolang_tilo::surface::is_primary(action)
-                        })
-                        .map(|_| ())
-                })
-            })
-            .is_some()
+            .and_then(|host| host.published_action(&address.resource, &address.action))
+            .is_some_and(|action| tilolang_tilo::surface::is_primary(&action))
     }
 
     /// Publish a change to the surface that moved only labels (a note's title typed into) as

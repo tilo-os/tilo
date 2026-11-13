@@ -13,7 +13,7 @@ use tilolang_runtime::run::WebRequest;
 use tilolang_runtime::web::{WebReply, WebTransport};
 use tilolang_runtime::{InvokeOutcome, Principal, UiNode, Value, ViewInstance};
 
-use crate::fixtures::Replica;
+use crate::fixtures::{Replica, action_id};
 
 const APP: &str = "so.tilo.lang.pictures";
 
@@ -512,23 +512,12 @@ fn undoing_the_step_takes_the_picture_back_out() {
     assert_eq!(field(&ada, &at, "bytes"), Value::Int(0));
 }
 
-/// The id of the action `action` of the pictures app.
-fn action_id(r: &Replica, action: &str) -> String {
-    r.host
-        .package(APP)
-        .expect("the pictures package")
-        .meta
-        .actions
-        .iter()
-        .find(|declared| declared.name == action)
-        .unwrap_or_else(|| panic!("the action `{action}`"))
-        .id
-        .clone()
-}
-
 /// What `action` of the pictures app answered, on the page at `at`.
 fn asked(r: &Replica, action: &str, at: &tilolang_runtime::ResourceRef) -> Result<Value, String> {
-    let id = action_id(r, action);
+    let id = action_id(
+        &r.host.package(APP).expect("the pictures package").meta,
+        action,
+    );
     let who = Principal::new(r.name.clone());
     let outcome = r
         .host

@@ -112,16 +112,17 @@ fn found(spec: &tilo_actions::ResourceSpec, needle: &str) -> bool {
 
 /// What the action `name` says it is, as the package published it on the notebook.
 fn said(spec: &tilo_actions::ResourceSpec, name: &str, package: &Package) -> String {
-    let id = &package
-        .meta
-        .actions
-        .iter()
-        .find(|action| action.name == name)
-        .expect("the notes app declares it")
-        .id;
+    assert!(
+        package
+            .meta
+            .actions
+            .iter()
+            .any(|action| action.name == name),
+        "the notes app declares it"
+    );
     spec.actions
         .iter()
-        .find(|action| &action.id == id)
+        .find(|action| action.id == name)
         .expect("it is offered on the notebook")
         .label
         .clone()
@@ -371,16 +372,10 @@ fn the_palette_reads_native_and_tilolang_actions_in_german() {
 fn the_consent_sheet_names_file_notes_arguments_in_german() {
     let (host, package) = notes("de-DE");
     let notebook = notebook(&host, &package);
-    let id = &package
-        .meta
-        .actions
-        .iter()
-        .find(|action| action.name == "file_note")
-        .expect("the notes app declares it")
-        .id;
+    let id = "file_note";
     let descriptor = tilo_actions::door::survey(std::slice::from_ref(&notebook))
         .into_iter()
-        .find(|descriptor| &descriptor.address.action == id)
+        .find(|descriptor| descriptor.address.action == id)
         .expect("filing a note is offered on the notebook");
     let arguments = serde_json::json!({"title": "Einkauf", "tag": "Haushalt"});
     let sheet = tilo_actions::Draft::render(

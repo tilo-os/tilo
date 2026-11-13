@@ -278,12 +278,9 @@ pub fn is_primary(action: &ActionMeta) -> bool {
 
 fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet) -> VerbSurface {
     VerbSurface {
-        id: action.id.clone(),
-        label: if action.label.is_empty() {
-            action.name.clone()
-        } else {
-            action.label.clone()
-        },
+        // As the door publishes it ([`crate::publish::action_type`]).
+        id: action.name.clone(),
+        label: tilolang_runtime::platform::label_of(action),
         description: (!action.doc.is_empty()).then(|| action.doc.clone()),
         kind: action_kind(action.class),
         destructive: is_destructive(action),

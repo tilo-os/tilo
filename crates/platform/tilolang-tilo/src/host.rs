@@ -1168,24 +1168,43 @@ impl Host {
         &self.inner.authority
     }
 
-    /// Whether the action `action` can run on the published resource `resource` now, as its app
-    /// says: the requirements its subject alone decides hold for the person at the window, or the
+    /// Whether the action published as `action` can run on the published resource `resource`
+    /// now, as its app says: the requirements its subject alone decides hold for the person at the window, or the
     /// first that does not and why. `None` when the app keeps no requirement its subject could
     /// decide, and the action is offered as it is.
     #[must_use]
     pub fn availability(&self, resource: &str, action: &str) -> Option<tilo_actions::Availability> {
-        self.inner.availability(resource, action)
+        let id = self.published_action(resource, action)?.id;
+        self.inner.availability(resource, &id)
     }
 
-    /// What the action `action` offers on the published resource `resource` now, as its app says
-    /// it ([`Offered`]), with what reading the answer read of the workspace: the fields it read,
+    /// What the action published as `action` offers on the published resource `resource` now, as
+    /// its app says it ([`Offered`]), with what reading the answer read of the workspace: the fields it read,
     /// each once, so a caller keeping the answer knows what has to move for it to be read again,
     /// and whether it read beyond the workspace at all ([`Reading`]). `None` when the app
     /// presents nothing of the action and keeps no requirement it can decide, or when one cannot
     /// be read.
     #[must_use]
     pub fn offered_reading(&self, resource: &str, action: &str) -> Option<(Offered, Reading)> {
-        self.inner.offered_reading(resource, action)
+        let id = self.published_action(resource, action)?.id;
+        self.inner.offered_reading(resource, &id)
+    }
+
+    /// The action the door publishes as `published` on `resource`: one of the package whose
+    /// resource it is (`tl:<app>:<id>`, `tl:<app>`), by its name
+    /// ([`MetaExt::action_published_as`](crate::meta::MetaExt::action_published_as)).
+    #[must_use]
+    pub fn published_action(
+        &self,
+        resource: &str,
+        published: &str,
+    ) -> Option<tilolang_runtime::meta::ActionMeta> {
+        let app = crate::publish::app_of(resource)?;
+        self.find_in_packages(|package| {
+            (package.meta.app == app)
+                .then(|| package.meta.action_published_as(published).cloned())
+                .flatten()
+        })
     }
 
     /// The resource `action` returned when it was last planned here, for whoever invoked it,
