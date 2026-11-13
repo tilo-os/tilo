@@ -6,8 +6,6 @@ const ALICE: &str = "a11ce";
 const BOB: &str = "b0b";
 const CAROL: &str = "ca401";
 
-/// A small PNG: the signature and a few bytes past it are all the record
-/// checks.
 fn png(fill: u8, len: usize) -> Vec<u8> {
     let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
     bytes.resize(len.max(bytes.len()), fill);
@@ -99,9 +97,8 @@ fn only_small_png_or_webp_pictures_are_kept() {
     assert_eq!(record.state().unwrap().names(), ["largest"]);
 }
 
-/// The largest picture travels inside its action's own change: below the
-/// size at which a payload's run is kept apart as the invoking app's
-/// content, which another app of the room could not read to replay it.
+/// The largest picture travels inside its action's change, below the size at
+/// which a payload's run is kept apart as the invoking app's content.
 #[test]
 fn the_largest_picture_stays_inside_its_action() {
     let image = EmojiImage(png(4, MAX_IMAGE_BYTES)).to_base64();
@@ -150,9 +147,6 @@ fn removing_anyones_emoji_sits_under_the_moderation_node() {
     assert_eq!(field("remove-emoji"), Some((None, ActionKind::Undoable)));
 }
 
-/// The room's roles decide them as they decide any app's actions: Editors
-/// add and remove their own, only Moderators and the owner remove anyone's,
-/// and someone who may only view or comment adds none.
 #[test]
 fn the_rooms_roles_decide_who_adds_and_who_moderates() {
     let mut room = WorkspacePolicy::new("r", ALICE);
@@ -203,8 +197,7 @@ fn concurrent_additions_converge() {
     let mut bob = alice.fork().as_author(BOB);
     alice.apply(add("from_alice", &png(2, 32))).unwrap();
     bob.apply(add("from_bob", &png(3, 32))).unwrap();
-    // The same name added on both sides at once: one picture wins
-    // everywhere.
+    // Same name added on both sides at once: one picture wins.
     alice.apply(add("same", &png(4, 32))).unwrap();
     bob.apply(add("same", &png(5, 32))).unwrap();
     bob.apply(remove_any("shared")).unwrap();
