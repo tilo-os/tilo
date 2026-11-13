@@ -1447,6 +1447,13 @@ mod tests {
                     let mut event = sample_event(seed);
                     event.recurrence = recurrence;
                     event.recurrence_interval = interval;
+                    // Nothing of a series lies before its first day.
+                    for offset in [-366, -7, -1] {
+                        let day = seed + Duration::days(offset);
+                        let row = format!("{recurrence:?} every {interval} from {seed}, {day}");
+                        assert_eq!(event.occurrences_before(day), 0, "{row}");
+                        assert!(!event.occurs_on(day), "{row}");
+                    }
                     let mut matched = 0;
                     for offset in 0..1500 {
                         let day = seed + Duration::days(offset);
