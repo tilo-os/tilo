@@ -33,138 +33,142 @@ fn group(width: WindowWidth, usable: f64) -> WindowGroup {
     g
 }
 
-#[test]
-fn width_tiers_are_ordered_shares_of_every_display() {
-    // Every named tier is the *same share* of the strip on every display, not a
-    // flat pixel count (which would be a different fraction of each one).
+tilo_test_env::scenario! {
+    fn window_widths_are_shares_of_the_display_and_resizes_round_trip;
+
+    phase width_tiers_are_ordered_shares_of_every_display;
     {
-        for (name, usable) in DISPLAYS {
+        // Every named tier is the *same share* of the strip on every display, not a
+        // flat pixel count (which would be a different fraction of each one).
+        {
+            for (name, usable) in DISPLAYS {
+                assert_eq!(
+                    WindowWidth::Narrow.resolve(usable),
+                    (usable * 0.333).round(),
+                    "Narrow must be a third of {name}",
+                );
+                // Two thirds, until that is wider than reads well (the default
+                // width's cap, two thirds of a 1920 px display).
+                assert_eq!(
+                    WindowWidth::Normal.resolve(usable),
+                    (usable * 0.667).round().min(NORMAL_MAX_PX),
+                    "Normal must be two thirds of {name}, at most {NORMAL_MAX_PX}",
+                );
+                assert_eq!(
+                    WindowWidth::Wide.resolve(usable),
+                    usable,
+                    "Wide must fill {name}",
+                );
+            }
+        }
+
+        // The tiers step upward and stay inside the strip on every display —
+        // the property that makes cycling a window through them useful.
+        {
+            for (name, usable) in DISPLAYS {
+                let narrow = WindowWidth::Narrow.resolve(usable);
+                let normal = WindowWidth::Normal.resolve(usable);
+                let wide = WindowWidth::Wide.resolve(usable);
+                assert!(
+                    narrow < normal && normal < wide,
+                    "tiers must step up on {name}: {narrow} / {normal} / {wide}",
+                );
+                assert!(
+                    wide <= usable,
+                    "no tier may exceed the strip on {name}: {wide} > {usable}",
+                );
+            }
+        }
+
+        // A launched app defaults to `Normal`, which must be a dominant share of
+        // the screen on every display, and on a big one a width that still reads
+        // well rather than a mostly empty pane.
+        {
+            for (name, usable) in DISPLAYS {
+                let px = group(WindowWidth::Normal, usable).resolved_width_px();
+                let share = px / usable;
+                assert!(
+                    (0.6..=0.7).contains(&share) || px == NORMAL_MAX_PX,
+                    "a launched window must take 60-70% of {name}, or the cap; got {px} px of \
+                 {usable} ({share:.2})",
+                );
+                assert!(px <= NORMAL_MAX_PX, "{name}: {px}");
+            }
+        }
+
+        // The widest setting must actually reach the screen edge, on any display —
+        // including a large one, where a pixel-clamped width could never fill it.
+        {
+            for (name, usable) in DISPLAYS {
+                let widest = WindowWidth::Wide.resolve(usable);
+                assert_eq!(widest, usable, "the widest tier must span {name} exactly");
+                assert!(
+                    max_group_px(usable) >= usable,
+                    "the resize ceiling on {name} must not stop short of the display",
+                );
+                let _ = WIDTH_MAX_PERMILLE;
+            }
+        }
+    }
+
+    phase manual_resizes_track_the_pointer_and_round_trip_as_shares;
+    {
+        // A manual resize is recorded as the fraction it landed on, so replaying
+        // it onto a different display gives the same share, not the same pixel count.
+        {
+            // Drag the right edge of a Normal group on the 1600 px display from
+            // its 1067 px out to 1200 px — three quarters of that display.
+            let mut g = group(WindowWidth::Normal, 1600.0);
+            let start = g.resolved_width_px();
+            assert_eq!(start, 1067.0, "Normal on a 1600 px strip");
+            g.begin_edge_drag(WindowEdge::Trailing);
+            g.set_live_width(1200.0);
+            let _ = g.end_edge_drag(true);
+
+            let stored = g.width();
             assert_eq!(
-                WindowWidth::Narrow.resolve(usable),
-                (usable * 0.333).round(),
-                "Narrow must be a third of {name}",
-            );
-            // Two thirds, until that is wider than reads well (the default
-            // width's cap, two thirds of a 1920 px display).
-            assert_eq!(
-                WindowWidth::Normal.resolve(usable),
-                (usable * 0.667).round().min(NORMAL_MAX_PX),
-                "Normal must be two thirds of {name}, at most {NORMAL_MAX_PX}",
+                stored,
+                WindowWidth::Fraction(750),
+                "the resize stores the share of the display, not 1200 px",
             );
             assert_eq!(
-                WindowWidth::Wide.resolve(usable),
-                usable,
-                "Wide must fill {name}",
+                g.take_pending_width_change(),
+                Some(WindowWidth::Fraction(750)),
+                "and hands the shell that same share to persist",
             );
+
+            // The share holds across displays; the pixel count scales.
+            for (name, usable) in DISPLAYS {
+                let restored = group(stored, usable);
+                assert_eq!(
+                    restored.resolved_width_px(),
+                    (usable * 0.75).round(),
+                    "the stored width must still be three quarters of {name}",
+                );
+            }
         }
-    }
 
-    // The tiers step upward and stay inside the strip on every display —
-    // the property that makes cycling a window through them useful.
-    {
-        for (name, usable) in DISPLAYS {
-            let narrow = WindowWidth::Narrow.resolve(usable);
-            let normal = WindowWidth::Normal.resolve(usable);
-            let wide = WindowWidth::Wide.resolve(usable);
-            assert!(
-                narrow < normal && normal < wide,
-                "tiers must step up on {name}: {narrow} / {normal} / {wide}",
-            );
-            assert!(
-                wide <= usable,
-                "no tier may exceed the strip on {name}: {wide} > {usable}",
-            );
+        // The only resize floor is an absolute pixel one, so no display yields an
+        // unusable sliver and none forces a share-sized minimum.
+        {
+            assert_eq!(min_group_px(3840.0), 160.0);
+            assert_eq!(min_group_px(1200.0), 160.0);
+            // A width far below the floor resolves to it rather than collapsing.
+            let mut g = group(WindowWidth::Normal, 1600.0);
+            g.set_width(WindowWidth::from_px(1.0, 1600.0));
+            assert_eq!(g.resolved_width_px(), min_group_px(1600.0));
+            assert_eq!(g.width_limits().min, min_group_px(1600.0));
         }
-    }
 
-    // A launched app defaults to `Normal`, which must be a dominant share of
-    // the screen on every display, and on a big one a width that still reads
-    // well rather than a mostly empty pane.
-    {
-        for (name, usable) in DISPLAYS {
-            let px = group(WindowWidth::Normal, usable).resolved_width_px();
-            let share = px / usable;
-            assert!(
-                (0.6..=0.7).contains(&share) || px == NORMAL_MAX_PX,
-                "a launched window must take 60-70% of {name}, or the cap; got {px} px of \
-             {usable} ({share:.2})",
-            );
-            assert!(px <= NORMAL_MAX_PX, "{name}: {px}");
+        // An edge drag tracks the pointer 1:1 in pixels — the fraction is a
+        // storage representation, not a snapping grid.
+        {
+            let mut g = group(WindowWidth::Normal, 1200.0);
+            assert_eq!(g.resolved_width_px(), 800.0);
+            g.begin_edge_drag(WindowEdge::Trailing);
+            g.set_live_width(950.0);
+            let _ = g.end_edge_drag(true);
+            assert_eq!(g.resolved_width_px(), 950.0);
         }
-    }
-
-    // The widest setting must actually reach the screen edge, on any display —
-    // including a large one, where a pixel-clamped width could never fill it.
-    {
-        for (name, usable) in DISPLAYS {
-            let widest = WindowWidth::Wide.resolve(usable);
-            assert_eq!(widest, usable, "the widest tier must span {name} exactly");
-            assert!(
-                max_group_px(usable) >= usable,
-                "the resize ceiling on {name} must not stop short of the display",
-            );
-            let _ = WIDTH_MAX_PERMILLE;
-        }
-    }
-}
-
-#[test]
-fn manual_resizes_track_the_pointer_and_round_trip_as_shares() {
-    // A manual resize is recorded as the fraction it landed on, so replaying
-    // it onto a different display gives the same share, not the same pixel count.
-    {
-        // Drag the right edge of a Normal group on the 1600 px display from
-        // its 1067 px out to 1200 px — three quarters of that display.
-        let mut g = group(WindowWidth::Normal, 1600.0);
-        let start = g.resolved_width_px();
-        assert_eq!(start, 1067.0, "Normal on a 1600 px strip");
-        g.begin_edge_drag(WindowEdge::Trailing);
-        g.set_live_width(1200.0);
-        let _ = g.end_edge_drag(true);
-
-        let stored = g.width();
-        assert_eq!(
-            stored,
-            WindowWidth::Fraction(750),
-            "the resize stores the share of the display, not 1200 px",
-        );
-        assert_eq!(
-            g.take_pending_width_change(),
-            Some(WindowWidth::Fraction(750)),
-            "and hands the shell that same share to persist",
-        );
-
-        // The share holds across displays; the pixel count scales.
-        for (name, usable) in DISPLAYS {
-            let restored = group(stored, usable);
-            assert_eq!(
-                restored.resolved_width_px(),
-                (usable * 0.75).round(),
-                "the stored width must still be three quarters of {name}",
-            );
-        }
-    }
-
-    // The only resize floor is an absolute pixel one, so no display yields an
-    // unusable sliver and none forces a share-sized minimum.
-    {
-        assert_eq!(min_group_px(3840.0), 160.0);
-        assert_eq!(min_group_px(1200.0), 160.0);
-        // A width far below the floor resolves to it rather than collapsing.
-        let mut g = group(WindowWidth::Normal, 1600.0);
-        g.set_width(WindowWidth::from_px(1.0, 1600.0));
-        assert_eq!(g.resolved_width_px(), min_group_px(1600.0));
-        assert_eq!(g.width_limits().min, min_group_px(1600.0));
-    }
-
-    // An edge drag tracks the pointer 1:1 in pixels — the fraction is a
-    // storage representation, not a snapping grid.
-    {
-        let mut g = group(WindowWidth::Normal, 1200.0);
-        assert_eq!(g.resolved_width_px(), 800.0);
-        g.begin_edge_drag(WindowEdge::Trailing);
-        g.set_live_width(950.0);
-        let _ = g.end_edge_drag(true);
-        assert_eq!(g.resolved_width_px(), 950.0);
     }
 }

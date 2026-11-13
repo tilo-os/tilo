@@ -157,164 +157,168 @@ pub fn opentype_ratchet() -> Ratchet {
     }
 }
 
-/// Every key counts the shapes it names and nothing else, so a regex edit
-/// that stops matching fails here instead of passing an empty audit.
-#[test]
-fn typography_patterns_match_exactly_the_shapes_they_name() {
-    let ratchet = typography_ratchet();
-    let cases: [(&str, &[&str], &[&str]); 6] = [
-        (
-            "literal_font_size",
-            &[
-                "MathField::new(\"\").with_size(20.0)",
-                "TextStyle::new(13.0)",
-                "label.with_scaled_size(11.5)",
-                "t.with_fixed_size(12)",
-                "input.text_size(14.0_f32)",
-                "Text::new(s).with_font_size( 15.0 )",
-                "editor.set_font_size(16.0)",
-            ],
-            &[
-                "Container::with_size(10.0, 20.0)",
-                "TextStyle::content(px)",
-                "Text::new(s).with_size(size)",
-                "TextStyle::role(TextRole::Body)",
-            ],
-        ),
-        (
-            "legacy_size_api",
-            &[
-                "tr.draw_text(scene, \"x\", 13.0, ink, p)",
-                "tr.draw_text_weighted(scene, s, 12.0, w, ink, p)",
-                "let (w, h) = tr.measure(\"x\", 12.0, None);",
-                "tr.measure_weighted(s, 11.0, None, TextWeight::Bold)",
-                "tr.measure_styled(s, &style)",
-                "tr.elide_to_width(s, 12.0, w)",
-                "tr.elide_to_width_weighted(s, 12.0, w, wt)",
-            ],
-            &[
-                "tr.measure_role(s, TextRole::Body)",
-                "layout.measured_size()",
-                "Measure::new(stat.measure())",
-                "draw_text_role(scene, s)",
-            ],
-        ),
-        (
-            "font_size_const",
-            &[
-                "const TITLE_FONT: f32 = 15.0;",
-                "pub const LABEL_SIZE: f32 = 12.0;",
-                "pub(crate) const CAPTION_TEXT: f32 = 11.5;",
-                "    const HEADING: f32 = 18.0;",
-            ],
-            &[
-                "const READING_CONTENT_PX: f32 = 18.0;",
-                "const TITLE_FONT: f64 = 15.0;",
-                "const PAD: f32 = 12.0;",
-                "const LABEL_SIZE: f32 = theme_size();",
-                "let title_size: f32 = 12.0;",
-            ],
-        ),
-        (
-            "type_step_arithmetic",
-            &[
-                "theme.tokens.typography.scale.sm - 1.0",
-                "t.typography.scale.base * 1.2",
-                "typography.scale.xs/2.0",
-            ],
-            &["theme.tokens.typography.scale.sm", "typography.scale.lg)"],
-        ),
-        (
-            "raw_type_step",
-            &["theme.tokens.typography.scale.sm", "TypeScale::default()"],
-            &["TextRole::Caption", "TypeScale::for_base(b)"],
-        ),
-        (
-            "renderer_scale_helper",
-            &[
-                "let style = renderer_input_style(tr, theme);",
-                "renderer_type_size(tr, 14.0)",
-            ],
-            &["renderer_scale(tr)"],
-        ),
-    ];
-    for (key, hits, misses) in cases {
-        let pattern = ratchet.pattern(key);
-        for line in hits {
-            assert!(pattern.hits(line) > 0, "{key} must count {line:?}");
-        }
-        for line in misses {
-            assert_eq!(pattern.hits(line), 0, "{key} must not count {line:?}");
-        }
-    }
-    let exempt = ratchet.exempt;
-    for path in [
-        "crates/sdk/ui-core/src/tokens/typography.rs",
-        "crates/sdk/ui-core/src/text_render.rs",
-        "crates/sdk/ui-core/src/text_render/shaping.rs",
-        "crates/sdk/ui-core/src/text_render_cache.rs",
-        "crates/sdk/ui-core/src/text_metrics.rs",
-    ] {
-        assert!(exempt(Path::new(path)), "{path} is the type engine");
-    }
-    assert!(!exempt(Path::new("apps/mail/src/app.rs")));
-}
+tilo_test_env::scenario! {
+    fn typography_audit_patterns_match_exactly_the_shapes_they_name;
 
-#[test]
-fn layout_measurement_does_not_hide_pixel_text_calls() {
-    let ratchet = typography_ratchet();
-    let legacy = ratchet.pattern("legacy_size_api");
-    for line in [
-        "tr.measure(format!(\"{}, {}\", a, b).as_str(), size, Some(w))",
-        "tr.measure(",
-        "tr.measure(s, size, None,)",
-    ] {
-        assert_eq!(legacy.hits(line), 1);
+    // Every key counts the shapes it names and nothing else, so a regex edit
+    // that stops matching fails here instead of passing an empty audit.
+    phase typography_patterns_match_exactly_the_shapes_they_name;
+    {
+        let ratchet = typography_ratchet();
+        let cases: [(&str, &[&str], &[&str]); 6] = [
+            (
+                "literal_font_size",
+                &[
+                    "MathField::new(\"\").with_size(20.0)",
+                    "TextStyle::new(13.0)",
+                    "label.with_scaled_size(11.5)",
+                    "t.with_fixed_size(12)",
+                    "input.text_size(14.0_f32)",
+                    "Text::new(s).with_font_size( 15.0 )",
+                    "editor.set_font_size(16.0)",
+                ],
+                &[
+                    "Container::with_size(10.0, 20.0)",
+                    "TextStyle::content(px)",
+                    "Text::new(s).with_size(size)",
+                    "TextStyle::role(TextRole::Body)",
+                ],
+            ),
+            (
+                "legacy_size_api",
+                &[
+                    "tr.draw_text(scene, \"x\", 13.0, ink, p)",
+                    "tr.draw_text_weighted(scene, s, 12.0, w, ink, p)",
+                    "let (w, h) = tr.measure(\"x\", 12.0, None);",
+                    "tr.measure_weighted(s, 11.0, None, TextWeight::Bold)",
+                    "tr.measure_styled(s, &style)",
+                    "tr.elide_to_width(s, 12.0, w)",
+                    "tr.elide_to_width_weighted(s, 12.0, w, wt)",
+                ],
+                &[
+                    "tr.measure_role(s, TextRole::Body)",
+                    "layout.measured_size()",
+                    "Measure::new(stat.measure())",
+                    "draw_text_role(scene, s)",
+                ],
+            ),
+            (
+                "font_size_const",
+                &[
+                    "const TITLE_FONT: f32 = 15.0;",
+                    "pub const LABEL_SIZE: f32 = 12.0;",
+                    "pub(crate) const CAPTION_TEXT: f32 = 11.5;",
+                    "    const HEADING: f32 = 18.0;",
+                ],
+                &[
+                    "const READING_CONTENT_PX: f32 = 18.0;",
+                    "const TITLE_FONT: f64 = 15.0;",
+                    "const PAD: f32 = 12.0;",
+                    "const LABEL_SIZE: f32 = theme_size();",
+                    "let title_size: f32 = 12.0;",
+                ],
+            ),
+            (
+                "type_step_arithmetic",
+                &[
+                    "theme.tokens.typography.scale.sm - 1.0",
+                    "t.typography.scale.base * 1.2",
+                    "typography.scale.xs/2.0",
+                ],
+                &["theme.tokens.typography.scale.sm", "typography.scale.lg)"],
+            ),
+            (
+                "raw_type_step",
+                &["theme.tokens.typography.scale.sm", "TypeScale::default()"],
+                &["TextRole::Caption", "TypeScale::for_base(b)"],
+            ),
+            (
+                "renderer_scale_helper",
+                &[
+                    "let style = renderer_input_style(tr, theme);",
+                    "renderer_type_size(tr, 14.0)",
+                ],
+                &["renderer_scale(tr)"],
+            ),
+        ];
+        for (key, hits, misses) in cases {
+            let pattern = ratchet.pattern(key);
+            for line in hits {
+                assert!(pattern.hits(line) > 0, "{key} must count {line:?}");
+            }
+            for line in misses {
+                assert_eq!(pattern.hits(line), 0, "{key} must not count {line:?}");
+            }
+        }
+        let exempt = ratchet.exempt;
+        for path in [
+            "crates/sdk/ui-core/src/tokens/typography.rs",
+            "crates/sdk/ui-core/src/text_render.rs",
+            "crates/sdk/ui-core/src/text_render/shaping.rs",
+            "crates/sdk/ui-core/src/text_render_cache.rs",
+            "crates/sdk/ui-core/src/text_metrics.rs",
+        ] {
+            assert!(exempt(Path::new(path)), "{path} is the type engine");
+        }
+        assert!(!exempt(Path::new("apps/mail/src/app.rs")));
     }
-    for line in [
-        "composer.measure(width, max_height, theme, text)",
-        "host.measure(width, f32::INFINITY, theme, tr);",
-        "let measured = ctx.measure(1, constraint)?;",
-    ] {
-        assert_eq!(legacy.hits(line), 0);
+
+    phase layout_measurement_does_not_hide_pixel_text_calls;
+    {
+        let ratchet = typography_ratchet();
+        let legacy = ratchet.pattern("legacy_size_api");
+        for line in [
+            "tr.measure(format!(\"{}, {}\", a, b).as_str(), size, Some(w))",
+            "tr.measure(",
+            "tr.measure(s, size, None,)",
+        ] {
+            assert_eq!(legacy.hits(line), 1);
+        }
+        for line in [
+            "composer.measure(width, max_height, theme, text)",
+            "host.measure(width, f32::INFINITY, theme, tr);",
+            "let measured = ctx.measure(1, constraint)?;",
+        ] {
+            assert_eq!(legacy.hits(line), 0);
+        }
+        assert_eq!(
+            legacy.hits("composer.measure(w, h, theme, tr); tr.measure(s, px, None)"),
+            1
+        );
+        assert_eq!(
+            legacy.hits("tr.measure(a, px, None); tr.measure(b, px, None)"),
+            2
+        );
     }
-    assert_eq!(
-        legacy.hits("composer.measure(w, h, theme, tr); tr.measure(s, px, None)"),
-        1
-    );
-    assert_eq!(
-        legacy.hits("tr.measure(a, px, None); tr.measure(b, px, None)"),
-        2
-    );
+
+    phase opentype_pattern_matches_raw_feature_settings_only;
+    {
+        let ratchet = opentype_ratchet();
+        let pattern = ratchet.pattern("raw_opentype_feature");
+        for line in [
+            ".with_numeric_style(NumericStyle::TabularLining)",
+            "style.with_font_feature(OpenTypeTag::new(*b\"ss01\"), 1)",
+            "Text::new(s).with_kerning(false)",
+            "FeatureTag::new(b\"zero\")",
+            "let tag = *b\"cv11\";",
+        ] {
+            assert!(pattern.hits(line) > 0, "must count {line:?}");
+        }
+        for line in [
+            "Text::new(s).numeric()",
+            "Text::new(code).with_kind(TextKind::Secret)",
+            "ColumnDef::new(k, h, w).with_kind(TextKind::Numeric)",
+            "let label = b\"kernel\";",
+        ] {
+            assert_eq!(pattern.hits(line), 0, "must not count {line:?}");
+        }
+    }
 }
 
 /// Literal sizes, size constants and pixel-size text calls may not grow.
 #[test]
 fn typography_literals_do_not_grow() {
     typography_ratchet().check();
-}
-
-#[test]
-fn opentype_pattern_matches_raw_feature_settings_only() {
-    let ratchet = opentype_ratchet();
-    let pattern = ratchet.pattern("raw_opentype_feature");
-    for line in [
-        ".with_numeric_style(NumericStyle::TabularLining)",
-        "style.with_font_feature(OpenTypeTag::new(*b\"ss01\"), 1)",
-        "Text::new(s).with_kerning(false)",
-        "FeatureTag::new(b\"zero\")",
-        "let tag = *b\"cv11\";",
-    ] {
-        assert!(pattern.hits(line) > 0, "must count {line:?}");
-    }
-    for line in [
-        "Text::new(s).numeric()",
-        "Text::new(code).with_kind(TextKind::Secret)",
-        "ColumnDef::new(k, h, w).with_kind(TextKind::Numeric)",
-        "let label = b\"kernel\";",
-    ] {
-        assert_eq!(pattern.hits(line), 0, "must not count {line:?}");
-    }
 }
 
 /// Raw OpenType feature settings in apps may not grow.

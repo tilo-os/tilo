@@ -5,38 +5,75 @@
 
 use tilo_ui::widget::Scrollable;
 
-#[test]
-fn scrollable_offset_clamps_reveals_and_decays() {
-    {
-        let mut s = Scrollable::new_vertical();
-        s.set_content_size(200.0, 1000.0);
-        s.set_viewport_size(300.0, 100.0);
-        s.scroll_by(0.0, 50_000.0);
-        assert_eq!(s.offset_y(), 900.0);
-        s.scroll_by(0.0, -50_000.0);
-        assert_eq!(s.offset_y(), 0.0);
-    }
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
+    fn a_bare_scrollable_clamps_reveals_and_glides_to_rest;
 
+    phase scrollable_offset_clamps_reveals_and_decays;
     {
-        let mut s = Scrollable::new_vertical();
-        s.set_content_size(200.0, 1000.0);
-        s.set_viewport_size(200.0, 100.0);
-        s.scroll_into_view(0.0, 600.0, 200.0, 20.0);
-        assert!(s.offset_y() >= 520.0 && s.offset_y() <= 600.0);
-    }
-
-    {
-        let mut s = Scrollable::new_vertical();
-        s.set_content_size(200.0, 10000.0);
-        s.set_viewport_size(200.0, 500.0);
-        s.fling(0.0, 1500.0);
-        let before = s.offset_y();
-        for _ in 0..120 {
-            s.tick(1.0 / 60.0);
+        {
+            let mut s = Scrollable::new_vertical();
+            s.set_content_size(200.0, 1000.0);
+            s.set_viewport_size(300.0, 100.0);
+            s.scroll_by(0.0, 50_000.0);
+            assert_eq!(s.offset_y(), 900.0);
+            s.scroll_by(0.0, -50_000.0);
+            assert_eq!(s.offset_y(), 0.0);
         }
-        let after = s.offset_y();
-        assert!(after > before);
-        assert!(s.momentum_speed() < 10.0);
+
+        {
+            let mut s = Scrollable::new_vertical();
+            s.set_content_size(200.0, 1000.0);
+            s.set_viewport_size(200.0, 100.0);
+            s.scroll_into_view(0.0, 600.0, 200.0, 20.0);
+            assert!(s.offset_y() >= 520.0 && s.offset_y() <= 600.0);
+        }
+
+        {
+            let mut s = Scrollable::new_vertical();
+            s.set_content_size(200.0, 10000.0);
+            s.set_viewport_size(200.0, 500.0);
+            s.fling(0.0, 1500.0);
+            let before = s.offset_y();
+            for _ in 0..120 {
+                s.tick(1.0 / 60.0);
+            }
+            let after = s.offset_y();
+            assert!(after > before);
+            assert!(s.momentum_speed() < 10.0);
+        }
+    }
+
+    // A flick that wavers a little sideways in a view that scrolls up and down
+    // glides up or down to its rest however its frames fall. A frame too short
+    // to move it a pixel up or down, in which the sideways waver tips over a
+    // pixel, is no end of the content; it used to stop the glide there, so a
+    // flick went a different way depending on when frames happened to come.
+    phase a_flick_that_wavers_sideways_glides_to_rest_however_its_frames_fall;
+    {
+        let mut s = Scrollable::new_vertical();
+        s.set_content_size(200.0, 10_000.0);
+        s.set_viewport_size(200.0, 500.0);
+        let start = tilo_ui::time::now();
+        tilo_ui::time::testing::with_monotonic_time(start, || s.fling(50.0, 1500.0));
+        let at = |micros: u64| start + tilo_ui::time::Duration::from_micros(micros);
+        // A frame, then one a tenth of a millisecond after it.
+        s.advance_momentum(at(10_400));
+        s.advance_momentum(at(10_500));
+        let mut micros = 10_500;
+        while s.momentum_speed() > 0.0 && micros < 5_000_000 {
+            micros += 16_667;
+            s.advance_momentum(at(micros));
+        }
+        let rest = tilo_ui::virtual_viewport::glide_rest_distance(1500.0);
+        assert!(
+            (f64::from(s.offset_y()) - rest).abs() <= 1.0,
+            "the flick glides the whole way to its rest: {} of {rest}",
+            s.offset_y()
+        );
     }
 }
 
@@ -444,34 +481,5 @@ fn a_surface_sized_by_its_content_does_not_keep_the_height_it_filled() {
         short.height() < 400.0,
         "the empty surface does not keep the {}px it filled: {short:?}",
         long.height()
-    );
-}
-
-/// A flick that wavers a little sideways in a view that scrolls up and down
-/// glides up or down to its rest however its frames fall. A frame too short
-/// to move it a pixel up or down, in which the sideways waver tips over a
-/// pixel, is no end of the content; it used to stop the glide there, so a
-/// flick went a different way depending on when frames happened to come.
-#[test]
-fn a_flick_that_wavers_sideways_glides_to_rest_however_its_frames_fall() {
-    let mut s = Scrollable::new_vertical();
-    s.set_content_size(200.0, 10_000.0);
-    s.set_viewport_size(200.0, 500.0);
-    let start = tilo_ui::time::now();
-    tilo_ui::time::testing::with_monotonic_time(start, || s.fling(50.0, 1500.0));
-    let at = |micros: u64| start + tilo_ui::time::Duration::from_micros(micros);
-    // A frame, then one a tenth of a millisecond after it.
-    s.advance_momentum(at(10_400));
-    s.advance_momentum(at(10_500));
-    let mut micros = 10_500;
-    while s.momentum_speed() > 0.0 && micros < 5_000_000 {
-        micros += 16_667;
-        s.advance_momentum(at(micros));
-    }
-    let rest = tilo_ui::virtual_viewport::glide_rest_distance(1500.0);
-    assert!(
-        (f64::from(s.offset_y()) - rest).abs() <= 1.0,
-        "the flick glides the whole way to its rest: {} of {rest}",
-        s.offset_y()
     );
 }

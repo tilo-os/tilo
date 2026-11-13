@@ -1,47 +1,51 @@
 use tilo_ui::Theme;
 use tilo_ui::tokens::{Metrics, Radii, Spacing, SpacingStep, Tokens};
 
-#[test]
-fn colour_and_radius_tokens_have_their_documented_shape() {
+tilo_test_env::scenario! {
+    fn colour_radius_and_spacing_tokens_have_their_documented_shape;
+
+    phase colour_and_radius_tokens_have_their_documented_shape;
     {
-        let t = Tokens::dark();
-        assert_eq!(t.colors.neutral.len(), 11);
-        assert_ne!(t.colors.neutral[0], t.colors.neutral[10]);
+        {
+            let t = Tokens::dark();
+            assert_eq!(t.colors.neutral.len(), 11);
+            assert_ne!(t.colors.neutral[0], t.colors.neutral[10]);
+        }
+
+        // Each role is pinned to the design language's table, so a drift in one
+        // step is a visible failure rather than a softer corner.
+        {
+            let r = Radii::default();
+            assert_eq!(r.detail, 4.0);
+            assert_eq!(r.item, 6.0);
+            assert_eq!(r.control, 8.0);
+            assert_eq!(r.tile, 14.0);
+            assert_eq!(r.panel, 18.0);
+            assert_eq!(r.full, 9999.0);
+            assert_eq!(r.concentric(r.panel, 6.0), 12.0);
+        }
     }
 
-    // Each role is pinned to the design language's table, so a drift in one
-    // step is a visible failure rather than a softer corner.
+    // The spacing scale is the 4 px base, read by field or resolved by step name.
+    phase spacing_scale_is_4px_base_by_field_and_by_step;
     {
-        let r = Radii::default();
-        assert_eq!(r.detail, 4.0);
-        assert_eq!(r.item, 6.0);
-        assert_eq!(r.control, 8.0);
-        assert_eq!(r.tile, 14.0);
-        assert_eq!(r.panel, 18.0);
-        assert_eq!(r.full, 9999.0);
-        assert_eq!(r.concentric(r.panel, 6.0), 12.0);
-    }
-}
-
-/// The spacing scale is the 4 px base, read by field or resolved by step name.
-#[test]
-fn spacing_scale_is_4px_base_by_field_and_by_step() {
-    assert_eq!(Spacing::default(), Spacing::BASE);
-    let s = Spacing::default();
-    let cases = [
-        ("s0", s.s0, SpacingStep::S0, 0.0),
-        ("s1", s.s1, SpacingStep::S1, 4.0),
-        ("s2", s.s2, SpacingStep::S2, 8.0),
-        ("s3", s.s3, SpacingStep::S3, 12.0),
-        ("s4", s.s4, SpacingStep::S4, 16.0),
-        ("s6", s.s6, SpacingStep::S6, 24.0),
-        ("s8", s.s8, SpacingStep::S8, 32.0),
-        ("s12", s.s12, SpacingStep::S12, 48.0),
-        ("s16", s.s16, SpacingStep::S16, 64.0),
-    ];
-    for (name, field, step, want) in cases {
-        assert_eq!(field, want, "case {name}: field");
-        assert_eq!(s.step(step), want, "case {name}: step");
+        assert_eq!(Spacing::default(), Spacing::BASE);
+        let s = Spacing::default();
+        let cases = [
+            ("s0", s.s0, SpacingStep::S0, 0.0),
+            ("s1", s.s1, SpacingStep::S1, 4.0),
+            ("s2", s.s2, SpacingStep::S2, 8.0),
+            ("s3", s.s3, SpacingStep::S3, 12.0),
+            ("s4", s.s4, SpacingStep::S4, 16.0),
+            ("s6", s.s6, SpacingStep::S6, 24.0),
+            ("s8", s.s8, SpacingStep::S8, 32.0),
+            ("s12", s.s12, SpacingStep::S12, 48.0),
+            ("s16", s.s16, SpacingStep::S16, 64.0),
+        ];
+        for (name, field, step, want) in cases {
+            assert_eq!(field, want, "case {name}: field");
+            assert_eq!(s.step(step), want, "case {name}: step");
+        }
     }
 }
 
