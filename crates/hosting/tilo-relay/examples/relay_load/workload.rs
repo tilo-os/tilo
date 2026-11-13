@@ -30,6 +30,7 @@ use tilo_user_identity::{
 
 use crate::relay_process::Setup;
 use tilo_lock::MutexRecover as _;
+use collab_types::WorkspaceId;
 
 /// The document every room edits together.
 const APP: &str = "so.tilo.word-processor";

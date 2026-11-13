@@ -23,6 +23,7 @@ use tilo_relay::{CoeditPayload, Envelope, RelayClient, RelayCoeditSession, Relay
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint, spawn_relay};
+use collab_types::WorkspaceId;
 
 /// Upper bound for a frame the relay owes a client. Live fan-out waits for the
 /// delta's durable commit (pending file plus directory fsyncs) and the relay's

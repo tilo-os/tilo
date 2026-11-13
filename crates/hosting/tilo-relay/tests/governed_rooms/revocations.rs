@@ -11,6 +11,7 @@ use tilo_user_identity::{
 };
 
 use super::*;
+use collab_types::WorkspaceId;
 
 fn revoke(user: &TestUser, device: &TestDevice) -> RevocationEntry {
     let mut entry = RevocationEntry {

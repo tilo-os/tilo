@@ -42,6 +42,7 @@ use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint, spawn_relay, wait_until};
+use collab_types::WorkspaceId;
 
 /// Connect p1 and p2 to relay1, subscribe both to workspace 3, and drain
 /// their initial Ready acks.

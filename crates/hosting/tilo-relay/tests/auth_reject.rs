@@ -21,6 +21,7 @@ use tilo_user_identity::{
 };
 
 use crate::common::{TestUser, client_endpoint, spawn_relay};
+use collab_types::WorkspaceId;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(

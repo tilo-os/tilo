@@ -50,6 +50,7 @@ use tilo_relay::Envelope;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestDevice, TestRelay, TestUser, client_endpoint, publisher, spawn_relay};
+use collab_types::WorkspaceId;
 
 const ROOM: &str = "5e11f00d-7110-4625-8000-000000000625";
 const WORKSPACE: u64 = 625;

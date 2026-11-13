@@ -8,6 +8,7 @@ use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, host_on, next_delta, session_to};
+use collab_types::WorkspaceId;
 
 /// How long the hosts are watched doing nothing: longer than the host's
 /// first two waits before dialing again, so a session that kept ending

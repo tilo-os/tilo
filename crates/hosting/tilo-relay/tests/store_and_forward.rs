@@ -29,6 +29,7 @@ use tilo_relay::Envelope;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint, spawn_relay};
+use collab_types::WorkspaceId;
 
 /// `.delta` files queued in `pending_dir`; none while it does not exist yet.
 fn queued_deltas(pending_dir: &std::path::Path) -> usize {

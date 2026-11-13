@@ -24,12 +24,13 @@ use super::{
     Browser, DeviceCapabilities, DocumentRoute, SHEETS, enrol, record_provider, request,
     sheet_named, sheet_names, start,
 };
+use tilo_relay_protocol::WorkspaceId;
 
 /// The retained bodies `author` wrote to `route`, and whether each is sealed
 /// on the route's channel.
 async fn retained_by(
     hosted: &super::Hosted,
-    workspace: u64,
+    workspace: WorkspaceId,
     route: &DocumentRoute,
     author: [u8; 32],
 ) -> Vec<bool> {
@@ -66,7 +67,7 @@ async fn retained_by(
 /// `route`, then return whether each is sealed on the route's channel.
 async fn until_retained(
     hosted: &super::Hosted,
-    workspace: u64,
+    workspace: WorkspaceId,
     route: &DocumentRoute,
     author: [u8; 32],
     count: usize,

@@ -20,6 +20,7 @@ use tilo_session::sync::{Cmd, Event, Outbox};
 use tilo_session_client::{Events, Link};
 use tilo_session_core::remote::Heard;
 use tilo_user_identity::DeviceCert;
+use tilo_relay_protocol::WorkspaceId;
 
 /// How long the owner's admission of this reporter stands: long enough to
 /// write and send a report after reviewing it, short enough that a person
@@ -44,7 +45,7 @@ pub(crate) struct Connection {
     reporter: DeviceCert,
     owner: DeviceCert,
     destination: FeedbackDestination,
-    workspace: u64,
+    workspace: WorkspaceId,
     serial: u64,
     pending: HashMap<u64, (web_time::Instant, Option<Submission>)>,
     /// Reports filed through the owner, by the invocation that files them.

@@ -22,6 +22,7 @@ use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint, spawn_relay};
+use collab_types::WorkspaceId;
 
 /// Take the next envelope or fail loudly. A dropped endpoint shows up
 /// here as a timeout, so the message has to name the suspect.

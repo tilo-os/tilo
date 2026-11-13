@@ -31,6 +31,7 @@ use tilo_relay::{Envelope, Relay, RelayClient, RelayConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestDevice, TestUser, device_endpoint};
+use collab_types::WorkspaceId;
 
 const APP: &str = "so.tilo.chat";
 

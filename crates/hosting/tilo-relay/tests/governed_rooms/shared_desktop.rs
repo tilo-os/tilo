@@ -14,6 +14,7 @@ use tilo_relay::workspaces::SetMemberRoleRequest;
 use tilo_relay::{CoeditPayload, RelayClient};
 
 use super::*;
+use collab_types::WorkspaceId;
 
 /// The windows of a one-strip desktop: `(tab, group, who opened it)`, in
 /// order, each tab in its own group unless two share one.

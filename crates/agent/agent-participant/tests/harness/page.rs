@@ -39,6 +39,7 @@ use tilo_session_core::remote::Heard;
 
 use super::hosted::Hosted;
 use crate::support::{Device, WORKSPACE, admitted_to, ready, start_peer};
+use tilo_relay_protocol::WorkspaceId;
 
 /// A record as it stood when a write landed: its author, and the record saved.
 pub type Checkpoint = ([u8; 32], Vec<u8>);
@@ -57,7 +58,7 @@ pub struct Page {
     pub answers: Vec<RemoteActionMessage>,
     /// The correlation the page names its next catalogue request with.
     pub correlation: u64,
-    pub workspace: u64,
+    pub workspace: WorkspaceId,
     pub cluster_id: String,
     /// Who is here, as the page's board heard them: its host pinned as the
     /// workspace's, so the runs the host speaks for are members too.

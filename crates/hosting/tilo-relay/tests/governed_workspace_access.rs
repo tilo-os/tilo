@@ -20,6 +20,7 @@ use tilo_relay::{Envelope, Relay, RelayClient, RelayConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint};
+use collab_types::WorkspaceId;
 
 async fn connect(
     relay: &Relay,

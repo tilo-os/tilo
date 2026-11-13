@@ -28,6 +28,7 @@ use super::resource_support::{admit_person, open_admitted_peer};
 use super::{
     Browser, Device, DeviceCapabilities, DocumentRoute, SHEETS, enrol, request, sheet_names, start,
 };
+use tilo_relay_protocol::WorkspaceId;
 
 /// The laptop: a root holder answering every agent request with the
 /// agent's certificate and the delegation of exactly what was proposed.
@@ -174,7 +175,7 @@ async fn until_sheet_by(
 
 /// Every body `author` wrote that the relay retains for `workspace`: its
 /// message kind, app and whether it is sealed.
-async fn retained_by(hosted: &super::Hosted, workspace: u64, author: [u8; 32]) -> Vec<String> {
+async fn retained_by(hosted: &super::Hosted, workspace: WorkspaceId, author: [u8; 32]) -> Vec<String> {
     hosted
         .relay
         .workspace_records()
@@ -199,7 +200,7 @@ async fn retained_by(hosted: &super::Hosted, workspace: u64, author: [u8; 32]) -
 /// sealed on the route's channel, and how many there are.
 async fn retained_sealed(
     hosted: &super::Hosted,
-    workspace: u64,
+    workspace: WorkspaceId,
     route: &DocumentRoute,
     author: [u8; 32],
 ) -> (usize, bool) {

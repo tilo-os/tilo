@@ -6,6 +6,7 @@ use super::{
     capabilities, existing_person, new_cache, require_files_access,
 };
 use std::sync::{Arc, RwLock};
+use collab_types::WorkspaceId;
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct JoinOptions {

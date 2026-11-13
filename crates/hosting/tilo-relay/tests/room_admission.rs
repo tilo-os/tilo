@@ -19,6 +19,7 @@ use tilo_relay::{Envelope, Relay, RelayClient, RelayConfig, TrustPolicy};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestDevice, TestUser, client_endpoint};
+use collab_types::WorkspaceId;
 
 /// The collaborator's own room, governed natively on this host.
 const GOVERNED: u64 = 801;

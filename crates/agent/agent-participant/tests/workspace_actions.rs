@@ -1,4 +1,5 @@
 //! Page actions on records nobody has open, answered by the host.
+use tilo_relay_protocol::WorkspaceId;
 //!
 //! The host runs `tilo_relay::agents::start`, whose app-serving plane now
 //! also answers the workspace's records ([`tilo_agent_participant::WorkspaceActions`]).
@@ -491,7 +492,7 @@ impl tilo_agent_participant::workspace_actions::WorkspaceRecordsLink for Deliver
     }
     fn view_read_policy(
         &self,
-        workspace: u64,
+        workspace: WorkspaceId,
         caller: &tilo_actions::remote::Caller,
         app: &str,
         record: &str,
@@ -519,7 +520,7 @@ impl tilo_agent_participant::workspace_actions::WorkspaceRecordsLink for Deliver
     }
     fn view_document(
         &self,
-        workspace: u64,
+        workspace: WorkspaceId,
         caller: &tilo_actions::remote::Caller,
         source: &DocumentRoute,
     ) -> Result<tilo_agent_participant::workspace_actions::ViewDocument, String> {

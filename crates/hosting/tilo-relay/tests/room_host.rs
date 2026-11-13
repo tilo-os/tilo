@@ -19,6 +19,7 @@ use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{Hosted, TestDevice, TestUser, device_endpoint, host_on, next_delta};
+use collab_types::WorkspaceId;
 
 /// A workspace the person's devices hold on the host before any room.
 const HOME: u64 = 0x686f_6d65;

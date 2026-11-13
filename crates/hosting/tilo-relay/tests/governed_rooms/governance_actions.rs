@@ -14,6 +14,7 @@ use tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION;
 use tilo_relay::workspaces::{HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, LIST_ROOMS};
 
 use super::*;
+use collab_types::WorkspaceId;
 
 /// A session of `device` with the relay, subscribed to nothing.
 pub(super) async fn connected(relay: &Relay, device: &TestDevice) -> RelayClient {

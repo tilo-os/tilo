@@ -33,6 +33,7 @@ use tilo_agent_participant::workspace_actions::{
 };
 use tilo_broker_core::{BrokerActor, CrdtRoute, PublishedAction, PublishedInput, PublishedSurface};
 use tilo_session_client::{Cmd, Outbox};
+use tilo_relay_protocol::WorkspaceId;
 
 const NOTES: &str = "so.tilo.notes";
 const PDF: &str = "so.tilo.pdf-viewer";
@@ -97,12 +98,12 @@ impl WorkspaceRecordsLink for Member {
     fn member(&self) -> WorkspaceMember {
         self.host.clone()
     }
-    fn admits(&self, _workspace: u64, caller: &Caller) -> bool {
+    fn admits(&self, _workspace: WorkspaceId, caller: &Caller) -> bool {
         self.standing(caller).is_some()
     }
     fn view_read_policy(
         &self,
-        _workspace: u64,
+        _workspace: WorkspaceId,
         caller: &Caller,
         _app: &str,
         _record: &str,
@@ -114,10 +115,10 @@ impl WorkspaceRecordsLink for Member {
             unix_time: tilo_clock::unix_now_ns() / 1_000_000_000,
         })
     }
-    fn workspace_policy(&self, workspace: u64, caller: &Caller) -> Option<ViewReadPolicy> {
+    fn workspace_policy(&self, workspace: WorkspaceId, caller: &Caller) -> Option<ViewReadPolicy> {
         self.view_read_policy(workspace, caller, "", "")
     }
-    fn workspace_content(&self, _workspace: u64) -> Option<tilo_content::ContentStore> {
+    fn workspace_content(&self, _workspace: WorkspaceId) -> Option<tilo_content::ContentStore> {
         Some(self.content.clone())
     }
     fn shell(&self) -> Option<Arc<dyn tilo_agent_participant::workspace_actions::WorkspaceShell>> {
@@ -125,7 +126,7 @@ impl WorkspaceRecordsLink for Member {
     }
     fn ask_person(
         &self,
-        _workspace: u64,
+        _workspace: WorkspaceId,
         caller: &Caller,
         _question: ConfirmationQuestion,
     ) -> Option<Pending<Result<ConfirmationReply, ActionHostError>>> {
@@ -149,7 +150,7 @@ enum Admitted {
 
 fn served(
     actions: &tilo_agent_participant::WorkspaceActions,
-    workspace: u64,
+    workspace: WorkspaceId,
     caller: &Caller,
     message: RemoteActionMessage,
 ) -> RemoteActionMessage {
@@ -165,7 +166,7 @@ fn served(
 /// What the host lists `caller` on the record `provider` names.
 fn listed(
     actions: &tilo_agent_participant::WorkspaceActions,
-    workspace: u64,
+    workspace: WorkspaceId,
     caller: &Caller,
     provider: &str,
 ) -> Vec<tilo_actions::ActionDescriptor> {
@@ -198,7 +199,7 @@ fn listed(
 /// asked is observed until it ends.
 fn settled(
     actions: &tilo_agent_participant::WorkspaceActions,
-    workspace: u64,
+    workspace: WorkspaceId,
     caller: &Caller,
     request: &InvokeRequest,
 ) -> ReceiptStatus {

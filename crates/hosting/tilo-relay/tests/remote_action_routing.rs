@@ -22,6 +22,7 @@ use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestDevice, TestUser, client_endpoint, spawn_relay, spawn_relay_serving_apps};
+use collab_types::WorkspaceId;
 
 const WS: u64 = 11;
 

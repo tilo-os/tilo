@@ -307,7 +307,7 @@ pub fn set_people(id: u64, people: &str) -> Result<(), JsValue> {
 /// One object of another device's window page reached this page: the mounts showing
 /// `workspace` of `peer` build window `tab` again, so the frame that arrived is drawn, and ask for
 /// the frame that shows it.
-pub(crate) fn page_arrived(peer: u32, workspace: u64, tab: u64) {
+pub(crate) fn page_arrived(peer: u32, workspace: WorkspaceId, tab: u64) {
     super::MOUNTS.with(|mounts| {
         // A page that arrives while a mount is being served is drawn by the frame that service asks
         // for: never a second borrow.
@@ -325,7 +325,7 @@ pub(crate) fn page_arrived(peer: u32, workspace: u64, tab: u64) {
     });
 }
 
-pub(crate) fn heard(peer: u32, workspace: u64) {
+pub(crate) fn heard(peer: u32, workspace: WorkspaceId) {
     super::MOUNTS.with(|mounts| {
         // A word that arrives while a mount is being served is laid out by
         // the frame that service asks for: never a second borrow.

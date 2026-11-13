@@ -22,6 +22,7 @@ use tilo_user_identity::DeviceCert;
 use wasm_bindgen::prelude::*;
 
 use crate::peer::{JsRecord, js_error, workspace_number};
+use tilo_relay_protocol::WorkspaceId;
 
 /// `{kind: 'person' | 'agent', label, color: '#rrggbb', profile_ms}`: `profile_ms` when the
 /// person last changed their profile, as this page knows it (`0` for unknown).
@@ -214,7 +215,7 @@ struct Page {
 }
 
 /// A door to `workspace`'s host actions over `handle`, with the host `host`.
-fn open_door(handle: &Link, workspace: u64, host: [u8; 32]) -> SessionActions {
+fn open_door(handle: &Link, workspace: WorkspaceId, host: [u8; 32]) -> SessionActions {
     SessionActions::new(handle, workspace, host)
 }
 
@@ -319,7 +320,7 @@ pub(crate) fn handle_of(id: u32) -> Option<Link> {
 
 /// The door to `workspace`'s host actions for `id`'s page, or `None` while its session has no
 /// host: one session path per workspace, whichever of the page's callers asks.
-pub(crate) fn actions_of(id: u32, workspace: u64) -> Option<SessionActions> {
+pub(crate) fn actions_of(id: u32, workspace: WorkspaceId) -> Option<SessionActions> {
     PAGES.with_borrow(|pages| {
         let page = pages.get(&id)?;
         let mut doors = page.doors.borrow_mut();

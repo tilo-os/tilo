@@ -14,6 +14,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 
 use tilo_relay::RelayConfig;
+use collab_types::WorkspaceId;
 
 const DEFAULT_CONFIG_PATH: &str = "/etc/tilo/relay.toml";
 

@@ -52,6 +52,7 @@ use ui::record::{RecordId, RecordSync};
 use ui::state::DocumentReplica;
 
 use crate::replicated::{Attachment, DESKTOP_APP, DESKTOP_RECORD};
+use tilo_relay_protocol::WorkspaceId;
 
 /// How often a page asks again what the workspace lets its person do: a role the
 /// workspace grants or withdraws while they are in it reaches their page within
@@ -111,7 +112,7 @@ pub(crate) struct Joined {
     device: String,
     events: Events,
     uuid: String,
-    workspace: u64,
+    workspace: WorkspaceId,
     store: Rc<MemoryStore>,
     /// Where `store` lives.
     kept: Kept,
