@@ -1,9 +1,6 @@
-//! The native input diagnostic Scratchpad reports to performance captures.
-//!
-//! A toolkit decorator around the view — the escape hatch for something the
-//! framework has no reason to know about. It adds one hook and forwards
-//! everything else to the view. It reads the real document and the shared
-//! scroll offset; it never includes the note text or mutates state.
+//! The native input diagnostic Scratchpad reports to performance captures. It reads the
+//! real document and the shared scroll offset; it never includes the note text or mutates
+//! state.
 
 use std::cell::Cell;
 use std::rc::Rc;
