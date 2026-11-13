@@ -1,9 +1,6 @@
 //! What a tilolang program's source is read as: the tokens it is made of, the spans they cover,
-//! the diagnostics reported where a line is not the language, and the literals a token holds.
-//!
-//! The compiler (`tilolang`) parses these into a syntax tree and checks it. An editor colours a
-//! tilolang program with this same lexer, so the colours a person reads never disagree with what
-//! the language reads.
+//! the diagnostics, and the literals a token holds. An editor colours source with this same lexer,
+//! so its colours never disagree with what the language reads.
 
 #![allow(
     clippy::arithmetic_side_effects,

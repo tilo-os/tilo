@@ -1,11 +1,8 @@
-//! Source spans and the diagnostics a line of source can carry.
-//!
-//! Every error carries a span, a stable code (`E0xx`) and a message written for an agent to act
-//! on.
+//! Source spans, and the diagnostics a line of source can carry: every one has a span and a
+//! stable code (`E0xx`).
 
 use serde::{Deserialize, Serialize};
 
-/// A byte range in the source text.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Span {
     pub start: usize,
@@ -27,7 +24,6 @@ impl Span {
     }
 }
 
-/// One reported problem.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Diagnostic {
     /// Stable code, for example `E030`.
@@ -36,10 +32,10 @@ pub struct Diagnostic {
     pub span: Span,
     /// 1-based line of `span.start`; 0 until [`Diagnostic::locate`] ran.
     pub line: usize,
-    /// 1-based column (in characters) of `span.start`; 0 until located.
+    /// 1-based column, in characters, of `span.start`; 0 until located.
     pub col: usize,
-    /// The file of a multi-file package the span points into, as the package named it; `None`
-    /// for a single source text. The span is then an offset in that file.
+    /// The file of a multi-file package the span points into; `None` for a single source text,
+    /// where the span is an offset in that file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
 }
@@ -56,7 +52,6 @@ impl Diagnostic {
         }
     }
 
-    /// Fills in `line` and `col` from the source text the span points into.
     pub fn locate(&mut self, src: &str) {
         let mut line = 1usize;
         let mut col = 1usize;
@@ -75,8 +70,8 @@ impl Diagnostic {
         self.col = col;
     }
 
-    /// `path:line:col: E0xx message`, the form `tilolang check` prints. A diagnostic of a
-    /// multi-file package is shown under its own file's path instead of `path`.
+    /// `path:line:col: E0xx message`: what `tilolang check` prints, under the file's own path
+    /// for a diagnostic of a multi-file package.
     pub fn render(&self, path: &str) -> String {
         let shown = self.file.as_deref().unwrap_or(path);
         format!(
@@ -85,7 +80,6 @@ impl Diagnostic {
         )
     }
 
-    /// The structured form for agents.
     pub fn to_json(&self) -> serde_json::Value {
         let mut out = serde_json::json!({
             "code": self.code,
