@@ -256,8 +256,9 @@ fn a_rows_press_opens_its_section_under_it() {
     assert!(section.y0 >= row.y1, "{section:?} under {row:?}");
 }
 
-/// While a section unrolls, the panel's window goes with its edge: at the press it is as tall as
-/// it was, and it ends as tall as the controls with the section open.
+/// While a section unrolls, the panel's window takes the height it ends at in one step, at the
+/// press, and the card grows inside it. Resized frame by frame instead, the window trails the page
+/// it fits (a size is a round trip to the desk) and cuts off what follows the opening section.
 #[test]
 fn the_panel_grows_with_a_section_as_it_unrolls() {
     let (mut app, _host) = hosted("controls");
@@ -267,14 +268,32 @@ fn the_panel_grows_with_a_section_as_it_unrolls() {
     open_details(&mut app, "qs-tile-wifi");
     let (_, pressed) = wanted(&mut app);
     assert!(
-        (pressed - short).abs() < 2.0,
-        "at the press the panel has not jumped: {short} to {pressed}"
+        pressed > short + 40.0,
+        "at the press the panel already stands where it ends: {short} to {pressed}"
+    );
+    let footer = target(&mut app, "qs-power");
+    assert!(
+        footer.y1 <= pressed,
+        "and the rows the section pushed down stand whole inside it at once: {footer:?} in \
+         {pressed}"
     );
     drop(frozen);
+    for frame in 0..8 {
+        app.settle();
+        let (_, height) = wanted(&mut app);
+        assert!(
+            height + 0.5 >= pressed,
+            "frame {frame} of the unrolling: the window never trails the card, so the rows below \
+             the opening section are never cut: {pressed} to {height}"
+        );
+    }
     let _settled = ui::motion::testing::settled();
     app.settle();
     let (_, open) = wanted(&mut app);
-    assert!(open > short + 40.0, "it ends grown: {short} to {open}");
+    assert!(
+        (open - pressed).abs() < 1.0,
+        "it rests where it stood at the press, once the card fills it: {pressed} to {open}"
+    );
 }
 
 /// The whole panel answers the keyboard: Tab to a tile, Enter toggles it,
