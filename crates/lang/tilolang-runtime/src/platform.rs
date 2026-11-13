@@ -19,6 +19,7 @@ use crate::runtime::{Presentation, Reading};
 use crate::seen::SeenMark;
 use crate::value::{ActionRef, EnumValue, RefValue, ResourceRef, Value};
 use crate::view_state::StateKey;
+use tilo_resource::history::{StepFacts, same_step};
 use tilolang::types::Ty;
 
 /// The window the lenses on each resource are kept under, as view state of no window: set by
@@ -1017,7 +1018,8 @@ impl Core {
 
     /// `steps(at)`: the changes made to a resource, newest first, each with the versions one
     /// change made together, the count of changes it folds, and where it stands among the visits
-    /// history reads: whether it opens one, and whether the page ends with it.
+    /// history reads: whether it opens one, and whether the page ends with it. Which changes fold
+    /// into one step is [`same_step`]'s, the rule every history reads.
     fn steps_value(&self, at: &crate::value::ResourceRef) -> HResult<Value> {
         let trapped = |e: crate::store::StoreError| crate::engine::HostFail::Trap(e.to_string());
         let versions = self.store.borrow().versions(at).map_err(trapped)?;
@@ -1025,7 +1027,11 @@ impl Core {
         let mut steps: Vec<Vec<crate::store::Version>> = Vec::new();
         for v in versions {
             match steps.last_mut() {
-                Some(step) if step.last().is_some_and(|last| same_step(last, &v)) => {
+                Some(step)
+                    if step
+                        .last()
+                        .is_some_and(|last| same_step(&step_facts(last), &step_facts(&v))) =>
+                {
                     step.push(v);
                 }
                 _ => steps.push(vec![v]),
@@ -2642,13 +2648,14 @@ fn run_value(run: &crate::store::Run) -> Value {
     ])
 }
 
-/// Whether `next`, the version after `last`, folds into the same step of history: both made in
-/// the same run, or both by the same person outside any run.
-fn same_step(last: &crate::store::Version, next: &crate::store::Version) -> bool {
-    match (&last.run, &next.run) {
-        (Some(a), Some(b)) => a.id == b.id,
-        (None, None) => last.who == next.who,
-        _ => false,
+/// What the version `version` of an app's own store records of the act it is one change of: who
+/// made it, and the run it was made in. A store's history folds a person's changes beside each
+/// other into one step, and the changes of one run into one.
+fn step_facts(version: &crate::store::Version) -> StepFacts<'_> {
+    StepFacts {
+        who: Some(version.who.as_str()),
+        run: version.run.as_ref().map(|run| run.id.as_str()),
+        ..StepFacts::default()
     }
 }
 

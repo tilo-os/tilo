@@ -86,6 +86,43 @@ pub fn committed_versions(doc: &Doc) -> Vec<Version> {
         .collect()
 }
 
+/// What a change records of the act it is one change of: who made it and the
+/// work that act is named by. A record's changes name the gesture of the burst
+/// of typing they were part of and the invocation of the action that made
+/// them; a store an app keeps for itself names the run it was made in, or
+/// nothing but the person who made it ([`same_step`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StepFacts<'a> {
+    /// Who made the change; `None` for a change that names nobody.
+    pub who: Option<&'a str>,
+    /// The run it was made in: an agent's connection, a task's run.
+    pub run: Option<&'a str>,
+    /// The gesture it is one change of: the keystrokes of one burst of typing.
+    pub gesture: Option<&'a tilo_actions::ActionId>,
+    /// The invocation it is one change of: one action and the actions it called.
+    pub invocation: Option<&'a tilo_actions::InvocationId>,
+}
+
+/// Whether `next`, the change after `last`, is a change of the same step of
+/// history: both name one act — one run, one gesture, one invocation — or,
+/// naming no act of their own, one person made both.
+#[must_use]
+pub fn same_step(last: &StepFacts<'_>, next: &StepFacts<'_>) -> bool {
+    fn one_act<T: PartialEq + ?Sized>(last: Option<&T>, next: Option<&T>) -> bool {
+        last.is_some() && last == next
+    }
+    if one_act(last.run, next.run)
+        || one_act(last.gesture, next.gesture)
+        || one_act(last.invocation, next.invocation)
+    {
+        return true;
+    }
+    let names_no_act = |facts: &StepFacts<'_>| {
+        facts.run.is_none() && facts.gesture.is_none() && facts.invocation.is_none()
+    };
+    names_no_act(last) && names_no_act(next) && last.who.is_some() && last.who == next.who
+}
+
 /// Commit the open transaction with a wall-clock timestamp attached.
 /// `AutoCommit::commit()` leaves the change's advisory time at `0`, which is
 /// why routing commits through here is what makes [`Version::time_ms`] — and
@@ -689,6 +726,48 @@ pub fn read_at<R: Resource>(doc: &mut Doc, heads: &[ChangeHash]) -> Result<R::St
 mod tests {
     use super::*;
     use automerge::{ActorId, ROOT, ReadDoc};
+
+    #[test]
+    fn one_act_is_one_step_and_a_person_alone_is_one_step_beside_their_changes() {
+        use tilo_actions::{ActionId, InvocationId};
+        let (gesture, other) = (ActionId::new(), ActionId::new());
+        let (invocation, elsewhere) = (InvocationId::new(), InvocationId::new());
+        let unnamed = |who| StepFacts {
+            who: Some(who),
+            ..StepFacts::default()
+        };
+        let in_run = |run| StepFacts {
+            run: Some(run),
+            ..StepFacts::default()
+        };
+        let of_gesture = |gesture| StepFacts {
+            gesture: Some(gesture),
+            ..StepFacts::default()
+        };
+        let in_invocation = |invocation| StepFacts {
+            invocation: Some(invocation),
+            ..StepFacts::default()
+        };
+        // The changes of one act are one step, by whichever fact the store names it, and a
+        // person's changes that name none are one step beside each other.
+        assert!(same_step(&unnamed("ada"), &unnamed("ada")));
+        assert!(same_step(&in_run("task@7"), &in_run("task@7")));
+        assert!(same_step(&of_gesture(&gesture), &of_gesture(&gesture)));
+        assert!(same_step(
+            &in_invocation(&invocation),
+            &in_invocation(&invocation)
+        ));
+        // Another act, another hand, or an act beside a change that names none: another step.
+        assert!(!same_step(&unnamed("ada"), &unnamed("bo")));
+        assert!(!same_step(&in_run("task@7"), &in_run("task@8")));
+        assert!(!same_step(&of_gesture(&gesture), &of_gesture(&other)));
+        assert!(!same_step(
+            &in_invocation(&invocation),
+            &in_invocation(&elsewhere)
+        ));
+        assert!(!same_step(&in_run("task@7"), &unnamed("alex")));
+        assert!(!same_step(&in_invocation(&invocation), &unnamed("ada")));
+    }
 
     #[test]
     fn the_first_page_of_a_long_history_reads_only_that_page() {
