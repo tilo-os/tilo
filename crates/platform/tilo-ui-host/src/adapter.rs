@@ -130,6 +130,13 @@ impl Published {
             })
     }
 
+    /// Whether the window publishes the action (`resource`, `action`) a control's event runs, to
+    /// bind the control to: what a press of it takes the one path through the door.
+    pub(crate) fn holds(&self, resource: &str, action: &str) -> bool {
+        self.holding(resource)
+            .is_some_and(|held| tilo_actions::ActionBinding::unit_for(held, action).is_ok())
+    }
+
     /// The binding of the action (`resource`, `action`) a control's event runs, built once and
     /// kept.
     fn binding(&mut self, resource: &str, action: &str) -> Option<tilo_actions::ActionBinding<()>> {
@@ -163,22 +170,22 @@ impl Published {
     /// control shows — a row's task, a window's notebook. Where this window publishes no such
     /// record (an action of its own app's on another app's reading, `morning_cleanup` over Tasks),
     /// the resource that publishes the action answers instead: the door that runs it holds that one.
-    fn naming(&self, resource: &str, action: &str, declared: &str) -> Option<String> {
+    fn naming(&self, resource: &str, action: &str, declared: &str) -> String {
         if let Some(spec) = self.holding(resource)
             && let Some(named) = named_by(spec, action, declared)
         {
-            return Some(named_address(spec, named, declared).encode());
+            return named_address(spec, named, declared).encode();
         }
         if let Some((spec, named)) = self
             .resources
             .iter()
             .find_map(|spec| named_by(spec, action, declared).map(|named| (spec, named)))
         {
-            return Some(named_address(spec, named, declared).encode());
+            return named_address(spec, named, declared).encode();
         }
         // A reading of another app's record: the id the control names is the resource that app
         // publishes it under, and its own door resolves it there.
-        Some(tilo_actions::ActionAddress::new(resource, declared).encode())
+        tilo_actions::ActionAddress::new(resource, declared).encode()
     }
 
     /// What the control `node` does, as the identity anyone looks it up by: the kind of record it
@@ -196,7 +203,7 @@ impl Published {
             .values()
             .find_map(|event| event.invokes.as_ref())
         {
-            return self.naming(&invoked.resource, &invoked.action, &invoked.declared);
+            return Some(self.naming(&invoked.resource, &invoked.action, &invoked.declared));
         }
         let binding = node.binding.as_ref()?;
         let (target, field) = binding.field()?;
@@ -216,7 +223,7 @@ fn named_address(
 ) -> tilo_actions::ActionAddress {
     let mut address = tilo_actions::ActionAddress::naming(spec, named);
     if !declared.is_empty() {
-        address.action = declared.to_owned();
+        declared.clone_into(&mut address.action);
     }
     address
 }
@@ -274,6 +281,10 @@ impl Adapter {
     /// ([`Published::identity_of`]).
     pub(crate) fn identity_of(&self, node: &UiNode) -> Option<String> {
         self.published.borrow().identity_of(node)
+    }
+
+    pub(crate) fn holds(&self, resource: &str, action: &str) -> bool {
+        self.published.borrow().holds(resource, action)
     }
 
     #[must_use]

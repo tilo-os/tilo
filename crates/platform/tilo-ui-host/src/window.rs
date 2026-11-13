@@ -2466,14 +2466,16 @@ fn rebinding(
     after: &crate::adapter::Adapter,
     node: &UiNode,
 ) -> bool {
-    // What a control does, and what it is known by, are the same thing: an action published since
-    // it was built — a command of its own app's on another app's reading — names it otherwise, so
-    // the control is built again.
-    before.identity_of(node) != after.identity_of(node)
-        || node
-            .children
-            .iter()
-            .any(|child| rebinding(before, after, child))
+    node.events.values().any(|event| {
+        let Some(invoked) = event.invokes.as_ref() else {
+            return false;
+        };
+        before.holds(&invoked.resource, &invoked.action)
+            != after.holds(&invoked.resource, &invoked.action)
+    }) || node
+        .children
+        .iter()
+        .any(|child| rebinding(before, after, child))
 }
 
 fn declared_within(node: &UiNode, pressed: &ui::platform::Shortcut) -> Option<(String, String)> {

@@ -299,11 +299,40 @@ impl Surface {
             return (resources, named);
         }
         let every = self.resources(None);
-        match named(&every) {
-            Some(named) => (every, named),
-            None => (resources, address.clone()),
+        if let Some(named) = named(&every) {
+            return (every, named);
+        }
+        // A control of another app's record that runs an action of this one (Today's cleanup over
+        // the Tasks list it shows): the address names a record this app holds no resource for, and
+        // the operation by the id this app declares it by — the resource that publishes it runs it.
+        let other_app =
+            tilolang_tilo::publish::app_of(&address.resource).is_some_and(|app| app != self.app);
+        if other_app && let Some(named) = declared_in(&every, &address.action) {
+            return (every, named);
+        }
+        (resources, address.clone())
+    }
+}
+
+/// The action this app publishes by `declared` — the id its declaration keeps — on the first
+/// resource that offers it, in reading order.
+fn declared_in(resources: &[ResourceSpec], declared: &str) -> Option<ActionAddress> {
+    if declared.is_empty() {
+        return None;
+    }
+    for resource in resources {
+        if let Some(action) = resource
+            .actions
+            .iter()
+            .find(|action| action.declared == declared)
+        {
+            return Some(ActionAddress::new(resource.id.as_str(), action.id.clone()));
+        }
+        if let Some(named) = declared_in(&resource.children, declared) {
+            return Some(named);
         }
     }
+    None
 }
 
 /// `spec` without its children: the resource itself, its actions and its views.

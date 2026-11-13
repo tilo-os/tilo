@@ -490,6 +490,13 @@ pub trait Widget {
         None
     }
 
+    /// Take `identity` as what this control does ([`crate::widget::Identified`]) where it says so
+    /// itself: `false` for one that holds no identity of its own, which the host builds again.
+    fn identify(&mut self, identity: &str) -> bool {
+        let _ = identity;
+        false
+    }
+
     /// [`Self::accessibility`] with its synthetic children shared, for a widget that keeps them between
     /// frames: each child it did not change is handed over as the very `Arc` of the last frame, which
     /// the semantic tree takes as unchanged without copying or comparing it.

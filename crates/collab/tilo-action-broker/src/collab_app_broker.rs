@@ -4386,10 +4386,15 @@ impl AppBrokerState {
             address:
                 tilo_actions::ActionAddress {
                     resource,
-                    item: None,
+                    item,
                     action,
                 },
         } = target;
+        // The directory lists resources, never the rows of one: an address that names a row says
+        // which record of the app's it acts on, which only the app's own door resolves.
+        if item.is_some() {
+            return Err(ActionDirectoryBridgeError::InvalidRequest);
+        }
         let peer_id = *peer_id;
         if revision.is_empty() {
             return Err(ActionDirectoryBridgeError::InvalidRequest);

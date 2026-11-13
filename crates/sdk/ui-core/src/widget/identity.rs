@@ -51,6 +51,11 @@ impl super::Decorator for Identified {
             .map(|node| node.with_action(self.identity.clone()))
     }
 
+    fn identify(&mut self, identity: &str) -> bool {
+        Identified::identify(self, identity);
+        true
+    }
+
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         self.content.as_any()
     }

@@ -532,6 +532,9 @@ decorator_trait! {
     }
 
     mut {
+        /// What the control inside says it does ([`crate::widget::Identified`]): an outer decorator
+        /// reaches it, so a window's report of what a control does moves with it.
+        fn identify(identity: &str) -> bool;
         fn set_full_bleed(full_bleed: bool);
         fn place_disclosing(slot: vello::kurbo::Rect);
         fn note_placement(placement: crate::widget::Placement);
