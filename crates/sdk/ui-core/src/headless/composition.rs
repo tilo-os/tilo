@@ -289,6 +289,7 @@ impl FrameHarness {
     /// logical pixel, its box's top left at the origin: the picture a host
     /// shows for a widget that declares nothing of its own
     /// ([`crate::composition::Own::Painted`]). `None` when no laid-out widget has that path.
+    /// Quiet: draws the widget's paint; nothing a frame reads changes.
     pub fn paint_composed(&mut self, path: &str, scale: f64) -> Option<(Scene, [f64; 4])> {
         if path == super::slot_row::WINDOW_SLOTS {
             return self.paint_slot_row(scale);
@@ -343,10 +344,10 @@ impl FrameHarness {
     /// Scroll the widget at `path` to `offset` logical pixels, as a host
     /// whose own scroller the person moved asks; whether it took it.
     pub fn scroll_composed(&mut self, path: &str, offset: f64) -> bool {
+        self.invalidate_local();
         let Some(&node) = self.named_target_nodes().get(path) else {
             return false;
         };
-        self.invalidate_local();
         // SAFETY: as in `paint_composed`.
         let scrolled = unsafe {
             crate::bound_dispatch::mutate_bound_node(
