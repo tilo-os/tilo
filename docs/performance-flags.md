@@ -127,7 +127,6 @@ animation. Likewise keep UI scale, text scale, theme, and overlays constant.
 `high-contrast`, otherwise dark); it is not a renderer optimization switch.
 
 Sources: [app.rs](../crates/sdk/ui-core/src/app.rs),
-[nav_split.rs](../crates/sdk/ui-core/src/widget/nav_split.rs),
 [profiling.rs](../crates/sdk/ui-core/src/profiling.rs),
 [WebView profiling](../crates/sdk/ui-core/src/webview/profile.rs).
 
@@ -140,7 +139,7 @@ selection. Keep their values identical across steady-state comparisons.
 | --------------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `TILO_STARTUP_METRICS_PATH` | Unset: disabled; path                                                | Enables startup event capture at initialization. Explicit dump or scoped shutdown writes/replaces JSON at that path; parent directories are not created and write errors are ignored. Verify the file exists before reporting a result.                                                                                                                                                             |
 
-Sources: [warmup.rs](../crates/sdk/ui-core/src/warmup.rs),
+Sources: [ui-core startup](../crates/sdk/ui-core/src),
 [session startup](../crates/session/session/src/main.rs),
 [startup metrics](../crates/system/tilo-startup-metrics/src/lib.rs).
 
@@ -343,9 +342,8 @@ software-renderer measurements in this VM establish none of these.
 
 `CARGO_BUILD_JOBS`, `RUSTC_WRAPPER`, `CARGO_TARGET_DIR`, and `CARGO_INCREMENTAL`
 control build scheduling/caching. The optional Cargo shim also uses
-`SCCACHE_CACHE_SIZE`, `SCCACHE_DIR`, and `SCCACHE_SERVER_PORT`; see
-[build troubleshooting](development/troubleshooting.md#builds-repeat-work-or-storage-is-exhausted).
-They are not runtime UI switches. Use a separate target directory per worktree.
+`SCCACHE_CACHE_SIZE`, `SCCACHE_DIR`, and `SCCACHE_SERVER_PORT`. They are not
+runtime UI switches. Use a separate target directory per worktree.
 Do not call a cache-hit build-time reduction a frame-time improvement.
 
 The optional [PGO/BOLT scripts](../scripts/perf/README.md) are separate build
@@ -400,7 +398,6 @@ than silently comparing different feature sets.
 Dirty/animation gating, retained widget/resource caches, allocation-free child
 traversal, retained scene sections, bounded queues/image caches/undo history,
 shared image storage, GPU buffer/bind-group reuse, and DRM recovery checks are
-code paths or fixed bounds, not hidden tunables. See the
-[rendering internals](ui-rendering-internals.md). Do not invent flags for cache
+code paths or fixed bounds, not hidden tunables. Do not invent flags for cache
 sizes, disable recovery, or describe diagnostic geometry-reuse opportunities as
-already implemented production reuse.
+production reuse.

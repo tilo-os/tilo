@@ -16,7 +16,7 @@ Two things serve it:
   library), which serves these same routes in process: no second implementation, no socket.
 
 MCP is the same calls for agents (`/mcp` on the API server, `tilo mcp` on a computer): its tools
-answer the bodies below as `structuredContent` (see [`mcp.md`](mcp.md)).
+answer the bodies below as `structuredContent` (see [MCP's typed answers](sdk-wire.md)).
 
 The OpenAPI 3.1 description is generated from the same catalogue and types the calls use:
 [`docs/api/openapi.json`](../api/openapi.json) (`tilo-api openapi --check` fails when it drifts).
