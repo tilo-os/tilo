@@ -1,11 +1,4 @@
 //! The seam between the app's controller and its views.
-//!
-//! [`DbClientApp`](crate::app::DbClientApp) owns the session and every effect
-//! on it. The views the window shell hosts (the navigator in the sidebar and
-//! the workspace beside it) own their widgets and nothing else: each frame the
-//! controller publishes a [`ViewModel`] describing what is on screen, and the
-//! views answer with [`Intent`]s describing what the person asked for. Neither
-//! side reaches into the other's state.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -21,20 +14,17 @@ use crate::model::{
 };
 use crate::session::{MainTab, RunStatus};
 
-/// One saved connection as the navigator lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConnectionRow {
     pub id: Uuid,
     pub name: String,
     pub engine: Engine,
     /// Where it connects: `host:port`, or the database file's name; empty
-    /// for the bundled sample.
     pub address: String,
     /// The bundled sample cannot be removed.
     pub removable: bool,
 }
 
-/// A dialog the workspace presents over the window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Dialog {
     /// The new-connection form.
@@ -43,7 +33,6 @@ pub enum Dialog {
     ConfirmRun,
 }
 
-/// What is on screen, published by the controller.
 #[derive(Clone)]
 pub struct ViewModel {
     pub connections: Vec<ConnectionRow>,
@@ -103,12 +92,10 @@ impl Default for ViewModel {
     }
 }
 
-/// What a view asks the controller to do.
 #[derive(Clone, Debug)]
 pub enum Intent {
     Connect(Uuid),
     /// Open a saved connection or saved query a search hit or an agent
-    /// names.
     OpenItem(Uuid),
     /// Show the new-connection form.
     NewConnection,
@@ -118,7 +105,7 @@ pub enum Intent {
     SelectTab(MainTab),
     /// Run the statement in the editor (asks first when it changes data).
     Run(String),
-    /// Run the statement the confirmation holds.
+    /// Confirmation before a statement that changes data runs.
     ConfirmRun,
     /// Close whichever dialog is open.
     CloseDialog,
@@ -142,14 +129,11 @@ struct Inner {
     model: ViewModel,
     intents: VecDeque<Intent>,
     /// The editor's text, mirrored by the workspace so the controller can run
-    /// the statement a shortcut was pressed over.
     sql: String,
     /// Where the editor submits its edits of the shared SQL, once the
-    /// framework dispatcher is attached.
     sql_edits: Option<Dispatcher<Record>>,
 }
 
-/// A shared handle on the model and the intent queue.
 #[derive(Clone, Default)]
 pub struct Link {
     inner: Rc<RefCell<Inner>>,

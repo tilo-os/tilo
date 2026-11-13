@@ -1,13 +1,5 @@
 //! The sidebar: the saved connections, and under them the tables and views
 //! of the open one's database.
-//!
-//! One toolkit [`NavList`], so a row looks, selects and moves the way it does
-//! in every other app, and one selection: the table that is open, or the
-//! connection when no table is. A connection says where it connects (its
-//! host and port, or its file) on a second line, and the open one carries
-//! the active dot. The open database's tables are a section of their own,
-//! titled with the connection's name, so the window's filter narrows the
-//! tables and never the connections.
 
 use ui::framework::Actions;
 use ui::icons::Icon;
@@ -81,7 +73,6 @@ fn relation_items(schema: &SchemaInfo) -> Vec<NavItem> {
 }
 
 /// What an open connection holds: the tables of its one schema, or a folder
-/// for each when there are several, open whenever the database is opened.
 fn catalog_items(schema: &DatabaseSchema) -> Vec<NavItem> {
     if let [only] = schema.schemas.as_slice() {
         return relation_items(only);
@@ -130,7 +121,6 @@ fn connection_section(rows: &[ConnectionRow], open: Option<Uuid>) -> NavSection 
 }
 
 /// The open database's tables, under the connection's name; the one
-/// section the window's filter narrows.
 fn catalog_section(name: &str, schema: &DatabaseSchema) -> NavSection {
     NavSection::new(CATALOG, name, catalog_items(schema))
         .empty_caption(t("db-tables"))
@@ -158,8 +148,6 @@ pub struct Navigator {
 
 impl Navigator {
     /// The sidebar over `link`; with the workspace's `actions`, a saved
-    /// connection's row removes it and the heading opens the new-connection
-    /// form, each through its published action.
     pub fn new(link: &Link, actions: Option<&Actions<Record>>) -> Self {
         let ask = link.clone();
         let opened = link.clone();
@@ -167,7 +155,6 @@ impl Navigator {
             .with_accessible_name(t("db-navigator"))
             .on_view("db.sidebar", move |id| {
                 if let Some(id) = parse_connection(&id) {
-                    // Choosing the connection that is already open keeps it open.
                     let open = opened.read(|model| model.connected && model.active == Some(id));
                     if !open {
                         ask.ask(Intent::Connect(id));
@@ -219,7 +206,6 @@ impl Navigator {
             self.shown = rows;
             self.shown_open = open_now;
         }
-        // One selection: the open table, or else the connection itself.
         let selected_key = match (&selected, open) {
             (Some(relation), Some(_)) => Some(relation_key(relation)),
             _ => active.map(connection_key),
@@ -301,16 +287,12 @@ mod tests {
         }
     }
 
-    /// The open database's tables are their own filterable section, titled
-    /// with the connection, with row counts; several schemas get a folder
-    /// each; with no connection open there are no tables.
     #[test]
     fn the_open_connection_holds_its_catalog() {
         let sample = row("Chinook sample", Engine::Sqlite, false);
         let analytics = row("Analytics", Engine::Postgres, true);
         let rows = [sample.clone(), analytics.clone()];
 
-        // --- phase: one_schema_is_just_tables ---
         {
             let schema = catalog(&[(
                 "main",
@@ -346,7 +328,6 @@ mod tests {
             assert!(tables[1].count.is_none(), "a view has no count");
         }
 
-        // --- phase: several_schemas_are_one_folder_each ---
         {
             let schema = catalog(&[
                 (
@@ -374,12 +355,10 @@ mod tests {
             );
         }
 
-        // --- phase: no_connection_open_means_no_tables ---
         {
             assert_eq!(sections(&rows, None).len(), 1, "only the connections");
         }
 
-        // --- phase: a_row_id_names_its_relation ---
         {
             let relation = RelationRef {
                 schema: "other:schema".into(),
@@ -415,7 +394,6 @@ mod tests {
         );
         harness.relayout();
 
-        // --- phase: the_open_connection_is_selected_until_a_table_is ---
         {
             let navigator = harness.root::<Navigator>();
             assert_eq!(
@@ -424,7 +402,6 @@ mod tests {
             );
         }
 
-        // --- phase: choosing_a_connection_opens_it ---
         {
             let rect = harness
                 .root::<Navigator>()
@@ -441,7 +418,6 @@ mod tests {
             );
         }
 
-        // --- phase: choosing_the_open_connection_asks_for_nothing ---
         {
             let rect = harness
                 .root::<Navigator>()
@@ -457,7 +433,6 @@ mod tests {
             );
         }
 
-        // --- phase: choosing_a_table_opens_it ---
         {
             let key = relation_key(&RelationRef {
                 schema: "main".into(),
@@ -476,7 +451,6 @@ mod tests {
             );
         }
 
-        // --- phase: the_sample_has_no_remove_action_and_others_do ---
         {
             let section = connection_section(&[sample, analytics], None);
             assert!(
@@ -491,7 +465,6 @@ mod tests {
         }
     }
 
-    /// Opening a table moves the one selection to it, and closing it moves the selection back to the connection; opening another connection and returning to the first still lists its tables.
     #[test]
     fn one_selection_follows_the_open_table() {
         let link = Link::new();

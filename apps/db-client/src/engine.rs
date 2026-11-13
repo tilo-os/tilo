@@ -1,13 +1,6 @@
 //! `SQLite` execution engine: opens a handle, seeds the bundled sample
 //! database, introspects the schema (tables, columns, keys, indexes) and
 //! runs arbitrary SQL returning a [`QueryResult`].
-//!
-//! The three engines — local `SQLite` plus the real network `PostgreSQL` and
-//! `MySQL` drivers — are unified behind [`LiveEngine`]. All of them block, so
-//! they are owned by the background [`crate::worker`] thread rather than the
-//! UI thread: [`open_engine`] opens whichever engine a profile targets, and a
-//! refused socket or a bad password surfaces as the driver's own error string,
-//! never a fabricated success.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,10 +19,8 @@ use crate::model::{
 /// the UI process. Table browsing remains separately paged at 100 rows.
 pub const MAX_QUERY_ROWS: usize = 1_000;
 /// Aggregate payload cap for one result. It prevents many columns of valid
-/// (but individually capped) text from multiplying into an excessive UI heap.
 pub const MAX_QUERY_RESULT_BYTES: usize = 8 * 1024 * 1024;
 /// Caps vector metadata as well as payload: NULL-heavy, extremely-wide output
-/// should not allocate an arbitrary number of [`Cell`] entries either.
 pub const MAX_QUERY_RESULT_CELLS: usize = 100_000;
 #[cfg(feature = "samples")]
 use crate::sample;
@@ -55,10 +46,6 @@ impl QueryCancellation {
     /// query.
     pub fn request(&self) {
         match self.clone() {
-            // Not `sqlite3_interrupt`: SQLite drops an interrupt that lands
-            // before the statement starts stepping, and one that lands late
-            // stops whatever statement runs then. The flag belongs to this
-            // query alone and its progress handler acts on it.
             Self::Sqlite(cancelled) => cancelled.store(true, Ordering::Relaxed),
             Self::Postgres(token) => {
                 let _ = thread::Builder::new()
@@ -90,11 +77,9 @@ impl QueryCancellation {
 }
 
 /// How many `SQLite` VM instructions run between checks of a query's
-/// cancellation flag: a few microseconds of work.
 const CANCELLATION_CHECK_OPS: std::ffi::c_int = 1000;
 
 /// A live `SQLite` handle. Owns the connection for the lifetime of the
-/// session; all introspection + query execution goes through it.
 pub struct SqliteEngine {
     /// Boxed: the driver's connection is the bulk of the engine, and a `LiveEngine` of another
     /// driver would carry its size.
@@ -106,9 +91,6 @@ pub struct SqliteEngine {
 }
 
 impl SqliteEngine {
-    /// Open an in-memory database and seed it with the bundled sample
-    /// schema + data so the schema browser and query runner work with no
-    /// external file.
     #[cfg(feature = "samples")]
     pub fn open_sample() -> Result<Self, String> {
         let conn = Box::new(Connection::open_in_memory().map_err(|e| e.to_string())?);
@@ -134,12 +116,9 @@ impl SqliteEngine {
     }
 
     /// Introspect the full schema. `SQLite` has a single implicit namespace,
-    /// which we surface as a "main" schema so the tree shape matches the
-    /// multi-schema engines.
     pub fn introspect(&self) -> Result<DatabaseSchema, String> {
         let mut tables = Vec::new();
 
-        // Enumerate user tables + views, skipping SQLite's internal tables.
         let mut stmt = self
             .conn
             .prepare(
@@ -295,13 +274,10 @@ impl SqliteEngine {
     fn run_statement(&self, trimmed: &str) -> Result<QueryResult, String> {
         let start = ui::time::now();
 
-        // Decide select-vs-DML by trying to prepare and asking the column
-        // count. A zero-column statement is DML/DDL.
         let mut stmt = self.conn.prepare(trimmed).map_err(|e| e.to_string())?;
         let col_count = stmt.column_count();
 
         if col_count == 0 {
-            // DML/DDL — execute and report affected rows.
             let affected = self.conn.execute(trimmed, []).map_err(|e| e.to_string())?;
             return Ok(QueryResult {
                 columns: Vec::new(),
@@ -351,6 +327,7 @@ impl SqliteEngine {
         })
     }
 
+    /// Capture the backend-specific interruption capability before beginning
     pub(crate) fn cancellation_handle(&self) -> QueryCancellation {
         QueryCancellation::Sqlite(Arc::clone(&self.cancelled))
     }
@@ -383,15 +360,11 @@ pub(crate) fn row_retained_bytes(row: &[Cell]) -> usize {
 }
 
 /// A live connection to any supported engine. The session holds one of these
-/// and dispatches introspection + query execution uniformly, so `SQLite` (local,
-/// bundled) and the real network engines share one code path.
 pub enum LiveEngine {
     Sqlite(SqliteEngine),
     /// Boxed: a network driver's connection buffers what it reads and writes, so the engine is
-    /// much larger than the local one.
     Postgres(Box<crate::engine_pg::PostgresEngine>),
     /// Boxed: the `MySQL` engine carries the driver's connection and the options it reconnects
-    /// with.
     MySql(Box<crate::engine_mysql::MySqlEngine>),
 }
 
@@ -405,7 +378,7 @@ impl LiveEngine {
         }
     }
 
-    /// Run a single SQL statement against whichever engine backs this handle.
+    /// Run a single SQL statement and collect the result.
     pub fn run(&mut self, sql: &str) -> Result<QueryResult, String> {
         match self {
             LiveEngine::Sqlite(e) => e.run(sql),
@@ -425,9 +398,6 @@ impl LiveEngine {
     }
 
     /// Read one page of a table's rows. The identifier is quoted the way the
-    /// backing engine expects — double quotes for SQLite/PostgreSQL, backticks
-    /// for `MySQL` — so a table named like a keyword (or a `MySQL` table at all)
-    /// browses correctly rather than erroring on the wrong quote style.
     pub fn browse_table(
         &mut self,
         schema: &str,
@@ -481,10 +451,8 @@ pub fn open_engine(profile: &ConnectionProfile) -> Result<LiveEngine, String> {
 mod tests {
     use super::*;
 
-    /// The `SQLite` engine introspects tables and foreign keys, returns rows and reports affected rows.
     #[test]
     fn sqlite_engine_introspects_and_executes() {
-        // --- phase: sample_engine_introspects_expected_tables ---
         {
             let eng = SqliteEngine::open_sample().unwrap();
             let schema = eng.introspect().unwrap();
@@ -494,7 +462,6 @@ mod tests {
             assert!(artists.columns.iter().any(|c| c.primary_key));
         }
 
-        // --- phase: select_returns_rows_with_columns ---
         {
             let mut eng = SqliteEngine::open_sample().unwrap();
             let r = eng
@@ -505,7 +472,6 @@ mod tests {
             assert_eq!(r.rows.len(), 3);
         }
 
-        // --- phase: dml_reports_rows_affected ---
         {
             let mut eng = SqliteEngine::open_sample().unwrap();
             let r = eng
@@ -515,7 +481,6 @@ mod tests {
             assert_eq!(r.rows_affected, Some(0));
         }
 
-        // --- phase: foreign_keys_are_discovered ---
         {
             let eng = SqliteEngine::open_sample().unwrap();
             let schema = eng.introspect().unwrap();
@@ -530,7 +495,6 @@ mod tests {
     /// Hostile text and many large cells are truncated to bounded sizes.
     #[test]
     fn sqlite_results_are_bounded() {
-        // --- phase: sqlite_hostile_text_is_retained_at_a_bounded_size ---
         {
             let mut eng = SqliteEngine::open_sample().unwrap();
             let sql = format!(
@@ -545,7 +509,6 @@ mod tests {
             assert!(value.ends_with("… [truncated]"));
         }
 
-        // --- phase: aggregate_budget_truncates_many_large_cells_across_rows_and_columns ---
         {
             let mut eng = SqliteEngine::open_sample().unwrap();
             let text = "x".repeat(Cell::MAX_RETAINED_TEXT_BYTES);
@@ -571,9 +534,6 @@ mod tests {
         }
     }
 
-    /// A cancellation requested before the statement starts still stops it:
-    /// `SQLite` forgets an interrupt that lands before the first step, which
-    /// is exactly when a quick Cancel after Run arrives.
     #[test]
     fn sqlite_cancellation_before_the_statement_starts_still_stops_it() {
         let mut eng = SqliteEngine::open_sample().unwrap();

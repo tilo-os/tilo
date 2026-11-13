@@ -1,14 +1,9 @@
-//! Pure data types for the database client: connection profiles, the
-//! introspected schema tree, and query results. No IO and no rendering —
-//! the engine layer fills these in, the widgets read them.
-
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Model};
 use uuid::Uuid;
 
-/// Which database engine a connection targets. `SQLite` is fully local and
-/// always available; Postgres and `MySQL` are network engines whose live
-/// drivers are gated behind a sandbox grant (see [`ConnectionProfile`]).
+/// Which engine a connection targets. `SQLite` is local and always available; Postgres and
+/// `MySQL` are network engines.
 #[derive(Model, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Engine {
     Sqlite,
@@ -39,8 +34,7 @@ impl Engine {
         [Engine::Sqlite, Engine::Postgres, Engine::MySql]
     }
 
-    /// Stable string key an engine is named by where it is typed: a verb's
-    /// parameter, the record. Kept distinct from [`label`](Self::label) so
+    /// The stable string an engine is named by where it is typed, apart from its label, so
     /// the key never shifts with a UI rename.
     pub fn as_key(self) -> &'static str {
         match self {
@@ -50,9 +44,8 @@ impl Engine {
         }
     }
 
-    /// Parse an engine back from its [`as_key`](Self::as_key) form, defaulting
-    /// to `PostgreSQL` for an unknown key so a forward-compatible document still
-    /// renders something sensible.
+    /// An engine from its key; an unknown key reads as `PostgreSQL`, so a
+    /// forward-compatible document still renders.
     pub fn from_key(key: &str) -> Engine {
         match key {
             "sqlite" => Engine::Sqlite,
@@ -62,36 +55,29 @@ impl Engine {
     }
 }
 
-/// A saved connection. Network engines carry host/port/user; `SQLite` carries
-/// a file path. `connected` reflects whether a live handle is currently open.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConnectionProfile {
     pub id: Uuid,
     pub name: String,
     pub engine: Engine,
-    /// Network engines: TCP host. `SQLite`: ignored.
     pub host: String,
     pub port: u16,
     pub database: String,
     pub user: String,
-    /// Network engines: password used to authenticate. Held in memory only —
-    /// `#[serde(skip)]` keeps it out of the on-disk profile so plaintext
-    /// secrets are never persisted; the user re-enters it per session.
+    /// The password, held in memory only: `#[serde(skip)]` keeps plaintext out of the
+    /// profile on disk.
     #[serde(skip, default)]
     pub password: String,
-    /// `SQLite` file path (or `:memory:` for the bundled sample).
     pub file_path: String,
-    /// Whether a live handle is currently open for this profile.
     #[serde(default)]
     pub connected: bool,
-    /// True for the read-only bundled sample database that ships with the
-    /// app so the schema browser and query runner work offline.
+    /// True for the read-only sample database that ships with the app, so the browser and
+    /// query runner work offline.
     #[serde(default)]
     pub is_sample: bool,
 }
 
 impl ConnectionProfile {
-    /// The connection that opens the sample database.
     #[cfg(feature = "samples")]
     pub fn sqlite_sample() -> Self {
         Self {
@@ -125,8 +111,6 @@ impl ConnectionProfile {
         }
     }
 
-    /// Human-readable target ("host:port/db" or a file path) for the
-    /// connection list subtitle.
     pub fn subtitle(&self) -> String {
         match self.engine {
             Engine::Sqlite => {
@@ -142,9 +126,6 @@ impl ConnectionProfile {
         }
     }
 
-    /// Where the connection goes, as the sidebar's second line: `host:port`
-    /// for a network engine, the file's name for `SQLite`, nothing for the
-    /// bundled sample.
     pub fn address(&self) -> String {
         match self.engine {
             Engine::Sqlite if self.is_sample || self.file_path == ":memory:" => String::new(),
@@ -158,13 +139,12 @@ impl ConnectionProfile {
         }
     }
 
-    /// Network engines need a sandbox grant before a live handle can open.
+    /// Whether a sandbox grant is needed before a live handle opens.
     pub fn is_remote(&self) -> bool {
         !matches!(self.engine, Engine::Sqlite)
     }
 }
 
-/// A single column of a table, as introspected from the engine.
 #[derive(Clone, Debug)]
 pub struct ColumnInfo {
     pub name: String,
@@ -174,7 +154,6 @@ pub struct ColumnInfo {
     pub default: Option<String>,
 }
 
-/// A foreign-key constraint on a table.
 #[derive(Clone, Debug)]
 pub struct ForeignKey {
     pub column: String,
@@ -182,7 +161,6 @@ pub struct ForeignKey {
     pub ref_column: String,
 }
 
-/// A secondary index on a table.
 #[derive(Clone, Debug)]
 pub struct IndexInfo {
     pub name: String,
@@ -190,14 +168,12 @@ pub struct IndexInfo {
     pub columns: Vec<String>,
 }
 
-/// What kind of relation a schema entry is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RelationKind {
     Table,
     View,
 }
 
-/// A table or view plus its full structure.
 #[derive(Clone, Debug)]
 pub struct TableInfo {
     pub name: String,
@@ -205,12 +181,12 @@ pub struct TableInfo {
     pub columns: Vec<ColumnInfo>,
     pub foreign_keys: Vec<ForeignKey>,
     pub indexes: Vec<IndexInfo>,
-    /// Estimated row count (a `COUNT(*)` for tables, `None` for views).
+    /// Estimated row count: a `COUNT(*)` for tables, `None` for views.
     pub row_count: Option<i64>,
 }
 
-/// A relation's unambiguous catalog address. Table names are only unique
-/// inside a schema, so live browse operations must never use a bare name.
+/// A relation's unambiguous catalog address: a table name is unique only inside its
+/// schema, so live operations never use a bare name.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RelationRef {
     pub schema: String,
@@ -223,16 +199,12 @@ impl TableInfo {
     }
 }
 
-/// A logical schema namespace. `SQLite` has a single implicit "main" schema;
-/// Postgres/MySQL expose several. The tree renders database → schema →
-/// tables → columns.
 #[derive(Clone, Debug)]
 pub struct SchemaInfo {
     pub name: String,
     pub tables: Vec<TableInfo>,
 }
 
-/// The fully-introspected schema for one connection.
 #[derive(Clone, Debug, Default)]
 pub struct DatabaseSchema {
     pub schemas: Vec<SchemaInfo>,
@@ -273,8 +245,6 @@ impl DatabaseSchema {
     }
 }
 
-/// A single cell value in a result set. Kept as a small enum so NULL can be
-/// styled distinctly and numbers can be right-aligned.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cell {
     Null,
@@ -304,8 +274,8 @@ impl Cell {
         ))
     }
 
-    /// Approximate owned payload retained by this cell. Blob payloads are not
-    /// kept, only their size metadata, so they consume no result-data budget.
+    /// The payload this cell retains. A blob keeps its size only, so it takes no
+    /// result-data budget.
     pub fn retained_bytes(&self) -> usize {
         match self {
             Self::Text(value) => value.len(),
@@ -313,8 +283,7 @@ impl Cell {
             Self::Null | Self::Blob(_) => 0,
         }
     }
-    /// Display string for the grid. NULL renders the literal token; callers
-    /// style it dim+italic.
+    /// The grid's text; `NULL` renders as the literal token.
     pub fn display(&self) -> String {
         match self {
             Cell::Null => "NULL".to_string(),
@@ -352,45 +321,33 @@ fn format_real(r: f64) -> String {
     }
 }
 
-/// Why a result holds fewer rows than the statement returned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Truncation {
-    /// The app's row limit was reached.
     RowLimit,
-    /// The result's payload (bytes or cells) reached its limit first.
     Payload,
 }
 
-/// The result of running a SQL statement.
 #[derive(Clone, Debug, Default)]
 pub struct QueryResult {
     pub columns: Vec<String>,
     pub rows: Vec<Vec<Cell>>,
     /// Wall-clock time the query took.
     pub elapsed_ms: f64,
-    /// For non-SELECT statements: rows affected.
+    /// Rows affected, for a statement that changes data.
     pub rows_affected: Option<i64>,
-    /// True when the statement returned a row set (SELECT/PRAGMA), false for
-    /// DML/DDL.
     pub is_select: bool,
-    /// Why collection stopped short of what the statement returned, if it
-    /// did. The grid can stay responsive without pretending the server
+    /// Why collection stopped short, if it did, so the grid never pretends the server
     /// returned only these rows.
     pub truncation: Option<Truncation>,
 }
 
-/// The row limit a query result is collected to, as the sentence that says so
-/// spells it.
 pub const ROW_LIMIT_NOTE: usize = crate::engine::MAX_QUERY_ROWS;
 
 impl QueryResult {
-    /// Whether the result holds fewer rows than the statement returned.
     pub fn truncated(&self) -> bool {
         self.truncation.is_some()
     }
 
-    /// One line naming what the statement returned, and, when the result was
-    /// cut, saying that it was cut rather than adding a `+` nobody can read.
     pub fn message(&self) -> String {
         use crate::i18n::{count, t_args, text};
         let ms = text(&format!("{:.1}", self.elapsed_ms));
@@ -410,8 +367,6 @@ impl QueryResult {
         )
     }
 
-    /// What to do about a cut result, when it was cut: the reason and the way
-    /// out, in one sentence above the grid.
     pub fn cut_note(&self) -> Option<String> {
         use crate::i18n::{count, t, t_args, text};
         match self.truncation? {

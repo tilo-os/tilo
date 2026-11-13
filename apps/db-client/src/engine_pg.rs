@@ -3,11 +3,6 @@
 //! `pg_catalog`) and runs arbitrary SQL returning a [`QueryResult`]. Mirrors
 //! the shape of [`crate::engine::SqliteEngine`] so the session layer can hold
 //! any engine behind one enum.
-//!
-//! Row-returning statements stream through `PostgreSQL`'s prepared cursor and
-//! stop at the app result limit. Common scalar values are decoded directly;
-//! unsupported binary types remain explicitly labelled rather than being
-//! confused with a database NULL.
 
 use ui::time::{Duration, Instant};
 
@@ -453,7 +448,6 @@ impl PostgresEngine {
     }
 
     /// Introspect every user schema (skipping `pg_catalog` /
-    /// `information_schema`) into the shared [`DatabaseSchema`] shape.
     pub fn introspect(&mut self) -> Result<DatabaseSchema, String> {
         let rows = self
             .client
@@ -511,7 +505,6 @@ impl PostgresEngine {
     }
 
     fn columns(&mut self, schema: &str, table: &str) -> Result<Vec<ColumnInfo>, String> {
-        // Primary-key column set first, folded into each column's flag.
         let pk_rows = self
             .client
             .query(
@@ -644,7 +637,6 @@ impl PostgresEngine {
 
         match self.client.prepare(trimmed) {
             Ok(stmt) if stmt.columns().is_empty() => {
-                // DML/DDL — execute and report affected rows.
                 let affected = self.client.execute(&stmt, &[]).map_err(|e| e.to_string())?;
                 Ok(QueryResult {
                     columns: Vec::new(),
@@ -723,14 +715,12 @@ mod tests {
         out
     }
 
-    /// Binary numerics preserve exponents, scale and specials and binary arrays preserve values, nulls and dimensions.
     #[allow(
         clippy::too_many_lines,
         reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
     )]
     #[test]
     fn pg_binary_values_preserve_numeric_and_array_semantics() {
-        // --- phase: binary_numeric_preserves_exponents_scale_and_specials ---
         {
             assert_eq!(
                 PgNumeric::from_sql(&Type::NUMERIC, &numeric(0, 0, 2, &[1, 2300]))
@@ -788,7 +778,6 @@ mod tests {
             assert!(PgNumeric::from_sql(&Type::NUMERIC, &numeric(0, 0x1234, 0, &[])).is_err());
         }
 
-        // --- phase: binary_arrays_preserve_values_nulls_and_dimension_honesty ---
         {
             let ints = array_1d(
                 23,
@@ -864,10 +853,8 @@ mod tests {
         raw
     }
 
-    /// The config carries profile fields and defaults an empty port to 5432.
     #[test]
     fn pg_config_carries_profile_fields_and_default_port() {
-        // --- phase: config_carries_profile_fields ---
         {
             let mut p = ConnectionProfile::new("prod", Engine::Postgres);
             p.host = "db.example".into();
@@ -887,7 +874,6 @@ mod tests {
             );
         }
 
-        // --- phase: config_defaults_empty_port_to_5432 ---
         {
             let mut p = ConnectionProfile::new("x", Engine::Postgres);
             p.port = 0;

@@ -1,9 +1,4 @@
 //! The open connection's catalogue: its live rows and their search entries.
-//!
-//! Catalog discovery happens when the live schema or shared document changes,
-//! never on each palette keystroke. Every relation, column, result,
-//! transaction and history entry is a search entry the surface contributes
-//! to the app's one search source, which pages through very large schemas.
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -33,7 +28,6 @@ struct IndexState {
     last_error: Option<String>,
 }
 
-/// A cheap-to-clone handle to the open connection's catalogue.
 #[derive(Clone, Default)]
 pub struct DbSearchIndex {
     state: Arc<RwLock<IndexState>>,
@@ -202,9 +196,6 @@ fn index_current_result(
             connection,
             generation,
         };
-        // The result's read discloses it, so exporting it is offered to
-        // whoever may read it, an agent too, where Show is this window's own
-        // view.
         let read = DbEffect::ReadResult {
             connection,
             generation,
@@ -330,8 +321,6 @@ fn apply_catalog_snapshot(
 
 impl DbSearchIndex {
     /// What opening the row anchored at `anchor` runs: the effect its hit
-    /// was found for (browse a relation, focus the database, show the
-    /// result, rerun a query). `None` once the row is gone.
     pub fn opened(&self, anchor: &str) -> Option<DbEffect> {
         let resource = self.resource(anchor)?;
         let encoded = resource
@@ -395,7 +384,6 @@ fn index_resource(
     mut entry: SearchEntry,
 ) {
     let mut resource = resource;
-    // What opening the row runs comes first ([`DbSearchIndex::opened`]).
     let opens = resource
         .actions
         .iter()
@@ -467,8 +455,6 @@ fn revision(session: &Session) -> String {
 }
 
 fn push_revision_part(parts: &mut String, value: &str) {
-    // Names may contain punctuation; length-prefixing keeps distinct catalog
-    // states distinct without relying on a separator convention.
     parts.push_str(&value.len().to_string());
     parts.push(':');
     parts.push_str(value);
@@ -481,7 +467,6 @@ mod tests {
     use ui::search::{DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult};
 
     /// The app's search source over the index's entries, as the framework
-    /// builds it.
     fn source(index: &DbSearchIndex) -> impl SearchProvider + use<> {
         ui::framework::testing::search_source::<crate::record::Workspace>(index.entries())
     }
@@ -505,7 +490,6 @@ mod tests {
     )]
     #[test]
     fn catalog_search_finds_relations_within_bounds() {
-        // --- phase: live_relations_are_findable_through_bounded_catalog_pages ---
         {
             let session = Session::with_sample();
             let index = DbSearchIndex::default();
@@ -526,7 +510,6 @@ mod tests {
             assert_address_resolves(&index, hit);
         }
 
-        // --- phase: provider_clamps_untrusted_result_limits ---
         {
             let mut session = Session::with_sample();
             let template = session.schema.schemas[0].tables[0].clone();
@@ -558,7 +541,6 @@ mod tests {
             );
         }
 
-        // --- phase: late_relation_is_discoverable_without_scanning_a_large_schema ---
         {
             let index = DbSearchIndex::default();
             let (_, hit) = assert_late_hit_reachable(
@@ -584,7 +566,6 @@ mod tests {
             assert_address_resolves(&index, &hit);
         }
 
-        // --- phase: late_column_is_discoverable_through_its_own_exact_browse_address ---
         {
             let index = DbSearchIndex::default();
             let (_, hit) = assert_late_hit_reachable(
@@ -607,7 +588,6 @@ mod tests {
             assert_address_resolves(&index, &hit);
         }
 
-        // --- phase: canonical_provider_resolution_retains_every_resource_action ---
         {
             let session = Session::with_sample();
             let index = DbSearchIndex::default();
@@ -648,10 +628,8 @@ mod tests {
         }
     }
 
-    /// Changed or renamed catalogs and a changed connection invalidate cursors and addresses; a rejected snapshot keeps the last good catalog.
     #[test]
     fn catalog_changes_invalidate_cursors_and_addresses() {
-        // --- phase: renamed_catalog_fields_are_found_by_their_new_names ---
         {
             let mut session = Session::with_sample();
             let index = DbSearchIndex::default();
@@ -666,7 +644,6 @@ mod tests {
             assert_address_resolves(&index, &column[0]);
         }
 
-        // --- phase: changing_active_connection_invalidates_catalog_addresses ---
         {
             let mut session = Session::with_sample();
             let index = DbSearchIndex::default();
@@ -685,7 +662,6 @@ mod tests {
             );
         }
 
-        // --- phase: rejected_snapshot_keeps_the_last_good_catalog_and_reports_the_failure ---
         {
             let session = Session::with_sample();
             let index = DbSearchIndex::default();

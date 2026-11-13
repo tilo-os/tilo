@@ -1,8 +1,6 @@
-//! `MySQL` / `MariaDB` execution engine: opens a real TCP connection through the
-//! sync `mysql` crate, introspects `information_schema` and runs arbitrary SQL
-//! returning a [`QueryResult`]. Mirrors [`crate::engine::SqliteEngine`] and
-//! [`crate::engine_pg::PostgresEngine`] so the session can hold any engine
-//! behind one enum.
+//! `MySQL` and `MariaDB`: a real TCP connection through the sync `mysql` crate,
+//! `information_schema` introspection and SQL execution, behind the same enum as the
+//! other engines.
 
 use ui::time::{Duration, Instant};
 
@@ -16,14 +14,13 @@ use crate::model::{
     TableInfo,
 };
 
-/// A live `MySQL` connection. Owns the connection for the session lifetime.
 pub struct MySqlEngine {
     conn: Conn,
     opts: Opts,
 }
 
-/// Build the connection options from a profile + password. Pure so the
-/// mapping is unit-testable without a server.
+/// The connection options a profile and password make. Pure, so the mapping is testable
+/// without a server.
 pub(crate) fn mysql_opts(profile: &crate::model::ConnectionProfile) -> OptsBuilder {
     let host = if profile.host.is_empty() {
         "localhost".to_string()
@@ -51,8 +48,8 @@ pub(crate) fn mysql_opts(profile: &crate::model::ConnectionProfile) -> OptsBuild
 }
 
 impl MySqlEngine {
-    /// Open a real connection. A refused socket or a failed auth surfaces as
-    /// the driver's own error string — never a fabricated success.
+    /// Open a real connection; a refused socket or a failed auth is the driver's own
+    /// error, never a fabricated success.
     pub fn connect(profile: &crate::model::ConnectionProfile) -> Result<Self, String> {
         let opts: Opts = mysql_opts(profile).into();
         let conn = Conn::new(opts.clone()).map_err(|e| e.to_string())?;
@@ -66,9 +63,8 @@ impl MySqlEngine {
         }
     }
 
-    /// Introspect the connection's current database into the shared
-    /// [`DatabaseSchema`] shape. `MySQL`'s schema namespace is the database, so
-    /// this yields a single [`SchemaInfo`] named after it.
+    /// Introspect the current database. The `MySQL` schema namespace is the database, so this
+    /// yields one [`SchemaInfo`] named after it.
     pub fn introspect(&mut self) -> Result<DatabaseSchema, String> {
         let db: Option<String> = self
             .conn
@@ -200,8 +196,7 @@ impl MySqlEngine {
         Ok(n.unwrap_or(0))
     }
 
-    /// Run a single SQL statement and collect the result. Empty column list
-    /// means the statement was DML/DDL — reported via affected rows.
+    /// Run one statement and collect its result; an empty column list means DML or DDL.
     pub fn run(&mut self, sql: &str) -> Result<QueryResult, String> {
         let trimmed = sql.trim();
         if trimmed.is_empty() {
@@ -210,10 +205,8 @@ impl MySqlEngine {
         let start = ui::time::now();
 
         let mut result = self.conn.query_iter(trimmed).map_err(|e| e.to_string())?;
-        // Capture the column names + server types. The text protocol returns
-        // every value as raw bytes, so the type is what lets an integer column
-        // land as a typed numeric cell (and right-align in the grid) rather
-        // than as a text string.
+        // The text protocol returns every value as raw bytes: the server type is what lets
+        // an integer column land as a typed numeric cell rather than as text.
         let col_meta: Vec<(String, ColumnType)> = result
             .columns()
             .as_ref()
@@ -276,11 +269,8 @@ fn elapsed_ms(start: Instant) -> f64 {
     start.elapsed().as_secs_f64() * 1000.0
 }
 
-/// Map a text-protocol value to a [`Cell`], using the column's server type to
-/// recover typed numerics. `query_iter` returns every value as raw bytes, so
-/// an integer/float column arrives as `Value::Bytes`; parsing it back to a
-/// typed cell keeps the grid's numeric right-alignment honest. Non-numeric
-/// columns and binary-protocol values fall through to [`mysql_value_to_cell`].
+/// A text-protocol value as a [`Cell`], using the server type to recover typed numerics so
+/// the grid's right-alignment stays honest.
 pub(crate) fn cell_from_value(v: Value, col_type: Option<ColumnType>) -> Cell {
     let Value::Bytes(bytes) = v else {
         return mysql_value_to_cell(v);
@@ -319,9 +309,9 @@ fn is_float_type(ct: ColumnType) -> bool {
     )
 }
 
-/// Map a driver [`Value`] to a [`Cell`]. Integers/floats keep their type;
-/// byte strings become text when valid UTF-8, otherwise a blob length;
-/// temporal values render as their canonical string form.
+/// A driver [`Value`] as a [`Cell`]: integers and floats keep their type, byte strings
+/// become text when valid UTF-8 and a blob length otherwise, temporal values their
+/// canonical string.
 pub(crate) fn mysql_value_to_cell(v: Value) -> Cell {
     match v {
         Value::NULL => Cell::Null,

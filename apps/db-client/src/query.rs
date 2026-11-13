@@ -42,7 +42,6 @@ impl EditorPane {
             .with_tab_width(2)
             .with_placeholder(&t("db-sql-placeholder"))
             .with_id("sql-editor");
-        // The client opens ready to type a query.
         editor.set_focused(true);
         Self {
             text: TextControl::view_only_at(editor, Record::paths().sql),
@@ -88,8 +87,6 @@ impl ui::widget::Decorator for EditorPane {
     ) -> NodeId {
         let node = Widget::build_layout(&mut self.text, taffy, theme, node_map);
         fill_remaining_height(taffy, node);
-        // The pane is what the node stands for: an action addressed to the
-        // editor reaches the text control, which submits the edit.
         ui::widget::decorator::register_node(node_map, node, self);
         node
     }
@@ -105,7 +102,6 @@ impl ui::widget::Decorator for EditorPane {
 }
 
 /// The starter queries: choosing one loads it into the editor, and the
-/// dropdown goes back to its label.
 struct StarterQueries {
     menu: Dropdown,
 }
@@ -129,8 +125,6 @@ impl StarterQueries {
                         .iter()
                         .find(|(candidate, _)| *candidate == name)
                         .ok_or_else(|| format!("there is no starter query `{name}`"))?;
-                    // The menu is a command, not a setting: it goes back to
-                    // its label once the starter is in the editor.
                     reset.set(String::new());
                     Ok(path.replace(*sql))
                 })
@@ -152,7 +146,7 @@ impl ui::widget::Decorator for StarterQueries {
         &mut self.menu
     }
 
-    /// The menu is as wide as a utility panel, not the whole toolbar.
+    /// The editor takes the height its pane has, not just its lines.
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -192,7 +186,6 @@ fn strip_text(link: &Link) -> String {
 }
 
 /// What shows a result: a line saying what it returned, and the rows, or a
-/// line saying so when the statement returned none.
 fn results_content(link: &Link, result: Option<Arc<QueryResult>>) -> Element {
     let strip_link = link.clone();
     let strip = Text::dynamic(move || strip_text(&strip_link))
@@ -203,8 +196,6 @@ fn results_content(link: &Link, result: Option<Arc<QueryResult>>) -> Element {
         .is_some_and(|result| !result.columns.is_empty());
     let body: Element = if has_columns {
         let mut table = ResultsTable::new("db.query.results").reporting_to(link);
-        // A cut result says so, and says what to do about it, above the grid
-        // rather than through a "+" nobody can read.
         let cut = result.as_ref().and_then(|result| result.cut_note());
         table.bind(result);
         match cut {

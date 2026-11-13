@@ -1,9 +1,4 @@
 //! Fluent copy for Database.
-//!
-//! Every sentence a person reads comes from the catalogue, so the German name
-//! the manifest advertises is a German window: the panes, the dialogs, the
-//! status lines and the window bar. A message the catalogue lacks falls back
-//! to its English source rather than to a bare key.
 
 use ui::i18n::{ArgValue, EmbeddedCatalog};
 
@@ -39,8 +34,6 @@ mod tests {
             .collect()
     }
 
-    /// Every message the source catalogue has, the German one has too, so the
-    /// German window the manifest advertises is really German.
     #[test]
     fn the_german_catalogue_covers_every_message() {
         let english = ids(SOURCE_FTL);
@@ -59,8 +52,6 @@ mod tests {
     /// message would show its own key in the window the manifest advertises.
     #[test]
     fn the_german_window_says_every_message_in_german() {
-        // The manager is the thread's, so the German install happens on a
-        // thread of its own rather than being left for the next test here.
         std::thread::spawn(|| {
             ui::i18n::I18nManager::install(
                 "en-US",
@@ -78,8 +69,6 @@ mod tests {
         .expect("the German window reads");
     }
 
-    /// Every key the app asks for exists, so a fallback to a bare key is a
-    /// test failure rather than something a person has to read.
     #[test]
     fn the_catalogue_holds_the_messages_the_app_asks_for() {
         let source = ids(SOURCE_FTL);

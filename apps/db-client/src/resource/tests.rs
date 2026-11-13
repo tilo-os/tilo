@@ -129,8 +129,6 @@ fn connections_are_saved_without_passwords() {
     assert_eq!(left[0].id, typed.id, "the other profile survives removal");
 }
 
-/// Saved queries keep the SQL given or the query being written; an empty
-/// buffer saves nothing.
 #[test]
 fn queries_are_saved_from_sql_or_the_buffer() {
     let mut workspace = Replica::<Workspace>::new();
@@ -183,8 +181,6 @@ fn queries_are_saved_from_sql_or_the_buffer() {
     assert_eq!(workspace.state().unwrap().saved_queries.len(), 1);
 }
 
-/// Two replicas of one workspace that each type SQL and save a query before
-/// syncing keep both.
 #[test]
 fn concurrent_edits_converge() {
     let mut ours = Replica::<Workspace>::new();
@@ -321,8 +317,6 @@ fn the_workspace_publishes_its_items_with_their_actions_and_live_rows_beside_the
     );
 }
 
-/// An agent works on the workspace through the one published tree, one
-/// call per change, and opening a saved query puts it in the editor.
 #[test]
 fn an_agent_edits_the_workspace_one_call_each() {
     let mut app = TestApp::<DbClientShell>::new().unwrap();
@@ -364,8 +358,6 @@ fn an_agent_edits_the_workspace_one_call_each() {
     assert_eq!(app.state().sql, "");
 }
 
-/// What an agent does for a person is history the person reads: the app's
-/// sentence for each field and verb.
 #[test]
 fn history_entries_render_as_the_apps_sentences() {
     use ui::tilo_actions::{ActionInvoker, ActorKind};

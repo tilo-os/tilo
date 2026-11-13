@@ -22,7 +22,6 @@ use crate::model::{Cell, QueryResult};
 type RowIndex = usize;
 
 /// Let the node take the height its parent has left, rather than the height
-/// of its content: the table then scrolls within what it is given.
 pub fn fill_remaining_height(taffy: &mut TaffyTree<()>, node: NodeId) {
     if let Ok(mut style) = taffy.style(node).cloned() {
         style.size.height = Dimension::auto();
@@ -35,7 +34,6 @@ pub fn fill_remaining_height(taffy: &mut TaffyTree<()>, node: NodeId) {
 }
 
 /// A line of text above a table, lined up with the text in the cells below
-/// it. Under a divider it also keeps clear of it.
 pub struct CaptionLine {
     text: ui::widget::Text,
     under_divider: bool,
@@ -98,7 +96,6 @@ pub struct ResultsTable {
     /// The column a header click asked to sort by, until the next event.
     clicked: Rc<Flag<Option<usize>>>,
     /// How the view tells the app which row is chosen, so the window bar's
-    /// Copy row and Ctrl+C act on it.
     link: Option<crate::link::Link>,
     result: Option<Arc<QueryResult>>,
     sort: Option<(usize, bool)>,
@@ -123,8 +120,6 @@ fn is_numeric_column(result: &QueryResult, column: usize) -> bool {
 
 /// Compare before converting: rounding an integer to f64 can equate adjacent IDs.
 fn compare_integer_real(integer: i64, real: f64) -> Ordering {
-    // i64::MAX rounds up to 2^63 as f64, so the upper bound is exclusive.
-    // NaNs sort after all other numbers, rather than equating unequal values.
     if real.is_nan() || real >= 9_223_372_036_854_775_808.0 {
         return Ordering::Less;
     }
@@ -139,7 +134,6 @@ fn compare_integer_real(integer: i64, real: f64) -> Ordering {
 }
 
 /// Nulls first, then numbers by value, then everything else by its text
-/// without regard to case.
 fn compare_cells(a: Option<&Cell>, b: Option<&Cell>) -> Ordering {
     match (a, b) {
         (None | Some(Cell::Null), None | Some(Cell::Null)) => Ordering::Equal,
@@ -175,8 +169,6 @@ impl ResultsTable {
         }
     }
 
-    /// Report the chosen row through `link`, so the rest of the window knows
-    /// what "copy this row" means, and mark rows as choosable.
     #[must_use]
     pub fn reporting_to(mut self, link: &crate::link::Link) -> Self {
         self.link = Some(link.clone());
@@ -234,7 +226,6 @@ impl ResultsTable {
     }
 
     /// Show `result`, replacing whatever was there. The sort a person chose
-    /// does not carry over to a different result.
     pub fn bind(&mut self, result: Option<Arc<QueryResult>>) {
         self.sort = None;
         self.body = 0.0;
@@ -368,7 +359,6 @@ mod tests {
         })
     }
 
-    /// A column is numeric when every value that is there is a number, and nulls are not values.
     #[test]
     fn numeric_columns_are_the_ones_holding_only_numbers() {
         let result = result();
@@ -378,7 +368,6 @@ mod tests {
         assert!(!is_numeric_column(&result, 9), "no such column");
     }
 
-    /// Ascending puts nulls first, then numbers by value; a second click on the same column flips it; another column starts ascending.
     #[test]
     fn a_header_click_sorts_and_the_next_one_flips() {
         let mut table = ResultsTable::new("results");
@@ -434,8 +423,6 @@ mod tests {
 
     #[test]
     fn mixed_types_sort_consistently_in_every_input_order() {
-        // SQLite columns can contain numbers and text in the same result.
-        // Comparing cross-type pairs as text used to create 2 < 10.0 < "11" < 2.
         let cells = [Cell::Integer(2), Cell::Real(10.0), Cell::Text("11".into())];
         for order in [
             [0, 1, 2],
@@ -555,7 +542,6 @@ mod tests {
         assert_eq!(descending, ranks);
     }
 
-    /// Text sorts without regard to case and numbers sort by value, not by their digits.
     #[test]
     fn cells_compare_by_value() {
         let ten = Cell::Integer(10);

@@ -1,16 +1,6 @@
-//! The database client's controller. It owns the [`Session`] (connections,
-//! engine, schema, results), the collaborative document edits and every
-//! effect, and presents them through the window shell: a sidebar of
-//! connections and tables, and a workspace of tabs.
-//!
-//! The controller never draws. Each frame it publishes what is on screen as a
-//! [`ViewModel`] and applies the [`Intent`]s the views asked for (see
-//! [`crate::link`]); the views are the toolkit's own widgets.
-//!
-//! The window is a bound view: [`window`] lays it out over the workspace the
-//! document holds, and the [`Store`] it keeps is shared with the view's
-//! effect handler and with what the view publishes (the live catalog as
-//! rows and search entries).
+//! The database client's controller: it owns the [`Session`] and the window's shared [`Store`],
+//! publishes what is on screen as a [`ViewModel`] and applies the [`Intent`]s the views ask
+//! for. It never draws; the views are the toolkit's widgets.
 
 use std::cell::{RefCell, RefMut};
 use std::io::Write;
@@ -38,12 +28,10 @@ use crate::workspace::Workspace;
 use ui::icons::Icon;
 use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, ToolbarView, ToolbarViews};
 
-/// What a saved connection's keyring entry holds.
 const PASSWORD_PURPOSE: &str = "password";
 
-/// Encode arbitrary catalog text into a path component without the ambiguity
-/// of delimiter-joined ids (`a:b` vs `a`, `b`). Labels remain human-readable;
-/// only machine identities use this representation.
+/// Catalog text as a path component: hex, so ids are unambiguous where a delimiter would
+/// not be.
 fn resource_component(value: &str) -> String {
     hex::encode(value)
 }
@@ -59,8 +47,8 @@ pub(crate) fn catalog_resource_id(kind: &str, components: &[&str]) -> String {
         .join("/")
 }
 
-/// The catalog's structural fingerprint: the views rebuild their rows only
-/// when it changes.
+/// The catalog's structural fingerprint: the views rebuild their rows only when it
+/// changes.
 fn schema_signature(schema: &DatabaseSchema) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -81,8 +69,6 @@ fn schema_signature(schema: &DatabaseSchema) -> u64 {
     hasher.finish()
 }
 
-/// What the views were last handed, so a result or a catalog is shared with
-/// them once rather than cloned every frame.
 #[derive(Default)]
 struct Published {
     schema: Option<(u64, Rc<DatabaseSchema>)>,
@@ -92,70 +78,48 @@ struct Published {
     table: Option<(crate::model::RelationRef, u64, Rc<TableInfo>)>,
 }
 
-/// The window: connections and tables beside the workspace, over the
-/// [`Store`] it shares with the view.
 pub struct DbClientApp {
     shell: NavShell,
     store: Shared,
-    /// The workspace as the document holds it, shown as it changes; `None`
-    /// for a window outside the framework.
+    /// The workspace as the document holds it; `None` outside the framework.
     live: Option<Live<Record>>,
-    /// The `(revision, loads)` of the workspace last shown.
     presented: Option<(u64, u64)>,
 }
 
-/// A capture's scenario (`None` for a plain capture).
 pub(crate) struct Staged(Option<String>);
 
-/// The [`Store`] as the window and the view share it.
 pub(crate) type Shared = Rc<RefCell<Store>>;
 
-/// What the window, the view's effect handler and what the view publishes
-/// share: the session and everything done on it.
 pub(crate) struct Store {
     link: Link,
     session: Session,
-    /// Where every change of the shared record goes: the saved connections
-    /// and queries and the SQL buffer, each a field edit or a verb, one undo
-    /// step each.
+    /// Where every change of the record goes, one undo step each.
     actions: Option<Dispatcher<Record>>,
-    /// This device's keyring for connection passwords, one secret per saved
-    /// profile: the document names the profile, the password stays here.
+    /// This device's keyring for connection passwords: the document names the profile, the
+    /// password stays here.
     secrets: Option<ui::secrets::SecretStore>,
-    /// Id of a connection the local user just added and wants opened as soon as
-    /// it lands back through the document reconcile (peer-added connections do
-    /// not set this, so they are listed but not auto-connected).
+    /// Id of a connection the local user just added, opened once it lands back through the
+    /// document. A peer's addition is listed but not connected.
     pending_connect_id: Option<Uuid>,
-    /// Active resource invocation plus whether its effect can be retried
-    /// safely without duplicating a database write.
-    /// The caller of a running "Run SQL" effect, answered when the query
-    /// settles.
+    /// The caller of a running \"Run SQL\" effect, answered when the query settles.
     effect_reply: Option<EffectReply>,
-    /// A copy whose outcome the clipboard reports after it returned: a paste
-    /// that fails later is said, not confirmed.
+    /// A copy whose outcome the clipboard reports after it returned.
     copy: ui::CopyWatch,
-    /// The result row the person chose, and the result generation it belongs
-    /// to: a fresh result starts with nothing chosen.
+    /// The result row the person chose, and the result generation it belongs to.
     selected_row: Option<usize>,
     selected_generation: usize,
-    /// The record as last presented.
     record: Rc<Record>,
     export_rx: Option<ui::portal::PortalChannel>,
     export_snapshot: Option<crate::model::QueryResult>,
     dialog: Option<Dialog>,
-    /// Potentially destructive SQL awaiting an explicit second confirmation.
+    /// Potentially destructive SQL awaiting a second confirmation.
     pending_query_confirmation: Option<String>,
-    /// Retained, revisioned global-search projection. It is rebuilt only when
-    /// the live catalog or collaborative query collection changes.
+    /// The search projection, rebuilt only when the catalog or the query collection
+    /// changes.
     search_index: crate::search::DbSearchIndex,
     published: Published,
-    /// An effect asked for the sidebar, opened when the window next looks.
     open_sidebar: bool,
-    /// An effect or a capture changed what the window shows since it last
-    /// looked.
     changed: bool,
-    /// The scenario a capture staged, staged once the window has shown the
-    /// document.
     staged: Option<Staged>,
 }
 
@@ -166,19 +130,17 @@ impl Default for DbClientApp {
 }
 
 impl DbClientApp {
-    /// The app opens on the workspace's saved connections (empty on a fresh
-    /// record) and never fabricates a sample database or profiles.
+    /// The app opens on the workspace's saved connections and never fabricates a sample
+    /// database or profiles.
     pub fn new() -> Self {
         Self::build(Session::new(), None)
     }
 
-    /// [`Self::new`], its controls bound to the workspace's `actions`.
     pub(crate) fn with_actions(actions: &ui::framework::Actions<Record>) -> Self {
         Self::build(Session::new(), Some(actions))
     }
 
-    /// A client on the bundled sample catalog, connected, beside two
-    /// remotes: the populated widget the tests drive.
+    /// A client on the bundled sample catalog, connected, beside two remotes.
     #[cfg(test)]
     pub(crate) fn sampled() -> Self {
         Self::build(Session::with_sample(), None)
@@ -186,8 +148,7 @@ impl DbClientApp {
 
     fn build(session: Session, actions: Option<&ui::framework::Actions<Record>>) -> Self {
         let link = Link::new();
-        // The window bar's search narrows the tables (the navigator's
-        // filterable section); its views are the workspace's tabs.
+        // The bar's search narrows the tables; its views are the workspace's tabs.
         let shell = NavShell::new()
             .content_kind(ui::widget::ContentKind::Document)
             .with_id("db-client")
@@ -224,12 +185,10 @@ impl DbClientApp {
         }
     }
 
-    /// What the window shares with the view.
     pub(crate) fn state(&self) -> RefMut<'_, Store> {
         self.store.borrow_mut()
     }
 
-    /// The window shell, for tests and shots.
     pub fn shell(&self) -> &NavShell {
         &self.shell
     }
@@ -238,8 +197,6 @@ impl DbClientApp {
         &mut self.shell
     }
 
-    /// Show the workspace the document holds, when it changed since the
-    /// window last showed it.
     fn follow_document(&mut self) {
         let Some(shown) = self
             .live
@@ -251,8 +208,6 @@ impl DbClientApp {
         self.state().adopt_resource_state(&shown);
     }
 
-    /// Do what the effects and a capture asked of the window since it last
-    /// looked: stage the capture's scenario, open the sidebar.
     fn follow_store(&mut self) {
         let (staged, open_sidebar) = {
             let mut state = self.state();
@@ -269,13 +224,6 @@ impl DbClientApp {
 }
 
 impl Store {
-    /// Stage a capture. Every populated scenario opens the connection that
-    /// stands for the bundled sample catalog and runs the query the
-    /// workspace holds against it, then shows what it names: `data` and
-    /// `structure` a table's rows and columns, `wide` the track listing,
-    /// `connect` the new-connection form, `confirm` the confirmation before
-    /// a statement that changes data, and `error` a remote that could not be
-    /// reached. `empty` is the first run.
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
         if scenario == Some("empty") {
             return;
@@ -310,7 +258,6 @@ impl Store {
         self.publish();
     }
 
-    /// Show a tab, loading what it needs.
     pub fn show_tab(&mut self, tab: MainTab) {
         self.session.tab = tab;
         if tab == MainTab::Data {
@@ -318,14 +265,12 @@ impl Store {
         }
     }
 
-    /// Open a table the way a click on it in the sidebar does.
     pub fn open_table(&mut self, name: &str) {
         self.session.select_table(name);
         self.session.block_until_idle();
         self.session.drain();
     }
 
-    /// Run `sql` on the open connection and wait for its result.
     pub fn show_query_result(&mut self, sql: &str) {
         self.session.run_query(sql);
         self.session.block_until_idle();
@@ -336,20 +281,16 @@ impl Store {
         self.dialog = Some(Dialog::Connect);
     }
 
-    /// Ask before running `sql`, the way a statement that changes data does.
     pub fn confirm_statement(&mut self, sql: &str) {
         self.pending_query_confirmation = Some(sql.to_owned());
         self.dialog = Some(Dialog::ConfirmRun);
     }
 
-    /// Fail the session with `message`, for staging an error.
     #[cfg(test)]
     pub(crate) fn fail_with(&mut self, message: &str) {
         self.session.status = RunStatus::Error(message.to_owned());
     }
 
-    /// Stage an attempt to open the connection called `name` that ended in
-    /// `message`: that connection is the active one, and it is not open.
     pub fn fail_connecting(&mut self, name: &str, message: &str) {
         self.session.fail_connecting(name, message);
     }
@@ -371,7 +312,6 @@ impl Store {
         }
     }
 
-    /// Copy the row selected in the result table, as tab-separated text.
     fn copy_row(&mut self) {
         let (result, row) = self
             .link
@@ -399,9 +339,8 @@ impl Store {
         }
     }
 
-    /// Write the result to a CSV file, asked from the window's bar: export is
-    /// the record's own effect, so the bar asks the same door the palette and
-    /// an agent do (`APP-db-client-03`).
+    /// Write the result to a CSV file, asked from the window's bar: export is the record's
+    /// own effect, so the bar asks the same door as the palette and agents.
     fn export_result_from_bar(&self) {
         let target = self.link.read(|model| {
             model
@@ -422,9 +361,8 @@ impl Store {
         }
     }
 
-    /// Put `text` on the clipboard and say so — or say it did not take. A
-    /// copy can fail after it returns, so it is watched and the failure it
-    /// reports later replaces the confirmation.
+    /// Put `text` on the clipboard and say so, or say it did not take: a copy that fails
+    /// later replaces the confirmation.
     fn copy_to_clipboard(&mut self, text: &str, done: &str) {
         if self.copy.watch(ui::try_clipboard_copy(text)) {
             self.session.status = RunStatus::Ok(crate::i18n::t(done));
@@ -433,12 +371,11 @@ impl Store {
         }
     }
 
-    /// Do what a view asked.
     fn apply(&mut self, intent: Intent) {
         match intent {
             Intent::Connect(id) => {
-                // Use the shared effect implementation for both selecting and
-                // retrying an already-active disconnected profile.
+                // The shared effect implementation, for selecting and for retrying an
+                // active but disconnected profile.
                 let _ = self.execute_effect(DbEffect::Connect {
                     connection: id_of(id).as_str().to_owned(),
                 });
@@ -469,11 +406,11 @@ impl Store {
             }
             Intent::DismissStatus => self.session.status = RunStatus::Idle,
             Intent::Cancel => {
-                // The engine stops the exact query it is running; the reply
-                // that follows reports the cancellation honestly.
+                // The engine stops the exact query it is running; the reply reports the
+                // cancellation.
                 if !self.session.cancel_in_flight_query() {
-                    // Nothing was running: say that, rather than blaming a
-                    // query that is not there.
+                    // Nothing was running: say that, rather than blaming a query that is
+                    // not there.
                     self.session.status = RunStatus::Ok(crate::i18n::t("db-cancel-finished"));
                 }
             }
@@ -489,10 +426,8 @@ impl Store {
         }
     }
 
-    /// Describe the session to the views.
     fn publish(&mut self) {
-        // A fresh result is a different set of rows: the chosen one does not
-        // carry over to it.
+        // A fresh result is a different set of rows: the chosen one does not carry over.
         if self.selected_generation != self.session.query_gen {
             self.selected_row = None;
             self.selected_generation = self.session.query_gen;
@@ -570,10 +505,9 @@ impl Store {
         self.link.publish(model);
     }
 
-    /// Execute a transient database effect after re-resolving every target
-    /// against the current session. Resource descriptors are only a helpful
-    /// snapshot: a collaborator can remove/rename a connection before an
-    /// invocation arrives, so their payload is never authority by itself.
+    /// Run a transient database effect after re-resolving every target against the session:
+    /// a resource descriptor is a snapshot, and a collaborator may have removed or renamed
+    /// the connection before the invocation arrives.
     fn focus_catalog(&mut self, connection_id: &str, schema: Option<&str>) -> Result<(), String> {
         let id = Uuid::parse_str(connection_id)
             .map_err(|_| "invalid database connection id".to_string())?;
@@ -607,8 +541,8 @@ impl Store {
         Ok(())
     }
 
-    /// The current query result, as its read answers it: the columns, the
-    /// first [`READ_RESULT_ROWS`] rows, and how many it holds.
+    /// The current result as its read answers it: the columns, the first
+    /// [`READ_RESULT_ROWS`] rows, and how many it holds.
     fn read_result(
         &self,
         connection_id: &str,
@@ -745,25 +679,21 @@ impl Store {
         }
     }
 
-    /// Replace the shared SQL buffer with `sql`: one field edit, written as
-    /// the smallest splice so a collaborator's concurrent typing survives.
-    /// For a participant who may only view, the buffer stays as it is; the
-    /// editor shows the stored text again on its next sync.
+    /// Replace the shared SQL buffer with `sql` as the smallest splice, so a
+    /// collaborator's concurrent typing survives. A view-only participant's buffer stays as
+    /// it is.
     fn replace_editor_sql(&self, sql: &str) {
         self.submit(Record::paths().sql.replace(sql));
     }
 
-    /// Submit a field edit or a verb of the shared record.
     fn submit(&self, submit: impl Submit<Record>) {
         if let Some(actions) = &self.actions {
             actions.submit(submit);
         }
     }
 
-    /// What opening an item does — a search hit, an agent's `open`: a saved
-    /// connection opens, a saved query is loaded into the editor. An id that
-    /// names neither is refused.
-    /// The catalogue's search index, shared with the opener of its hits.
+    /// What opening an item does: a saved connection opens, a saved query loads into the
+    /// editor.
     pub(crate) fn search_index(&self) -> crate::search::DbSearchIndex {
         self.search_index.clone()
     }
@@ -779,7 +709,6 @@ impl Store {
         }
     }
 
-    /// Open the item `id`: connect a saved connection, load a saved query.
     fn open_item(&mut self, id: Uuid) {
         if let Some(index) = self.session.connections.iter().position(|c| c.id == id) {
             self.connect(index);
@@ -789,8 +718,8 @@ impl Store {
         }
     }
 
-    /// Show the saved connections the workspace holds, and open the one the
-    /// local user just added once it has landed.
+    /// Show the saved connections the record holds, and open the one the local user just
+    /// added.
     pub(crate) fn adopt_resource_state(&mut self, state: &Rc<Record>) {
         self.record = Rc::clone(state);
         let connections = state.profiles();
@@ -809,8 +738,8 @@ impl Store {
                         && incoming.file_path == local.file_path
                 });
         if !same {
-            // A removed connection is gone for good, whoever removed it:
-            // this device forgets the password it kept for it.
+            // A removed connection is gone for good, whoever removed it: this device forgets
+            // the password it kept.
             let removed: Vec<Uuid> = self
                 .session
                 .connections
@@ -832,8 +761,7 @@ impl Store {
         self.publish();
     }
 
-    /// Attach the framework dispatcher, this device's keyring, and in a
-    /// capture the sample catalog that stands in for a database server.
+    /// Attach the dispatcher, this device's keyring, and in a capture the sample catalog.
     fn attach_framework(&mut self, cx: &ViewCx<Record>) {
         let dispatcher = cx.dispatcher();
         self.link.attach_sql_edits(dispatcher.clone());
@@ -848,8 +776,7 @@ impl Store {
         }
     }
 
-    /// Open the saved connection at `idx`, with the password this device
-    /// keeps for it.
+    /// Open the saved connection at `idx` with the password this device keeps for it.
     fn connect(&mut self, idx: usize) {
         let Some(id) = self.session.connections.get(idx).map(|profile| profile.id) else {
             return;
@@ -865,8 +792,8 @@ impl Store {
                 Err(error) => tracing::warn!(%error, "reading a connection password failed"),
             }
         }
-        // Reconnect even when the requested profile is already the selected
-        // row, so an active-but-disconnected profile can be retried.
+        // Reconnect even when the profile is already the selected row, so an active but
+        // disconnected profile can be retried.
         self.session.active = idx;
         self.session.connect_active();
     }
@@ -878,8 +805,7 @@ impl Store {
             .map(|secrets| secrets.item(PASSWORD_PURPOSE, &id.to_string()))
     }
 
-    /// What the effects can do right now: SQL runs only on an open
-    /// connection.
+    /// What the effects can do now: SQL runs only on an open connection.
     fn effect_statuses(&self) -> Vec<EffectStatus> {
         if self.session.connected {
             Vec::new()
@@ -892,8 +818,7 @@ impl Store {
         }
     }
 
-    /// The live entities the client shows that the workspace does not hold:
-    /// an in-flight connect / query / export job, the current query result,
+    /// The live entities the catalogue does not hold: the in-flight job, the current result,
     /// and the open connection's catalog, transactions and query history.
     pub(crate) fn live_rows(&self) -> Vec<LiveRow> {
         let mut rows = Vec::new();
@@ -909,17 +834,14 @@ impl Store {
         rows
     }
 
-    /// Every row of the open connection's catalog as a search entry.
     pub(crate) fn catalog_search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
         self.search_index.entries()
     }
 
-    /// The live entity `id`, at any depth of the open connection's catalog.
     pub(crate) fn live_row(&self, id: &str) -> Option<LiveRow> {
         self.search_index.resource(id).map(LiveRow::from_resource)
     }
 
-    /// In-flight connect / query / export job label.
     fn live_job_label(&self) -> Option<String> {
         match &self.session.status {
             RunStatus::Busy(label) => Some(label.clone()),
@@ -928,9 +850,8 @@ impl Store {
         }
     }
 
-    /// Save a new connection profile through the action model — the metadata
-    /// lands in `root["connections"]` (collaborative, undoable) while the
-    /// password goes to this device's keyring — and open it once it lands.
+    /// Save a new connection: its metadata in the record, its password in this device's
+    /// keyring, and open it once it lands.
     fn save_connection(&mut self, profile: crate::model::ConnectionProfile) {
         let id = profile.id;
         let at = self.record.connections.len();
@@ -953,7 +874,6 @@ impl Store {
         self.pending_connect_id = Some(id);
     }
 
-    /// Forget the password this device kept for saved connection `id`.
     fn forget_password(&self, id: Uuid) {
         if let Some(secret) = self.password_secret(id)
             && secret.present_blocking()
@@ -964,8 +884,7 @@ impl Store {
     }
 }
 
-/// The query a staged capture shows the result of: the track listing for
-/// `wide`, the starter query otherwise.
+/// The query a staged capture shows the result of.
 pub(crate) fn scenario_query(scenario: Option<&str>) -> &'static str {
     if scenario == Some("wide") {
         crate::sample::starter_queries()
@@ -977,10 +896,9 @@ pub(crate) fn scenario_query(scenario: Option<&str>) -> &'static str {
     }
 }
 
-/// Conservative editor-side safety check. It deliberately asks for review on
-/// the common data-changing verbs, while harmless `SELECT`/`EXPLAIN` keeps the
-/// one-keystroke run flow. The worker remains the source of truth for actual
-/// SQL validity and permissions.
+/// The editor's safety check: it asks for review on the common data-changing verbs, while
+/// `SELECT` and `EXPLAIN` keep the one-keystroke run. The engine remains the source of
+/// truth for validity.
 #[allow(
     clippy::while_let_on_iterator,
     reason = "the lexer must peek and consume paired delimiters"
@@ -1059,9 +977,8 @@ fn sql_is_potentially_destructive(sql: &str) -> bool {
 }
 
 fn write_csv(path: &std::path::Path, result: &crate::model::QueryResult) -> Result<(), String> {
-    // The portal owns naming/overwrite UX, but never rely on that as write
-    // authority: refuse a raced or pre-existing destination rather than
-    // silently replacing somebody else's export.
+    // The portal owns naming and overwrite, but is never write authority: refuse a raced or
+    // existing destination rather than replacing somebody else's export.
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -1086,10 +1003,8 @@ fn write_csv(path: &std::path::Path, result: &crate::model::QueryResult) -> Resu
     file.flush().map_err(|error| error.to_string())
 }
 
-/// Make a CSV field safe to open in spreadsheet software. A leading formula
-/// sigil remains data (prefixed with an apostrophe), including when hidden
-/// behind whitespace/control characters; the CSV itself still quotes every
-/// field so commas/newlines/quotes remain lossless.
+/// A CSV field safe to open in spreadsheet software: a leading formula sigil stays data,
+/// prefixed with an apostrophe, even behind whitespace; every field is quoted.
 fn csv_field(value: &str) -> String {
     let formula = value
         .trim_start_matches(|c: char| c.is_ascii_whitespace() || c.is_ascii_control())
@@ -1102,7 +1017,6 @@ fn csv_field(value: &str) -> String {
     format!("\"{}\"", safe.replace('"', "\"\""))
 }
 
-/// Whether a key press is Ctrl (Command on macOS) with `key`.
 fn is_command(event: &WindowEvent, modifiers: winit::event::Modifiers, wanted: &str) -> bool {
     let WindowEvent::KeyboardInput {
         event:
@@ -1160,9 +1074,9 @@ impl ui::widget::Decorator for DbClientApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // A connect or query in flight wakes the app when the worker replies
-        // (its waking channel). An action's caller may cancel, and a save
-        // dialog answers on a channel of its own: those are still polled.
+        // A connect or query in flight wakes the app when the worker replies. An action's
+        // caller may cancel, and a save dialog answers on its own channel: those are
+        // polled.
         let store = self.store.borrow();
         store.effect_reply.is_some()
             || store.export_rx.is_some()
@@ -1175,11 +1089,9 @@ impl ui::widget::Decorator for DbClientApp {
 }
 
 impl Store {
-    /// Bring the session up to date and describe it to the views.
     fn refresh(&mut self) {
-        // Fold in any results the background worker has finished (connect
-        // outcomes, query result sets, table pages). This is what makes a
-        // remote query land on screen without further user input.
+        // Fold in what the worker finished: connect outcomes, result sets, table pages.
+        // This is what makes a remote query land on screen.
         self.session.drain();
         self.settle_effect();
         if self.copy.failed() {
@@ -1189,25 +1101,23 @@ impl Store {
             self.drain_export_portal();
         }
 
-        // The saved connections come from the workspace as presented
-        // (`adopt_resource_state`); the widget writes nothing itself.
+        // The saved connections come from the workspace as presented; the widget writes
+        // nothing itself.
         for intent in self.link.take_intents() {
             self.apply(intent);
         }
 
         if let Err(error) = self.search_index.sync(&self.session) {
-            // Preserve the last known-good catalogue for existing palette
-            // entries, but make a rejected rebuild visible rather than
-            // silently advertising stale discovery as current.
+            // Keep the last good catalogue, but make a rejected rebuild visible rather than
+            // advertising stale discovery as current.
             self.session.status = RunStatus::Error(error);
         }
 
         self.publish();
     }
 
-    /// Answer one of the window's own shortcuts, which come before the
-    /// focused widget sees the key, unless a dialog is asking for something
-    /// else.
+    /// The window's own shortcuts, which come before the focused widget sees the key unless
+    /// a dialog is asking.
     fn shortcut(&self, event: &WindowEvent, modifiers: winit::event::Modifiers) -> bool {
         if self.dialog != Some(Dialog::Connect) && is_command(event, modifiers, "Enter") {
             let intent = if self.dialog == Some(Dialog::ConfirmRun) {
@@ -1244,20 +1154,14 @@ impl Store {
     }
 }
 
-/// The window bar's action that runs the query in the editor.
 pub(crate) const RUN_QUERY: &str = "db.query.run";
-/// The window bar's action that stops the query in flight.
 pub(crate) const CANCEL_QUERY: &str = "db.query.cancel";
-/// The window bar's action that copies the selected row.
 pub(crate) const COPY_ROW: &str = "db.result.copy-row";
-/// The window bar's action that copies the whole result.
 pub(crate) const COPY_RESULT: &str = "db.result.copy-result";
-/// The window bar's action that writes the result to a CSV file the person
-/// picks: it exists as an effect, so the bar offers it (`APP-db-client-03`).
+/// The bar's action that writes the result to a CSV file the person picks.
 pub(crate) const EXPORT_CSV: &str = "db.result.export-csv";
 
-/// What the bar offers once there is a result to take away or out: copy a
-/// row, copy the result, or write it as CSV.
+/// What the bar offers once there is a result to take away or out.
 fn result_actions() -> Vec<ToolbarAction> {
     vec![
         ToolbarAction::new(COPY_ROW, Icon::Copy.name(), crate::i18n::t("db-copy-row")).in_menu(),
@@ -1277,9 +1181,8 @@ fn result_actions() -> Vec<ToolbarAction> {
 }
 
 impl DbClientApp {
-    /// Run what the person did in the window's bar, then declare its slots:
-    /// the shell's own, the open connection as the location, and the
-    /// workspace's tabs as the views once there is a connection.
+    /// Run what the person did in the bar, then declare its slots: the shell's own, the open
+    /// connection as the location, and the workspace's tabs as the views.
     fn run_window_toolbar(&mut self) {
         for event in ui::window_toolbar::take_events() {
             if !self.shell.window_toolbar_event(&event) {
@@ -1297,9 +1200,9 @@ impl DbClientApp {
             )
         });
         let mut toolbar = self.shell.window_toolbar();
-        // Run stands in the bar while the query is in front; Cancel takes its
-        // place while a statement runs, because a disabled Run with no way
-        // out is how a long query used to end.
+        // Run stands in the bar while the query is in front; Cancel takes its place while a
+        // statement runs, because a disabled Run with no way out is how a long query used to
+        // end.
         if tab == MainTab::Query && connected {
             let mut actions = Vec::new();
             if busy {
@@ -1342,9 +1245,8 @@ impl DbClientApp {
     }
 }
 
-/// The window as the view lays it out: it shows the workspace the document
-/// holds, answers the effects through the store it shares with them,
-/// publishes the open connection's catalog and stages a capture's scenario.
+/// The window as the view lays it out: it shows the workspace the document holds, answers
+/// the effects, publishes the catalog and stages a capture's scenario.
 pub(crate) fn window(cx: &ViewCx<Record>, mut window: DbClientApp) -> Element {
     window.live = Some(cx.live().clone());
     window.state().attach_framework(cx);
@@ -1366,16 +1268,14 @@ pub(crate) fn window(cx: &ViewCx<Record>, mut window: DbClientApp) -> Element {
         Publishes::new()
             .live_rows(move || rows.borrow().live_rows())
             .live_row(move |id| row.borrow().live_row(id))
-            // The open connection's relations, columns, result, transaction
-            // and local query history: what the live catalog holds, not the
-            // document.
+            // The open connection's relations, columns, result, transaction and local query
+            // history: what the live catalog holds, not the document.
             .search_entries(move || entries.borrow().catalog_search_entries()),
         Box::new(window),
     )
 }
 
 impl Store {
-    /// Run what the person did in the window's bar beyond the shell's own.
     fn toolbar_event(&mut self, event: &ToolbarEvent) {
         if let ToolbarEvent::Action { id } = event
             && let Some(tab) = MainTab::all().into_iter().find(|tab| tab.view_id() == id)
@@ -1411,8 +1311,7 @@ impl Store {
     }
 }
 
-/// A workspace document whose SQL buffer holds the starter query, as a
-/// capture stages it: what the tests show beside a sampled client.
+/// A workspace document whose SQL buffer holds the starter query.
 #[cfg(test)]
 pub(crate) fn sample_document() -> AutoCommit {
     let mut replica = ui::tilo_resource::Replica::<Record>::new();
@@ -1427,14 +1326,12 @@ pub(crate) fn sample_document() -> AutoCommit {
     AutoCommit::load(&replica.save()).expect("the record loads")
 }
 
-/// [`sample_document`] as a headless driver's state.
 #[cfg(test)]
 pub(crate) fn sample_state() -> ui::State {
     ui::State::from_doc(sample_document())
 }
 
-/// The SQL buffer as the framework hosts it: every edit a splice of the SQL
-/// child, through the workspace's dispatcher.
+/// The SQL buffer as the framework hosts it: every edit a splice of the SQL child.
 #[cfg(test)]
 mod editor_sql_tests {
     use ui::a11y::Action as A11yAction;
@@ -1449,8 +1346,7 @@ mod editor_sql_tests {
         app.state().sql
     }
 
-    /// The SQL buffer's edits in history: those naming the SQL as the field
-    /// edited.
+    /// The SQL buffer's edits in history.
     fn sql_edits(app: &TestApp<DbClientShell>) -> usize {
         app.history()
             .into_iter()
@@ -1458,8 +1354,8 @@ mod editor_sql_tests {
             .count()
     }
 
-    /// A workspace with one saved connection, which shows the query editor,
-    /// with the editor focused.
+    /// A workspace with one saved connection, showing the query editor, with the editor
+    /// focused.
     fn workspace() -> TestApp<DbClientShell> {
         let mut app = TestApp::<DbClientShell>::new().unwrap();
         app.invoke(adding(&ConnectionProfile::new("Local", Engine::Sqlite), 0))
