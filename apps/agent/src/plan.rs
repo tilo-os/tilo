@@ -267,38 +267,6 @@ fn is_content_placeholder(text: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// A plan names content an earlier step makes by placeholder; the
-    /// placeholder, however the model wrote it, becomes that content, and
-    /// an address that names content outright is kept.
-    #[test]
-    fn content_placeholders_bind_to_the_latest_content() {
-        let latest = format!("tilo.content:{}", "a".repeat(64));
-        let kept = format!("tilo.content:{}", "b".repeat(64));
-        let mut arguments = serde_json::json!({
-            "src": LATEST_CONTENT,
-            "images": ["tilo.content:<export-result>", kept],
-            "style": {"background": " tilo.content:hero "},
-            "upper": format!("tilo.content:{}", "C".repeat(64)),
-            "title": "Meet Lumo",
-            "count": 3,
-        })
-        .as_object()
-        .cloned()
-        .unwrap();
-        assert_eq!(bind_latest_content(&mut arguments, &latest), 4);
-        assert_eq!(arguments["src"], latest.as_str());
-        assert_eq!(arguments["images"][0], latest.as_str());
-        assert_eq!(arguments["images"][1], kept.as_str());
-        assert_eq!(arguments["style"]["background"], latest.as_str());
-        assert_eq!(
-            arguments["upper"],
-            latest.as_str(),
-            "upper-case hex is no address the store derives"
-        );
-        assert_eq!(arguments["title"], "Meet Lumo");
-        assert_eq!(arguments["count"], 3);
-    }
-
     /// An offer built from a real descriptor, so what these tests check is
     /// what a gate checks against a real survey.
     fn offer(
@@ -348,223 +316,259 @@ mod tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each case keeps its original fixture and assertions"
-    )]
-    fn an_instruction_resolves_only_to_a_surveyed_bound_and_confirmed_operation() {
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "each case keeps its original fixture and assertions"
+        )]
+        fn a_plans_step_binds_content_and_resolves_only_what_was_surveyed;
+
+        phase content_placeholders_bind_to_the_latest_content;
+        // A plan names content an earlier step makes by placeholder; the
+        // placeholder, however the model wrote it, becomes that content, and
+        // an address that names content outright is kept.
         {
-            let offers = vec![offer(
-                "word-processor",
-                "word-processor.section:b7",
-                "place-image",
-                "Place image below",
-                Some(tilo_actions::Collects::Content),
-            )];
-            let answered = Instruction::from_answer(
-                "word-processor.section:b7#place-image",
-                "place image below b7",
-                None,
-                &offers,
-            );
+            let latest = format!("tilo.content:{}", "a".repeat(64));
+            let kept = format!("tilo.content:{}", "b".repeat(64));
+            let mut arguments = serde_json::json!({
+                "src": LATEST_CONTENT,
+                "images": ["tilo.content:<export-result>", kept],
+                "style": {"background": " tilo.content:hero "},
+                "upper": format!("tilo.content:{}", "C".repeat(64)),
+                "title": "Meet Lumo",
+                "count": 3,
+            })
+            .as_object()
+            .cloned()
+            .unwrap();
+            assert_eq!(bind_latest_content(&mut arguments, &latest), 4);
+            assert_eq!(arguments["src"], latest.as_str());
+            assert_eq!(arguments["images"][0], latest.as_str());
+            assert_eq!(arguments["images"][1], kept.as_str());
+            assert_eq!(arguments["style"]["background"], latest.as_str());
             assert_eq!(
-                answered,
-                Ok(Instruction::Perform {
-                    id: "word-processor.section:b7#place-image".into(),
-                    arguments: serde_json::Map::new(),
-                    confirmation: ConfirmationEvidence::None,
-                })
+                arguments["upper"],
+                latest.as_str(),
+                "upper-case hex is no address the store derives"
             );
+            assert_eq!(arguments["title"], "Meet Lumo");
+            assert_eq!(arguments["count"], 3);
         }
 
+        phase an_instruction_resolves_only_to_a_surveyed_bound_and_confirmed_operation;
         {
-            let offers = vec![offer(
-                "files",
-                "files.entry:/a",
-                "rename",
-                "Rename",
-                Some(tilo_actions::Collects::Words),
-            )];
-            assert!(
-                matches!(
-                    Instruction::from_answer("files.entry:/a#rename", "rename it", None, &offers),
-                    Err(Refused::Unusable(_))
-                ),
-                "no literal anywhere must be refused, not performed with a blank"
-            );
-            assert_eq!(
-                Instruction::from_answer(
-                    "files.entry:/a#rename",
-                    r#"rename it to "b.md""#,
+            {
+                let offers = vec![offer(
+                    "word-processor",
+                    "word-processor.section:b7",
+                    "place-image",
+                    "Place image below",
+                    Some(tilo_actions::Collects::Content),
+                )];
+                let answered = Instruction::from_answer(
+                    "word-processor.section:b7#place-image",
+                    "place image below b7",
                     None,
-                    &offers
-                ),
-                Ok(Instruction::Perform {
-                    id: "files.entry:/a#rename".into(),
-                    arguments: serde_json::Map::from_iter([(
-                        "value".into(),
-                        serde_json::Value::String("b.md".into())
-                    )]),
-                    confirmation: ConfirmationEvidence::None,
-                }),
-                "a literal quoted in the instruction is used"
-            );
-            assert_eq!(
-                Instruction::from_answer(
-                    "files.entry:/a#rename",
-                    "rename it",
-                    Some(&serde_json::Map::from_iter([(
-                        "value".into(),
-                        serde_json::Value::String("c.md".into())
-                    )])),
                     &offers,
-                ),
-                Ok(Instruction::Perform {
-                    id: "files.entry:/a#rename".into(),
-                    arguments: serde_json::Map::from_iter([(
-                        "value".into(),
-                        serde_json::Value::String("c.md".into())
-                    )]),
-                    confirmation: ConfirmationEvidence::None,
-                }),
-                "a literal the answer itself supplied is used even with no quote in the instruction"
-            );
-        }
+                );
+                assert_eq!(
+                    answered,
+                    Ok(Instruction::Perform {
+                        id: "word-processor.section:b7#place-image".into(),
+                        arguments: serde_json::Map::new(),
+                        confirmation: ConfirmationEvidence::None,
+                    })
+                );
+            }
 
-        {
-            let mut rich = offer("sheets", "sheets.range:r1", "fill", "Fill range", None);
-            rich.descriptor.params = vec![
-                tilo_actions::ActionParam::required(
-                    "count",
-                    tilo_actions::ParamType::Integer,
-                    "Rows to fill",
-                ),
-                tilo_actions::ActionParam::required(
-                    "enabled",
-                    tilo_actions::ParamType::Boolean,
-                    "Whether formulas are enabled",
-                ),
-            ];
-            let offers = vec![rich];
-            let valid = serde_json::Map::from_iter([
-                ("count".into(), serde_json::json!(3)),
-                ("enabled".into(), serde_json::json!(true)),
-            ]);
-            let instruction =
-                Instruction::from_answer("sheets.range:r1#fill", "fill it", Some(&valid), &offers)
-                    .expect("the descriptor accepts its typed object");
-            assert_eq!(
-                instruction,
-                Instruction::Perform {
-                    id: "sheets.range:r1#fill".into(),
-                    arguments: valid,
-                    confirmation: ConfirmationEvidence::None,
-                }
-            );
+            {
+                let offers = vec![offer(
+                    "files",
+                    "files.entry:/a",
+                    "rename",
+                    "Rename",
+                    Some(tilo_actions::Collects::Words),
+                )];
+                assert!(
+                    matches!(
+                        Instruction::from_answer("files.entry:/a#rename", "rename it", None, &offers),
+                        Err(Refused::Unusable(_))
+                    ),
+                    "no literal anywhere must be refused, not performed with a blank"
+                );
+                assert_eq!(
+                    Instruction::from_answer(
+                        "files.entry:/a#rename",
+                        r#"rename it to "b.md""#,
+                        None,
+                        &offers
+                    ),
+                    Ok(Instruction::Perform {
+                        id: "files.entry:/a#rename".into(),
+                        arguments: serde_json::Map::from_iter([(
+                            "value".into(),
+                            serde_json::Value::String("b.md".into())
+                        )]),
+                        confirmation: ConfirmationEvidence::None,
+                    }),
+                    "a literal quoted in the instruction is used"
+                );
+                assert_eq!(
+                    Instruction::from_answer(
+                        "files.entry:/a#rename",
+                        "rename it",
+                        Some(&serde_json::Map::from_iter([(
+                            "value".into(),
+                            serde_json::Value::String("c.md".into())
+                        )])),
+                        &offers,
+                    ),
+                    Ok(Instruction::Perform {
+                        id: "files.entry:/a#rename".into(),
+                        arguments: serde_json::Map::from_iter([(
+                            "value".into(),
+                            serde_json::Value::String("c.md".into())
+                        )]),
+                        confirmation: ConfirmationEvidence::None,
+                    }),
+                    "a literal the answer itself supplied is used even with no quote in the instruction"
+                );
+            }
 
-            let wrong = serde_json::Map::from_iter([
-                ("count".into(), serde_json::json!("3")),
-                ("enabled".into(), serde_json::json!(true)),
-            ]);
-            assert!(matches!(
-                Instruction::from_answer("sheets.range:r1#fill", "fill it", Some(&wrong), &offers,),
-                Err(Refused::Unusable(_))
-            ));
-        }
+            {
+                let mut rich = offer("sheets", "sheets.range:r1", "fill", "Fill range", None);
+                rich.descriptor.params = vec![
+                    tilo_actions::ActionParam::required(
+                        "count",
+                        tilo_actions::ParamType::Integer,
+                        "Rows to fill",
+                    ),
+                    tilo_actions::ActionParam::required(
+                        "enabled",
+                        tilo_actions::ParamType::Boolean,
+                        "Whether formulas are enabled",
+                    ),
+                ];
+                let offers = vec![rich];
+                let valid = serde_json::Map::from_iter([
+                    ("count".into(), serde_json::json!(3)),
+                    ("enabled".into(), serde_json::json!(true)),
+                ]);
+                let instruction =
+                    Instruction::from_answer("sheets.range:r1#fill", "fill it", Some(&valid), &offers)
+                        .expect("the descriptor accepts its typed object");
+                assert_eq!(
+                    instruction,
+                    Instruction::Perform {
+                        id: "sheets.range:r1#fill".into(),
+                        arguments: valid,
+                        confirmation: ConfirmationEvidence::None,
+                    }
+                );
 
-        {
-            let mut destructive = offer(
-                "files",
-                "files.entry:/important",
-                "delete",
-                "Delete file",
-                None,
-            );
-            destructive.descriptor.contract.confirmation =
-                tilo_actions::ConfirmationPolicy::Confirm;
-            destructive.descriptor.params = vec![tilo_actions::ActionParam::required(
-                "recursive",
-                tilo_actions::ParamType::Boolean,
-                "Delete descendants",
-            )];
-            let offers = vec![destructive];
-
-            for arguments in [
-                serde_json::json!({"recursive": true}),
-                serde_json::json!({"recursive": true, "confirm": false}),
-                serde_json::json!({"recursive": true, "confirm": "true"}),
-            ] {
+                let wrong = serde_json::Map::from_iter([
+                    ("count".into(), serde_json::json!("3")),
+                    ("enabled".into(), serde_json::json!(true)),
+                ]);
                 assert!(matches!(
+                    Instruction::from_answer("sheets.range:r1#fill", "fill it", Some(&wrong), &offers,),
+                    Err(Refused::Unusable(_))
+                ));
+            }
+
+            {
+                let mut destructive = offer(
+                    "files",
+                    "files.entry:/important",
+                    "delete",
+                    "Delete file",
+                    None,
+                );
+                destructive.descriptor.contract.confirmation =
+                    tilo_actions::ConfirmationPolicy::Confirm;
+                destructive.descriptor.params = vec![tilo_actions::ActionParam::required(
+                    "recursive",
+                    tilo_actions::ParamType::Boolean,
+                    "Delete descendants",
+                )];
+                let offers = vec![destructive];
+
+                for arguments in [
+                    serde_json::json!({"recursive": true}),
+                    serde_json::json!({"recursive": true, "confirm": false}),
+                    serde_json::json!({"recursive": true, "confirm": "true"}),
+                ] {
+                    assert!(matches!(
+                        Instruction::from_answer(
+                            "files.entry:/important#delete",
+                            "delete it",
+                            arguments.as_object(),
+                            &offers,
+                        ),
+                        Err(Refused::Unusable(_))
+                    ));
+                }
+
+                let confirmed = serde_json::json!({"recursive": true, "confirm": true});
+                assert_eq!(
                     Instruction::from_answer(
                         "files.entry:/important#delete",
                         "delete it",
-                        arguments.as_object(),
+                        confirmed.as_object(),
                         &offers,
                     ),
-                    Err(Refused::Unusable(_))
-                ));
+                    Ok(Instruction::Perform {
+                        id: "files.entry:/important#delete".into(),
+                        arguments: serde_json::Map::from_iter([(
+                            "recursive".into(),
+                            serde_json::Value::Bool(true),
+                        )]),
+                        confirmation: ConfirmationEvidence::Confirm,
+                    })
+                );
             }
 
-            let confirmed = serde_json::json!({"recursive": true, "confirm": true});
-            assert_eq!(
-                Instruction::from_answer(
-                    "files.entry:/important#delete",
-                    "delete it",
-                    confirmed.as_object(),
-                    &offers,
-                ),
-                Ok(Instruction::Perform {
-                    id: "files.entry:/important#delete".into(),
-                    arguments: serde_json::Map::from_iter([(
-                        "recursive".into(),
-                        serde_json::Value::Bool(true),
-                    )]),
-                    confirmation: ConfirmationEvidence::Confirm,
-                })
-            );
-        }
+            {
+                let phrase = "delete all archived messages";
+                let mut destructive =
+                    offer("chat", "chat.archive:2025", "purge", "Purge archive", None);
+                destructive.descriptor.contract.confirmation =
+                    tilo_actions::ConfirmationPolicy::Phrase {
+                        phrase: phrase.into(),
+                    };
+                let offers = vec![destructive];
 
-        {
-            let phrase = "delete all archived messages";
-            let mut destructive =
-                offer("chat", "chat.archive:2025", "purge", "Purge archive", None);
-            destructive.descriptor.contract.confirmation =
-                tilo_actions::ConfirmationPolicy::Phrase {
-                    phrase: phrase.into(),
-                };
-            let offers = vec![destructive];
+                for supplied in [
+                    serde_json::json!({}),
+                    serde_json::json!({"confirmation_phrase": "Delete all archived messages"}),
+                    serde_json::json!({"confirmation_phrase": "delete all archived messages "}),
+                ] {
+                    assert!(matches!(
+                        Instruction::from_answer(
+                            "chat.archive:2025#purge",
+                            "purge it",
+                            supplied.as_object(),
+                            &offers,
+                        ),
+                        Err(Refused::Unusable(_))
+                    ));
+                }
 
-            for supplied in [
-                serde_json::json!({}),
-                serde_json::json!({"confirmation_phrase": "Delete all archived messages"}),
-                serde_json::json!({"confirmation_phrase": "delete all archived messages "}),
-            ] {
-                assert!(matches!(
+                let exact = serde_json::json!({"confirmation_phrase": phrase});
+                assert_eq!(
                     Instruction::from_answer(
                         "chat.archive:2025#purge",
                         "purge it",
-                        supplied.as_object(),
+                        exact.as_object(),
                         &offers,
                     ),
-                    Err(Refused::Unusable(_))
-                ));
+                    Ok(Instruction::Perform {
+                        id: "chat.archive:2025#purge".into(),
+                        arguments: serde_json::Map::new(),
+                        confirmation: ConfirmationEvidence::Phrase(phrase.into()),
+                    })
+                );
             }
-
-            let exact = serde_json::json!({"confirmation_phrase": phrase});
-            assert_eq!(
-                Instruction::from_answer(
-                    "chat.archive:2025#purge",
-                    "purge it",
-                    exact.as_object(),
-                    &offers,
-                ),
-                Ok(Instruction::Perform {
-                    id: "chat.archive:2025#purge".into(),
-                    arguments: serde_json::Map::new(),
-                    confirmation: ConfirmationEvidence::Phrase(phrase.into()),
-                })
-            );
         }
     }
 }

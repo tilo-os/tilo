@@ -157,41 +157,45 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_skill_is_for_the_resources_its_selector_picks_out() {
-        let skill = Skill::new("Book report", books());
-        assert!(skill.is_for(&Sample {
-            kind: "ebook.book",
-            content_type: "application/epub+zip",
-        }));
-        assert!(!skill.is_for(&Sample {
-            kind: "ebook.book",
-            content_type: "application/pdf",
-        }));
-        assert!(!skill.is_for(&Sample {
-            kind: "files.file",
-            content_type: "application/epub+zip",
-        }));
-    }
+    tilo_test_env::scenario! {
+        fn a_skill_says_what_it_is_for;
 
-    #[test]
-    fn a_skill_needs_a_name_and_something_to_be_for() {
-        assert!(Skill::new("Book report", books()).validate().is_ok());
-        assert!(Skill::new("  ", books()).validate().is_err());
-        assert!(
-            Skill::new("Anything", Selector::default())
-                .validate()
-                .is_err()
-        );
-    }
+        phase a_skill_is_for_the_resources_its_selector_picks_out;
+        {
+            let skill = Skill::new("Book report", books());
+            assert!(skill.is_for(&Sample {
+                kind: "ebook.book",
+                content_type: "application/epub+zip",
+            }));
+            assert!(!skill.is_for(&Sample {
+                kind: "ebook.book",
+                content_type: "application/pdf",
+            }));
+            assert!(!skill.is_for(&Sample {
+                kind: "files.file",
+                content_type: "application/epub+zip",
+            }));
+        }
 
-    #[test]
-    fn the_composer_says_what_the_skill_is_for() {
-        let skill = Skill::new("Book report", books());
-        assert_eq!(
-            subject_of(&skill),
-            "ebook.book { content-type in [\"application/epub+zip\"] }"
-        );
-        assert_eq!(subject_of(&Skill::new("Anything", Selector::default())), "");
+        phase a_skill_needs_a_name_and_something_to_be_for;
+        {
+            assert!(Skill::new("Book report", books()).validate().is_ok());
+            assert!(Skill::new("  ", books()).validate().is_err());
+            assert!(
+                Skill::new("Anything", Selector::default())
+                    .validate()
+                    .is_err()
+            );
+        }
+
+        phase the_composer_says_what_the_skill_is_for;
+        {
+            let skill = Skill::new("Book report", books());
+            assert_eq!(
+                subject_of(&skill),
+                "ebook.book { content-type in [\"application/epub+zip\"] }"
+            );
+            assert_eq!(subject_of(&Skill::new("Anything", Selector::default())), "");
+        }
     }
 }

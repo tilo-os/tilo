@@ -30,329 +30,6 @@ fn reasks(sent: &[CollabRequest]) -> Vec<runtime_collab::TaskChildWait> {
         .collect()
 }
 
-/// Steps the model marks standalone, on records no running step acts on,
-/// start without waiting for the ones before them to settle. Each is still
-/// its own native child (its own request, id, admission and journal row),
-/// and the model reads their results in the order it wrote the calls.
-#[test]
-fn standalone_native_steps_run_alongside_each_other_in_plan_order() {
-    let mut f = fixture(
-        "post the standup change and start the agenda and the minutes",
-        World {
-            second_window: Some("doc-2"),
-            settle_after: Some(Duration::from_millis(10)),
-            settle_gate: 3,
-            ..World::default()
-        },
-        vec![
-            turn(&three_records(true), 24),
-            turn(&[finish("Posted and started both documents.", true)], 64),
-        ],
-    );
-    f.session.run_task(&f.run).unwrap();
-    let world = f.world.borrow();
-    let started = &world.started;
-    assert_eq!(started.len(), 3, "{started:?}");
-    let first_settles = started[0].2;
-    for (action, began, _) in started {
-        assert!(
-            *began < first_settles,
-            "{action} waited for the first step to settle: {started:?}"
-        );
-    }
-    let children = children_started(&f.sent.borrow());
-    assert_eq!(children.len(), 3, "one request per step, nothing batched");
-    let distinct: HashSet<_> = children.iter().collect();
-    assert_eq!(
-        distinct.len(),
-        3,
-        "each step is its own child: {children:?}"
-    );
-    let bodies = f.script.bodies.lock().unwrap().clone();
-    let results = tool_results(&bodies[1]);
-    let ids: Vec<String> = results.iter().map(|(id, _)| id.clone()).collect();
-    assert_eq!(ids, asked_ids(&bodies[1]), "plan order");
-    for (id, result) in &results {
-        assert_eq!(result["result"], "succeeded", "{id}: {result}");
-    }
-    assert_eq!(
-        terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Succeeded {
-            message: "Posted and started both documents.".into()
-        }
-    );
-}
-
-/// An unmarked native step, or one on a record a running step acts on,
-/// starts only after every running step has settled.
-#[test]
-fn a_native_step_that_may_read_earlier_writes_waits_for_them() {
-    let mut f = fixture(
-        "post, write a heading, then type under it and confirm in Chat",
-        World {
-            settle_after: Some(Duration::from_millis(10)),
-            settle_gate: 2,
-            ..World::default()
-        },
-        vec![
-            turn(
-                &[
-                    invoke_on(
-                        CHAT_PEER,
-                        "chat.channel:general",
-                        "post",
-                        &serde_json::json!({"message": "Writing the notes."}),
-                        true,
-                    ),
-                    invoke_on(
-                        PEER,
-                        DOC,
-                        "append-paragraph",
-                        &serde_json::json!({"text": "Notes"}),
-                        true,
-                    ),
-                    invoke_on(
-                        PEER,
-                        DOC,
-                        "type-text",
-                        &serde_json::json!({"text": " (draft)"}),
-                        true,
-                    ),
-                    invoke_on(
-                        CHAT_PEER,
-                        "chat.channel:general",
-                        "post",
-                        &serde_json::json!({"message": "Notes are drafted."}),
-                        false,
-                    ),
-                ],
-                24,
-            ),
-            turn(&[finish("Done.", true)], 64),
-        ],
-    );
-    f.session.run_task(&f.run).unwrap();
-    let world = f.world.borrow();
-    let started = &world.started;
-    let actions: Vec<&str> = started
-        .iter()
-        .map(|(action, _, _)| action.as_str())
-        .collect();
-    assert_eq!(actions, ["post", "append-paragraph", "type-text", "post"]);
-    assert!(started[1].1 < started[0].2, "standalone: alongside");
-    assert!(
-        started[2].1 >= started[0].2 && started[2].1 >= started[1].2,
-        "the same record waits for everything running: {started:?}"
-    );
-    assert!(
-        started[3].1 >= started[2].2,
-        "an unmarked step waits for the one before it: {started:?}"
-    );
-    assert_eq!(world.blocks[0].1, "Notes (draft)");
-    assert_eq!(world.posts, ["Writing the notes.", "Notes are drafted."]);
-}
-
-/// Cancelling the native run from Task Center stops every step still
-/// running, not only one being waited on: the host cancels each child when
-/// it reads the run cancelled, and the run ends cancelled.
-#[test]
-fn cancelling_a_native_task_stops_every_step_in_flight() {
-    let mut f = fixture(
-        "post the change and start the agenda",
-        World {
-            // Longer than the test may run: the steps end cancelled.
-            settle_after: Some(tilo_test_env::hang_bound()),
-            cancel_after_steps: Some(2),
-            ..World::default()
-        },
-        vec![turn(
-            &[
-                invoke_on(
-                    CHAT_PEER,
-                    "chat.channel:general",
-                    "post",
-                    &serde_json::json!({"message": "Standup moved."}),
-                    true,
-                ),
-                invoke_on(
-                    PEER,
-                    DOC,
-                    "append-paragraph",
-                    &serde_json::json!({"text": "Agenda"}),
-                    true,
-                ),
-                finish("Done.", true),
-            ],
-            24,
-        )],
-    );
-    f.session.run_task(&f.run).unwrap();
-    let world = f.world.borrow();
-    assert_eq!(world.started.len(), 2);
-    let started: HashSet<_> = children_started(&f.sent.borrow()).into_iter().collect();
-    let cancelled: HashSet<_> = world.cancelled.iter().copied().collect();
-    assert_eq!(cancelled, started, "every running child is cancelled");
-    assert!(matches!(
-        terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Cancelled { .. }
-    ));
-}
-
-/// The host refusing one standalone native step (an authorization
-/// refusal) does not stop the others; an unmarked step is still skipped
-/// after a failure.
-#[test]
-fn a_refused_native_step_does_not_stop_the_others() {
-    let mut f = fixture(
-        "post the change and start the agenda",
-        World {
-            settle_after: Some(Duration::from_millis(100)),
-            deny: vec!["post".into()],
-            ..World::default()
-        },
-        vec![
-            turn(
-                &[
-                    invoke_on(
-                        CHAT_PEER,
-                        "chat.channel:general",
-                        "post",
-                        &serde_json::json!({"message": "Standup moved."}),
-                        true,
-                    ),
-                    invoke_on(
-                        PEER,
-                        DOC,
-                        "append-paragraph",
-                        &serde_json::json!({"text": "Agenda"}),
-                        true,
-                    ),
-                    invoke_on(
-                        PEER,
-                        DOC,
-                        "type-text",
-                        &serde_json::json!({"text": " for Monday"}),
-                        false,
-                    ),
-                ],
-                24,
-            ),
-            turn(&[finish("Started the agenda; I may not post.", true)], 64),
-        ],
-    );
-    f.session.run_task(&f.run).unwrap();
-    let world = f.world.borrow();
-    assert!(world.posts.is_empty(), "the refused post never ran");
-    assert_eq!(world.blocks, [("p1".to_owned(), "Agenda".to_owned())]);
-    let bodies = f.script.bodies.lock().unwrap().clone();
-    let results = tool_results(&bodies[1]);
-    assert_eq!(results[0].1["result"], "failed", "{:?}", results[0]);
-    assert!(
-        results[0].1["error"]
-            .as_str()
-            .unwrap()
-            .contains("permission denied"),
-        "{:?}",
-        results[0]
-    );
-    assert_eq!(results[1].1["result"], "succeeded", "{:?}", results[1]);
-    assert_eq!(results[2].1["result"], "not run", "{:?}", results[2]);
-    assert_eq!(
-        children_started(&f.sent.borrow()).len(),
-        2,
-        "each step asked the host on its own; the skipped one never"
-    );
-}
-
-/// A running native step is followed by its host's answer, not a timer:
-/// the one re-ask out is held until the child settles, so it is answered
-/// once, with the outcome, and no round trip comes back empty.
-#[test]
-fn a_native_step_is_answered_when_it_settles_not_on_a_timer() {
-    let mut f = fixture(
-        "post the change",
-        World {
-            settle_after: Some(Duration::from_millis(250)),
-            // However long the machine takes to get there, the re-ask is
-            // still held when the child settles.
-            reask_hold: ReaskHold::UntilNews,
-            ..World::default()
-        },
-        vec![
-            turn(
-                &[invoke_on(
-                    CHAT_PEER,
-                    "chat.channel:general",
-                    "post",
-                    &serde_json::json!({"message": "Standup moved."}),
-                    false,
-                )],
-                24,
-            ),
-            turn(&[finish("Posted.", true)], 64),
-        ],
-    );
-    f.session.run_task(&f.run).unwrap();
-    let world = f.world.borrow();
-    assert_eq!(world.posts, ["Standup moved."]);
-    let reasks = reasks(&f.sent.borrow());
-    assert_eq!(
-        reasks.len(),
-        1,
-        "one held re-ask, answered when the child settled: {reasks:?}"
-    );
-    assert_eq!(reasks[0].seen, tilo_actions::remote::UpdateMark::Accepted);
-    assert!(reasks[0].wait_ms > 0);
-    assert_eq!(world.observations, 1);
-    assert_eq!(world.idle_observations, 0, "no answer came back empty");
-}
-
-/// A host from before held re-asks answers at once, with nothing new: the
-/// agent then re-asks at the old cadence, never in a loop.
-#[test]
-fn a_host_that_answers_reasks_at_once_is_paced_not_spun() {
-    let mut f = fixture(
-        "post the change",
-        World {
-            settle_after: Some(tilo_test_env::hang_bound()),
-            settles_at_reask: Some(4),
-            reask_hold: ReaskHold::AnswerAtOnce,
-            ..World::default()
-        },
-        vec![
-            turn(
-                &[invoke_on(
-                    CHAT_PEER,
-                    "chat.channel:general",
-                    "post",
-                    &serde_json::json!({"message": "Standup moved."}),
-                    false,
-                )],
-                24,
-            ),
-            turn(&[finish("Posted.", true)], 64),
-        ],
-    );
-    f.session.run_task(&f.run).unwrap();
-    let world = f.world.borrow();
-    assert_eq!(world.posts, ["Standup moved."]);
-    assert_eq!(world.observations, 4);
-    assert_eq!(world.idle_observations, 3);
-    // Each re-ask after an empty answer waits for the old cadence, counted
-    // from when the agent sent the one before (a moment before the host
-    // took it in); a loop would send the next at once.
-    let gaps: Vec<Duration> = world
-        .reasked_at
-        .windows(2)
-        .map(|pair| pair[1] - pair[0])
-        .collect();
-    assert!(
-        gaps.iter()
-            .all(|gap| *gap >= crate::session::native_task::REASK_PACE / 2),
-        "re-asked {gaps:?} apart"
-    );
-}
-
 /// One measured run of the benchmark plan.
 struct Measured {
     wall_ms: f64,
@@ -458,55 +135,6 @@ fn native_task_benchmark() {
     }
 }
 
-/// A step that asks the person is held, not refused: the host answers the
-/// ask with its draft waiting, the agent takes the child and follows it,
-/// and the person's answer — arriving when the child may start — is what
-/// ends the wait. No deadline of the step's own cuts it short
-/// (`docs/designs/app-language/shell.md` §1, "Trust stays system-drawn").
-#[test]
-fn a_step_that_asks_the_person_is_held_until_they_answer() {
-    let mut f = fixture(
-        "Append the release line",
-        World {
-            awaiting: Some(("append-paragraph".into(), 2)),
-            settle_after: Some(Duration::from_millis(10)),
-            ..World::default()
-        },
-        vec![
-            turn(
-                &[invoke(
-                    "append-paragraph",
-                    &serde_json::json!({"text": "Ship it"}),
-                )],
-                24,
-            ),
-            turn(&[finish("The line is appended.", true)], 64),
-        ],
-    );
-    f.session.run_task(&f.run).unwrap();
-    // The step waits on the person: the agent follows it with a held re-ask
-    // rather than refusing it.
-    assert!(
-        f.sent.borrow().iter().any(|request| matches!(
-            request,
-            CollabRequest::InvokeTaskAction { wait: Some(_), .. }
-        )),
-        "the step waits on the person: {:?}",
-        f.sent.borrow()
-    );
-    assert_eq!(
-        f.world.borrow().steps.len(),
-        1,
-        "the step ran once, after the person's answer"
-    );
-    assert_eq!(
-        terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Succeeded {
-            message: "The line is appended.".into()
-        }
-    );
-}
-
 /// The descriptor of Writer's `append-paragraph`, as the agent reads it.
 fn drafted(f: &mut Fixture) -> tilo_actions::ActionDescriptor {
     let catalogue = f.session.task_catalogue();
@@ -516,68 +144,444 @@ fn drafted(f: &mut Fixture) -> tilo_actions::ActionDescriptor {
         .clone()
 }
 
-/// A paused step whose draft does not give back the exact arguments it was
-/// confirmed for is not guessed at: nothing runs before the model, which is
-/// told what waits so that it asks for that step again.
-#[test]
-fn a_paused_step_the_draft_cannot_rebuild_is_left_to_the_model() {
-    let mut f = fixture(
-        "add a closing line",
-        World::default(),
-        vec![turn(&[finish("Waiting on the person.", true)], 24)],
-    );
-    let arguments = serde_json::Map::from_iter([("text".to_owned(), Value::from("Kind regards"))]);
-    let descriptor = drafted(&mut f);
-    f.run.paused = Some(runtime_collab::TaskRunPausedStep {
-        app: "so.tilo.word-processor".into(),
-        resource: DOC.into(),
-        action: "append-paragraph".into(),
-        draft: tilo_actions::Draft::render(&descriptor, &arguments),
-        arguments_digest: [7; 32],
-    });
-    f.session.run_task(&f.run).unwrap();
-    assert!(children_started(&f.sent.borrow()).is_empty());
-    let bodies = f.script.bodies.lock().unwrap().clone();
-    let first = bodies[0].to_string();
-    assert!(first.contains("still waits for them"), "{first}");
-    assert!(first.contains("Kind regards"), "{first}");
-}
+tilo_test_env::scenario! {
+    fn native_steps_run_wait_and_stop_as_their_plan_says;
 
-/// A native child's id names its request: the same request in a run
-/// delivered again (a new agent process) finds the same child, a different
-/// request at the same position is a different child, and asking the same
-/// thing twice in one run makes two children.
-#[test]
-fn a_native_child_id_names_its_request_not_its_position() {
-    let ids = |requests: &[&str]| {
-        let mut f = fixture("ids", World::default(), Vec::new());
-        f.session.native_task = Some(crate::session::native_task::NativeTaskState {
-            run_id: f.run.run_id,
-            task_id: f.run.task_id.clone(),
-            base: "00000000000000000000000000000000".into(),
-            ..Default::default()
-        });
-        let offers = f.session.task_catalogue();
-        requests
+    phase standalone_native_steps_run_alongside_each_other_in_plan_order;
+    // Steps the model marks standalone, on records no running step acts on,
+    // start without waiting for the ones before them to settle. Each is still
+    // its own native child (its own request, id, admission and journal row),
+    // and the model reads their results in the order it wrote the calls.
+    {
+        let mut f = fixture(
+            "post the standup change and start the agenda and the minutes",
+            World {
+                second_window: Some("doc-2"),
+                settle_after: Some(Duration::from_millis(10)),
+                settle_gate: 3,
+                ..World::default()
+            },
+            vec![
+                turn(&three_records(true), 24),
+                turn(&[finish("Posted and started both documents.", true)], 64),
+            ],
+        );
+        f.session.run_task(&f.run).unwrap();
+        let world = f.world.borrow();
+        let started = &world.started;
+        assert_eq!(started.len(), 3, "{started:?}");
+        let first_settles = started[0].2;
+        for (action, began, _) in started {
+            assert!(
+                *began < first_settles,
+                "{action} waited for the first step to settle: {started:?}"
+            );
+        }
+        let children = children_started(&f.sent.borrow());
+        assert_eq!(children.len(), 3, "one request per step, nothing batched");
+        let distinct: HashSet<_> = children.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            3,
+            "each step is its own child: {children:?}"
+        );
+        let bodies = f.script.bodies.lock().unwrap().clone();
+        let results = tool_results(&bodies[1]);
+        let ids: Vec<String> = results.iter().map(|(id, _)| id.clone()).collect();
+        assert_eq!(ids, asked_ids(&bodies[1]), "plan order");
+        for (id, result) in &results {
+            assert_eq!(result["result"], "succeeded", "{id}: {result}");
+        }
+        assert_eq!(
+            terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Succeeded {
+                message: "Posted and started both documents.".into()
+            }
+        );
+    }
+
+    phase a_native_step_that_may_read_earlier_writes_waits_for_them;
+    // An unmarked native step, or one on a record a running step acts on,
+    // starts only after every running step has settled.
+    {
+        let mut f = fixture(
+            "post, write a heading, then type under it and confirm in Chat",
+            World {
+                settle_after: Some(Duration::from_millis(10)),
+                settle_gate: 2,
+                ..World::default()
+            },
+            vec![
+                turn(
+                    &[
+                        invoke_on(
+                            CHAT_PEER,
+                            "chat.channel:general",
+                            "post",
+                            &serde_json::json!({"message": "Writing the notes."}),
+                            true,
+                        ),
+                        invoke_on(
+                            PEER,
+                            DOC,
+                            "append-paragraph",
+                            &serde_json::json!({"text": "Notes"}),
+                            true,
+                        ),
+                        invoke_on(
+                            PEER,
+                            DOC,
+                            "type-text",
+                            &serde_json::json!({"text": " (draft)"}),
+                            true,
+                        ),
+                        invoke_on(
+                            CHAT_PEER,
+                            "chat.channel:general",
+                            "post",
+                            &serde_json::json!({"message": "Notes are drafted."}),
+                            false,
+                        ),
+                    ],
+                    24,
+                ),
+                turn(&[finish("Done.", true)], 64),
+            ],
+        );
+        f.session.run_task(&f.run).unwrap();
+        let world = f.world.borrow();
+        let started = &world.started;
+        let actions: Vec<&str> = started
             .iter()
-            .map(|text| {
-                let arguments =
-                    serde_json::Map::from_iter([("text".to_owned(), Value::from(*text))]);
-                let offer = surface::find(&offers.offers, &op("append-paragraph")).unwrap();
-                let action = task_action_from_offer(offer, arguments.clone()).unwrap();
-                f.session
-                    .task_child_id(&f.run, &action, &arguments)
-                    .unwrap()
-            })
-            .collect::<Vec<_>>()
-    };
-    let before = ids(&["a", "b", "a"]);
-    let after = ids(&["b", "a"]);
-    assert_ne!(before[0], before[2], "asking twice makes two children");
-    assert_eq!(
-        after[0], before[1],
-        "the same request finds its child again"
-    );
-    assert_eq!(after[1], before[0]);
-    assert_ne!(after[0], before[0], "another request at the same position");
+            .map(|(action, _, _)| action.as_str())
+            .collect();
+        assert_eq!(actions, ["post", "append-paragraph", "type-text", "post"]);
+        assert!(started[1].1 < started[0].2, "standalone: alongside");
+        assert!(
+            started[2].1 >= started[0].2 && started[2].1 >= started[1].2,
+            "the same record waits for everything running: {started:?}"
+        );
+        assert!(
+            started[3].1 >= started[2].2,
+            "an unmarked step waits for the one before it: {started:?}"
+        );
+        assert_eq!(world.blocks[0].1, "Notes (draft)");
+        assert_eq!(world.posts, ["Writing the notes.", "Notes are drafted."]);
+    }
+
+    phase cancelling_a_native_task_stops_every_step_in_flight;
+    // Cancelling the native run from Task Center stops every step still
+    // running, not only one being waited on: the host cancels each child when
+    // it reads the run cancelled, and the run ends cancelled.
+    {
+        let mut f = fixture(
+            "post the change and start the agenda",
+            World {
+                // Longer than the test may run: the steps end cancelled.
+                settle_after: Some(tilo_test_env::hang_bound()),
+                cancel_after_steps: Some(2),
+                ..World::default()
+            },
+            vec![turn(
+                &[
+                    invoke_on(
+                        CHAT_PEER,
+                        "chat.channel:general",
+                        "post",
+                        &serde_json::json!({"message": "Standup moved."}),
+                        true,
+                    ),
+                    invoke_on(
+                        PEER,
+                        DOC,
+                        "append-paragraph",
+                        &serde_json::json!({"text": "Agenda"}),
+                        true,
+                    ),
+                    finish("Done.", true),
+                ],
+                24,
+            )],
+        );
+        f.session.run_task(&f.run).unwrap();
+        let world = f.world.borrow();
+        assert_eq!(world.started.len(), 2);
+        let started: HashSet<_> = children_started(&f.sent.borrow()).into_iter().collect();
+        let cancelled: HashSet<_> = world.cancelled.iter().copied().collect();
+        assert_eq!(cancelled, started, "every running child is cancelled");
+        assert!(matches!(
+            terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Cancelled { .. }
+        ));
+    }
+
+    phase a_refused_native_step_does_not_stop_the_others;
+    // The host refusing one standalone native step (an authorization
+    // refusal) does not stop the others; an unmarked step is still skipped
+    // after a failure.
+    {
+        let mut f = fixture(
+            "post the change and start the agenda",
+            World {
+                settle_after: Some(Duration::from_millis(100)),
+                deny: vec!["post".into()],
+                ..World::default()
+            },
+            vec![
+                turn(
+                    &[
+                        invoke_on(
+                            CHAT_PEER,
+                            "chat.channel:general",
+                            "post",
+                            &serde_json::json!({"message": "Standup moved."}),
+                            true,
+                        ),
+                        invoke_on(
+                            PEER,
+                            DOC,
+                            "append-paragraph",
+                            &serde_json::json!({"text": "Agenda"}),
+                            true,
+                        ),
+                        invoke_on(
+                            PEER,
+                            DOC,
+                            "type-text",
+                            &serde_json::json!({"text": " for Monday"}),
+                            false,
+                        ),
+                    ],
+                    24,
+                ),
+                turn(&[finish("Started the agenda; I may not post.", true)], 64),
+            ],
+        );
+        f.session.run_task(&f.run).unwrap();
+        let world = f.world.borrow();
+        assert!(world.posts.is_empty(), "the refused post never ran");
+        assert_eq!(world.blocks, [("p1".to_owned(), "Agenda".to_owned())]);
+        let bodies = f.script.bodies.lock().unwrap().clone();
+        let results = tool_results(&bodies[1]);
+        assert_eq!(results[0].1["result"], "failed", "{:?}", results[0]);
+        assert!(
+            results[0].1["error"]
+                .as_str()
+                .unwrap()
+                .contains("permission denied"),
+            "{:?}",
+            results[0]
+        );
+        assert_eq!(results[1].1["result"], "succeeded", "{:?}", results[1]);
+        assert_eq!(results[2].1["result"], "not run", "{:?}", results[2]);
+        assert_eq!(
+            children_started(&f.sent.borrow()).len(),
+            2,
+            "each step asked the host on its own; the skipped one never"
+        );
+    }
+
+    phase a_native_step_is_answered_when_it_settles_not_on_a_timer;
+    // A running native step is followed by its host's answer, not a timer:
+    // the one re-ask out is held until the child settles, so it is answered
+    // once, with the outcome, and no round trip comes back empty.
+    {
+        let mut f = fixture(
+            "post the change",
+            World {
+                settle_after: Some(Duration::from_millis(250)),
+                // However long the machine takes to get there, the re-ask is
+                // still held when the child settles.
+                reask_hold: ReaskHold::UntilNews,
+                ..World::default()
+            },
+            vec![
+                turn(
+                    &[invoke_on(
+                        CHAT_PEER,
+                        "chat.channel:general",
+                        "post",
+                        &serde_json::json!({"message": "Standup moved."}),
+                        false,
+                    )],
+                    24,
+                ),
+                turn(&[finish("Posted.", true)], 64),
+            ],
+        );
+        f.session.run_task(&f.run).unwrap();
+        let world = f.world.borrow();
+        assert_eq!(world.posts, ["Standup moved."]);
+        let reasks = reasks(&f.sent.borrow());
+        assert_eq!(
+            reasks.len(),
+            1,
+            "one held re-ask, answered when the child settled: {reasks:?}"
+        );
+        assert_eq!(reasks[0].seen, tilo_actions::remote::UpdateMark::Accepted);
+        assert!(reasks[0].wait_ms > 0);
+        assert_eq!(world.observations, 1);
+        assert_eq!(world.idle_observations, 0, "no answer came back empty");
+    }
+
+    phase a_host_that_answers_reasks_at_once_is_paced_not_spun;
+    // A host from before held re-asks answers at once, with nothing new: the
+    // agent then re-asks at the old cadence, never in a loop.
+    {
+        let mut f = fixture(
+            "post the change",
+            World {
+                settle_after: Some(tilo_test_env::hang_bound()),
+                settles_at_reask: Some(4),
+                reask_hold: ReaskHold::AnswerAtOnce,
+                ..World::default()
+            },
+            vec![
+                turn(
+                    &[invoke_on(
+                        CHAT_PEER,
+                        "chat.channel:general",
+                        "post",
+                        &serde_json::json!({"message": "Standup moved."}),
+                        false,
+                    )],
+                    24,
+                ),
+                turn(&[finish("Posted.", true)], 64),
+            ],
+        );
+        f.session.run_task(&f.run).unwrap();
+        let world = f.world.borrow();
+        assert_eq!(world.posts, ["Standup moved."]);
+        assert_eq!(world.observations, 4);
+        assert_eq!(world.idle_observations, 3);
+        // Each re-ask after an empty answer waits for the old cadence, counted
+        // from when the agent sent the one before (a moment before the host
+        // took it in); a loop would send the next at once.
+        let gaps: Vec<Duration> = world
+            .reasked_at
+            .windows(2)
+            .map(|pair| pair[1] - pair[0])
+            .collect();
+        assert!(
+            gaps.iter()
+                .all(|gap| *gap >= crate::session::native_task::REASK_PACE / 2),
+            "re-asked {gaps:?} apart"
+        );
+    }
+
+    phase a_step_that_asks_the_person_is_held_until_they_answer;
+    // A step that asks the person is held, not refused: the host answers the
+    // ask with its draft waiting, the agent takes the child and follows it,
+    // and the person's answer — arriving when the child may start — is what
+    // ends the wait. No deadline of the step's own cuts it short
+    // (`docs/designs/app-language/shell.md` §1, "Trust stays system-drawn").
+    {
+        let mut f = fixture(
+            "Append the release line",
+            World {
+                awaiting: Some(("append-paragraph".into(), 2)),
+                settle_after: Some(Duration::from_millis(10)),
+                ..World::default()
+            },
+            vec![
+                turn(
+                    &[invoke(
+                        "append-paragraph",
+                        &serde_json::json!({"text": "Ship it"}),
+                    )],
+                    24,
+                ),
+                turn(&[finish("The line is appended.", true)], 64),
+            ],
+        );
+        f.session.run_task(&f.run).unwrap();
+        // The step waits on the person: the agent follows it with a held re-ask
+        // rather than refusing it.
+        assert!(
+            f.sent.borrow().iter().any(|request| matches!(
+                request,
+                CollabRequest::InvokeTaskAction { wait: Some(_), .. }
+            )),
+            "the step waits on the person: {:?}",
+            f.sent.borrow()
+        );
+        assert_eq!(
+            f.world.borrow().steps.len(),
+            1,
+            "the step ran once, after the person's answer"
+        );
+        assert_eq!(
+            terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Succeeded {
+                message: "The line is appended.".into()
+            }
+        );
+    }
+
+    phase a_paused_step_the_draft_cannot_rebuild_is_left_to_the_model;
+    // A paused step whose draft does not give back the exact arguments it was
+    // confirmed for is not guessed at: nothing runs before the model, which is
+    // told what waits so that it asks for that step again.
+    {
+        let mut f = fixture(
+            "add a closing line",
+            World::default(),
+            vec![turn(&[finish("Waiting on the person.", true)], 24)],
+        );
+        let arguments = serde_json::Map::from_iter([("text".to_owned(), Value::from("Kind regards"))]);
+        let descriptor = drafted(&mut f);
+        f.run.paused = Some(runtime_collab::TaskRunPausedStep {
+            app: "so.tilo.word-processor".into(),
+            resource: DOC.into(),
+            action: "append-paragraph".into(),
+            draft: tilo_actions::Draft::render(&descriptor, &arguments),
+            arguments_digest: [7; 32],
+        });
+        f.session.run_task(&f.run).unwrap();
+        assert!(children_started(&f.sent.borrow()).is_empty());
+        let bodies = f.script.bodies.lock().unwrap().clone();
+        let first = bodies[0].to_string();
+        assert!(first.contains("still waits for them"), "{first}");
+        assert!(first.contains("Kind regards"), "{first}");
+    }
+
+    phase a_native_child_id_names_its_request_not_its_position;
+    // A native child's id names its request: the same request in a run
+    // delivered again (a new agent process) finds the same child, a different
+    // request at the same position is a different child, and asking the same
+    // thing twice in one run makes two children.
+    {
+        let ids = |requests: &[&str]| {
+            let mut f = fixture("ids", World::default(), Vec::new());
+            f.session.native_task = Some(crate::session::native_task::NativeTaskState {
+                run_id: f.run.run_id,
+                task_id: f.run.task_id.clone(),
+                base: "00000000000000000000000000000000".into(),
+                ..Default::default()
+            });
+            let offers = f.session.task_catalogue();
+            requests
+                .iter()
+                .map(|text| {
+                    let arguments =
+                        serde_json::Map::from_iter([("text".to_owned(), Value::from(*text))]);
+                    let offer = surface::find(&offers.offers, &op("append-paragraph")).unwrap();
+                    let action = task_action_from_offer(offer, arguments.clone()).unwrap();
+                    f.session
+                        .task_child_id(&f.run, &action, &arguments)
+                        .unwrap()
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = ids(&["a", "b", "a"]);
+        let after = ids(&["b", "a"]);
+        assert_ne!(before[0], before[2], "asking twice makes two children");
+        assert_eq!(
+            after[0], before[1],
+            "the same request finds its child again"
+        );
+        assert_eq!(after[1], before[0]);
+        assert_ne!(after[0], before[0], "another request at the same position");
+    }
 }

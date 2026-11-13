@@ -153,105 +153,109 @@ fn person_key(kind: ErrorKind) -> &'static str {
 mod tests {
     use super::*;
 
-    /// The sentence a person reads never carries the record: no recovery
-    /// instruction written for the agent, no partial answer, no reasoning.
-    #[test]
-    fn a_model_failure_keeps_its_record_out_of_the_persons_sentence() {
-        for kind in [
-            ErrorKind::TimedOut,
-            ErrorKind::Transport,
-            ErrorKind::Provider,
-            ErrorKind::Authentication,
-            ErrorKind::NoProvider,
-        ] {
-            let error = ModelError {
-                kind,
-                message: "Model request timed out".into(),
-            };
-            let failure = Failure::model(&error)
-                .retained("Let me read r4, r9..", "Let's do it: 25,26,27,36,37,38,…");
-            let message = failure.message();
-            assert!(
-                !message.contains("Retry inference from saved history"),
-                "{message}"
-            );
-            assert!(
-                !message.contains("do not replay completed actions"),
-                "{message}"
-            );
-            assert!(!message.contains("Partial answer"), "{message}");
-            assert!(!message.contains("Provider-exposed summary"), "{message}");
-            assert!(!message.contains("Let me read"), "{message}");
-            assert!(!message.contains("Let's do it"), "{message}");
-            assert!(!message.contains(".."), "{message}");
-            assert!(!message.contains('…'), "{message}");
-            // One sentence: it names what happened, in the person's terms.
-            assert!(message.ends_with('.'), "{message}");
-            assert!(!message.contains('\n'), "{message}");
-            // The record keeps everything the sentence leaves out.
-            assert!(failure.detail().contains("Partial answer (not completed)"));
-            assert!(failure.detail().contains("Provider-exposed summary"));
-        }
-        // A timeout's record keeps the recovery the agent itself may take,
-        // which is never the person's sentence.
-        let failure = Failure::model(&ModelError {
-            kind: ErrorKind::TimedOut,
-            message: "Model request timed out".into(),
-        });
-        assert!(
-            failure
-                .detail()
-                .contains("the turn starts again from committed history"),
-            "{}",
-            failure.detail()
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_failure_is_one_sentence_a_person_can_read;
 
-    /// A timeout reads as one plain sentence about time.
-    #[test]
-    fn a_timeout_reads_as_one_sentence_about_time() {
-        let failure = Failure::model(&ModelError::new(ErrorKind::TimedOut));
-        assert_eq!(failure.message(), "The model didn't answer in time.");
-    }
-
-    /// A configuration failure names the setting to look at.
-    #[test]
-    fn a_configuration_failure_names_the_setting() {
-        let failure = Failure::model(&ModelError::new(ErrorKind::NoProvider));
-        assert!(failure.message().contains("Settings"));
-        assert!(failure.message().contains("Agent models"));
-    }
-
-    /// Every kind has its own sentence, and none tells the person to replay
-    /// or continue anything only the agent decides.
-    #[test]
-    fn no_kind_tells_a_person_to_replay_or_continue() {
-        for kind in [
-            ErrorKind::Unavailable,
-            ErrorKind::NoProvider,
-            ErrorKind::Authentication,
-            ErrorKind::PermissionDenied,
-            ErrorKind::InvalidRequest,
-            ErrorKind::Conflict,
-            ErrorKind::InvalidResponse,
-            ErrorKind::Unsupported,
-            ErrorKind::RateLimited,
-            ErrorKind::CreditsExhausted,
-            ErrorKind::ContextLimit,
-            ErrorKind::Provider,
-            ErrorKind::TimedOut,
-            ErrorKind::Cancelled,
-            ErrorKind::Truncated,
-            ErrorKind::Refused,
-            ErrorKind::Transport,
-        ] {
-            let said = crate::i18n::t(person_key(kind));
-            assert_ne!(said, person_key(kind), "{kind:?} has no sentence");
-            for forbidden in ["replay", "inference", "partial", "reasoning", "history"] {
+        phase a_model_failure_keeps_its_record_out_of_the_persons_sentence;
+        // The sentence a person reads never carries the record: no recovery
+        // instruction written for the agent, no partial answer, no reasoning.
+        {
+            for kind in [
+                ErrorKind::TimedOut,
+                ErrorKind::Transport,
+                ErrorKind::Provider,
+                ErrorKind::Authentication,
+                ErrorKind::NoProvider,
+            ] {
+                let error = ModelError {
+                    kind,
+                    message: "Model request timed out".into(),
+                };
+                let failure = Failure::model(&error)
+                    .retained("Let me read r4, r9..", "Let's do it: 25,26,27,36,37,38,…");
+                let message = failure.message();
                 assert!(
-                    !said.to_lowercase().contains(forbidden),
-                    "{kind:?} says {forbidden}: {said}"
+                    !message.contains("Retry inference from saved history"),
+                    "{message}"
                 );
+                assert!(
+                    !message.contains("do not replay completed actions"),
+                    "{message}"
+                );
+                assert!(!message.contains("Partial answer"), "{message}");
+                assert!(!message.contains("Provider-exposed summary"), "{message}");
+                assert!(!message.contains("Let me read"), "{message}");
+                assert!(!message.contains("Let's do it"), "{message}");
+                assert!(!message.contains(".."), "{message}");
+                assert!(!message.contains('…'), "{message}");
+                // One sentence: it names what happened, in the person's terms.
+                assert!(message.ends_with('.'), "{message}");
+                assert!(!message.contains('\n'), "{message}");
+                // The record keeps everything the sentence leaves out.
+                assert!(failure.detail().contains("Partial answer (not completed)"));
+                assert!(failure.detail().contains("Provider-exposed summary"));
+            }
+            // A timeout's record keeps the recovery the agent itself may take,
+            // which is never the person's sentence.
+            let failure = Failure::model(&ModelError {
+                kind: ErrorKind::TimedOut,
+                message: "Model request timed out".into(),
+            });
+            assert!(
+                failure
+                    .detail()
+                    .contains("the turn starts again from committed history"),
+                "{}",
+                failure.detail()
+            );
+        }
+
+        phase a_timeout_reads_as_one_sentence_about_time;
+        // A timeout reads as one plain sentence about time.
+        {
+            let failure = Failure::model(&ModelError::new(ErrorKind::TimedOut));
+            assert_eq!(failure.message(), "The model didn't answer in time.");
+        }
+
+        phase a_configuration_failure_names_the_setting;
+        // A configuration failure names the setting to look at.
+        {
+            let failure = Failure::model(&ModelError::new(ErrorKind::NoProvider));
+            assert!(failure.message().contains("Settings"));
+            assert!(failure.message().contains("Agent models"));
+        }
+
+        phase no_kind_tells_a_person_to_replay_or_continue;
+        // Every kind has its own sentence, and none tells the person to replay
+        // or continue anything only the agent decides.
+        {
+            for kind in [
+                ErrorKind::Unavailable,
+                ErrorKind::NoProvider,
+                ErrorKind::Authentication,
+                ErrorKind::PermissionDenied,
+                ErrorKind::InvalidRequest,
+                ErrorKind::Conflict,
+                ErrorKind::InvalidResponse,
+                ErrorKind::Unsupported,
+                ErrorKind::RateLimited,
+                ErrorKind::CreditsExhausted,
+                ErrorKind::ContextLimit,
+                ErrorKind::Provider,
+                ErrorKind::TimedOut,
+                ErrorKind::Cancelled,
+                ErrorKind::Truncated,
+                ErrorKind::Refused,
+                ErrorKind::Transport,
+            ] {
+                let said = crate::i18n::t(person_key(kind));
+                assert_ne!(said, person_key(kind), "{kind:?} has no sentence");
+                for forbidden in ["replay", "inference", "partial", "reasoning", "history"] {
+                    assert!(
+                        !said.to_lowercase().contains(forbidden),
+                        "{kind:?} says {forbidden}: {said}"
+                    );
+                }
             }
         }
     }

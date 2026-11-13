@@ -177,192 +177,196 @@ fn recorded(sent: &[CollabRequest], action: &str) -> Vec<Value> {
         .collect()
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one task end to end: its programs, their records, and the view it answers with"
-)]
-fn a_task_works_in_programs_and_answers_with_a_view() {
-    let cards = serde_json::json!({
-        "text": "c1 \"Write the release notes\" column: c2",
-        "failed": false,
-        "answer": {"state": "done", "output": [], "steps": [], "changed": 0, "apps": []},
-        "refs": [["c1", "@board.Card:root/cards:c1"], ["c2", "@board.Column:root/columns:k1"]],
-    });
-    let moved = serde_json::json!({
-        "text": "step 1: 1 change in board; `undo` takes it back",
-        "failed": false,
-        "answer": {"state": "done", "output": [], "changed": 1, "apps": [BOARD],
-            "steps": [{"app": BOARD, "action": "move_card",
-                "resources": [format!("tl:{BOARD}:root/cards:c1")], "destructive": false}]},
-    });
-    let world = World {
-        tilolang: true,
-        // The view, checked by the Views host: a `view` declaration that takes nothing.
-        tl_blocks: vec![(
-            "row(c)",
-            serde_json::json!({"kind": "view", "tree": {"kind": "column", "key": "0"},
-                "definition": {"name": "left", "shows": null, "params": []}}),
-        )],
-        // Matched in order: the program that does not compile, the move, the cards.
-        tl_programs: vec![
-            (
-                "nope",
-                serde_json::json!({
-                    "text": "error: the program does not compile; nothing ran\n1:7: `board` has no `nope`",
-                    "failed": true,
-                    "answer": {"state": "rejected", "detail": ["1:7: `board` has no `nope`"]},
-                }),
-            ),
-            ("move", moved),
-            ("board.Card", cards),
-        ],
-        ..World::default()
-    };
-    let view = "view left() {\n    stack { for c in (root board.Board).cards { row(c) } }\n}";
-    let mut f = fixture(
-        "what's left for the release?",
-        world,
-        vec![
-            turn(&[tilo("board.nope")], 64),
-            turn(
-                &[tilo(
-                    "find(board.Card).filter(c -> c.column.title != \"Done\")",
-                )],
-                64,
-            ),
-            turn(&[tilo("board.move_card(c1, c2)")], 64),
-            turn(
-                &[(
-                    tools::PLAN,
-                    serde_json::json!({
-                        "reply": "One card is left.",
-                        "done": true,
-                        "view": {"title": "Left for the release", "source": view}
-                    }),
-                )],
-                64,
-            ),
-        ],
-    );
-    f.session.run_task(&f.run).unwrap();
-    let bodies = f.script.bodies.lock().unwrap();
-    assert_eq!(
-        bodies.len(),
-        4,
-        "a turn per program and the finish; the last one read: {}",
-        said_last(bodies.last().unwrap())
-    );
-    assert_eq!(
-        terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Succeeded {
-            message: "One card is left.".into()
-        }
-    );
-    // The first message says where the task is: the apps its programs reach, and no limits
-    // when its person set none.
-    let first = bodies[0].to_string();
-    assert!(!first.contains("Limits:"), "{first}");
-    assert!(first.contains("`board`: Board"), "{first}");
-    assert!(first.contains("types Card, Column"), "{first}");
-    assert!(tool_names(&bodies[0]).contains(&crate::programs::TILO.to_owned()));
-    // A program that does not compile answers what is valid; the next one answers in tilolang.
-    let second = bodies[1].to_string();
-    assert!(second.contains("does not compile"), "{second}");
-    let third = said_last(&bodies[2]);
-    assert!(third.contains("c1 \"Write the release notes\""), "{third}");
-    drop(bodies);
-    let sent = f.sent.borrow();
-    // The reply the run ends with lists its three programs, and nothing
-    // else: the view it kept is its answer, not a step.
-    let records = recorded(&sent, "record-work");
-    let last = records
-        .last()
-        .expect("the reply was told how the run ended");
-    let work = &last["work"];
-    assert_eq!(work["state"], "provider_complete");
-    let steps = work["trace"].as_array().expect("the reply's steps");
-    assert_eq!(steps.len(), 3, "{steps:?}");
-    assert_eq!(steps[0]["outcome"], "refused", "{steps:?}");
-    assert_eq!(steps[0]["resource"], "tilo.program");
-    // A previewed program names the record it read, and one that changed
-    // something names the action it ran.
-    assert_eq!(steps[1]["outcome"], "applied", "{steps:?}");
-    assert_eq!(steps[1]["resource"], format!("tl:{BOARD}:root/cards:c1"));
-    assert_eq!(steps[2]["outcome"], "applied", "{steps:?}");
-    assert_eq!(steps[2]["label"], "move_card");
-    assert_eq!(steps[2]["resource"], format!("tl:{BOARD}:root/cards:c1"));
-    // Every program went to the door as a step of the task's run.
-    let world = f.world.borrow();
-    let ran: Vec<&serde_json::Map<String, Value>> = world
-        .steps
-        .iter()
-        .filter(|(action, _)| action == tilo_actions::remote::task_programs::RUN)
-        .map(|(_, arguments)| arguments)
-        .collect();
-    assert_eq!(ran.len(), 3);
-    assert_eq!(ran[0]["run"], Value::String(f.run.group()));
-    drop(world);
-    // The view was checked by the Views host before it was kept, and the answer names the
-    // resource keeping it.
-    let world = f.world.borrow();
-    let kept: Vec<&str> = world
-        .steps
-        .iter()
-        .map(|(action, _)| action.as_str())
-        .filter(|action| ["run-block", "answer"].contains(action))
-        .collect();
-    assert_eq!(kept, ["run-block", "answer"]);
-    // It is kept as the declaration the task wrote, among the person's own views.
-    let answer = &world
-        .steps
-        .iter()
-        .find(|(action, _)| action == "answer")
-        .unwrap()
-        .1;
-    assert_eq!(answer["definition"], Value::String(view.to_owned()));
-    assert_eq!(answer["shows"], Value::String(String::new()));
-    drop(world);
-    // The view is kept, and the reply that names it is the same one: no step
-    // of the turn is the view itself.
-    assert!(
-        steps
-            .iter()
-            .all(|step| step["resource"] != format!("tl:{VIEWS}:root/items:v1"))
-    );
-}
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one task end to end: its programs, their records, and the view it answers with"
+    )]
+    fn a_task_works_in_programs_and_refuses_what_is_not_a_view;
 
-#[test]
-fn a_view_that_is_not_a_view_is_refused_and_the_task_goes_on() {
-    let world = World {
-        tilolang: true,
-        tl_blocks: vec![("42", serde_json::json!({"kind": "data", "value": 42}))],
-        ..World::default()
-    };
-    let mut f = fixture(
-        "how many?",
-        world,
-        vec![
-            turn(
-                &[(
-                    tools::PLAN,
-                    serde_json::json!({"reply": "42", "done": true,
-                        "view": {"title": "Count", "source": "42"}}),
-                )],
-                64,
-            ),
-            turn(&[finish("There are 42.", true)], 64),
-        ],
-    );
-    f.session.run_task(&f.run).unwrap();
-    let bodies = f.script.bodies.lock().unwrap();
-    let refused = said_last(&bodies[1]);
-    assert!(refused.contains("is not a `view` declaration"), "{refused}");
-    drop(bodies);
-    assert_eq!(
-        terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Succeeded {
-            message: "There are 42.".into()
-        }
-    );
+    phase a_task_works_in_programs_and_answers_with_a_view;
+    {
+        let cards = serde_json::json!({
+            "text": "c1 \"Write the release notes\" column: c2",
+            "failed": false,
+            "answer": {"state": "done", "output": [], "steps": [], "changed": 0, "apps": []},
+            "refs": [["c1", "@board.Card:root/cards:c1"], ["c2", "@board.Column:root/columns:k1"]],
+        });
+        let moved = serde_json::json!({
+            "text": "step 1: 1 change in board; `undo` takes it back",
+            "failed": false,
+            "answer": {"state": "done", "output": [], "changed": 1, "apps": [BOARD],
+                "steps": [{"app": BOARD, "action": "move_card",
+                    "resources": [format!("tl:{BOARD}:root/cards:c1")], "destructive": false}]},
+        });
+        let world = World {
+            tilolang: true,
+            // The view, checked by the Views host: a `view` declaration that takes nothing.
+            tl_blocks: vec![(
+                "row(c)",
+                serde_json::json!({"kind": "view", "tree": {"kind": "column", "key": "0"},
+                    "definition": {"name": "left", "shows": null, "params": []}}),
+            )],
+            // Matched in order: the program that does not compile, the move, the cards.
+            tl_programs: vec![
+                (
+                    "nope",
+                    serde_json::json!({
+                        "text": "error: the program does not compile; nothing ran\n1:7: `board` has no `nope`",
+                        "failed": true,
+                        "answer": {"state": "rejected", "detail": ["1:7: `board` has no `nope`"]},
+                    }),
+                ),
+                ("move", moved),
+                ("board.Card", cards),
+            ],
+            ..World::default()
+        };
+        let view = "view left() {\n    stack { for c in (root board.Board).cards { row(c) } }\n}";
+        let mut f = fixture(
+            "what's left for the release?",
+            world,
+            vec![
+                turn(&[tilo("board.nope")], 64),
+                turn(
+                    &[tilo(
+                        "find(board.Card).filter(c -> c.column.title != \"Done\")",
+                    )],
+                    64,
+                ),
+                turn(&[tilo("board.move_card(c1, c2)")], 64),
+                turn(
+                    &[(
+                        tools::PLAN,
+                        serde_json::json!({
+                            "reply": "One card is left.",
+                            "done": true,
+                            "view": {"title": "Left for the release", "source": view}
+                        }),
+                    )],
+                    64,
+                ),
+            ],
+        );
+        f.session.run_task(&f.run).unwrap();
+        let bodies = f.script.bodies.lock().unwrap();
+        assert_eq!(
+            bodies.len(),
+            4,
+            "a turn per program and the finish; the last one read: {}",
+            said_last(bodies.last().unwrap())
+        );
+        assert_eq!(
+            terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Succeeded {
+                message: "One card is left.".into()
+            }
+        );
+        // The first message says where the task is: the apps its programs reach, and no limits
+        // when its person set none.
+        let first = bodies[0].to_string();
+        assert!(!first.contains("Limits:"), "{first}");
+        assert!(first.contains("`board`: Board"), "{first}");
+        assert!(first.contains("types Card, Column"), "{first}");
+        assert!(tool_names(&bodies[0]).contains(&crate::programs::TILO.to_owned()));
+        // A program that does not compile answers what is valid; the next one answers in tilolang.
+        let second = bodies[1].to_string();
+        assert!(second.contains("does not compile"), "{second}");
+        let third = said_last(&bodies[2]);
+        assert!(third.contains("c1 \"Write the release notes\""), "{third}");
+        drop(bodies);
+        let sent = f.sent.borrow();
+        // The reply the run ends with lists its three programs, and nothing
+        // else: the view it kept is its answer, not a step.
+        let records = recorded(&sent, "record-work");
+        let last = records
+            .last()
+            .expect("the reply was told how the run ended");
+        let work = &last["work"];
+        assert_eq!(work["state"], "provider_complete");
+        let steps = work["trace"].as_array().expect("the reply's steps");
+        assert_eq!(steps.len(), 3, "{steps:?}");
+        assert_eq!(steps[0]["outcome"], "refused", "{steps:?}");
+        assert_eq!(steps[0]["resource"], "tilo.program");
+        // A previewed program names the record it read, and one that changed
+        // something names the action it ran.
+        assert_eq!(steps[1]["outcome"], "applied", "{steps:?}");
+        assert_eq!(steps[1]["resource"], format!("tl:{BOARD}:root/cards:c1"));
+        assert_eq!(steps[2]["outcome"], "applied", "{steps:?}");
+        assert_eq!(steps[2]["label"], "move_card");
+        assert_eq!(steps[2]["resource"], format!("tl:{BOARD}:root/cards:c1"));
+        // Every program went to the door as a step of the task's run.
+        let world = f.world.borrow();
+        let ran: Vec<&serde_json::Map<String, Value>> = world
+            .steps
+            .iter()
+            .filter(|(action, _)| action == tilo_actions::remote::task_programs::RUN)
+            .map(|(_, arguments)| arguments)
+            .collect();
+        assert_eq!(ran.len(), 3);
+        assert_eq!(ran[0]["run"], Value::String(f.run.group()));
+        drop(world);
+        // The view was checked by the Views host before it was kept, and the answer names the
+        // resource keeping it.
+        let world = f.world.borrow();
+        let kept: Vec<&str> = world
+            .steps
+            .iter()
+            .map(|(action, _)| action.as_str())
+            .filter(|action| ["run-block", "answer"].contains(action))
+            .collect();
+        assert_eq!(kept, ["run-block", "answer"]);
+        // It is kept as the declaration the task wrote, among the person's own views.
+        let answer = &world
+            .steps
+            .iter()
+            .find(|(action, _)| action == "answer")
+            .unwrap()
+            .1;
+        assert_eq!(answer["definition"], Value::String(view.to_owned()));
+        assert_eq!(answer["shows"], Value::String(String::new()));
+        drop(world);
+        // The view is kept, and the reply that names it is the same one: no step
+        // of the turn is the view itself.
+        assert!(
+            steps
+                .iter()
+                .all(|step| step["resource"] != format!("tl:{VIEWS}:root/items:v1"))
+        );
+    }
+
+    phase a_view_that_is_not_a_view_is_refused_and_the_task_goes_on;
+    {
+        let world = World {
+            tilolang: true,
+            tl_blocks: vec![("42", serde_json::json!({"kind": "data", "value": 42}))],
+            ..World::default()
+        };
+        let mut f = fixture(
+            "how many?",
+            world,
+            vec![
+                turn(
+                    &[(
+                        tools::PLAN,
+                        serde_json::json!({"reply": "42", "done": true,
+                            "view": {"title": "Count", "source": "42"}}),
+                    )],
+                    64,
+                ),
+                turn(&[finish("There are 42.", true)], 64),
+            ],
+        );
+        f.session.run_task(&f.run).unwrap();
+        let bodies = f.script.bodies.lock().unwrap();
+        let refused = said_last(&bodies[1]);
+        assert!(refused.contains("is not a `view` declaration"), "{refused}");
+        drop(bodies);
+        assert_eq!(
+            terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Succeeded {
+                message: "There are 42.".into()
+            }
+        );
+    }
 }

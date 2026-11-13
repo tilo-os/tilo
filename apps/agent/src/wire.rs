@@ -525,45 +525,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn typed_poll_batches_keep_every_event_in_order() {
-        let mut pending = VecDeque::new();
-        let first = take_next_polled(
-            &mut pending,
-            vec![
-                CollabEvent::RemoteCursorMoved {
-                    user_id: "one".into(),
-                    x: 1.0,
-                    y: 0.0,
-                },
-                CollabEvent::RemoteCursorMoved {
-                    user_id: "two".into(),
-                    x: 2.0,
-                    y: 0.0,
-                },
-                CollabEvent::RemoteCursorMoved {
-                    user_id: "three".into(),
-                    x: 3.0,
-                    y: 0.0,
-                },
-            ],
-        );
-
-        assert!(matches!(
-            first,
-            Some(CollabEvent::RemoteCursorMoved { x: 1.0, .. })
-        ));
-        assert!(matches!(
-            take_next_polled(&mut pending, Vec::new()),
-            Some(CollabEvent::RemoteCursorMoved { x: 2.0, .. })
-        ));
-        assert!(matches!(
-            take_next_polled(&mut pending, Vec::new()),
-            Some(CollabEvent::RemoteCursorMoved { x: 3.0, .. })
-        ));
-        assert!(take_next_polled(&mut pending, Vec::new()).is_none());
-    }
-
     /// Answers every cancellation poll at once, each followed by
     /// an ordinary workspace event, so detached answers arrive interleaved with
     /// the traffic the session loop reads.
@@ -604,49 +565,6 @@ mod tests {
         }
     }
 
-    /// Detached answers never reach the session loop: each waits for its
-    /// owner — and every other event keeps its order, including an answer
-    /// nobody detached (an in-line wait still sees it).
-    #[test]
-    fn detached_answers_leave_the_event_stream_without_reordering_it() {
-        let (_wake, rx) = test_wake();
-        let mut link = test_link(AnsweringHost { events: Vec::new() }, rx);
-        link.send_detached(&poll(1)).unwrap();
-        link.send_detached(&poll(2)).unwrap();
-        // Sent in line: its answer is the caller's to read.
-        link.send(&poll(3)).unwrap();
-        assert!(
-            link.send_detached(&CollabRequest::RequestDocumentSnapshot)
-                .is_err(),
-            "only requests with a correlated answer can be detached"
-        );
-
-        let mut seen = Vec::new();
-        while let Some(event) = link.recv(Duration::ZERO).unwrap() {
-            seen.push(match event {
-                CollabEvent::RemoteCursorMoved { user_id, .. } => user_id,
-                CollabEvent::TaskRunCancellation { request_id, .. } => {
-                    format!("reply-{request_id}")
-                }
-                other => panic!("unexpected event {other:?}"),
-            });
-        }
-        assert_eq!(
-            seen,
-            ["after-1", "after-2", "reply-3", "after-3"],
-            "detached answers are taken out; the rest keep their order"
-        );
-        assert_eq!(
-            link.take_detached(1),
-            Some(Detached::Cancellation(Ok(true)))
-        );
-        assert_eq!(
-            link.take_detached(2),
-            Some(Detached::Cancellation(Ok(false)))
-        );
-        assert_eq!(link.take_detached(1), None, "an answer is taken once");
-    }
-
     /// Hands over `events` on its first poll, then nothing.
     struct Courier {
         events: Vec<CollabEvent>,
@@ -664,60 +582,146 @@ mod tests {
         }
     }
 
-    /// A wait for the catalogue is ended by a republication, and only by one: a
-    /// republication behind another event still ends it, and that event keeps
-    /// its place for the session loop.
-    #[test]
-    fn a_catalogue_wait_takes_the_republication_and_keeps_every_other_event() {
-        let change = CatalogueChange::snapshot(&[]);
-        let (_wake, rx) = test_wake();
-        let mut link = test_link(
-            Courier {
-                events: vec![
+    tilo_test_env::scenario! {
+        fn the_link_keeps_polled_events_in_order;
+
+        phase typed_poll_batches_keep_every_event_in_order;
+        {
+            let mut pending = VecDeque::new();
+            let first = take_next_polled(
+                &mut pending,
+                vec![
                     CollabEvent::RemoteCursorMoved {
                         user_id: "one".into(),
                         x: 1.0,
                         y: 0.0,
                     },
-                    CollabEvent::ActionCatalogue {
-                        change: change.clone(),
+                    CollabEvent::RemoteCursorMoved {
+                        user_id: "two".into(),
+                        x: 2.0,
+                        y: 0.0,
+                    },
+                    CollabEvent::RemoteCursorMoved {
+                        user_id: "three".into(),
+                        x: 3.0,
+                        y: 0.0,
                     },
                 ],
-            },
-            rx,
-        );
-        assert_eq!(
-            link.next_catalogue(ui::time::now()),
-            Some(change),
-            "the republication ends the wait"
-        );
-        assert!(
-            matches!(
-                link.recv(Duration::ZERO).unwrap(),
-                Some(CollabEvent::RemoteCursorMoved { user_id, .. }) if user_id == "one"
-            ),
-            "the other event keeps its place for the session loop"
-        );
-        assert!(link.recv(Duration::ZERO).unwrap().is_none());
-    }
+            );
 
-    #[test]
-    fn a_forgotten_poll_is_dropped_and_an_arrived_one_needs_no_wait() {
-        let (_wake, rx) = test_wake();
-        let mut link = test_link(AnsweringHost { events: Vec::new() }, rx);
-        link.send_detached(&poll(1)).unwrap();
-        link.forget(1);
-        link.send_detached(&poll(3)).unwrap();
-        // A deadline already past: only an answer that needs no wait is seen.
-        assert_eq!(
-            link.wait_detached(3, ui::time::now()),
-            Some(Detached::Cancellation(Ok(true)))
-        );
-        assert_eq!(link.take_detached(1), None);
-        assert_eq!(
-            link.wait_detached(1, ui::time::now()),
-            None,
-            "nothing is outstanding under a forgotten id"
-        );
+            assert!(matches!(
+                first,
+                Some(CollabEvent::RemoteCursorMoved { x: 1.0, .. })
+            ));
+            assert!(matches!(
+                take_next_polled(&mut pending, Vec::new()),
+                Some(CollabEvent::RemoteCursorMoved { x: 2.0, .. })
+            ));
+            assert!(matches!(
+                take_next_polled(&mut pending, Vec::new()),
+                Some(CollabEvent::RemoteCursorMoved { x: 3.0, .. })
+            ));
+            assert!(take_next_polled(&mut pending, Vec::new()).is_none());
+        }
+
+        phase detached_answers_leave_the_event_stream_without_reordering_it;
+        // Detached answers never reach the session loop: each waits for its
+        // owner — and every other event keeps its order, including an answer
+        // nobody detached (an in-line wait still sees it).
+        {
+            let (_wake, rx) = test_wake();
+            let mut link = test_link(AnsweringHost { events: Vec::new() }, rx);
+            link.send_detached(&poll(1)).unwrap();
+            link.send_detached(&poll(2)).unwrap();
+            // Sent in line: its answer is the caller's to read.
+            link.send(&poll(3)).unwrap();
+            assert!(
+                link.send_detached(&CollabRequest::RequestDocumentSnapshot)
+                    .is_err(),
+                "only requests with a correlated answer can be detached"
+            );
+
+            let mut seen = Vec::new();
+            while let Some(event) = link.recv(Duration::ZERO).unwrap() {
+                seen.push(match event {
+                    CollabEvent::RemoteCursorMoved { user_id, .. } => user_id,
+                    CollabEvent::TaskRunCancellation { request_id, .. } => {
+                        format!("reply-{request_id}")
+                    }
+                    other => panic!("unexpected event {other:?}"),
+                });
+            }
+            assert_eq!(
+                seen,
+                ["after-1", "after-2", "reply-3", "after-3"],
+                "detached answers are taken out; the rest keep their order"
+            );
+            assert_eq!(
+                link.take_detached(1),
+                Some(Detached::Cancellation(Ok(true)))
+            );
+            assert_eq!(
+                link.take_detached(2),
+                Some(Detached::Cancellation(Ok(false)))
+            );
+            assert_eq!(link.take_detached(1), None, "an answer is taken once");
+        }
+
+        phase a_catalogue_wait_takes_the_republication_and_keeps_every_other_event;
+        // A wait for the catalogue is ended by a republication, and only by one: a
+        // republication behind another event still ends it, and that event keeps
+        // its place for the session loop.
+        {
+            let change = CatalogueChange::snapshot(&[]);
+            let (_wake, rx) = test_wake();
+            let mut link = test_link(
+                Courier {
+                    events: vec![
+                        CollabEvent::RemoteCursorMoved {
+                            user_id: "one".into(),
+                            x: 1.0,
+                            y: 0.0,
+                        },
+                        CollabEvent::ActionCatalogue {
+                            change: change.clone(),
+                        },
+                    ],
+                },
+                rx,
+            );
+            assert_eq!(
+                link.next_catalogue(ui::time::now()),
+                Some(change),
+                "the republication ends the wait"
+            );
+            assert!(
+                matches!(
+                    link.recv(Duration::ZERO).unwrap(),
+                    Some(CollabEvent::RemoteCursorMoved { user_id, .. }) if user_id == "one"
+                ),
+                "the other event keeps its place for the session loop"
+            );
+            assert!(link.recv(Duration::ZERO).unwrap().is_none());
+        }
+
+        phase a_forgotten_poll_is_dropped_and_an_arrived_one_needs_no_wait;
+        {
+            let (_wake, rx) = test_wake();
+            let mut link = test_link(AnsweringHost { events: Vec::new() }, rx);
+            link.send_detached(&poll(1)).unwrap();
+            link.forget(1);
+            link.send_detached(&poll(3)).unwrap();
+            // A deadline already past: only an answer that needs no wait is seen.
+            assert_eq!(
+                link.wait_detached(3, ui::time::now()),
+                Some(Detached::Cancellation(Ok(true)))
+            );
+            assert_eq!(link.take_detached(1), None);
+            assert_eq!(
+                link.wait_detached(1, ui::time::now()),
+                None,
+                "nothing is outstanding under a forgotten id"
+            );
+        }
     }
 }
