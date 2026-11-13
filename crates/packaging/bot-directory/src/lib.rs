@@ -1,7 +1,6 @@
-//! Installing a bot from a registry: verify the listed program against its
-//! signed entry, derive the grant it needs, check its connectors, and build
-//! the `install-bot` arguments a room's governance action takes. The Store
-//! and the room service share this, so both show and install the same thing.
+//! Installing a bot from a registry: verify the listed program against its signed entry, derive the
+//! grant it needs, check its connectors, and build the `install-bot` arguments a room's governance
+//! action takes. The Store and the room service share this, so both show and install the same thing.
 
 use std::collections::BTreeSet;
 
@@ -56,9 +55,8 @@ fn not_listed(entry: &str, version: &str) -> DirectoryError {
     }
 }
 
-/// Check `program_bytes` against `version` of the bot `entry` in `entries`.
-/// The registry checked this at review. A client checks again, because the
-/// bytes it installs are the ones that count.
+/// Check `program_bytes` against `version` of the bot `entry` in `entries`. The registry checked
+/// this at review; a client checks again, because the bytes it installs are the ones that count.
 pub fn verify_listed_bot(
     entries: &[VerifiedEntry],
     registry_owner: &str,
@@ -128,8 +126,8 @@ pub fn verify_listed_bot(
     })
 }
 
-/// Fetch the signed listing of `entry` (every retained version) and the
-/// program `version` binds, then verify both.
+/// Fetch the signed listing of `entry` (every retained version) and the program `version` binds,
+/// then verify both.
 pub fn fetch_listed_bot(
     reg: &RegistryConfig,
     entry: &str,
