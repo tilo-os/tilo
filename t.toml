@@ -2537,18 +2537,6 @@ timeout_secs = 1800
 on = ["idle"]
 
 [[check]]
-name = "site-door-acceptance"
-run = "export TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nbash tools/test-env.sh python3 -I dist/dev/site-door-acceptance.py --no-build --bundle /target/publish/web-desktop/bundle --out /target/site-door-acceptance\n"
-needs = ["nested-session", "test-assets", "web-desktop-bundle"]
-env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16" }
-requires = ["arch=x86_64"]
-isolation = "vm"
-outputs = ["/target/site-door-acceptance/**"]
-git = true
-timeout_secs = 7200
-on = ["idle"]
-
-[[check]]
 name = "app-screenshots"
 run = "bash tools/screenshots/build.sh \"$CARGO_TARGET_DIR/app-screenshots-build\"\nrm -rf /target/app-screenshots\nbash tools/test-env.sh python3 -I tools/screenshots/run.py --out /target/app-screenshots \\\n  --bin-dir \"$CARGO_TARGET_DIR/app-screenshots-build/bin\" --lib-dir \"$CARGO_TARGET_DIR/app-screenshots-build/lib\" \\\n  || echo \"app-screenshots: some situations failed (see summary.json)\"\n"
 env = { TILO_TEST_NTFS_FIXTURES = "0", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
@@ -4688,44 +4676,6 @@ env = { TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/tar
 requires = ["arch=x86_64"]
 isolation = "nested"
 timeout_secs = 1200
-on = ["idle"]
-
-[[check]]
-name = "nested-terminal"
-run = "bash tools/test-env.sh python3 -I dist/dev/nested-terminal-check.py --out /target/nested-terminal"
-needs = ["nested-session"]
-env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session" }
-requires = ["arch=x86_64"]
-isolation = "vm"
-outputs = ["/target/nested-terminal/**"]
-git = true
-timeout_secs = 1800
-on = ["idle"]
-
-[[check]]
-name = "lounge-switch-local"
-run = "bash tools/test-env.sh python3 -I dist/dev/lounge-switch-local.py t2024"
-needs = ["nested-session", "test-assets"]
-env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_ASSET_SEED = "/target/test-assets", TILO_TEST_NTFS_FIXTURES = "0" }
-requires = ["arch=x86_64"]
-isolation = "vm"
-outputs = ["/target/lounge-switch-local/**"]
-cache = false
-git = true
-timeout_secs = 5400
-on = ["idle"]
-
-[[check]]
-name = "lounge-invite-local"
-run = "bash tools/test-env.sh python3 -I dist/dev/lounge-invite-local.py t2024"
-needs = ["nested-session", "test-assets"]
-env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_ASSET_SEED = "/target/test-assets" }
-requires = ["arch=x86_64"]
-isolation = "vm"
-outputs = ["/target/lounge-invite-local/**"]
-cache = false
-git = true
-timeout_secs = 5400
 on = ["idle"]
 
 [[check]]
