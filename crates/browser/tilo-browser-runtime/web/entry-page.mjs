@@ -1112,12 +1112,16 @@ export async function startEntryPage({mode}) {
         const lobby = await connectPeer({origin, identity, runtime, displayName, live: false});
         try { await lobby.workspaces.enter(room); } finally { await lobby.dispose?.(); }
       }
-      // This tab's own device key: a new one where other tabs hold the
-      // others, a new device of the person. A workspace the person is in
-      // admits each device their root certifies, so it enters through the
-      // workspace's door on its session, as the person's first device did.
+      // This tab's own device key, which may be one the workspace never
+      // admitted: a new key where other tabs hold the others, or one this
+      // browser's other pages took for this host while the person entered
+      // the workspace on another. Whether the person is in the workspace is
+      // the host's to say, by their root, not this browser's: the device
+      // enters through the workspace's door on its session, which lets a
+      // device it admitted straight back in and admits any other device of
+      // a member at the part the person holds.
       const custody = await openDeviceCustody({profile: identityProfile(identity, origin), storage: idbStorage()});
-      if (custody.created && !kept.owner) {
+      if (!kept.owner) {
         const door = new URL(`directory/${room}/`, `${origin}/`).href;
         const entered = await withCustody(custody, () => joinWorkspace({origin, door, identity, runtime, displayName, custody}));
         keepJoinedHost({origin, room, userPublicKey: identity.userPublicKey});
