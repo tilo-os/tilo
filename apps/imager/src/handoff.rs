@@ -652,7 +652,7 @@ mod tests {
             label: "setup".into(),
             user_public_key: identity_id.clone(),
             device_cert: None,
-            relay_workspace_ids: vec![7],
+            relay_workspace_ids: vec![tilo_relay_protocol::WorkspaceId::from_u128(7)],
         };
         fs::write(
             &home_peers,

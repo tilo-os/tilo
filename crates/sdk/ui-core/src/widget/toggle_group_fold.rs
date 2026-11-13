@@ -7,10 +7,12 @@ use vello::kurbo::{Affine, Rect};
 
 use super::super::context_menu::{ContextMenu, MenuItem};
 use super::super::window_toolbar_row::{LocationLift, PickerText, paint_picker};
-use super::{NONE_CHOSEN, Orientation, SegmentedFace, SegmentedStyle, ToggleGroup};
+use super::{
+    NONE_CHOSEN, Orientation, Segment, SegmentedFace, SegmentedStyle, StripMetrics, ToggleGroup,
+};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::Widget;
+use crate::widget::{ControlSize, Widget};
 
 pub(super) fn labels_fit(width: f64, naturals: &[(f64, f64)]) -> bool {
     let needed: f64 = naturals.iter().map(|(full, short)| full.min(*short)).sum();
@@ -18,6 +20,37 @@ pub(super) fn labels_fit(width: f64, naturals: &[(f64, f64)]) -> bool {
 }
 
 impl SegmentedFace<'_> {
+    /// Whether a strip the app lays out itself, `segments` for `labels`, folds: some label does
+    /// not fit its segment even shortened.
+    #[must_use]
+    pub fn folds(
+        segments: &[Rect],
+        labels: &[&str],
+        size: ControlSize,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) -> bool {
+        let shown: Vec<Segment> = labels.iter().map(|label| Segment::new(*label)).collect();
+        let naturals =
+            StripMetrics::of(size, theme).naturals(&shown, SegmentedStyle::Segmented, text);
+        labels.len() == segments.len()
+            && labels.iter().any(|label| !label.is_empty())
+            && segments
+                .iter()
+                .zip(&naturals)
+                .any(|(segment, (full, short))| full.min(*short) > segment.width() + 0.5)
+    }
+
+    /// The menu a folded strip the app lays out itself opens: every label, the chosen one checked.
+    #[must_use]
+    pub fn menu_items(labels: &[&str], selected: usize) -> Vec<MenuItem> {
+        labels
+            .iter()
+            .enumerate()
+            .map(|(i, label)| MenuItem::selection(*label).with_checked(i == selected))
+            .collect()
+    }
+
     #[must_use]
     pub fn folded(mut self, hovered: bool, open: bool) -> Self {
         self.fold = Some(LocationLift {

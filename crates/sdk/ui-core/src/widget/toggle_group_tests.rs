@@ -1296,7 +1296,7 @@ fn a_strip_told_of_a_finger_stands_as_tall_as_its_target() {
 fn a_strip_of_choices_runs_the_choice_pressed_and_holds_what_the_setting_says() {
     fn binding(edge: &str) -> crate::tilo_actions::ActionBinding<()> {
         let spec = crate::tilo_actions::ActionSpec::typed_operation(
-            &format!("dock_{edge}"),
+            format!("dock_{edge}"),
             "Dock edge",
             "Move the dock",
             crate::tilo_actions::OperationKind::Effect,
