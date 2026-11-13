@@ -296,6 +296,41 @@ test('the home workspace opens through its host door under its listed name, and 
   page.router.stop?.();
 });
 
+test('a workspace no listing of the page names is mounted under the name it answered admission with', async () => {
+  // The person's own workspace on a host, reached by a link that names no
+  // workspace, on a site whose entry lists none: the desk the page starts has
+  // no name of its own to read, so the tab would never say which workspace it
+  // is.
+  const runtime = runtimeFake({
+    parseLink: () => { throw Object.assign(new Error('no route'), {code: 'no-route'}); },
+    formatLink: () => 'https://rooms.example/open/#/@rooms.example/w/OWN',
+    ...entering('door'),
+  });
+  const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
+  const mounts = [];
+  const peer = {workspace: 'OWN', workspaceName: 'Studio', whenReady: async () => {},
+    mountDesktop: async (element, options) => {
+      mounts.push(options);
+      options.onNavigation?.(navigation);
+      return {navigation};
+    }};
+  const window = {
+    __tiloLinkSecrets: Object.freeze({}),
+    location: {href: 'https://rooms.example/open/', hash: ''},
+    history: {state: null, replaceState() {}, pushState() {}},
+    addEventListener() {}, removeEventListener() {},
+  };
+  const deps = {
+    loadRuntime: async () => runtime,
+    fetch: async () => ({ok: true, json: async () => ({})}),
+    readAccounts: async () => [],
+    enterViaHost: async () => peer,
+  };
+  const page = await boot({mode: 'desktop', window, status: null, deps});
+  assert.equal(mounts[0].workspaceName, 'Studio');
+  page.router.stop?.();
+});
+
 test('a link whose document id is damaged opens its workspace and says what it did not use', async () => {
   const scope = {kind: 'room', host: 'https://eu1.tilo.sh', room: 'WORKSPACE'};
   const replaced = [];

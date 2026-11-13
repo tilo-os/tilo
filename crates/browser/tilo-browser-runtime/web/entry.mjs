@@ -404,6 +404,11 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // A listed workspace is shown under its listed name, not its workspace id.
   const scope = route.target.scope;
   const listed = listedAt(workspaces, scope, admittedWorkspace);
+  // The name the workspace answered this page's admission with, for one no
+  // directory of the page's lists: a workspace a link's invitation admits
+  // into, or the person's own. Without it the desk it starts has no name and
+  // the tab never says which workspace it is.
+  const workspaceName = listed?.name || peer?.workspaceName || null;
   // The desktop shows its invite sheet in a workspace the page can invite
   // to, made and listed through the workspace's host.
   const invite = deps.invite?.({peer, entry}) ?? null;
@@ -415,7 +420,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   const unsupported = await deps.rendererUnavailable?.();
   if (unsupported) return {peer, rendererUnavailable: unsupported};
   const shown = await present({route, peer, surface, mountDesktop: deps.mountDesktop, directory: deps.directory?.() ?? null,
-    diagnostics: {...(listed?.name ? {workspaceName: listed.name} : {}), ...(host ? {host} : {}),
+    diagnostics: {...(workspaceName ? {workspaceName} : {}), ...(host ? {host} : {}),
       ...(entry.about ? {about: entry.about} : {}),
       ...(entry.layout ? {layout: entry.layout} : {}),
       ...(linkOffer ? {linkOffer} : {}),

@@ -529,6 +529,10 @@ async function connect({
     publishParticipant();
   };
   let snapshot = {phase: 'authenticating', records: []};
+  /** The workspace's name as its host answered admission with it
+   * ([`certifiedPeer.noteWorkspaceName`]), kept until the workspace's own
+   * shared desktop names it again. */
+  let admittedName = null;
   // A session dialling the host as the site named it, which it has not
   // reached yet, asks the host who it is once it fails or takes long: a host
   // set up again since answers as another, and the page stops there with the
@@ -1078,11 +1082,19 @@ async function connect({
     userPublicKey,
     /** The person's name, as history and presence show it from now on. */
     get displayName() { return displayName; },
+    /** The workspace's name as its host answered this page's admission with:
+     * the name the tab is titled after and the desk's first space is given,
+     * for a workspace the page read in no directory — one a link's invitation
+     * admits into, or the person's own. */
+    noteWorkspaceName(name) {
+      admittedName = typeof name === 'string' && name.trim() ? name.trim() : null;
+    },
     /** The workspace's name as its people last set it (the workspace in front on
-     * its shared desktop), once the workspace delivered it; else `undefined`. */
+     * its shared desktop), once the workspace delivered it; else the name its
+     * host answered admission with; else `undefined`. */
     get workspaceName() {
       // Asked after a failure too, when the session may be gone.
-      try { return peer?.workspaceName?.() ?? undefined; } catch { return undefined; }
+      try { return peer?.workspaceName?.() ?? admittedName ?? undefined; } catch { return admittedName ?? undefined; }
     },
     setDisplayName: name => rename(name),
     /** Issue an invitation to the workspace (`rooms.rs`): resolves to its
@@ -1626,6 +1638,10 @@ async function enterOnSession({
   });
   try {
     const answered = await entryAnswered(peer);
+    // The name the workspace gave itself, before its shared desktop reaches
+    // the page: what the tab is titled after and the desk's first space is
+    // given.
+    peer.noteWorkspaceName?.(answered.name);
     onProgress?.({phase: 'admitted', room: answered.workspace, workspaceName: answered.name, role: answered.role});
     return peer;
   } catch (error) {

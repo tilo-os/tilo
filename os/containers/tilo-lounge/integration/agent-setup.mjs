@@ -395,10 +395,25 @@ if (!/is in .*\.claude\.json/.test(checked.stdout) || !/tilo_ls/.test(checked.st
 
 // The screen leaves for the person's own workspace.
 await until(first, `document.documentElement.dataset.firstRun === undefined`, 'the first screen leaving', stepLimit(2));
-// Titled after the person's own workspace once it says its name, never the Lounge's.
-const ownTitle = `/^Tilo · /.test(document.title) && !/lounge/i.test(document.title)`;
-for (const deadline = Date.now() + stepLimit(2); !await first.evaluate(ownTitle).catch(() => false);) {
-  if (Date.now() > deadline) await fail(`the tab is titled "${await first.evaluate('document.title')}", not after the person's own workspace`);
+// Titled after the person's own workspace once it says its name, never the
+// Lounge's: the name is the one the workspace answered this page's admission
+// with, which the desk it starts is given. What the wait is on is the page
+// itself — its host admitting it and its first desk drawing — and the page
+// gives a host that says nothing two minutes before it calls it unanswered
+// (`whenReady` in peer.mjs), so this step is given as long rather than a
+// stopwatch on a frame. What the page was doing is said when it never comes.
+const ownWorkspace = `(() => {
+  const state = globalThis.tiloMount?.state?.() ?? null;
+  const title = document.title ?? '';
+  return JSON.stringify({title, own: /^Tilo · /.test(title) && !/lounge/i.test(title),
+    phase: state?.phase ?? null, frames: state?.frames ?? null,
+    workspace: state?.workspaceName ?? null, entry: document.documentElement.dataset.entry ?? null});
+})()`;
+let at = {};
+for (const deadline = Date.now() + stepLimit(8); ;) {
+  at = JSON.parse(await first.evaluate(ownWorkspace).catch(() => '{}'));
+  if (at.own) break;
+  if (Date.now() > deadline) await fail(`the tab is titled "${at.title}", not after the person's own workspace: ${JSON.stringify(at)}`);
   await sleep(250);
 }
 report.workspace = await first.evaluate('document.title');

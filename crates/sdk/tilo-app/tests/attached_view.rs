@@ -547,3 +547,73 @@ fn an_action_answers_once_the_work_it_caused_has_landed() {
         .collect();
     assert_eq!(did, ["ask", "answer", "ask", "answer"]);
 }
+
+/// Two pages of one profile open one record: each is a writer of its own, so
+/// their changes never share a writer's sequence. Two changes under one
+/// writer and sequence cannot both be kept — the record holds the one that
+/// reached it first and builds on it alone — so a record two pages wrote has
+/// to merge from both, with every change its own.
+#[test]
+fn two_pages_of_one_profile_write_one_record_without_sharing_a_sequence() {
+    let app = TestApp::<TallyApp>::new().unwrap();
+    let saved = app.read_document(|doc| doc.clone().save());
+    let definition = definition::<TallyApp>();
+    let open = || {
+        AttachedView::open(
+            definition,
+            "test-workspace",
+            RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
+            saved.clone(),
+            AGENT,
+            writer(),
+            false,
+        )
+        .unwrap()
+    };
+    let mut first = open();
+    let mut second = open();
+    let mut written = Vec::new();
+    for (page, name) in [
+        (&mut first, "from the first page"),
+        (&mut second, "from the second page"),
+    ] {
+        page.invoke_typed(&Tally::RENAME.with(name), false).unwrap();
+        let Some(DocumentMutation::Incremental(bytes) | DocumentMutation::Snapshot(bytes)) =
+            page.take_changes().unwrap()
+        else {
+            panic!("a page that wrote takes its change");
+        };
+        written.push(bytes);
+    }
+    // What the workspace does with what both pages sent: one history.
+    let mut record = tilo_app::automerge::AutoCommit::load(&saved).unwrap();
+    for bytes in &written {
+        tilo_automerge::ApplyIncoming::load_incoming(&mut record, bytes).unwrap();
+    }
+    let changes = record.get_changes(&[]);
+    let writers: std::collections::HashSet<_> = changes
+        .iter()
+        .map(|change| (change.actor_id().to_bytes(), change.seq()))
+        .collect();
+    assert_eq!(
+        writers.len(),
+        changes.len(),
+        "one change per writer and sequence, whichever page wrote it"
+    );
+    assert_eq!(
+        changes.len(),
+        3,
+        "the record's genesis and both pages' changes are in it"
+    );
+    // Both writes are in what the workspace keeps: neither page's change is
+    // the one a record holding two of a sequence leaves out.
+    let name = <Tally as tilo_resource::Resource>::read(&record)
+        .unwrap()
+        .name;
+    for written in ["from the first page", "from the second page"] {
+        assert!(
+            name.contains(written),
+            "both pages' writes are in the record: {name:?}"
+        );
+    }
+}

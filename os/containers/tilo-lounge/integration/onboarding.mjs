@@ -83,7 +83,7 @@ const state = tab => tab.evaluate(`JSON.stringify({
   entry: document.documentElement.dataset.entry ?? null,
   firstRun: document.documentElement.dataset.firstRun ?? null,
   title: document.title,
-})`).then(JSON.parse).catch(() => ({}));
+})`).then(JSON.parse).catch(error => ({unreachable: String(error?.message ?? error).slice(0, 300)}));
 
 const dump = async (tab, name) => {
   const png = await Promise.race([tab.screenshot().catch(() => null), sleep(stepLimit(2)).then(() => null)]);
@@ -211,6 +211,19 @@ const person = tab => tab.evaluate(`JSON.stringify({
 })`).then(JSON.parse).catch(() => ({}));
 /** The person's own workspace, as the page titles it: never the Lounge's. */
 const ownWorkspace = tab => tab.evaluate(`/^Tilo · /.test(document.title) && !/lounge/i.test(document.title) && document.title`).catch(() => '');
+/** What the page is doing while it is not there yet: the mount's own phase,
+ * the frames it drew and the name the workspace answered admission with, so a
+ * wait that runs out says which of them it was waiting on. A page waits on its
+ * host admitting it and replaying what it made before its desk draws, and
+ * gives a host that says nothing two minutes before it calls it unanswered
+ * (`whenReady` in peer.mjs): the waits below on the person's own workspace are
+ * given as long, never a stopwatch on a frame. */
+const ownProgress = tab => tab.evaluate(`(() => {
+  const state = globalThis.tiloMount?.state?.() ?? null;
+  return JSON.stringify({title: document.title, phase: state?.phase ?? null, frames: state?.frames ?? null,
+    workspace: state?.workspaceName ?? null, entry: document.documentElement.dataset.entry ?? null});
+})()`).catch(() => '{}');
+const OWN_WORKSPACE_STEPS = 8;
 
 // -- the desktop -------------------------------------------------------------
 const canvasBox = tab => tab.evaluate(`(() => {
@@ -615,8 +628,8 @@ try {
   if (!/mcp add .*tilo .*-- \S*tilo mcp/.test(registered)) await fail(`tilo login did not add its MCP server to the agent: ${registered || 'never asked'}`);
   console.log('ok: tilo login ran and added Tilo’s MCP server to the agent');
   await until(stranger.tab, `!${firstScreenShown}`, 'the first screen leaving', stepLimit(4));
-  for (const deadline = Date.now() + stepLimit(3); !await ownWorkspace(stranger.tab).catch(() => '');) {
-    if (Date.now() > deadline) await fail(`the tab is titled "${await stranger.tab.evaluate('document.title')}", not after the person's own workspace`);
+  for (const deadline = Date.now() + stepLimit(OWN_WORKSPACE_STEPS); !await ownWorkspace(stranger.tab).catch(() => '');) {
+    if (Date.now() > deadline) await fail(`the tab is titled ${await ownProgress(stranger.tab)}, not after the person's own workspace`);
     await sleep(250);
   }
   report.workspace = await ownWorkspace(stranger.tab);
@@ -685,7 +698,7 @@ try {
   report.returned = returned;
   if (returned.user !== kept.person) await fail(`the passkey signed in ${returned.user}, not ${kept.person}`);
   await until(stranger.tab, `(() => { const t = document.title; return /^Tilo · /.test(t) && !/lounge/i.test(t); })()`,
-    "the person back in their own workspace", stepLimit(6));
+    'the person back in their own workspace', stepLimit(OWN_WORKSPACE_STEPS));
   report.returnedTo = await ownWorkspace(stranger.tab);
   await dump(stranger.tab, '6-passkey-back');
   console.log(`ok: a passkey signed the same person back in, to ${report.returnedTo}`);

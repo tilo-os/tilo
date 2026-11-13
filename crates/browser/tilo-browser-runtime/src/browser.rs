@@ -535,6 +535,9 @@ pub(crate) struct Mount {
     here_stale: bool,
     /// The workspace the mount's presence board speaks for.
     workspace: String,
+    /// The name the page gave the workspace it mounted ([`Config::workspace_name`]):
+    /// what a tab is titled after while the desk's own space carries no name.
+    workspace_name: Option<String>,
     /// The change of the page's theme this mount draws in
     /// ([`crate::page_theme::generation`]).
     theme_seen: u64,
@@ -1710,6 +1713,10 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         followed_view: ui::headless::FollowedView::default(),
         here_stale: false,
         workspace: config.workspace.clone(),
+        workspace_name: config
+            .workspace_name
+            .clone()
+            .filter(|name| !name.trim().is_empty()),
         theme_seen: crate::page_theme::generation(),
         peer: config.peer,
         replica_changed,
@@ -3154,8 +3161,14 @@ impl Mount {
             "rootRect": root_rect,
             "record": self.checkout.as_ref().map(|checkout| checkout.id.as_str()),
             "desktopRevision": self.desktop.as_ref().map(|d| d.handle.revision()),
-            // The page titles its tab after it.
-            "workspaceName": self.desktop.as_ref().and_then(|d| d.handle.read(|tree| tree.active_workspace().map(|w| w.name.clone()))),
+            // The page titles its tab after it: the space in front on the
+            // desk, or, while the desk's own space is unnamed (one this page
+            // seeded for a workspace no directory named), the name the
+            // workspace answered this page's admission with.
+            "workspaceName": self.desktop.as_ref()
+                .and_then(|d| d.handle.read(|tree| tree.active_workspace().map(|w| w.name.clone())))
+                .filter(|name| !name.trim().is_empty())
+                .or_else(|| self.workspace_name.clone()),
             "hostRequests": self.desktop.as_ref().map(|d| std::mem::take(&mut *d.requests.borrow_mut())).filter(|r| !r.is_empty()),
             "ime": ime,
         });
