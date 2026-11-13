@@ -1,12 +1,12 @@
-//! `nested-session-bus ARGS…` runs the dbus-daemon of the environment this executable was built
-//! in with ARGS, as `dbus-daemon ARGS…` would.
+//! `nested-session-bus ARGS…` runs the dbus-daemon of the environment this executable was built in
+//! with ARGS, as `dbus-daemon ARGS…` would.
 //!
-//! A nested session starts a private session bus per shell (dist/dev/session-bus.sh). Tilo OS
-//! hosts run their user bus on dbus-broker and carry no dbus-daemon, and a build that runs on
-//! another machine brings back only what cargo built: this executable is how the build
-//! environment's dbus-daemon (the build image's, of the same Fedora release as Tilo OS, linking
-//! only libraries every Tilo host has) reaches the session. It writes the embedded daemon to an
-//! anonymous memory file and executes that, so nothing lands on disk.
+//! A nested session starts a private session bus per shell (dist/dev/session-bus.sh). Tilo OS hosts
+//! run their user bus on dbus-broker and carry no dbus-daemon, and a build on another machine brings
+//! back only what cargo built: this executable is how the build environment's dbus-daemon (of the
+//! same Fedora release as Tilo OS, linking only libraries every Tilo host has) reaches the session.
+//! It writes the embedded daemon to an anonymous memory file and executes that, so nothing lands on
+//! disk.
 
 use std::ffi::{CString, OsString};
 use std::io::Write;
