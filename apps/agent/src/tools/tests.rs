@@ -122,6 +122,34 @@ fn refused_results_name_what_is_wrong_and_answer_every_call() {
     assert_eq!(refused_results(&[unnamed]), None);
 }
 
+/// A web search the model sent without its query, its words under a name of its own: the answer
+/// says the query is required, what the call sent, and what the tool takes.
+#[test]
+fn a_web_search_without_its_query_is_told_what_it_sent_and_what_it_takes() {
+    let call = ToolCall {
+        id: "w".into(),
+        name: super::web::SEARCH_WEB.into(),
+        input: json!({"pattern": "week", "count": 3}),
+        extra_content: None,
+    };
+    let refused = refused_results(std::slice::from_ref(&call)).unwrap();
+    let answer = &refused[0].1;
+    assert!(answer.contains("missing query"), "{answer}");
+    assert!(answer.contains("required arguments are: query"), "{answer}");
+    assert!(answer.contains("You sent count, pattern."), "{answer}");
+    assert!(
+        answer.contains("It takes: count, engines, offset, query, safe_search."),
+        "{answer}"
+    );
+    // The tool says what it is for, and that the person's own things are not on the web.
+    let described = super::web::search_definition().description;
+    assert!(described.contains("`query` (required)"), "{described}");
+    assert!(
+        described.contains("never the person's own things"),
+        "{described}"
+    );
+}
+
 pub(super) fn offer(
     app: &'static str,
     resource: &str,
