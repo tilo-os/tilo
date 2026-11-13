@@ -640,6 +640,10 @@ mod tests {
             ("any(test, unix)", true),
             ("any(test, all(test, unix))", false),
             ("feature = \"test\"", true),
+            // No arm requires `test`, so neither is taken for test-only: an empty `all` is
+            // always compiled, and an empty `any` is kept rather than guessed away.
+            ("all()", true),
+            ("any()", true),
         ] {
             let app = tempfile::tempdir().unwrap();
             std::fs::create_dir_all(app.path().join("src")).unwrap();
@@ -706,6 +710,70 @@ mod tests {
             let error = super::declared_with_metadata(app.path(), &metadata).unwrap_err();
             assert_eq!(error.to_string(), expected, "{metadata}");
         }
+    }
+
+    /// Metadata written by hand, for the dependency shapes the workspace of real crates below
+    /// does not hold: a build-dependency and what it depends on, a dependency that is both a
+    /// normal and a dev-dependency, one that two crates share, and a registry package.
+    #[test]
+    fn only_local_packages_reached_through_normal_dependencies_are_scanned() {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path();
+        let registry = serde_json::json!("registry+https://github.com/rust-lang/crates.io-index");
+        let mut packages = Vec::new();
+        for (name, source) in [
+            ("app", serde_json::Value::Null),
+            ("model", serde_json::Value::Null),
+            ("both", serde_json::Value::Null),
+            ("shared", serde_json::Value::Null),
+            ("codegen", serde_json::Value::Null),
+            ("generated", serde_json::Value::Null),
+            ("fixtures", serde_json::Value::Null),
+            ("vendored", registry),
+        ] {
+            write_crate(
+                &root.join(name),
+                "",
+                &format!(r#"#[resource(kind = "example.{name}")] impl Record {{}}"#),
+            );
+            packages.push(serde_json::json!({
+                "id": name,
+                "source": source,
+                "manifest_path": root.join(name).join("Cargo.toml"),
+            }));
+        }
+        let dep = |name: &str, kinds: &[Option<&str>]| {
+            let kinds: Vec<_> = kinds
+                .iter()
+                .map(|kind| serde_json::json!({"kind": kind, "target": null}))
+                .collect();
+            serde_json::json!({"pkg": name, "dep_kinds": kinds})
+        };
+        let metadata = serde_json::json!({
+            "packages": packages,
+            "resolve": {"root": "app", "nodes": [
+                {"id": "app", "deps": [
+                    dep("model", &[None]),
+                    dep("both", &[Some("dev"), None]),
+                    dep("codegen", &[Some("build")]),
+                    dep("fixtures", &[Some("dev")]),
+                    dep("vendored", &[None]),
+                ]},
+                {"id": "model", "deps": [dep("shared", &[None])]},
+                {"id": "both", "deps": [dep("shared", &[None])]},
+                {"id": "codegen", "deps": [dep("generated", &[None])]},
+            ]},
+        });
+        assert_eq!(
+            super::declared_with_metadata(&root.join("app"), &metadata).unwrap(),
+            [
+                "example.app",
+                "example.both",
+                "example.model",
+                "example.shared"
+            ],
+            "not the build- or dev-dependency, what only they reach, or the registry package"
+        );
     }
 
     fn write_crate(dir: &Path, manifest: &str, source: &str) {
