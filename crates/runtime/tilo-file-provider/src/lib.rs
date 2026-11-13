@@ -1,15 +1,10 @@
 //! The C bridge the macOS File Provider extension (`macos/`) reads the
-//! standalone runtime's workspace files through.
+//! standalone runtime's workspace files through: read only, on the profile's
+//! `files.sock`, with items named by workspace-relative path, the root being
+//! `""`.
 //!
-//! The extension is a sandboxed Swift process; the workspace is the runtime
-//! daemon's, served read only on its profile's `files.sock`
-//! (`runtime_fs::workspace_server`). A session keeps one connection, on a
-//! thread of its own because the filesystem client is single-threaded, and
-//! reconnects when the runtime restarts. Items are named by
-//! workspace-relative path, the root being `""`.
-//!
-//! Every call answers JSON, `{"ok": …}` or `{"error": "…"}`, as a string
-//! the caller frees with [`tilo_fp_string_free`]; `macos/TiloFileProvider.h`
+//! Every call answers JSON, `{"ok": …}` or `{"error": "…"}`, as a string the
+//! caller frees with [`tilo_fp_string_free`]; `macos/TiloFileProvider.h`
 //! declares the functions.
 
 mod session;
