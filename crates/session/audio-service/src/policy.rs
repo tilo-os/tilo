@@ -658,222 +658,247 @@ mod tests {
         }
     }
 
-    #[test]
-    fn unplugging_the_default_private_output_pauses_and_nothing_else_does() {
-        let speakers = || {
-            sink(
-                "alsa_output.pci-0000_00_1f.3.analog-stereo",
-                "Built-in Audio Analog Stereo",
-                false,
-            )
-        };
-        let bluetooth = |default| {
-            let mut device = sink("bluez_output.AA_BB.1", "Buds", default);
-            device.codec = Some("AAC".into());
-            device
-        };
-        let headset = |default| {
-            sink(
-                "alsa_output.usb-Logi_USB_Headset-00.analog-stereo",
-                "USB Headset",
-                default,
-            )
-        };
-        let as_default = |mut device: AudioDevice| {
-            device.is_default = true;
-            device
-        };
-        // (before, after, pauses)
-        let table = [
-            // Headphones / Bluetooth removed while default: pause.
-            (vec![speakers(), bluetooth(true)], vec![speakers()], true),
-            (vec![speakers(), headset(true)], vec![speakers()], true),
-            // Default speakers removed: keep playing.
-            (
-                vec![as_default(speakers()), headset(false)],
-                vec![headset(false)],
-                false,
-            ),
-            // A private output removed while it was not the default.
-            (
-                vec![as_default(speakers()), bluetooth(false)],
-                vec![as_default(speakers())],
-                false,
-            ),
-            // Plugging headphones in, or back in, never resumes or pauses.
-            (
-                vec![as_default(speakers())],
-                vec![speakers(), headset(true)],
-                false,
-            ),
-            (
-                vec![speakers(), headset(true)],
-                vec![speakers(), headset(true)],
-                false,
-            ),
-        ];
-        for (index, (before, after, pauses)) in table.into_iter().enumerate() {
-            let before = sinks_graph(before);
-            let after = sinks_graph(after);
-            let delta = AudioGraph::diff(&before, &after);
-            assert_eq!(pause_on_removal(&before, &delta), pauses, "row {index}");
-        }
-    }
+    tilo_test_env::scenario! {
+        fn a_hotplug_pauses_or_moves_the_sound_only_for_a_private_output;
 
-    #[test]
-    fn a_private_output_that_arrives_becomes_the_default_and_nothing_else_does() {
-        let at = |id: u32, mut device: AudioDevice| {
-            device.id = id;
-            device
-        };
-        let speakers = |default| {
-            at(
-                1,
+        phase unplugging_the_default_private_output_pauses_and_nothing_else_does;
+        {
+            let speakers = || {
                 sink(
                     "alsa_output.pci-0000_00_1f.3.analog-stereo",
                     "Built-in Audio Analog Stereo",
-                    default,
-                ),
-            )
-        };
-        let hdmi = || {
-            at(
-                2,
-                sink("alsa_output.pci-0000_01_00.1.hdmi-stereo", "HDMI", false),
-            )
-        };
-        let buds = |suffix: &str, default| {
-            let mut device = at(
-                3,
-                sink(&format!("bluez_output.AA_BB.{suffix}"), "Buds", default),
-            );
-            device.codec = Some("AAC".into());
-            device
-        };
-        let headset = |default| {
-            at(
-                4,
+                    false,
+                )
+            };
+            let bluetooth = |default| {
+                let mut device = sink("bluez_output.AA_BB.1", "Buds", default);
+                device.codec = Some("AAC".into());
+                device
+            };
+            let headset = |default| {
                 sink(
                     "alsa_output.usb-Logi_USB_Headset-00.analog-stereo",
                     "USB Headset",
                     default,
+                )
+            };
+            let as_default = |mut device: AudioDevice| {
+                device.is_default = true;
+                device
+            };
+            // (before, after, pauses)
+            let table = [
+                // Headphones / Bluetooth removed while default: pause.
+                (vec![speakers(), bluetooth(true)], vec![speakers()], true),
+                (vec![speakers(), headset(true)], vec![speakers()], true),
+                // Default speakers removed: keep playing.
+                (
+                    vec![as_default(speakers()), headset(false)],
+                    vec![headset(false)],
+                    false,
                 ),
-            )
-        };
-        let group = || {
-            at(
-                5,
-                sink(media::audio::SPEAKER_GROUP_SINK, "Speaker group", true),
-            )
-        };
-        // (before, after, the output switched to)
-        let table = [
-            // Earbuds connect, or a headset is plugged in, while the speakers play.
-            (
-                vec![speakers(true)],
-                vec![speakers(true), buds("1", false)],
-                Some(3),
-            ),
-            (
-                vec![speakers(true)],
-                vec![speakers(true), headset(false)],
-                Some(4),
-            ),
-            // WirePlumber made it the default already.
-            (
-                vec![speakers(false)],
-                vec![speakers(false), headset(true)],
-                None,
-            ),
-            // A screen's speakers are not private.
-            (vec![speakers(true)], vec![speakers(true), hdmi()], None),
-            // The earbuds the person moved away from change profile.
-            (
-                vec![speakers(true), buds("1", false)],
-                vec![speakers(true), buds("headset-head-unit", false)],
-                None,
-            ),
-            // A speaker set is playing.
-            (
-                vec![speakers(false), group()],
-                vec![speakers(false), group(), buds("1", false)],
-                None,
-            ),
-        ];
-        for (index, (before, after, switched)) in table.into_iter().enumerate() {
-            let before = sinks_graph(before);
-            let delta = AudioGraph::diff(&before, &sinks_graph(after));
-            assert_eq!(follow_on_arrival(&before, &delta), switched, "row {index}");
+                // A private output removed while it was not the default.
+                (
+                    vec![as_default(speakers()), bluetooth(false)],
+                    vec![as_default(speakers())],
+                    false,
+                ),
+                // Plugging headphones in, or back in, never resumes or pauses.
+                (
+                    vec![as_default(speakers())],
+                    vec![speakers(), headset(true)],
+                    false,
+                ),
+                (
+                    vec![speakers(), headset(true)],
+                    vec![speakers(), headset(true)],
+                    false,
+                ),
+            ];
+            for (index, (before, after, pauses)) in table.into_iter().enumerate() {
+                let before = sinks_graph(before);
+                let after = sinks_graph(after);
+                let delta = AudioGraph::diff(&before, &after);
+                assert_eq!(pause_on_removal(&before, &delta), pauses, "row {index}");
+            }
+        }
+
+        phase a_private_output_that_arrives_becomes_the_default_and_nothing_else_does;
+        {
+            let at = |id: u32, mut device: AudioDevice| {
+                device.id = id;
+                device
+            };
+            let speakers = |default| {
+                at(
+                    1,
+                    sink(
+                        "alsa_output.pci-0000_00_1f.3.analog-stereo",
+                        "Built-in Audio Analog Stereo",
+                        default,
+                    ),
+                )
+            };
+            let hdmi = || {
+                at(
+                    2,
+                    sink("alsa_output.pci-0000_01_00.1.hdmi-stereo", "HDMI", false),
+                )
+            };
+            let buds = |suffix: &str, default| {
+                let mut device = at(
+                    3,
+                    sink(&format!("bluez_output.AA_BB.{suffix}"), "Buds", default),
+                );
+                device.codec = Some("AAC".into());
+                device
+            };
+            let headset = |default| {
+                at(
+                    4,
+                    sink(
+                        "alsa_output.usb-Logi_USB_Headset-00.analog-stereo",
+                        "USB Headset",
+                        default,
+                    ),
+                )
+            };
+            let group = || {
+                at(
+                    5,
+                    sink(media::audio::SPEAKER_GROUP_SINK, "Speaker group", true),
+                )
+            };
+            // (before, after, the output switched to)
+            let table = [
+                // Earbuds connect, or a headset is plugged in, while the speakers play.
+                (
+                    vec![speakers(true)],
+                    vec![speakers(true), buds("1", false)],
+                    Some(3),
+                ),
+                (
+                    vec![speakers(true)],
+                    vec![speakers(true), headset(false)],
+                    Some(4),
+                ),
+                // WirePlumber made it the default already.
+                (
+                    vec![speakers(false)],
+                    vec![speakers(false), headset(true)],
+                    None,
+                ),
+                // A screen's speakers are not private.
+                (vec![speakers(true)], vec![speakers(true), hdmi()], None),
+                // The earbuds the person moved away from change profile.
+                (
+                    vec![speakers(true), buds("1", false)],
+                    vec![speakers(true), buds("headset-head-unit", false)],
+                    None,
+                ),
+                // A speaker set is playing.
+                (
+                    vec![speakers(false), group()],
+                    vec![speakers(false), group(), buds("1", false)],
+                    None,
+                ),
+            ];
+            for (index, (before, after, switched)) in table.into_iter().enumerate() {
+                let before = sinks_graph(before);
+                let delta = AudioGraph::diff(&before, &sinks_graph(after));
+                assert_eq!(follow_on_arrival(&before, &delta), switched, "row {index}");
+            }
+        }
+
+        phase a_failed_enumeration_is_not_an_unplug;
+        {
+            assert!(!enumerated(&AudioGraph::default()));
+            assert!(enumerated(&sinks_graph(vec![sink("a", "A", true)])));
+        }
+
+        phase private_outputs_are_recognised_by_transport_and_name;
+        {
+            assert!(private_output(&sink("bluez_output.X.1", "Speaker", false)));
+            assert!(private_output(&sink("alsa_output.x", "Headphones", false)));
+            assert!(!private_output(&sink(
+                "alsa_output.pci.hdmi-stereo",
+                "HDMI / DisplayPort",
+                false
+            )));
+            assert!(!private_output(&sink(
+                "alsa_output.pci.analog-stereo",
+                "Built-in Audio",
+                false
+            )));
         }
     }
 
-    #[test]
-    fn a_failed_enumeration_is_not_an_unplug() {
-        assert!(!enumerated(&AudioGraph::default()));
-        assert!(enumerated(&sinks_graph(vec![sink("a", "A", true)])));
-    }
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "fixture arithmetic in test bodies, which the lint skips in a plain test")]
+        fn a_still_graph_is_read_less_often;
 
-    #[test]
-    fn a_stable_graph_backs_off_pw_dump() {
-        assert_eq!(poll_interval(0), POLL_INTERVAL);
-        assert_eq!(poll_interval(STABLE_POLLS_BEFORE_IDLE - 1), POLL_INTERVAL);
-        assert_eq!(poll_interval(STABLE_POLLS_BEFORE_IDLE), IDLE_POLL_INTERVAL);
-        assert_eq!(poll_interval(u8::MAX), IDLE_POLL_INTERVAL);
-        assert!(IDLE_POLL_INTERVAL > POLL_INTERVAL);
-    }
-
-    #[test]
-    fn empty_and_volume_only_graphs_are_topology_stable() {
-        let empty = AudioGraph::default();
-        assert!(
-            topology_unchanged(Some(idle_signature(&empty).as_str()), &empty),
-            "two empty dumps are the same topology; PartialEq used to miss this              when last_graph stayed unset"
-        );
-        let mut louder = graph(&["Built-in Audio"]);
-        louder.sinks.push(sink(
-            "alsa_output.pci.analog-stereo",
-            "Built-in Audio",
-            true,
-        ));
-        let mut quieter = louder.clone();
-        if let Some(device) = quieter.sinks.first_mut() {
-            device.volume = Some(0.1);
+        phase a_stable_graph_backs_off_pw_dump;
+        {
+            assert_eq!(poll_interval(0), POLL_INTERVAL);
+            assert_eq!(poll_interval(STABLE_POLLS_BEFORE_IDLE - 1), POLL_INTERVAL);
+            assert_eq!(poll_interval(STABLE_POLLS_BEFORE_IDLE), IDLE_POLL_INTERVAL);
+            assert_eq!(poll_interval(u8::MAX), IDLE_POLL_INTERVAL);
+            assert!(IDLE_POLL_INTERVAL > POLL_INTERVAL);
         }
-        assert_eq!(
-            louder.topology_signature(),
-            quieter.topology_signature(),
-            "volume is not topology; comparing whole graphs kept pw-dump awake"
-        );
-    }
 
-    #[test]
-    fn a_transient_dump_stream_does_not_keep_the_graph_awake() {
-        let mut still = graph(&["Built-in Audio"]);
-        still.sinks.push(sink(
-            "alsa_output.pci.analog-stereo",
-            "Built-in Audio",
-            true,
-        ));
-        let mut with_dump = still.clone();
-        with_dump.playback_streams.push(media::audio::AudioStream {
-            id: 99,
-            serial: 1,
-            app: "pw-dump".into(),
-            media_name: None,
-            playback: true,
-            target_id: None,
-            volume: None,
-            muted: None,
-        });
-        assert_ne!(
-            still.topology_signature(),
-            with_dump.topology_signature(),
-            "topology_signature still sees streams; idle compare must not"
-        );
-        assert!(
-            topology_unchanged(Some(idle_signature(&still).as_str()), &with_dump),
-            "pw-dump is a stream, not a device; including it in idle compare kept itself awake"
-        );
+        phase empty_and_volume_only_graphs_are_topology_stable;
+        {
+            let empty = AudioGraph::default();
+            assert!(
+                topology_unchanged(Some(idle_signature(&empty).as_str()), &empty),
+                "two empty dumps are the same topology; PartialEq used to miss this              when last_graph stayed unset"
+            );
+            let mut louder = graph(&["Built-in Audio"]);
+            louder.sinks.push(sink(
+                "alsa_output.pci.analog-stereo",
+                "Built-in Audio",
+                true,
+            ));
+            let mut quieter = louder.clone();
+            if let Some(device) = quieter.sinks.first_mut() {
+                device.volume = Some(0.1);
+            }
+            assert_eq!(
+                louder.topology_signature(),
+                quieter.topology_signature(),
+                "volume is not topology; comparing whole graphs kept pw-dump awake"
+            );
+        }
+
+        phase a_transient_dump_stream_does_not_keep_the_graph_awake;
+        {
+            let mut still = graph(&["Built-in Audio"]);
+            still.sinks.push(sink(
+                "alsa_output.pci.analog-stereo",
+                "Built-in Audio",
+                true,
+            ));
+            let mut with_dump = still.clone();
+            with_dump.playback_streams.push(media::audio::AudioStream {
+                id: 99,
+                serial: 1,
+                app: "pw-dump".into(),
+                media_name: None,
+                playback: true,
+                target_id: None,
+                volume: None,
+                muted: None,
+            });
+            assert_ne!(
+                still.topology_signature(),
+                with_dump.topology_signature(),
+                "topology_signature still sees streams; idle compare must not"
+            );
+            assert!(
+                topology_unchanged(Some(idle_signature(&still).as_str()), &with_dump),
+                "pw-dump is a stream, not a device; including it in idle compare kept itself awake"
+            );
+        }
     }
 
     /// Whether the fake `PipeWire`'s socket exists, and whether it can be
@@ -1000,230 +1025,234 @@ mod tests {
     /// The baseline and every still reading after it.
     const STILL_READINGS: usize = LONG_STILL + 1;
 
-    #[test]
-    fn removal_of_private_output_pauses_after_settling() {
-        let mut graphs = vec![laptop(true); LONG_STILL];
-        graphs.push(laptop(false));
-        let (events, rx) = mpsc::channel();
-        let worker = std::thread::spawn(move || {
-            let mut env = FakeEnv::new(graphs);
-            run(&mut env, &rx);
-            env
-        });
-        for _ in 0..=LONG_STILL {
-            events.send(PolicyEvent::GraphChanged).unwrap();
-        }
-        events.send(PolicyEvent::Stop).unwrap();
-        let env = worker.join().unwrap();
-        assert_eq!(env.enumerations, STILL_READINGS, "one reading per change");
-        assert_eq!(
-            env.pauses, 1,
-            "unplugging the headset after the graph settled must pause playback"
-        );
-        assert_eq!(env.sounds, [DeviceEvent::Disconnected]);
-    }
+    tilo_test_env::scenario! {
+        fn the_policy_worker_reads_the_graph_only_when_something_changed;
 
-    #[test]
-    fn a_headset_plugged_in_while_the_speakers_play_becomes_the_output() {
-        let mut arrived = laptop(true);
-        for sink in &mut arrived.sinks {
-            sink.id = if sink.name.contains("Headset") { 7 } else { 1 };
-            // WirePlumber keeps the output the person chose earlier.
-            sink.is_default = sink.id == 1;
-        }
-        let mut env = FakeEnv::new([laptop(false), arrived]);
-        let mut worker = PolicyWorker::start(&mut env);
-        worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
-        assert!(env.defaults.is_empty(), "the baseline switches nothing");
-        worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
-        assert_eq!(env.defaults, [7], "sound moves to the headset");
-        assert_eq!(env.pauses, 0);
-    }
-
-    #[test]
-    fn a_reading_that_saw_no_graph_is_not_the_base_for_an_arrival() {
-        // The person chose the speakers while the headset stayed plugged in.
-        let mut chosen = laptop(true);
-        for sink in &mut chosen.sinks {
-            sink.id = if sink.name.contains("Headset") { 7 } else { 1 };
-            sink.is_default = sink.id == 1;
-        }
-        // `PipeWire` restarts: one reading sees nothing, the next sees the
-        // same devices again.
-        let mut env = FakeEnv::new([chosen.clone(), AudioGraph::default(), chosen]);
-        let mut worker = PolicyWorker::start(&mut env);
-        for _ in 0..3 {
-            worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
-        }
-        assert_eq!(env.enumerations, 3);
-        assert!(
-            env.defaults.is_empty(),
-            "the headset was there all along and must not take the sound: {:?}",
-            env.defaults
-        );
-        assert_eq!(env.pauses, 0);
-    }
-
-    #[test]
-    fn idle_session_skips_pw_dump_until_the_graph_changes() {
-        let mut env = FakeEnv::new([laptop(true)]);
-        let mut worker = PolicyWorker::start(&mut env);
-        assert_eq!(
-            env.enumerations, 0,
-            "the watch's baseline is the first read"
-        );
-        worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
-        let now = Instant::now();
-        for later in [0, 4, 30, 3600] {
+        phase removal_of_private_output_pauses_after_settling;
+        {
+            let mut graphs = vec![laptop(true); LONG_STILL];
+            graphs.push(laptop(false));
+            let (events, rx) = mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let mut env = FakeEnv::new(graphs);
+                run(&mut env, &rx);
+                env
+            });
+            for _ in 0..=LONG_STILL {
+                events.send(PolicyEvent::GraphChanged).unwrap();
+            }
+            events.send(PolicyEvent::Stop).unwrap();
+            let env = worker.join().unwrap();
+            assert_eq!(env.enumerations, STILL_READINGS, "one reading per change");
             assert_eq!(
-                worker.next_wake(now.checked_add(Duration::from_secs(later)).unwrap(), None),
-                None,
-                "R01's 30s empty desktop must not shell pw-dump at all once idle"
+                env.pauses, 1,
+                "unplugging the headset after the graph settled must pause playback"
             );
+            assert_eq!(env.sounds, [DeviceEvent::Disconnected]);
         }
-        assert_eq!(env.enumerations, 1);
-        assert_eq!(env.preference_loads, 1, "settings are read on change only");
-        for _ in 0..LONG_STILL {
+
+        phase a_headset_plugged_in_while_the_speakers_play_becomes_the_output;
+        {
+            let mut arrived = laptop(true);
+            for sink in &mut arrived.sinks {
+                sink.id = if sink.name.contains("Headset") { 7 } else { 1 };
+                // WirePlumber keeps the output the person chose earlier.
+                sink.is_default = sink.id == 1;
+            }
+            let mut env = FakeEnv::new([laptop(false), arrived]);
+            let mut worker = PolicyWorker::start(&mut env);
             worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
+            assert!(env.defaults.is_empty(), "the baseline switches nothing");
+            worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
+            assert_eq!(env.defaults, [7], "sound moves to the headset");
+            assert_eq!(env.pauses, 0);
         }
-        assert_eq!(
-            env.enumerations, STILL_READINGS,
-            "a change after any amount of stillness is still read"
-        );
-        assert_eq!(worker.next_wake(now, None), None);
-    }
 
-    #[test]
-    fn unreachable_pipewire_falls_back_to_polling_that_still_sees_hotplug() {
-        let mut env = FakeEnv::new([laptop(true)]);
-        env.graph_watchable = false;
-        let mut worker = PolicyWorker::start(&mut env);
-        assert_eq!(env.enumerations, 1, "polling reads its own baseline");
-        let now = Instant::now();
-        assert_eq!(worker.next_wake(now, None), Some(POLL_INTERVAL));
-        for _ in 0..LONG_STILL {
+        phase a_reading_that_saw_no_graph_is_not_the_base_for_an_arrival;
+        {
+            // The person chose the speakers while the headset stayed plugged in.
+            let mut chosen = laptop(true);
+            for sink in &mut chosen.sinks {
+                sink.id = if sink.name.contains("Headset") { 7 } else { 1 };
+                sink.is_default = sink.id == 1;
+            }
+            // `PipeWire` restarts: one reading sees nothing, the next sees the
+            // same devices again.
+            let mut env = FakeEnv::new([chosen.clone(), AudioGraph::default(), chosen]);
+            let mut worker = PolicyWorker::start(&mut env);
+            for _ in 0..3 {
+                worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
+            }
+            assert_eq!(env.enumerations, 3);
+            assert!(
+                env.defaults.is_empty(),
+                "the headset was there all along and must not take the sound: {:?}",
+                env.defaults
+            );
+            assert_eq!(env.pauses, 0);
+        }
+
+        phase idle_session_skips_pw_dump_until_the_graph_changes;
+        {
+            let mut env = FakeEnv::new([laptop(true)]);
+            let mut worker = PolicyWorker::start(&mut env);
+            assert_eq!(
+                env.enumerations, 0,
+                "the watch's baseline is the first read"
+            );
+            worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
+            let now = Instant::now();
+            for later in [0, 4, 30, 3600] {
+                assert_eq!(
+                    worker.next_wake(now.checked_add(Duration::from_secs(later)).unwrap(), None),
+                    None,
+                    "R01's 30s empty desktop must not shell pw-dump at all once idle"
+                );
+            }
+            assert_eq!(env.enumerations, 1);
+            assert_eq!(env.preference_loads, 1, "settings are read on change only");
+            for _ in 0..LONG_STILL {
+                worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
+            }
+            assert_eq!(
+                env.enumerations, STILL_READINGS,
+                "a change after any amount of stillness is still read"
+            );
+            assert_eq!(worker.next_wake(now, None), None);
+        }
+
+        phase unreachable_pipewire_falls_back_to_polling_that_still_sees_hotplug;
+        {
+            let mut env = FakeEnv::new([laptop(true)]);
+            env.graph_watchable = false;
+            let mut worker = PolicyWorker::start(&mut env);
+            assert_eq!(env.enumerations, 1, "polling reads its own baseline");
+            let now = Instant::now();
+            assert_eq!(worker.next_wake(now, None), Some(POLL_INTERVAL));
+            for _ in 0..LONG_STILL {
+                worker.handle(Wake::Timeout, &mut env);
+            }
+            assert_eq!(
+                worker.next_wake(now, None),
+                Some(IDLE_POLL_INTERVAL),
+                "a still graph is polled slower"
+            );
+            assert_eq!(
+                env.enumerations, STILL_READINGS,
+                "but every poll still reads the graph"
+            );
+            env.graphs.push_back(laptop(false));
             worker.handle(Wake::Timeout, &mut env);
+            assert_eq!(env.pauses, 1, "hotplug lands within one idle poll");
+            assert_eq!(env.sounds, [DeviceEvent::Disconnected]);
+
+            env.graph_watchable = true;
+            let before = env.enumerations;
+            worker.handle(Wake::Timeout, &mut env);
+            assert_eq!(worker.next_wake(now, None), None, "watching again");
+            assert_eq!(env.enumerations, before, "the watch sends the baseline");
         }
-        assert_eq!(
-            worker.next_wake(now, None),
-            Some(IDLE_POLL_INTERVAL),
-            "a still graph is polled slower"
-        );
-        assert_eq!(
-            env.enumerations, STILL_READINGS,
-            "but every poll still reads the graph"
-        );
-        env.graphs.push_back(laptop(false));
-        worker.handle(Wake::Timeout, &mut env);
-        assert_eq!(env.pauses, 1, "hotplug lands within one idle poll");
-        assert_eq!(env.sounds, [DeviceEvent::Disconnected]);
 
-        env.graph_watchable = true;
-        let before = env.enumerations;
-        worker.handle(Wake::Timeout, &mut env);
-        assert_eq!(worker.next_wake(now, None), None, "watching again");
-        assert_eq!(env.enumerations, before, "the watch sends the baseline");
-    }
+        phase without_a_running_pipewire_the_worker_waits_for_its_socket;
+        // With no `PipeWire` running there is no graph to poll: the worker
+        // sleeps with no timer until the socket's watch says it started (an
+        // idle desktop without it polled every 8 s, 0.4 wakeups/s).
+        {
+            let mut env = FakeEnv::new([AudioGraph::default(), laptop(false)]);
+            env.graph_watchable = false;
+            env.daemon = FakeDaemon::Stopped;
+            let mut worker = PolicyWorker::start(&mut env);
+            let now = Instant::now();
+            assert_eq!(worker.next_wake(now, None), None, "no timer");
+            assert_eq!(env.enumerations, 1, "the empty baseline");
 
-    /// With no `PipeWire` running there is no graph to poll: the worker
-    /// sleeps with no timer until the socket's watch says it started (an
-    /// idle desktop without it polled every 8 s, 0.4 wakeups/s).
-    #[test]
-    fn without_a_running_pipewire_the_worker_waits_for_its_socket() {
-        let mut env = FakeEnv::new([AudioGraph::default(), laptop(false)]);
-        env.graph_watchable = false;
-        env.daemon = FakeDaemon::Stopped;
-        let mut worker = PolicyWorker::start(&mut env);
-        let now = Instant::now();
-        assert_eq!(worker.next_wake(now, None), None, "no timer");
-        assert_eq!(env.enumerations, 1, "the empty baseline");
+            // Started, but not yet answering: poll it until it does.
+            env.daemon = FakeDaemon::Running;
+            worker.handle(Wake::Event(PolicyEvent::DaemonChanged), &mut env);
+            assert_eq!(worker.next_wake(now, None), Some(POLL_INTERVAL));
+            assert_eq!(env.enumerations, 2, "a running daemon is read at once");
 
-        // Started, but not yet answering: poll it until it does.
-        env.daemon = FakeDaemon::Running;
-        worker.handle(Wake::Event(PolicyEvent::DaemonChanged), &mut env);
-        assert_eq!(worker.next_wake(now, None), Some(POLL_INTERVAL));
-        assert_eq!(env.enumerations, 2, "a running daemon is read at once");
+            env.graph_watchable = true;
+            let before = env.enumerations;
+            worker.handle(Wake::Timeout, &mut env);
+            assert_eq!(worker.next_wake(now, None), None, "watching");
+            assert_eq!(env.enumerations, before, "the watch sends the baseline");
 
-        env.graph_watchable = true;
-        let before = env.enumerations;
-        worker.handle(Wake::Timeout, &mut env);
-        assert_eq!(worker.next_wake(now, None), None, "watching");
-        assert_eq!(env.enumerations, before, "the watch sends the baseline");
+            // It stops: the lost watch waits for it again, still with no timer.
+            env.graph_watchable = false;
+            env.daemon = FakeDaemon::Stopped;
+            worker.handle(Wake::Event(PolicyEvent::WatchLost), &mut env);
+            assert_eq!(worker.next_wake(now, None), None);
+            env.daemon = FakeDaemon::Running;
+            env.graph_watchable = true;
+            worker.handle(Wake::Event(PolicyEvent::DaemonChanged), &mut env);
+            assert_eq!(worker.observation, Observation::Watching);
+        }
 
-        // It stops: the lost watch waits for it again, still with no timer.
-        env.graph_watchable = false;
-        env.daemon = FakeDaemon::Stopped;
-        worker.handle(Wake::Event(PolicyEvent::WatchLost), &mut env);
-        assert_eq!(worker.next_wake(now, None), None);
-        env.daemon = FakeDaemon::Running;
-        env.graph_watchable = true;
-        worker.handle(Wake::Event(PolicyEvent::DaemonChanged), &mut env);
-        assert_eq!(worker.observation, Observation::Watching);
-    }
+        phase a_pipewire_socket_that_cannot_be_watched_is_polled_for;
+        {
+            let mut env = FakeEnv::new([laptop(true)]);
+            env.graph_watchable = false;
+            env.daemon = FakeDaemon::StoppedUnwatchable;
+            let worker = PolicyWorker::start(&mut env);
+            assert_eq!(worker.next_wake(Instant::now(), None), Some(POLL_INTERVAL));
+        }
 
-    #[test]
-    fn a_pipewire_socket_that_cannot_be_watched_is_polled_for() {
-        let mut env = FakeEnv::new([laptop(true)]);
-        env.graph_watchable = false;
-        env.daemon = FakeDaemon::StoppedUnwatchable;
-        let worker = PolicyWorker::start(&mut env);
-        assert_eq!(worker.next_wake(Instant::now(), None), Some(POLL_INTERVAL));
-    }
+        phase a_lost_watch_polls_until_it_is_back;
+        {
+            let mut env = FakeEnv::new([laptop(true)]);
+            let mut worker = PolicyWorker::start(&mut env);
+            worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
+            worker.handle(Wake::Event(PolicyEvent::WatchLost), &mut env);
+            assert_eq!(env.enumerations, 2, "a lost watch reads the graph at once");
+            assert_eq!(worker.next_wake(Instant::now(), None), Some(POLL_INTERVAL));
+        }
 
-    #[test]
-    fn a_lost_watch_polls_until_it_is_back() {
-        let mut env = FakeEnv::new([laptop(true)]);
-        let mut worker = PolicyWorker::start(&mut env);
-        worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
-        worker.handle(Wake::Event(PolicyEvent::WatchLost), &mut env);
-        assert_eq!(env.enumerations, 2, "a lost watch reads the graph at once");
-        assert_eq!(worker.next_wake(Instant::now(), None), Some(POLL_INTERVAL));
-    }
+        phase settings_changes_reconcile_without_reading_the_graph;
+        {
+            let mut env = FakeEnv::new([laptop(true)]);
+            let mut worker = PolicyWorker::start(&mut env);
+            worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
+            let (reads, reconciles) = (env.enumerations, env.reconciles);
+            worker.handle(Wake::Event(PolicyEvent::SettingsChanged), &mut env);
+            assert_eq!(env.reconciles, reconciles, "an unrelated setting changed");
+            env.preferences.mono_output = true;
+            worker.handle(Wake::Event(PolicyEvent::SettingsChanged), &mut env);
+            assert_eq!(env.reconciles, reconciles.saturating_add(1));
+            assert_eq!(env.enumerations, reads, "the graph did not change");
+        }
 
-    #[test]
-    fn settings_changes_reconcile_without_reading_the_graph() {
-        let mut env = FakeEnv::new([laptop(true)]);
-        let mut worker = PolicyWorker::start(&mut env);
-        worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
-        let (reads, reconciles) = (env.enumerations, env.reconciles);
-        worker.handle(Wake::Event(PolicyEvent::SettingsChanged), &mut env);
-        assert_eq!(env.reconciles, reconciles, "an unrelated setting changed");
-        env.preferences.mono_output = true;
-        worker.handle(Wake::Event(PolicyEvent::SettingsChanged), &mut env);
-        assert_eq!(env.reconciles, reconciles.saturating_add(1));
-        assert_eq!(env.enumerations, reads, "the graph did not change");
-    }
+        phase without_a_settings_watch_preferences_follow_graph_changes;
+        {
+            let mut env = FakeEnv::new([laptop(true)]);
+            env.settings_watchable = false;
+            let mut worker = PolicyWorker::start(&mut env);
+            worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
+            assert_eq!(env.preference_loads, 2);
+            assert_eq!(worker.next_wake(Instant::now(), None), None);
+        }
 
-    #[test]
-    fn without_a_settings_watch_preferences_follow_graph_changes() {
-        let mut env = FakeEnv::new([laptop(true)]);
-        env.settings_watchable = false;
-        let mut worker = PolicyWorker::start(&mut env);
-        worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
-        assert_eq!(env.preference_loads, 2);
-        assert_eq!(worker.next_wake(Instant::now(), None), None);
-    }
-
-    #[test]
-    fn a_due_retry_wakes_once_and_a_past_one_never_spins() {
-        let mut env = FakeEnv::new([laptop(true)]);
-        let mut worker = PolicyWorker::start(&mut env);
-        worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
-        let now = Instant::now();
-        let retry = now.checked_add(Duration::from_secs(5)).unwrap();
-        assert_eq!(
-            worker.next_wake(now, Some(retry)),
-            Some(Duration::from_secs(5))
-        );
-        assert_eq!(worker.next_wake(retry, Some(retry)), None);
-        let reconciles = env.reconciles;
-        worker.handle(Wake::Timeout, &mut env);
-        assert_eq!(
-            env.reconciles,
-            reconciles.saturating_add(1),
-            "the retry reconciles"
-        );
-        assert_eq!(env.enumerations, 1, "against the graph it already has");
+        phase a_due_retry_wakes_once_and_a_past_one_never_spins;
+        {
+            let mut env = FakeEnv::new([laptop(true)]);
+            let mut worker = PolicyWorker::start(&mut env);
+            worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
+            let now = Instant::now();
+            let retry = now.checked_add(Duration::from_secs(5)).unwrap();
+            assert_eq!(
+                worker.next_wake(now, Some(retry)),
+                Some(Duration::from_secs(5))
+            );
+            assert_eq!(worker.next_wake(retry, Some(retry)), None);
+            let reconciles = env.reconciles;
+            worker.handle(Wake::Timeout, &mut env);
+            assert_eq!(
+                env.reconciles,
+                reconciles.saturating_add(1),
+                "the retry reconciles"
+            );
+            assert_eq!(env.enumerations, 1, "against the graph it already has");
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -1250,33 +1279,29 @@ mod tests {
         assert_eq!(env.preference_loads, 1);
     }
 
-    #[test]
-    fn private_outputs_are_recognised_by_transport_and_name() {
-        assert!(private_output(&sink("bluez_output.X.1", "Speaker", false)));
-        assert!(private_output(&sink("alsa_output.x", "Headphones", false)));
-        assert!(!private_output(&sink(
-            "alsa_output.pci.hdmi-stereo",
-            "HDMI / DisplayPort",
-            false
-        )));
-        assert!(!private_output(&sink(
-            "alsa_output.pci.analog-stereo",
-            "Built-in Audio",
-            false
-        )));
-    }
+    tilo_test_env::scenario! {
+        fn audio_preferences_read_from_the_settings_document_with_safe_defaults;
 
-    #[test]
-    fn malformed_or_out_of_range_preferences_are_safe_defaults() {
-        let mut doc = serde_json::Map::new();
-        doc.insert(
-            "audio".into(),
-            json!({"balance": 8.0, "mono_output": "yes", "echo_cancellation": "no"}),
-        );
-        assert_eq!(
-            preferences_from(&doc),
-            PersistentAudioPreferences::default()
-        );
+        phase malformed_or_out_of_range_preferences_are_safe_defaults;
+        {
+            let mut doc = serde_json::Map::new();
+            doc.insert(
+                "audio".into(),
+                json!({"balance": 8.0, "mono_output": "yes", "echo_cancellation": "no"}),
+            );
+            assert_eq!(
+                preferences_from(&doc),
+                PersistentAudioPreferences::default()
+            );
+        }
+
+        phase calls_are_echo_cancelled_unless_the_person_turned_it_off;
+        {
+            assert!(preferences_from(&serde_json::Map::new()).echo_cancellation);
+            let mut doc = serde_json::Map::new();
+            doc.insert("audio".into(), json!({"echo_cancellation": false}));
+            assert!(!preferences_from(&doc).echo_cancellation);
+        }
     }
 
     fn graph(devices: &[&str]) -> media::audio::AudioGraph {
@@ -1324,13 +1349,5 @@ mod tests {
             roster.observe(&graph(&["Dock", "Headset"])),
             [DeviceEvent::Connected, DeviceEvent::Disconnected]
         );
-    }
-
-    #[test]
-    fn calls_are_echo_cancelled_unless_the_person_turned_it_off() {
-        assert!(preferences_from(&serde_json::Map::new()).echo_cancellation);
-        let mut doc = serde_json::Map::new();
-        doc.insert("audio".into(), json!({"echo_cancellation": false}));
-        assert!(!preferences_from(&doc).echo_cancellation);
     }
 }

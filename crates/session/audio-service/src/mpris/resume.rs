@@ -294,37 +294,85 @@ mod tests {
         assert_eq!(required_seek(-1, 4_000_000, true), SeekDecision::Impossible);
     }
 
-    #[test]
-    fn resumes_are_bounded_and_never_run_twice() {
-        let resumes = Resumes::default();
-        let first = resumes.begin([1; 16]).unwrap();
-        assert!(resumes.begin([1; 16]).is_none());
-        for index in 2..=u8::try_from(MAX_PENDING_RESUMES).unwrap() {
-            assert!(resumes.begin([index; 16]).is_some());
+    tilo_test_env::scenario! {
+        fn a_resume_runs_once_and_its_cancellation_is_final;
+
+        phase resumes_are_bounded_and_never_run_twice;
+        {
+            let resumes = Resumes::default();
+            let first = resumes.begin([1; 16]).unwrap();
+            assert!(resumes.begin([1; 16]).is_none());
+            for index in 2..=u8::try_from(MAX_PENDING_RESUMES).unwrap() {
+                assert!(resumes.begin([index; 16]).is_some());
+            }
+            assert!(resumes.begin([99; 16]).is_none(), "past the bound");
+            resumes.finish(&first);
+            assert!(
+                resumes.begin([1; 16]).is_some(),
+                "a finished resume frees its slot"
+            );
         }
-        assert!(resumes.begin([99; 16]).is_none(), "past the bound");
-        resumes.finish(&first);
-        assert!(
-            resumes.begin([1; 16]).is_some(),
-            "a finished resume frees its slot"
-        );
-    }
 
-    #[test]
-    fn cancellation_after_launch_blocks_every_later_mutation() {
-        let resumes = Resumes::default();
-        let authority = resumes.begin([22; 16]).unwrap();
-        let mut mutations = Vec::new();
+        phase cancellation_after_launch_blocks_every_later_mutation;
+        {
+            let resumes = Resumes::default();
+            let authority = resumes.begin([22; 16]).unwrap();
+            let mut mutations = Vec::new();
 
-        assert_eq!(
-            mutate_now(&authority, || mutations.push("open-uri")),
-            Some(())
-        );
-        resumes.cancel([22; 16]);
-        assert_eq!(mutate_now(&authority, || mutations.push("seek")), None);
-        assert_eq!(mutate_now(&authority, || mutations.push("play")), None);
-        assert_eq!(mutations, ["open-uri"]);
-        assert!(!authority.is_active());
+            assert_eq!(
+                mutate_now(&authority, || mutations.push("open-uri")),
+                Some(())
+            );
+            resumes.cancel([22; 16]);
+            assert_eq!(mutate_now(&authority, || mutations.push("seek")), None);
+            assert_eq!(mutate_now(&authority, || mutations.push("play")), None);
+            assert_eq!(mutations, ["open-uri"]);
+            assert!(!authority.is_active());
+        }
+
+        phase cancellation_is_linearized_after_an_in_flight_mutation;
+        {
+            let resumes = Arc::new(Resumes::default());
+            let authority = resumes.begin([24; 16]).unwrap();
+            let mutation_authority = authority.clone();
+            let (mutation_started_tx, mutation_started_rx) = mpsc::channel();
+            let (release_mutation_tx, release_mutation_rx) = mpsc::channel::<()>();
+            let mutation = std::thread::spawn(move || {
+                mutate_now(&mutation_authority, || {
+                    mutation_started_tx.send(()).unwrap();
+                    release_mutation_rx.recv().unwrap();
+                })
+            });
+            mutation_started_rx.recv().unwrap();
+
+            let cancel_resumes = Arc::clone(&resumes);
+            let (cancel_started_tx, cancel_started_rx) = mpsc::channel();
+            let (cancelled_tx, cancelled_rx) = mpsc::channel();
+            let cancellation = std::thread::spawn(move || {
+                cancel_started_tx
+                    .send(tilo_test_env::idle::current_thread_id().expect("a thread id"))
+                    .unwrap();
+                cancel_resumes.cancel([24; 16]);
+                cancelled_tx.send(()).unwrap();
+            });
+            let cancel_thread = cancel_started_rx.recv().unwrap();
+            let early = tilo_test_env::wait_for("the cancel to answer or block", || {
+                if cancelled_rx.try_recv().is_ok() {
+                    return Some(true);
+                }
+                thread_is_blocked(cancel_thread).then_some(false)
+            });
+            assert!(
+                !early,
+                "cancel must wait for the already-started mutation to leave its gate"
+            );
+
+            release_mutation_tx.send(()).unwrap();
+            assert_eq!(mutation.join().unwrap(), Some(()));
+            tilo_test_env::recv("the cancel returning", &cancelled_rx);
+            cancellation.join().unwrap();
+            assert_eq!(mutate_now(&authority, || panic!("late mutation ran")), None);
+        }
     }
 
     /// Whether thread `tid` of this process sleeps in the kernel, as one
@@ -334,49 +382,5 @@ mod tests {
             .ok()
             .and_then(|stat| Some(stat.rsplit_once(')')?.1.trim_start().starts_with('S')))
             .unwrap_or(false)
-    }
-
-    #[test]
-    fn cancellation_is_linearized_after_an_in_flight_mutation() {
-        let resumes = Arc::new(Resumes::default());
-        let authority = resumes.begin([24; 16]).unwrap();
-        let mutation_authority = authority.clone();
-        let (mutation_started_tx, mutation_started_rx) = mpsc::channel();
-        let (release_mutation_tx, release_mutation_rx) = mpsc::channel::<()>();
-        let mutation = std::thread::spawn(move || {
-            mutate_now(&mutation_authority, || {
-                mutation_started_tx.send(()).unwrap();
-                release_mutation_rx.recv().unwrap();
-            })
-        });
-        mutation_started_rx.recv().unwrap();
-
-        let cancel_resumes = Arc::clone(&resumes);
-        let (cancel_started_tx, cancel_started_rx) = mpsc::channel();
-        let (cancelled_tx, cancelled_rx) = mpsc::channel();
-        let cancellation = std::thread::spawn(move || {
-            cancel_started_tx
-                .send(tilo_test_env::idle::current_thread_id().expect("a thread id"))
-                .unwrap();
-            cancel_resumes.cancel([24; 16]);
-            cancelled_tx.send(()).unwrap();
-        });
-        let cancel_thread = cancel_started_rx.recv().unwrap();
-        let early = tilo_test_env::wait_for("the cancel to answer or block", || {
-            if cancelled_rx.try_recv().is_ok() {
-                return Some(true);
-            }
-            thread_is_blocked(cancel_thread).then_some(false)
-        });
-        assert!(
-            !early,
-            "cancel must wait for the already-started mutation to leave its gate"
-        );
-
-        release_mutation_tx.send(()).unwrap();
-        assert_eq!(mutation.join().unwrap(), Some(()));
-        tilo_test_env::recv("the cancel returning", &cancelled_rx);
-        cancellation.join().unwrap();
-        assert_eq!(mutate_now(&authority, || panic!("late mutation ran")), None);
     }
 }

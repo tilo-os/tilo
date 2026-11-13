@@ -103,84 +103,88 @@ mod tests {
         SystemSoundPrefs::default()
     }
 
-    #[test]
-    fn a_device_arriving_or_leaving_sounds_in_the_chosen_theme_and_volume() {
-        let mut chosen = prefs();
-        chosen.theme = Some("ocean".into());
-        chosen.volume = 0.25;
-        let connected = cue(SystemSoundEvent::DeviceConnected, &chosen);
-        assert_eq!(connected.theme, "ocean");
-        assert!((connected.volume - 0.25).abs() < f32::EPSILON);
-        assert_eq!(connected.ids, SystemSoundEvent::DeviceConnected.sound_ids());
-        assert_eq!(
-            cue(SystemSoundEvent::DeviceDisconnected, &prefs()).theme,
-            settings_store::system_sounds::DEFAULT_THEME
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_device_sound_plays_as_the_person_set_it_and_keeps_quiet_when_asked;
 
-    #[test]
-    fn do_not_disturb_and_focus_hold_a_device_sound_back() {
-        let event = SystemSoundEvent::DeviceConnected;
-        assert!(plays(event, &prefs(), QuietState::default()));
-        for quiet in [
-            QuietState {
-                do_not_disturb: true,
-                ..QuietState::default()
-            },
-            QuietState {
-                focus: true,
-                ..QuietState::default()
-            },
-            QuietState {
-                presenting: true,
-                ..QuietState::default()
-            },
-        ] {
-            assert!(!plays(event, &prefs(), quiet), "{quiet:?}");
+        phase a_device_arriving_or_leaving_sounds_in_the_chosen_theme_and_volume;
+        {
+            let mut chosen = prefs();
+            chosen.theme = Some("ocean".into());
+            chosen.volume = 0.25;
+            let connected = cue(SystemSoundEvent::DeviceConnected, &chosen);
+            assert_eq!(connected.theme, "ocean");
+            assert!((connected.volume - 0.25).abs() < f32::EPSILON);
+            assert_eq!(connected.ids, SystemSoundEvent::DeviceConnected.sound_ids());
+            assert_eq!(
+                cue(SystemSoundEvent::DeviceDisconnected, &prefs()).theme,
+                settings_store::system_sounds::DEFAULT_THEME
+            );
         }
-    }
 
-    #[test]
-    fn the_persons_switches_and_the_volume_decide() {
-        let quiet = QuietState::default();
-        let mut off = prefs();
-        off.enabled = false;
-        assert!(!plays(SystemSoundEvent::DeviceConnected, &off, quiet));
+        phase do_not_disturb_and_focus_hold_a_device_sound_back;
+        {
+            let event = SystemSoundEvent::DeviceConnected;
+            assert!(plays(event, &prefs(), QuietState::default()));
+            for quiet in [
+                QuietState {
+                    do_not_disturb: true,
+                    ..QuietState::default()
+                },
+                QuietState {
+                    focus: true,
+                    ..QuietState::default()
+                },
+                QuietState {
+                    presenting: true,
+                    ..QuietState::default()
+                },
+            ] {
+                assert!(!plays(event, &prefs(), quiet), "{quiet:?}");
+            }
+        }
 
-        let mut silent = prefs();
-        silent.volume = 0.0;
-        assert!(!plays(SystemSoundEvent::DeviceConnected, &silent, quiet));
+        phase the_persons_switches_and_the_volume_decide;
+        {
+            let quiet = QuietState::default();
+            let mut off = prefs();
+            off.enabled = false;
+            assert!(!plays(SystemSoundEvent::DeviceConnected, &off, quiet));
 
-        let mut events = prefs();
-        events
-            .events
-            .set(SystemSoundEvent::DeviceDisconnected, false);
-        assert!(plays(SystemSoundEvent::DeviceConnected, &events, quiet));
-        assert!(!plays(SystemSoundEvent::DeviceDisconnected, &events, quiet));
-    }
+            let mut silent = prefs();
+            silent.volume = 0.0;
+            assert!(!plays(SystemSoundEvent::DeviceConnected, &silent, quiet));
 
-    #[test]
-    fn focus_time_is_read_from_the_persons_schedule() {
-        use chrono::TimeZone as _;
-        let now = chrono::Local
-            .with_ymd_and_hms(2026, 11, 2, 10, 30, 0)
-            .single()
-            .expect("an unambiguous local time");
-        let mut document = serde_json::Map::new();
-        assert_eq!(quiet_state(&document, now), QuietState::default());
-        document.insert(
-            "notifications".into(),
-            serde_json::json!({
-                "do_not_disturb": true,
-                "focus": {"enabled": true, "start_minute": 540, "end_minute": 720}
-            }),
-        );
-        let quiet = quiet_state(&document, now);
-        assert!(quiet.do_not_disturb);
-        assert!(quiet.focus, "10:30 is inside the 09:00-12:00 focus period");
-        assert!(
-            !quiet.presenting,
-            "the service is not a screen and says nothing about presenting"
-        );
+            let mut events = prefs();
+            events
+                .events
+                .set(SystemSoundEvent::DeviceDisconnected, false);
+            assert!(plays(SystemSoundEvent::DeviceConnected, &events, quiet));
+            assert!(!plays(SystemSoundEvent::DeviceDisconnected, &events, quiet));
+        }
+
+        phase focus_time_is_read_from_the_persons_schedule;
+        {
+            use chrono::TimeZone as _;
+            let now = chrono::Local
+                .with_ymd_and_hms(2026, 11, 2, 10, 30, 0)
+                .single()
+                .expect("an unambiguous local time");
+            let mut document = serde_json::Map::new();
+            assert_eq!(quiet_state(&document, now), QuietState::default());
+            document.insert(
+                "notifications".into(),
+                serde_json::json!({
+                    "do_not_disturb": true,
+                    "focus": {"enabled": true, "start_minute": 540, "end_minute": 720}
+                }),
+            );
+            let quiet = quiet_state(&document, now);
+            assert!(quiet.do_not_disturb);
+            assert!(quiet.focus, "10:30 is inside the 09:00-12:00 focus period");
+            assert!(
+                !quiet.presenting,
+                "the service is not a screen and says nothing about presenting"
+            );
+        }
     }
 }
