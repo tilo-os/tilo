@@ -2,8 +2,6 @@
 //! the person installed (Settings › Models), through the model gateway; and
 //! the maths an app refines and cleans its edge with (`tilo-segment`).
 //!
-//! The model and its runtime live in the gateway: an app holds neither, and
-//! nothing leaves the device.
 
 use std::io::Cursor;
 
@@ -15,11 +13,10 @@ use image::{DynamicImage, RgbaImage};
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
-/// The longest side of the picture sent to the model: it sees far less
-/// (320 pixels for U²-Net), and the edge is refined at full size after.
+/// The longest side of the picture sent to the model: it sees far less (320
+/// pixels for U²-Net), and the edge is refined at full size after.
 pub const MAX_SUBJECT_EDGE: u32 = 1024;
 
-/// A subject found, at the size of the picture it was asked for.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Subject {
     pub matte: Matte,
