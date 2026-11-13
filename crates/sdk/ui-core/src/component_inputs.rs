@@ -161,20 +161,23 @@ impl PassReading {
         let crossed = read
             .as_ref()
             .is_some_and(|read| read.owner.crossed() != self.crossed);
-        let locale = self.locale;
+        // So does the language: words loading while the pass ran (another
+        // window's page, a device's formats) leave what it showed in two
+        // languages. A language that moved before the pass began is not this:
+        // the pass read every word it shows in the one that stood.
+        let language = crate::i18n::I18nManager::revision() != self.locale;
         drop(self);
         match read {
             Some(read) => Reads {
                 probes: read.probes,
                 untracked: read
                     .untracked
-                    .or(crossed.then_some("ui.component.loud.woken_during_pass")),
-                locale: Some(locale),
+                    .or(crossed.then_some("ui.component.loud.woken_during_pass"))
+                    .or(language.then_some("ui.component.loud.language_during_pass")),
             },
             None => Reads {
                 probes: Vec::new(),
                 untracked: Some("component_inputs.lost"),
-                locale: None,
             },
         }
     }
@@ -439,10 +442,6 @@ pub fn is_proving() -> bool {
 pub(crate) struct Reads {
     probes: Vec<Probe>,
     untracked: Option<&'static str>,
-    /// The language its earliest pass began in: a language that moved while
-    /// the pass ran (another window's words loading, a device's formats
-    /// changing) is read again by the next pass, which shows what it holds.
-    pub(crate) locale: Option<u64>,
 }
 
 impl Reads {
@@ -450,17 +449,8 @@ impl Reads {
     /// read.
     pub(crate) fn join(mut self, other: Self) -> Self {
         self.untracked = self.untracked.or(other.untracked);
-        self.locale = self.earliest(other.locale);
         self.take(other.probes, false);
         self
-    }
-
-    /// Where `self` read the locale earlier than `other` did.
-    fn earliest(&self, other: Option<u64>) -> Option<u64> {
-        match (self.locale, other) {
-            (Some(mine), Some(theirs)) => Some(mine.min(theirs)),
-            (mine, theirs) => mine.or(theirs),
-        }
     }
 
     /// What `self`, a later pass, read, and what the earlier passes read
@@ -468,7 +458,6 @@ impl Reads {
     /// pass read, while its own checks skip reading it again. What is
     /// carried is taken as it stands now, after the later pass ran with it.
     pub(crate) fn carry(mut self, earlier: Self) -> Self {
-        self.locale = self.earliest(earlier.locale);
         self.take(earlier.probes, true);
         self
     }
