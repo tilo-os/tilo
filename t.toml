@@ -2872,13 +2872,14 @@ outputs = ["/target/publish/hosted-guest/agent/tilo-legacy-agent"]
 default = false
 
 # The guest's Tilo session (docs/hosted-browser.md): this repository's own
-# components, placed by os/components.toml. Browser and the engine come from the
-# compiled tree and the engine build, and are packed and installed by the app
-# release's own scripts.
+# components, placed by os/components.toml from the compiled tree, the same build
+# the guest's apps come from. Browser and the engine come from the compiled tree
+# and the engine build, and are packed and installed by the app release's own
+# scripts.
 [[check]]
 name = "hosted-guest-session"
-run = "bash tools/ci/publish/hosted-guest.sh session /target/publish/hosted-guest/session"
-needs = ["font-seed"]
+run = "bash tools/ci/publish/hosted-guest.sh session /target/os/x86_64/compiled /target/publish/hosted-guest/session"
+needs = ["font-seed", "os-compile-x86_64"]
 env = { TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1" }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/hosted-guest/session/**"]
