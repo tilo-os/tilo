@@ -147,70 +147,75 @@ mod tests {
         json!({"content": text}).as_object().cloned().unwrap()
     }
 
-    #[test]
-    fn duplicate_event_ids_are_dropped() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut log = EventLog::open(dir.path()).unwrap();
-        assert_eq!(
-            log.append("message-created", "m1", 1, 10, payload("a"))
-                .unwrap(),
-            Some(1)
-        );
-        assert_eq!(
-            log.append("message-created", "m1", 1, 11, payload("a"))
-                .unwrap(),
-            None
-        );
-        assert_eq!(
-            log.append("message-updated", "m1", 2, 12, payload("b"))
-                .unwrap(),
-            Some(2),
-            "ids are per source"
-        );
-        assert_eq!(log.after(0, 0).count(), 2);
-    }
+    tilo_test_env::scenario! {
+        /// Deduplication, selection and pruning, each case on an event log of its own.
+        fn the_log_drops_duplicates_selects_by_cursor_and_floor_and_prunes;
 
-    #[test]
-    fn cursors_and_floor_select_what_an_installation_has_not_seen() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut log = EventLog::open(dir.path()).unwrap();
-        for (at, id) in [(0, "a"), (100, "b"), (200, "c")] {
-            log.append("command", id, at, at, payload(id)).unwrap();
+        phase duplicate_event_ids_are_dropped;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut log = EventLog::open(dir.path()).unwrap();
+            assert_eq!(
+                log.append("message-created", "m1", 1, 10, payload("a"))
+                    .unwrap(),
+                Some(1)
+            );
+            assert_eq!(
+                log.append("message-created", "m1", 1, 11, payload("a"))
+                    .unwrap(),
+                None
+            );
+            assert_eq!(
+                log.append("message-updated", "m1", 2, 12, payload("b"))
+                    .unwrap(),
+                Some(2),
+                "ids are per source"
+            );
+            assert_eq!(log.after(0, 0).count(), 2);
         }
-        let ids: Vec<&str> = log.after(1, 0).map(|e| e.id.as_str()).collect();
-        assert_eq!(ids, ["b", "c"]);
-        let floored: Vec<&str> = log.after(0, 150).map(|e| e.id.as_str()).collect();
-        assert_eq!(
-            floored,
-            ["c"],
-            "events before the floor are never delivered"
-        );
-    }
 
-    #[test]
-    fn prune_keeps_the_window() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut log = EventLog::open(dir.path()).unwrap();
-        log.append("command", "old", 0, 0, payload("o")).unwrap();
-        log.append("command", "new", 0, EventLog::WINDOW_MS + 5, payload("n"))
-            .unwrap();
-        assert_eq!(log.prune(EventLog::WINDOW_MS + 10).unwrap(), 1);
-        let left: Vec<&str> = log.after(0, 0).map(|e| e.id.as_str()).collect();
-        assert_eq!(left, ["new"]);
-        assert_eq!(log.last_seq(), 2, "sequence numbers never go back");
-    }
+        phase cursors_and_floor_select_what_an_installation_has_not_seen;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut log = EventLog::open(dir.path()).unwrap();
+            for (at, id) in [(0, "a"), (100, "b"), (200, "c")] {
+                log.append("command", id, at, at, payload(id)).unwrap();
+            }
+            let ids: Vec<&str> = log.after(1, 0).map(|e| e.id.as_str()).collect();
+            assert_eq!(ids, ["b", "c"]);
+            let floored: Vec<&str> = log.after(0, 150).map(|e| e.id.as_str()).collect();
+            assert_eq!(
+                floored,
+                ["c"],
+                "events before the floor are never delivered"
+            );
+        }
 
-    #[test]
-    fn prune_caps_the_count() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut log = EventLog::open(dir.path()).unwrap();
-        for i in 0..(EventLog::MAX_EVENTS + 3) {
-            log.append("command", &i.to_string(), 0, 1, Map::new())
+        phase prune_keeps_the_window;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut log = EventLog::open(dir.path()).unwrap();
+            log.append("command", "old", 0, 0, payload("o")).unwrap();
+            log.append("command", "new", 0, EventLog::WINDOW_MS + 5, payload("n"))
                 .unwrap();
+            assert_eq!(log.prune(EventLog::WINDOW_MS + 10).unwrap(), 1);
+            let left: Vec<&str> = log.after(0, 0).map(|e| e.id.as_str()).collect();
+            assert_eq!(left, ["new"]);
+            assert_eq!(log.last_seq(), 2, "sequence numbers never go back");
         }
-        log.prune(2).unwrap();
-        assert_eq!(log.after(0, 0).count(), EventLog::MAX_EVENTS);
-        assert_eq!(log.after(0, 0).next().unwrap().id, "3");
+
+        phase prune_caps_the_count;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut log = EventLog::open(dir.path()).unwrap();
+            for i in 0..(EventLog::MAX_EVENTS + 3) {
+                log.append("command", &i.to_string(), 0, 1, Map::new())
+                    .unwrap();
+            }
+            log.prune(2).unwrap();
+            assert_eq!(log.after(0, 0).count(), EventLog::MAX_EVENTS);
+            assert_eq!(log.after(0, 0).next().unwrap().id, "3");
+        }
     }
 
     #[test]
