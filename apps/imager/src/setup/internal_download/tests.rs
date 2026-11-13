@@ -1,5 +1,6 @@
 use super::*;
 use crate::setup::test_support::isolated;
+use test_http::Responder;
 fn manifest() -> Vec<u8> {
     super::super::internal_bundle::tests::bytes(&super::super::internal_bundle::tests::fixture())
 }
@@ -157,15 +158,14 @@ fn manifest_and_selected_context_require_exact_authenticated_bytes() {
 }
 
 use std::{
-    net::TcpListener,
     sync::{Arc, Mutex},
     thread,
 };
 pub(in crate::setup) struct Server {
     url: String,
     requests: Arc<Mutex<Vec<String>>>,
-    stop: Arc<AtomicBool>,
-    thread: Option<thread::JoinHandle<()>>,
+    // Held for the fixture's lifetime: dropping it stops the answering.
+    _served: Responder,
 }
 impl Server {
     pub(in crate::setup) fn new(responses: Vec<Vec<u8>>) -> Self {
@@ -173,56 +173,39 @@ impl Server {
     }
     pub(in crate::setup) fn on_request(
         responses: Vec<Vec<u8>>,
-        mut on_request: impl FnMut() + Send + 'static,
+        on_request: impl FnMut() + Send + 'static,
     ) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let url = format!(
-            "http://{}/releases/manifest.json",
-            listener.local_addr().unwrap()
-        );
+        let responses = Arc::new(Mutex::new(
+            responses
+                .into_iter()
+                .collect::<std::collections::VecDeque<_>>(),
+        ));
+        let on_request = Arc::new(Mutex::new(on_request));
         let requests = Arc::new(Mutex::new(Vec::new()));
-        let seen = requests.clone();
-        let stop = Arc::new(AtomicBool::new(false));
-        let done = stop.clone();
-        let thread = thread::spawn(move || {
-            let mut responses = responses.into_iter();
-            while !done.load(Ordering::Acquire) {
-                match listener.accept() {
-                    Ok((mut socket, _)) => {
-                        // Darwin can inherit O_NONBLOCK from the listener. A
-                        // temporary WouldBlock is not an empty HTTP request.
-                        socket.set_nonblocking(false).unwrap();
-                        socket
-                            .set_read_timeout(Some(tilo_test_env::hang_bound()))
-                            .unwrap();
-                        let mut request = Vec::new();
-                        let mut byte = [0];
-                        while !request.ends_with(b"\r\n\r\n") && request.len() < 8192 {
-                            if socket.read(&mut byte).unwrap_or(0) == 0 {
-                                break;
-                            }
-                            request.push(byte[0]);
-                        }
-                        seen.lock()
-                            .unwrap()
-                            .push(String::from_utf8(request).unwrap());
-                        on_request();
-                        let response = responses.next().unwrap_or_else(|| response(500, "", b""));
-                        let _ = socket.write_all(&response);
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(2))
-                    }
-                    Err(e) => panic!("{e}"),
-                }
+        let seen = Arc::clone(&requests);
+        let served = Responder::serve(move |peer| {
+            let mut head = format!(
+                "{} {} HTTP/1.1\r\n",
+                peer.request().method,
+                peer.request().target
+            );
+            for (name, value) in &peer.request().headers {
+                head.push_str(&format!("{name}: {value}\r\n"));
             }
+            seen.lock().unwrap().push(head);
+            (on_request.lock().unwrap())();
+            let answer = responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| response(500, "", b""));
+            let _ = peer.write(&answer);
         });
+        let url = format!("{}/releases/manifest.json", served.url());
         Self {
             url,
             requests,
-            stop,
-            thread: Some(thread),
+            _served: served,
         }
     }
     pub(in crate::setup) fn requests(&self) -> Vec<String> {
@@ -234,12 +217,6 @@ impl Server {
     }
     pub(in crate::setup) fn release(&self, bytes: &[u8]) -> InternalRelease {
         InternalRelease::transport_fixture(bytes, &self.url)
-    }
-}
-impl Drop for Server {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        self.thread.take().unwrap().join().unwrap();
     }
 }
 pub(in crate::setup) fn response(status: u16, headers: &str, bytes: &[u8]) -> Vec<u8> {
@@ -1060,19 +1037,21 @@ fn redirects_and_stream_timeouts_are_bounded() {
     );
 
     isolated("stalled_network_read_obeys_injected_timeout", || {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}/manifest.json", listener.local_addr().unwrap());
         // The body never comes until the transfer has given up.
         let (gave_up, release) = std::sync::mpsc::channel::<()>();
-        let worker = thread::spawn(move || {
-            let (mut socket, _) = listener.accept().unwrap();
-            let mut request = [0; 4096];
-            socket.read(&mut request).unwrap();
-            socket
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4096\r\n\r\n")
-                .unwrap();
-            release.recv_timeout(tilo_test_env::hang_bound()).is_ok()
+        let release = Mutex::new(release);
+        let (finished, stalled) = std::sync::mpsc::channel();
+        let served = Responder::serve(move |peer| {
+            let _ = peer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 4096\r\n\r\n");
+            let _ = finished.send(
+                release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(tilo_test_env::hang_bound())
+                    .is_ok(),
+            );
         });
+        let url = format!("{}/manifest.json", served.url());
         let bytes = manifest();
         let selected = SelectedManifest::checked(
             &InternalRelease::transport_fixture(&bytes, &url),
@@ -1099,7 +1078,7 @@ fn redirects_and_stream_timeouts_are_bounded() {
         );
         gave_up.send(()).unwrap();
         assert!(
-            worker.join().unwrap(),
+            stalled.recv_timeout(tilo_test_env::hang_bound()).unwrap(),
             "the transfer waited for the stalled body instead of its timeout"
         );
     });
@@ -1108,24 +1087,20 @@ fn redirects_and_stream_timeouts_are_bounded() {
         "multiple_stream_reads_can_outlast_one_timeout_and_cancel_after_received_bytes",
         || {
             for should_cancel in [false, true] {
-                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-                let url = format!("http://{}/manifest.json", listener.local_addr().unwrap());
-                let worker = thread::spawn(move || {
-                    let (mut socket, _) = listener.accept().unwrap();
-                    let mut request = [0; 4096];
-                    socket.read(&mut request).unwrap();
-                    socket
-                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4096\r\n\r\n")
-                        .unwrap();
+                let served = Responder::serve(|peer| {
+                    if !peer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 4096\r\n\r\n") {
+                        return;
+                    }
                     for i in 0..4 {
                         if i > 0 {
                             thread::sleep(Duration::from_millis(150));
                         }
-                        if socket.write_all(&vec![b'E'; 1024]).is_err() {
+                        if !peer.write(&vec![b'E'; 1024]) {
                             break;
                         }
                     }
                 });
+                let url = format!("{}/manifest.json", served.url());
                 let bytes = manifest();
                 let selected = SelectedManifest::checked(
                     &InternalRelease::transport_fixture(&bytes, &url),
@@ -1161,7 +1136,6 @@ fn redirects_and_stream_timeouts_are_bounded() {
                         .iter()
                         .any(|p| p.phase == Phase::Receiving && p.received > 0 && p.verified == 0)
                 );
-                worker.join().unwrap();
             }
         },
     );

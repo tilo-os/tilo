@@ -5,11 +5,7 @@
 //! machine's own addresses, and a test reads the engines' scrapers and the
 //! page reader against answers it writes itself.
 
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::thread::JoinHandle;
 
 /// One answer a fixture server gives: the path it answers, the media type it
 /// labels the body with, and the body itself.
@@ -102,53 +98,54 @@ fn decode(encoded: &str) -> String {
 /// A server on this machine, listening on a free port, answering `routes`
 /// until it is dropped.
 pub struct FixtureServer {
-    address: SocketAddr,
-    base: String,
-    stop: Arc<AtomicBool>,
-    listening: Option<JoinHandle<()>>,
+    responder: test_http::Responder,
     seen: Arc<Mutex<Vec<Request>>>,
 }
 
 impl FixtureServer {
     /// Answer `routes` on a free port of this machine from now on.
     ///
-    /// # Errors
+    /// # Panics
     ///
-    /// [`std::io::Error`] when the address cannot be bound or the thread
-    /// cannot be started.
-    pub fn serve(routes: Vec<Route>) -> std::io::Result<Self> {
-        let listener = TcpListener::bind("127.0.0.1:0")?;
-        let address = listener.local_addr()?;
-        let stop = Arc::new(AtomicBool::new(false));
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let routes = Arc::new(routes);
-        let listening = {
-            let stop = Arc::clone(&stop);
-            let seen = Arc::clone(&seen);
-            let routes = Arc::clone(&routes);
-            std::thread::Builder::new()
-                .name("tilo-web-search-fixtures".into())
-                .spawn(move || accept(&listener, &routes, &seen, &stop))?
-        };
-        Ok(Self {
-            address,
-            base: format!("http://{address}"),
-            stop,
-            listening: Some(listening),
-            seen,
-        })
-    }
-
-    /// Where the server listens, such as `http://127.0.0.1:41234`.
+    /// If the port cannot be bound.
+    #[allow(
+        clippy::expect_used,
+        reason = "a fixture server that cannot bind loopback has no meaningful fallback"
+    )]
     #[must_use]
-    pub fn base(&self) -> &str {
-        &self.base
+    pub fn serve(routes: Vec<Route>) -> Self {
+        let routes = Arc::new(routes);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&seen);
+        let responder = test_http::Responder::handle(move |request| {
+            let (path, query) = request
+                .target
+                .split_once('?')
+                .unwrap_or((request.target.as_str(), ""));
+            recorded
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(Request {
+                    method: request.method.clone(),
+                    path: path.to_owned(),
+                    query: query.to_owned(),
+                    body: request.body_text(),
+                });
+            let found = routes.iter().find(|route| route.path == path)?;
+            let reply = test_http::Reply::status(200).body(found.body.clone());
+            Some(if found.content_type.is_empty() {
+                reply
+            } else {
+                reply.header("Content-Type", &found.content_type)
+            })
+        });
+        Self { responder, seen }
     }
 
     /// The address of `path` on the server.
     #[must_use]
     pub fn at(&self, path: &str) -> String {
-        format!("{}{path}", self.base)
+        format!("{}{path}", self.responder.url())
     }
 
     /// Every request answered so far, in the order they arrived.
@@ -159,132 +156,4 @@ impl FixtureServer {
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
     }
-}
-
-impl Drop for FixtureServer {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        // Accept is parked until a connection arrives: this one wakes it so
-        // the thread reads the flag and ends.
-        if TcpStream::connect(self.address).is_err() {
-            return;
-        }
-        if let Some(listening) = self.listening.take()
-            && listening.join().is_err()
-        {
-            tracing::warn!("the fixture server's thread did not end cleanly");
-        }
-    }
-}
-
-/// Answer every connection until the server is dropped.
-fn accept(
-    listener: &TcpListener,
-    routes: &Arc<Vec<Route>>,
-    seen: &Arc<Mutex<Vec<Request>>>,
-    stop: &AtomicBool,
-) {
-    while !stop.load(Ordering::Relaxed) {
-        let (stream, _) = match listener.accept() {
-            Ok(accepted) => accepted,
-            Err(error) => {
-                tracing::warn!(%error, "the fixture server could not accept a connection");
-                return;
-            }
-        };
-        let routes = Arc::clone(routes);
-        let seen = Arc::clone(seen);
-        if let Err(error) = std::thread::Builder::new()
-            .name("tilo-web-search-fixture-answer".into())
-            .spawn(move || answer(&stream, &routes, &seen))
-        {
-            tracing::warn!(%error, "the fixture server could not answer a connection");
-        }
-    }
-}
-
-/// Read one request from `stream` and answer it with the route for its path,
-/// or a 404.
-fn answer(stream: &TcpStream, routes: &[Route], seen: &Mutex<Vec<Request>>) {
-    let Ok(reader_stream) = stream.try_clone() else {
-        return;
-    };
-    let mut reader = BufReader::new(reader_stream);
-    let Some(request) = read_request(&mut reader) else {
-        return;
-    };
-    seen.lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .push(request.clone());
-    let found = routes.iter().find(|route| route.path == request.path);
-    let mut writer = stream;
-    let (head, body) = match found {
-        Some(route) => {
-            let kind = if route.content_type.is_empty() {
-                String::new()
-            } else {
-                format!("Content-Type: {}\r\n", route.content_type)
-            };
-            (
-                format!(
-                    "HTTP/1.1 200 OK\r\n{kind}Content-Length: {}\r\n",
-                    route.body.len()
-                ),
-                route.body.as_slice(),
-            )
-        }
-        None => (
-            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n".to_owned(),
-            &[][..],
-        ),
-    };
-    let head = format!("{head}Connection: close\r\n\r\n");
-    let answered = writer
-        .write_all(head.as_bytes())
-        .and_then(|()| writer.write_all(body))
-        .and_then(|()| writer.flush());
-    if answered.is_err() {
-        tracing::debug!("a fixture client went away before its answer");
-    }
-}
-
-/// The request a client sent, or `None` when the connection ended first.
-fn read_request(reader: &mut BufReader<TcpStream>) -> Option<Request> {
-    let mut line = String::new();
-    if reader.read_line(&mut line).ok()? == 0 {
-        return None;
-    }
-    let mut parts = line.split_whitespace();
-    let method = parts.next()?.to_owned();
-    let target = parts.next().unwrap_or("/").to_owned();
-    let (path, query) = target.split_once('?').unwrap_or((target.as_str(), ""));
-    let mut length = 0usize;
-    loop {
-        let mut header = String::new();
-        if reader.read_line(&mut header).ok()? == 0 {
-            break;
-        }
-        let header = header.trim_end();
-        if header.is_empty() {
-            break;
-        }
-        if let Some((name, value)) = header.split_once(':')
-            && name.trim().eq_ignore_ascii_case("content-length")
-        {
-            length = value.trim().parse().unwrap_or(0);
-        }
-    }
-    let body = if length == 0 {
-        Vec::new()
-    } else {
-        let mut body = vec![0; length];
-        reader.read_exact(&mut body).ok()?;
-        body
-    };
-    Some(Request {
-        method,
-        path: path.to_owned(),
-        query: query.to_owned(),
-        body: String::from_utf8_lossy(&body).into_owned(),
-    })
 }

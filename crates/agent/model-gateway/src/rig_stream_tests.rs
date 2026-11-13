@@ -2,6 +2,7 @@
 use super::*;
 use agent_provider_config::protocol as neutral;
 use serde_json::json;
+use test_http::Responder;
 
 fn chunk(delta: &serde_json::Value, finish: &serde_json::Value) -> String {
     format!(
@@ -51,28 +52,25 @@ async fn test_stream_gated(
     Vec<Response>,
     PlanTiming,
 ) {
-    use std::io::Write as _;
     let (legacy, deltas) = options;
     let (preview_tx, preview_rx) = std::sync::mpsc::channel::<Response>();
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let mut profile = ProviderProfile::hosted(protocol);
-    profile.endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
-    let peer = std::thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        let _ = super::tests::read_request(&mut socket);
-        write!(
-            socket,
-            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
-        )
-        .unwrap();
+    let preview_rx = Mutex::new(preview_rx);
+    let served = Responder::serve(move |peer| {
         let split = gate.unwrap_or(body.len());
+        let _ = peer.write(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+        );
         for bytes in body[..split].chunks(piece) {
-            socket.write_all(bytes).unwrap();
+            let _ = peer.write(bytes);
         }
         if gate.is_some() {
-            let preview = preview_rx.recv_timeout(tilo_test_env::hang_bound()).expect(
-                "argument preview must arrive before the provider releases the terminal frame",
-            );
+            let preview = preview_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(tilo_test_env::hang_bound())
+                .expect(
+                    "argument preview must arrive before the provider releases the terminal frame",
+                );
             assert_eq!(preview.event.as_deref(), Some(EVENT_TOOL_CALL_DELTA));
             let value: serde_json::Value =
                 serde_json::from_str(preview.output.as_deref().unwrap()).unwrap();
@@ -81,9 +79,11 @@ async fn test_stream_gated(
             assert!(!value["delta"].as_str().unwrap().is_empty());
         }
         for bytes in body[split..].chunks(piece) {
-            socket.write_all(bytes).unwrap();
+            let _ = peer.write(bytes);
         }
     });
+    let mut profile = ProviderProfile::hosted(protocol);
+    profile.endpoint = format!("{}/v1", served.url());
     let transport = GatewayHttp {
         client: provider_client().unwrap(),
         endpoint: provider_url(&profile),
@@ -117,7 +117,6 @@ async fn test_stream_gated(
     )
     .await
     .map_err(|error| error.why);
-    peer.join().unwrap();
     (response, events, timing)
 }
 

@@ -89,7 +89,7 @@ async fn coordinated(
 /// done. Only a coordinated task's `plan` takes items and notes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_coordinated_task_gives_each_item_a_fresh_agent() {
-    let (url, sent, answer) = answered_model_endpoint();
+    let (url, sent, answer, _served) = answered_model_endpoint();
     let (mut workspace, ours, task, first) = Box::pin(coordinated(
         &url,
         &sent,
@@ -189,7 +189,7 @@ async fn a_coordinated_task_gives_each_item_a_fresh_agent() {
 /// item that posts, and of the other app's open record only its reads.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_item_s_agent_is_offered_only_its_item_s_apps() {
-    let (url, sent, answer) = answered_model_endpoint();
+    let (url, sent, answer, _served) = answered_model_endpoint();
     let (mut workspace, _ours, task, first) = Box::pin(coordinated(
         &url,
         &sent,
@@ -253,7 +253,7 @@ async fn an_item_s_agent_is_offered_only_its_item_s_apps() {
 /// with it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_coordinator_s_wait_asks_no_model_and_hands_on_what_arrived() {
-    let (url, sent, answer) = answered_model_endpoint();
+    let (url, sent, answer, _served) = answered_model_endpoint();
     let (mut workspace, ours, task, _) = Box::pin(coordinated(
         &url,
         &sent,
@@ -321,7 +321,7 @@ async fn a_coordinator_s_wait_asks_no_model_and_hands_on_what_arrived() {
 /// agent do that item again, told the note and what it did before.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn news_reaches_the_running_item_as_a_hint_and_redoes_a_done_one() {
-    let (url, sent, answer) = answered_model_endpoint();
+    let (url, sent, answer, _served) = answered_model_endpoint();
     let (mut workspace, ours, task, _) = Box::pin(coordinated(
         &url,
         &sent,
@@ -451,7 +451,7 @@ fn reply_only(id: &str, reply: &str) -> serde_json::Value {
 /// asked once more, told to try first; it then does its item.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_item_s_agent_that_cannot_before_trying_is_asked_again_and_acts() {
-    let (url, sent, answer) = answered_model_endpoint();
+    let (url, sent, answer, _served) = answered_model_endpoint();
     let (mut workspace, ours, task, _) = Box::pin(coordinated(
         &url,
         &sent,
@@ -501,7 +501,7 @@ async fn an_item_s_agent_that_cannot_before_trying_is_asked_again_and_acts() {
 /// read: the messages item 2 read, not a line about them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_item_s_agent_plans_with_the_records_and_what_earlier_items_read() {
-    let (url, sent, answer) = answered_model_endpoint();
+    let (url, sent, answer, _served) = answered_model_endpoint();
     let (mut workspace, _ours, task, _) = Box::pin(coordinated(
         &url,
         &sent,
@@ -610,7 +610,7 @@ async fn item_1_fails(
 /// again, and the item that needs it runs after the redo.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_failed_item_goes_to_the_coordinator_which_has_it_done_again() {
-    let (url, sent, answer) = answered_model_endpoint();
+    let (url, sent, answer, _served) = answered_model_endpoint();
     let (mut workspace, ours, task, _) = Box::pin(coordinated(
         &url,
         &sent,
@@ -678,7 +678,7 @@ async fn a_failed_item_goes_to_the_coordinator_which_has_it_done_again() {
 /// not done.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_items_after_a_failed_one_run_when_the_coordinator_goes_on() {
-    let (url, sent, answer) = answered_model_endpoint();
+    let (url, sent, answer, _served) = answered_model_endpoint();
     let (mut workspace, ours, task, _) = Box::pin(coordinated(
         &url,
         &sent,
@@ -721,7 +721,7 @@ async fn the_items_after_a_failed_one_run_when_the_coordinator_goes_on() {
 /// call until the message arrives, which starts the item that needs it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_held_wait_lets_independent_items_run_and_wakes_on_what_arrives() {
-    let (url, sent, answer) = answered_model_endpoint();
+    let (url, sent, answer, _served) = answered_model_endpoint();
     let (mut workspace, ours, task, _) = Box::pin(coordinated(
         &url,
         &sent,
@@ -795,7 +795,7 @@ async fn a_held_wait_lets_independent_items_run_and_wakes_on_what_arrives() {
 /// it starts with what arrived.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_held_wait_ends_on_what_arrived_before_it_began() {
-    let (url, sent, answer) = answered_model_endpoint();
+    let (url, sent, answer, _served) = answered_model_endpoint();
     let (mut workspace, ours, task, _) = Box::pin(coordinated(
         &url,
         &sent,
@@ -859,7 +859,7 @@ async fn a_held_wait_ends_on_what_arrived_before_it_began() {
 /// new.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_news_turn_that_lists_the_items_again_adds_no_duplicates() {
-    let (url, sent, answer) = answered_model_endpoint();
+    let (url, sent, answer, _served) = answered_model_endpoint();
     let (mut workspace, ours, task, _) = Box::pin(coordinated(
         &url,
         &sent,
@@ -962,7 +962,7 @@ async fn an_item_s_agent_imports_a_pdf_the_workspace_keeps_and_reads_it() {
     let payslips = content
         .put(&pdf(&["Payslip September net pay 2140.55"]))
         .unwrap();
-    let (url, sent, answer) = answered_model_endpoint();
+    let (url, sent, answer, _served) = answered_model_endpoint();
     let mut workspace = Box::pin(RelayWorkspace::granting_with(
         &url,
         &[CHAT, WRITER, PDF],
@@ -1069,8 +1069,8 @@ fn model_of(body: &str) -> String {
 /// endpoints, each answering only its own turns.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_coordinated_task_plans_its_items_with_the_item_model() {
-    let (own_url, to_own, own) = answered_model_endpoint();
-    let (item_url, to_items, items) = answered_model_endpoint();
+    let (own_url, to_own, own, _own_served) = answered_model_endpoint();
+    let (item_url, to_items, items, _item_served) = answered_model_endpoint();
     let endpoint = |url: &str, model: &str| {
         Box::new(tilo_agent_participant::OpenAiModel::new(
             url,

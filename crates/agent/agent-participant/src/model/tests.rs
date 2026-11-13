@@ -9,6 +9,7 @@ use super::scripted::{clauses, names_app, words};
 use super::*;
 use crate::planner::read_answer;
 use crate::vision::LOOK_CONTENT;
+use test_http::{Reply, Responder};
 use tilo_model_gateway::host_backend::protocol::{
     Content, ErrorKind, Message, ModelError, ModelRequest, ModelResponse, Role, StopReason,
     ToolCall, Usage,
@@ -192,38 +193,36 @@ fn the_usage_log_keeps_cached_input_and_reasoning() {
     );
 }
 
-/// An endpoint answering `answers` in order, one connection each, and
-/// reporting every request's head and body.
-pub(crate) fn endpoint(
-    answers: Vec<String>,
-) -> (String, std::sync::mpsc::Receiver<(String, String)>) {
-    use std::io::{BufRead as _, BufReader, Read as _, Write as _};
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}/v1", listener.local_addr().unwrap());
-    let (sent, received) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        for answer in answers {
-            let (stream, _) = listener.accept().unwrap();
-            let mut reader = BufReader::new(stream);
-            let (mut head, mut length) = (String::new(), 0);
-            loop {
-                let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
-                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                    length = value.trim().parse().unwrap();
-                }
-                if line == "\r\n" {
-                    break;
-                }
-                head.push_str(&line.to_ascii_lowercase());
-            }
-            let mut body = vec![0; length];
-            reader.read_exact(&mut body).unwrap();
-            sent.send((head, String::from_utf8(body).unwrap())).unwrap();
-            reader.into_inner().write_all(answer.as_bytes()).unwrap();
-        }
+/// An endpoint answering `answers`, whole replies as written, in order.
+pub(crate) fn endpoint(answers: Vec<String>) -> (String, Responder) {
+    let answers = std::sync::Mutex::new(
+        answers
+            .into_iter()
+            .collect::<std::collections::VecDeque<_>>(),
+    );
+    let served = Responder::serve(move |peer| {
+        let answer = answers
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_else(|| http("500 Internal Server Error", ""));
+        let _ = peer.write(answer.as_bytes());
     });
-    (url, received)
+    (format!("{}/v1", served.url()), served)
+}
+
+/// One request as the endpoint took it: its head, lowercased, and its body.
+pub(crate) fn seen(request: &test_http::Request) -> (String, String) {
+    let mut head = format!("{} {} HTTP/1.1\r\n", request.method, request.target);
+    for (name, value) in &request.headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    (head.to_ascii_lowercase(), request.body_text())
+}
+
+/// Every request the endpoint has taken, in order.
+pub(crate) fn taken(served: &Responder) -> Vec<(String, String)> {
+    served.drain_requests().iter().map(seen).collect()
 }
 
 fn http(status: &str, body: &str) -> String {
@@ -251,7 +250,7 @@ fn a_metered_turn_is_retried_under_one_key_and_plans() {
             "tool_calls": [{"id": "c2", "type": "function", "function": {"name": "plan",
                 "arguments": serde_json::json!({"steps": [{"operation": offer, "arguments": {}}],
                     "why": "open", "then": "add a note"}).to_string()}}]}, "finish_reason": "tool_calls"}]});
-    let (url, sent) = endpoint(vec![
+    let (url, served) = endpoint(vec![
         http(
             "429 Too Many Requests",
             r#"{"error":"slow down","code":"rate_limited"}"#,
@@ -275,7 +274,7 @@ fn a_metered_turn_is_retried_under_one_key_and_plans() {
         .unwrap();
     assert_eq!(answer.actions, vec![offer]);
     assert_eq!(answer.then.as_deref(), Some("add a note"));
-    let requests: Vec<(String, String)> = sent.try_iter().collect();
+    let requests = taken(&served);
     let key = |head: &str| {
         head.lines()
             .find_map(|line| line.strip_prefix("idempotency-key: "))
@@ -342,12 +341,12 @@ fn message_text(message: &serde_json::Value, role: &str) -> String {
 #[test]
 fn an_operation_the_task_turn_lists_is_planned_in_one_request() {
     let offer = open_notes().offers[0].id();
-    let (url, sent) = endpoint(vec![plan_answer("c1", &offer)]);
+    let (url, served) = endpoint(vec![plan_answer("c1", &offer)]);
     let answer = standard(&url)
         .choose("open notes then add a note", &open_notes(), MOST_STEPS)
         .unwrap();
     assert_eq!(answer.actions, vec![offer.clone()]);
-    let requests: Vec<(String, String)> = sent.try_iter().collect();
+    let requests = taken(&served);
     assert_eq!(requests.len(), 1, "one model turn");
     let first: serde_json::Value = serde_json::from_str(&requests[0].1).unwrap();
     let task = message_text(&first["messages"][1], "user");
@@ -384,7 +383,7 @@ fn host_planner_resolves_environment_hints() {
         (Some("invalid"), None, None),
     ] {
         let offer = open_notes().offers[0].id();
-        let (url, sent) = endpoint(vec![plan_answer("c1", &offer)]);
+        let (url, served) = endpoint(vec![plan_answer("c1", &offer)]);
         let mut child = std::process::Command::new(std::env::current_exe().unwrap());
         child
             .args([
@@ -401,7 +400,7 @@ fn host_planner_resolves_environment_hints() {
         }
         let output = child.output_locked().unwrap();
         assert!(output.status.success(), "{output:?}");
-        let (_, body) = sent.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+        let (_, body) = seen(&served.next_request());
         let body: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(
             body.get("service_tier").and_then(serde_json::Value::as_str),
@@ -412,14 +411,14 @@ fn host_planner_resolves_environment_hints() {
                 .and_then(serde_json::Value::as_str),
             effort
         );
-        assert_eq!(sent.try_iter().count(), 0);
+        assert!(taken(&served).is_empty());
     }
 }
 
 #[test]
 fn preset_hints_reach_the_provider_without_changing_the_plan() {
     let offer = open_notes().offers[0].id();
-    let (url, sent) = endpoint(vec![plan_answer("c1", &offer)]);
+    let (url, served) = endpoint(vec![plan_answer("c1", &offer)]);
     let profile = crate::profile::Profile::resolve("mini", &|name| {
         (name == crate::profile::PRESET_ENV).then(|| "fastest".into())
     });
@@ -428,7 +427,7 @@ fn preset_hints_reach_the_provider_without_changing_the_plan() {
         .choose("open notes", &open_notes(), MOST_STEPS)
         .unwrap();
     assert_eq!(answer.actions, vec![offer]);
-    let requests: Vec<_> = sent.try_iter().collect();
+    let requests = taken(&served);
     assert_eq!(requests.len(), 1, "presets never duplicate requests");
     let body: serde_json::Value = serde_json::from_str(&requests[0].1).unwrap();
     assert_eq!(body["service_tier"], "priority");
@@ -439,7 +438,7 @@ fn preset_hints_reach_the_provider_without_changing_the_plan() {
 #[test]
 fn metered_targets_strip_preset_hints_before_sending() {
     let offer = open_notes().offers[0].id();
-    let (url, sent) = endpoint(vec![plan_answer("c1", &offer)]);
+    let (url, served) = endpoint(vec![plan_answer("c1", &offer)]);
     let answer = OpenAiModel::new(
         &url,
         CLOUD_MODEL,
@@ -454,7 +453,7 @@ fn metered_targets_strip_preset_hints_before_sending() {
     .choose("open notes", &open_notes(), MOST_STEPS)
     .unwrap();
     assert_eq!(answer.actions, vec![offer]);
-    let requests: Vec<_> = sent.try_iter().collect();
+    let requests = taken(&served);
     assert_eq!(requests.len(), 1);
     let body: serde_json::Value = serde_json::from_str(&requests[0].1).unwrap();
     assert!(body.get("service_tier").is_none(), "{body}");
@@ -466,11 +465,11 @@ fn metered_targets_strip_preset_hints_before_sending() {
 #[test]
 fn default_planners_send_no_optional_hints() {
     let offer = open_notes().offers[0].id();
-    let (url, sent) = endpoint(vec![plan_answer("c1", &offer)]);
+    let (url, served) = endpoint(vec![plan_answer("c1", &offer)]);
     standard(&url)
         .choose("open notes", &open_notes(), MOST_STEPS)
         .unwrap();
-    let (_, body) = sent.recv().unwrap();
+    let (_, body) = seen(&served.next_request());
     let body: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert!(body.get("service_tier").is_none(), "{body}");
     assert!(body.get("reasoning_effort").is_none(), "{body}");
@@ -483,14 +482,14 @@ fn default_planners_send_no_optional_hints() {
 fn an_unshown_operation_is_refused_back_to_the_model_with_stable_tools() {
     let offer = open_notes().offers[0].id();
     let invented = "app.so.tilo.sheets#open";
-    let (url, sent) = endpoint(vec![plan_answer("c1", invented), plan_answer("c2", &offer)]);
+    let (url, served) = endpoint(vec![plan_answer("c1", invented), plan_answer("c2", &offer)]);
     let answer = standard(&url)
         .choose("open notes then add a note", &open_notes(), MOST_STEPS)
         .unwrap();
     assert_eq!(answer.actions, vec![offer.clone()]);
-    let requests: Vec<serde_json::Value> = sent
-        .try_iter()
-        .map(|(_, body)| serde_json::from_str(&body).unwrap())
+    let requests: Vec<serde_json::Value> = taken(&served)
+        .iter()
+        .map(|(_, body)| serde_json::from_str(body).unwrap())
         .collect();
     assert_eq!(requests.len(), 2);
     let refusal = &requests[1]["messages"][3];
@@ -510,59 +509,47 @@ fn an_unshown_operation_is_refused_back_to_the_model_with_stable_tools() {
 }
 
 /// An endpoint that keeps each connection open and answers `answers` in
-/// order across them, reporting how many requests each connection
-/// carried (one count per accepted connection).
+/// order across them, and how many requests each connection carried (one
+/// count per accepted connection).
 fn keep_alive_endpoint(
     answers: Vec<String>,
-) -> (String, std::sync::Arc<std::sync::Mutex<Vec<usize>>>) {
-    use std::io::{BufRead as _, BufReader, Read as _, Write as _};
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+) -> (
+    String,
+    Responder,
+    std::sync::Arc<std::sync::Mutex<Vec<usize>>>,
+) {
     let carried = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let counts = std::sync::Arc::clone(&carried);
     let answers = std::sync::Arc::new(std::sync::Mutex::new(
         answers
             .into_iter()
             .collect::<std::collections::VecDeque<_>>(),
     ));
-    let counts = carried.clone();
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let connection = {
-                let mut counts = counts.lock().unwrap();
-                counts.push(0_usize);
-                counts.len().saturating_sub(1)
+    let served = Responder::serve(move |peer| {
+        let connection = {
+            let mut counts = counts.lock().unwrap();
+            counts.push(0_usize);
+            counts.len().saturating_sub(1)
+        };
+        loop {
+            if let Some(served) = counts.lock().unwrap().get_mut(connection) {
+                *served = served.saturating_add(1);
+            }
+            let Some(answer) = answers.lock().unwrap().pop_front() else {
+                return;
             };
-            let (answers, counts) = (answers.clone(), counts.clone());
-            std::thread::spawn(move || {
-                let mut reader = BufReader::new(stream.unwrap());
-                loop {
-                    let mut length = 0;
-                    loop {
-                        let mut line = String::new();
-                        if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                            return;
-                        }
-                        if let Some(value) =
-                            line.to_ascii_lowercase().strip_prefix("content-length:")
-                        {
-                            length = value.trim().parse().unwrap();
-                        }
-                        if line == "\r\n" {
-                            break;
-                        }
-                    }
-                    let mut body = vec![0; length];
-                    reader.read_exact(&mut body).unwrap();
-                    let mut served = counts.lock().unwrap();
-                    served[connection] = served[connection].saturating_add(1);
-                    drop(served);
-                    let answer = answers.lock().unwrap().pop_front().unwrap();
-                    reader.get_mut().write_all(answer.as_bytes()).unwrap();
-                }
-            });
+            peer.reply(
+                &Reply::status(200)
+                    .header("Content-Type", "application/json")
+                    .body(answer)
+                    .keep_alive(),
+            );
+            if peer.next_request().is_none() {
+                return;
+            }
         }
     });
-    (url, carried)
+    (format!("{}/v1", served.url()), served, carried)
 }
 
 /// Later turns of a task go over a connection an earlier turn opened:
@@ -578,19 +565,12 @@ fn later_turns_reuse_an_earlier_turns_connection() {
             "tool_calls": [{"id": "c2", "type": "function", "function": {"name": "plan",
                 "arguments": serde_json::json!({"steps": [{"operation": offer, "arguments": {}}],
                     "why": "open", "then": null}).to_string()}}]}, "finish_reason": "tool_calls"}]});
-    let kept_open = |body: &serde_json::Value| {
-        let body = body.to_string();
-        format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
-            body.len()
-        )
-    };
     let mut second_list = list.clone();
     second_list["choices"][0]["message"]["tool_calls"][0]["id"] = "c-middle".into();
-    let (url, carried) = keep_alive_endpoint(vec![
-        kept_open(&list),
-        kept_open(&second_list),
-        kept_open(&plan),
+    let (url, served, carried) = keep_alive_endpoint(vec![
+        list.to_string(),
+        second_list.to_string(),
+        plan.to_string(),
     ]);
     let mut model = OpenAiModel::new(
         &url,
@@ -603,6 +583,7 @@ fn later_turns_reuse_an_earlier_turns_connection() {
         .choose("open notes", &open_notes(), MOST_STEPS)
         .unwrap();
     assert_eq!(answer.actions, vec![offer]);
+    drop(served);
     let carried = carried.lock().unwrap().clone();
     assert_eq!(carried.iter().sum::<usize>(), 3, "{carried:?}");
     // A connection opened speculatively may carry nothing; one turn's
@@ -612,7 +593,7 @@ fn later_turns_reuse_an_earlier_turns_connection() {
 
 #[test]
 fn running_out_of_credit_ends_the_task_with_a_plain_reason() {
-    let (url, sent) = endpoint(vec![http(
+    let (url, served) = endpoint(vec![http(
         "402 Payment Required",
         r#"{"error":"Included credit is insufficient for this request","code":"insufficient_credit"}"#,
     )]);
@@ -630,7 +611,7 @@ fn running_out_of_credit_ends_the_task_with_a_plain_reason() {
         error.starts_with(tilo_model_gateway::openai::OUT_OF_CREDITS),
         "{error}"
     );
-    assert_eq!(sent.try_iter().count(), 1);
+    assert_eq!(taken(&served).len(), 1);
 }
 
 #[test]
@@ -644,7 +625,7 @@ fn typed_credit_failure_maps_to_cli_without_retry_or_provider_text() {
     );
     assert!(expected.contains("choose another model"), "{expected}");
     // Classification comes from the machine code, not the provider's prose.
-    let (url, sent) = endpoint(vec![http(
+    let (url, served) = endpoint(vec![http(
         "402 Payment Required",
         r#"{"error":"private upstream detail","code":"insufficient_credit"}"#,
     )]);
@@ -659,11 +640,7 @@ fn typed_credit_failure_maps_to_cli_without_retry_or_provider_text() {
     .unwrap_err();
     assert_eq!(error, expected);
     assert!(!error.contains("private upstream detail"));
-    assert_eq!(
-        sent.try_iter().count(),
-        1,
-        "credit failures are not retried"
-    );
+    assert_eq!(taken(&served).len(), 1, "credit failures are not retried");
 
     let other = ModelError::new(ErrorKind::Authentication);
     assert_eq!(converse::model_error_text(&other), other.to_string());
