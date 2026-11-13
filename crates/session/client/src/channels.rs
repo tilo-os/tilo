@@ -703,15 +703,15 @@ pub type Roster = Vec<RosterDevice>;
 /// One device `workspace` admits, with the certificate the workspace certified it under: what its
 /// role in the workspace is read from.
 #[derive(Clone, Debug)]
-pub struct Member {
+pub struct Device {
     pub device: [u8; 32],
     pub cert: tilo_user_identity::DeviceCert,
 }
 
-/// The members of `workspace` : the devices its governance admits now, with the certificate it
-/// holds of each. A device the workspace removed, or whose certificate ran out, is not one, and
-/// what it sent or would receive is refused from then on.
-pub fn members_of(engine: &Engine, workspace: ModelWorkspaceId) -> Result<Vec<Member>, String> {
+/// The devices `workspace` admits now, with the certificate it holds of each. A device the
+/// workspace removed, or whose certificate ran out, is not one, and what it sent or would receive
+/// is refused from then on.
+pub fn devices_of(engine: &Engine, workspace: ModelWorkspaceId) -> Result<Vec<Device>, String> {
     let now = tilo_clock::wall();
     engine.owner().with_current(workspace, |view| {
         let admitted: BTreeSet<[u8; 32]> = view
@@ -725,7 +725,7 @@ pub fn members_of(engine: &Engine, workspace: ModelWorkspaceId) -> Result<Vec<Me
             .peer()
             .admitted_workspace()
             .ok_or("no admitted workspace")?;
-        let mut members = BTreeMap::new();
+        let mut devices = BTreeMap::new();
         for bytes in tilo_peer_state::workspace::governance_of(Some(document))
             .identities
             .values()
@@ -735,27 +735,27 @@ pub fn members_of(engine: &Engine, workspace: ModelWorkspaceId) -> Result<Vec<Me
             };
             let device = row.device_cert.device_public_key;
             if admitted.contains(&device) {
-                members.insert(
+                devices.insert(
                     device,
-                    Member {
+                    Device {
                         device,
                         cert: row.device_cert,
                     },
                 );
             }
         }
-        Ok(members.into_values().collect())
+        Ok(devices.into_values().collect())
     })
 }
 
-/// The roster of `workspace` , as [`members_of`] reads it: the devices whose window streams carry
+/// The roster of `workspace` , as [`devices_of`] reads it: the devices whose window streams carry
 /// between.
 pub fn roster_of(engine: &Engine, workspace: ModelWorkspaceId) -> Result<Roster, String> {
-    members_of(engine, workspace)?
+    devices_of(engine, workspace)?
         .into_iter()
-        .map(|member| {
-            iroh_base::EndpointId::from_bytes(&member.device)
-                .map(|publisher| (publisher, member.cert.expires_at_ns))
+        .map(|device| {
+            iroh_base::EndpointId::from_bytes(&device.device)
+                .map(|publisher| (publisher, device.cert.expires_at_ns))
                 .map_err(|error| error.to_string())
         })
         .collect()

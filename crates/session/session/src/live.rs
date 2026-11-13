@@ -42,7 +42,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_network_actor::local_host::Protocols;
 use tilo_user_identity::{DeviceCert, EndpointDelegation};
 
-use crate::channels::{self, Member};
+use crate::channels::{self, Device};
 use crate::engine::Engine;
 
 /// The scope one workspace's live plane carries.
@@ -50,24 +50,24 @@ fn scope_of(workspace: WorkspaceId) -> Scope {
     Scope::workspace(workspace.to_string())
 }
 
-/// The workspace's relays, as its state names them: every member whose certificate says it takes
+/// The workspace's relays, as its state names them: every device whose certificate says it takes
 /// the work, by ascending device key, so every device tries them in the same order without another
 /// round trip; and when none does, `host`, the device hosting the workspace, while it is a member.
 /// Empty when neither is, which is a workspace with no live plane.
-pub(crate) fn relays_of(members: &[Member], host: Option<[u8; 32]>, now_ns: u64) -> Vec<[u8; 32]> {
-    let current = |member: &&Member| !member.cert.is_expired_at(now_ns);
-    let mut relays: Vec<[u8; 32]> = members
+pub(crate) fn relays_of(devices: &[Device], host: Option<[u8; 32]>, now_ns: u64) -> Vec<[u8; 32]> {
+    let current = |device: &&Device| !device.cert.is_expired_at(now_ns);
+    let mut relays: Vec<[u8; 32]> = devices
         .iter()
         .filter(current)
-        .filter(|member| member.cert.capabilities.can_act_as_host)
-        .map(|member| member.device)
+        .filter(|device| device.cert.capabilities.can_act_as_host)
+        .map(|device| device.device)
         .collect();
     if relays.is_empty() {
         relays.extend(
-            members
+            devices
                 .iter()
                 .filter(current)
-                .map(|member| member.device)
+                .map(|device| device.device)
                 .filter(|device| Some(*device) == host),
         );
     }
@@ -112,7 +112,7 @@ struct Request {
 fn bind(
     peer: Peer,
     grant: &grant::Native,
-    members: &[Member],
+    devices: &[Device],
     host: Option<[u8; 32]>,
     own: [u8; 32],
     now_ns: u64,
@@ -125,7 +125,7 @@ fn bind(
     }
     // Every member that may relay serves one: it is reached when the ones above it are not, and
     // bridges the others while they are.
-    if !relays_of(members, host, now_ns).contains(&own) {
+    if !relays_of(devices, host, now_ns).contains(&own) {
         return Err(Denied);
     }
     let certificate: DeviceCert = serde_json::from_slice(&grant.certificate).map_err(|_| Denied)?;
@@ -133,11 +133,11 @@ fn bind(
         return Err(Denied);
     }
     let device = certificate.device_public_key;
-    let member = members
+    let admitted = devices
         .iter()
-        .find(|member| member.device == device)
+        .find(|admitted| admitted.device == device)
         .ok_or(Denied)?;
-    if certificate != member.cert {
+    if certificate != admitted.cert {
         return Err(Denied);
     }
     if endpoint != device {
@@ -187,10 +187,10 @@ impl SessionAuthorization for Permit {
         }
         // The workspace's membership as it is now: a device it removed, or one whose certificate
         // ran out, is not admitted any more.
-        let Ok(members) = channels::members_of(&self.engine, self.workspace) else {
+        let Ok(devices) = channels::devices_of(&self.engine, self.workspace) else {
             return false;
         };
-        if !members.iter().any(|member| member.device == name.device()) {
+        if !devices.iter().any(|device| device.device == name.device()) {
             return false;
         }
         match direction {
@@ -275,9 +275,9 @@ impl Shared {
         let Peer(_) = peer;
         let grant = grant::Native::parse(proof).ok_or(Denied)?;
         let workspace = WorkspaceId::parse(&live::workspace_id(grant.workspace)).ok_or(Denied)?;
-        let members = channels::members_of(&self.engine, workspace).map_err(|_| Denied)?;
+        let devices = channels::devices_of(&self.engine, workspace).map_err(|_| Denied)?;
         let host = self.engine.host_of(workspace);
-        let request = bind(peer, &grant, &members, host, self.device, now_ns())?;
+        let request = bind(peer, &grant, &devices, host, self.device, now_ns())?;
         // A device that sealed under an epoch this relay already moved past would publish nothing
         // anyone opens: it is refused at the preface.
         let newest = self
@@ -331,19 +331,19 @@ where
 }
 
 impl Shared {
-    /// This workspace's members and the devices among them that may relay its live plane, in the
+    /// This workspace's devices, and the ones among them that may relay its live plane, in the
     /// order every device tries them; `None` — after withdrawing the plane — when the membership is
     /// unknown or names no relay.
-    fn relay_candidates(&self, workspace: WorkspaceId) -> Option<(Vec<Member>, Vec<[u8; 32]>)> {
-        let members = match channels::members_of(&self.engine, workspace) {
-            Ok(members) => members,
+    fn relay_candidates(&self, workspace: WorkspaceId) -> Option<(Vec<Device>, Vec<[u8; 32]>)> {
+        let devices = match channels::devices_of(&self.engine, workspace) {
+            Ok(devices) => devices,
             Err(error) => {
                 tracing::warn!(%workspace, %error, "the live plane's membership is unknown");
                 self.withdraw(workspace);
                 return None;
             }
         };
-        let candidates = relays_of(&members, self.engine.host_of(workspace), now_ns());
+        let candidates = relays_of(&devices, self.engine.host_of(workspace), now_ns());
         if candidates.is_empty() {
             // No member may relay it: the workspace has no live plane.
             if self.planes.lock_recover().contains_key(&workspace) {
@@ -352,7 +352,7 @@ impl Shared {
             self.withdraw(workspace);
             return None;
         }
-        Some((members, candidates))
+        Some((devices, candidates))
     }
 
     /// The keys of this device's own streams in `workspace`, lent by its host, when this session
@@ -374,7 +374,7 @@ impl Shared {
     /// this device reaches, move the plane's keys and roster when they changed,
     /// or leave when the workspace names no relay any more.
     async fn settle(self: &Arc<Self>, workspace: WorkspaceId, endpoint: &Endpoint, relay: &Relay) {
-        let Some((members, candidates)) = self.relay_candidates(workspace) else {
+        let Some((devices, candidates)) = self.relay_candidates(workspace) else {
             return;
         };
         // The plane's tracks are sealed under the workspace's media channel: taking part in it asks
@@ -399,8 +399,8 @@ impl Shared {
             PlaneKeys::from(lent)
         };
         self.observe(workspace, keys.epoch());
-        self.observe_roster(workspace, &members);
-        let roster = Roster::new(members.iter().map(|member| member.device));
+        self.observe_roster(workspace, &devices);
+        let roster = Roster::new(devices.iter().map(|device| device.device));
         let scope = scope_of(workspace);
         let kept = {
             let planes = self.planes.lock_recover();
@@ -511,8 +511,8 @@ impl Shared {
     }
 
     /// Note who `workspace` admits now, and tell the sessions open on this relay when that moved.
-    fn observe_roster(&self, workspace: WorkspaceId, members: &[Member]) {
-        let devices: BTreeSet<[u8; 32]> = members.iter().map(|member| member.device).collect();
+    fn observe_roster(&self, workspace: WorkspaceId, admitted: &[Device]) {
+        let devices: BTreeSet<[u8; 32]> = admitted.iter().map(|device| device.device).collect();
         let moved = {
             let mut rosters = self.rosters.lock_recover();
             match rosters.insert(workspace, devices.clone()) {
@@ -919,22 +919,22 @@ mod tests {
         }
     }
 
-    fn member(device: [u8; 32], host: bool, expires_at_ns: Option<u64>) -> Member {
-        Member {
+    fn device(device: [u8; 32], host: bool, expires_at_ns: Option<u64>) -> Device {
+        Device {
             device,
             cert: cert(device, host, expires_at_ns),
         }
     }
 
     #[test]
-    fn the_relays_are_the_host_capable_members_in_key_order() {
-        let members = vec![
-            member([9; 32], false, None),
-            member([5; 32], true, None),
-            member([3; 32], true, None),
-            member([1; 32], false, None),
+    fn the_relays_are_the_host_capable_devices_in_key_order() {
+        let devices = vec![
+            device([9; 32], false, None),
+            device([5; 32], true, None),
+            device([3; 32], true, None),
+            device([1; 32], false, None),
         ];
-        assert_eq!(relays_of(&members, None, 10), vec![[3; 32], [5; 32]]);
+        assert_eq!(relays_of(&devices, None, 10), vec![[3; 32], [5; 32]]);
     }
 
     #[tokio::test]
@@ -968,62 +968,62 @@ mod tests {
 
     #[test]
     fn without_a_host_capable_member_the_device_hosting_the_workspace_relays() {
-        let members = vec![member([1; 32], false, None), member([2; 32], false, None)];
-        assert_eq!(relays_of(&members, Some([2; 32]), 10), vec![[2; 32]]);
+        let devices = vec![device([1; 32], false, None), device([2; 32], false, None)];
+        assert_eq!(relays_of(&devices, Some([2; 32]), 10), vec![[2; 32]]);
         assert!(
-            relays_of(&members, None, 10).is_empty(),
+            relays_of(&devices, None, 10).is_empty(),
             "a workspace nobody hosts here and nobody may relay has no live plane"
         );
         assert!(
-            relays_of(&members, Some([7; 32]), 10).is_empty(),
+            relays_of(&devices, Some([7; 32]), 10).is_empty(),
             "a host that is no member relays nothing"
         );
-        let members = vec![member([1; 32], false, None), member([5; 32], true, None)];
+        let devices = vec![device([1; 32], false, None), device([5; 32], true, None)];
         assert_eq!(
-            relays_of(&members, Some([1; 32]), 10),
+            relays_of(&devices, Some([1; 32]), 10),
             vec![[5; 32]],
             "a host-capable member takes the work from the device hosting the workspace"
         );
-        let members = vec![
-            member([1; 32], false, Some(10)),
-            member([2; 32], false, None),
+        let devices = vec![
+            device([1; 32], false, Some(10)),
+            device([2; 32], false, None),
         ];
-        assert!(relays_of(&members, Some([1; 32]), 10).is_empty());
+        assert!(relays_of(&devices, Some([1; 32]), 10).is_empty());
     }
 
     #[test]
-    fn an_ordinary_device_hosting_the_workspace_admits_its_members() {
+    fn an_ordinary_device_hosting_the_workspace_admits_its_devices() {
         let workspace = WorkspaceId::new();
         let mine = cert([1; 32], false, None);
         let other = cert([2; 32], false, None);
-        let members = vec![
-            Member {
+        let devices = vec![
+            Device {
                 device: [1; 32],
                 cert: mine,
             },
-            Member {
+            Device {
                 device: [2; 32],
                 cert: other.clone(),
             },
         ];
         let asked = grant(workspace, &other);
         assert!(
-            bind(Peer([2; 32]), &asked, &members, Some([1; 32]), [1; 32], 10).is_ok(),
+            bind(Peer([2; 32]), &asked, &devices, Some([1; 32]), [1; 32], 10).is_ok(),
             "the device hosting the workspace relays it"
         );
         assert!(
-            bind(Peer([2; 32]), &asked, &members, Some([2; 32]), [1; 32], 10).is_err(),
+            bind(Peer([2; 32]), &asked, &devices, Some([2; 32]), [1; 32], 10).is_err(),
             "a device that hosts nothing here and may not host relays nothing"
         );
     }
 
     #[test]
     fn an_expired_certificate_relays_nothing() {
-        let members = vec![member([1; 32], true, Some(10)), member([2; 32], true, None)];
-        assert_eq!(relays_of(&members, None, 10), vec![[2; 32]]);
-        assert_eq!(relays_of(&members, None, 11), vec![[2; 32]]);
-        let members = vec![member([1; 32], true, Some(10))];
-        assert!(relays_of(&members, None, 10).is_empty());
+        let devices = vec![device([1; 32], true, Some(10)), device([2; 32], true, None)];
+        assert_eq!(relays_of(&devices, None, 10), vec![[2; 32]]);
+        assert_eq!(relays_of(&devices, None, 11), vec![[2; 32]]);
+        let devices = vec![device([1; 32], true, Some(10))];
+        assert!(relays_of(&devices, None, 10).is_empty());
     }
 
     /// Whether a relay that is `own`, in a workspace nobody hosts here, admits `grant` from the
@@ -1031,11 +1031,11 @@ mod tests {
     fn admits(
         peer: [u8; 32],
         grant: &grant::Native,
-        members: &[Member],
+        devices: &[Device],
         own: [u8; 32],
         now_ns: u64,
     ) -> bool {
-        bind(Peer(peer), grant, members, None, own, now_ns).is_ok()
+        bind(Peer(peer), grant, devices, None, own, now_ns).is_ok()
     }
 
     fn grant(workspace: WorkspaceId, device: &DeviceCert) -> grant::Native {
@@ -1054,26 +1054,26 @@ mod tests {
         let workspace = WorkspaceId::new();
         let mine = cert([1; 32], true, None);
         let other = cert([2; 32], false, None);
-        let members = vec![
-            Member {
+        let devices = vec![
+            Device {
                 device: [1; 32],
                 cert: mine.clone(),
             },
-            Member {
+            Device {
                 device: [2; 32],
                 cert: other.clone(),
             },
         ];
         assert!(
-            admits([1; 32], &grant(workspace, &mine), &members, [1; 32], 10),
+            admits([1; 32], &grant(workspace, &mine), &devices, [1; 32], 10),
             "the relay admits the device whose certificate it holds"
         );
         assert!(
-            !admits([2; 32], &grant(workspace, &mine), &members, [1; 32], 10),
+            !admits([2; 32], &grant(workspace, &mine), &devices, [1; 32], 10),
             "a device presenting another's certificate is refused"
         );
         assert!(
-            !admits([3; 32], &grant(workspace, &other), &members, [1; 32], 10),
+            !admits([3; 32], &grant(workspace, &other), &devices, [1; 32], 10),
             "a device that is not on the roster is refused"
         );
     }
@@ -1088,7 +1088,7 @@ mod tests {
         let page_key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
         let page = page_key.verifying_key().to_bytes();
         let mine = cert(device_key.verifying_key().to_bytes(), true, None);
-        let members = vec![Member {
+        let devices = vec![Device {
             device: mine.device_public_key,
             cert: mine.clone(),
         }];
@@ -1102,14 +1102,14 @@ mod tests {
         let mut delegated = grant(workspace, &mine);
         delegated.delegation = serde_json::to_vec(&delegation).unwrap();
         assert!(
-            admits(page, &delegated, &members, mine.device_public_key, 200),
+            admits(page, &delegated, &devices, mine.device_public_key, 200),
             "the page's endpoint speaks for the device that signed for it"
         );
         assert!(
             !admits(
                 page,
                 &grant(workspace, &mine),
-                &members,
+                &devices,
                 mine.device_public_key,
                 200
             ),
@@ -1117,7 +1117,7 @@ mod tests {
         );
         let later = 100 + 60 * 60 * 1_000_000_000;
         assert!(
-            !admits(page, &delegated, &members, mine.device_public_key, later),
+            !admits(page, &delegated, &devices, mine.device_public_key, later),
             "an expired delegation admits nobody"
         );
         let mut anyone = delegated;
@@ -1126,7 +1126,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            !admits(page, &anyone, &members, mine.device_public_key, 200),
+            !admits(page, &anyone, &devices, mine.device_public_key, 200),
             "an endpoint cannot vouch for itself"
         );
     }
@@ -1136,25 +1136,25 @@ mod tests {
         let workspace = WorkspaceId::new();
         let mine = cert([2; 32], true, None);
         let lower = cert([1; 32], true, None);
-        let members = vec![
-            Member {
+        let devices = vec![
+            Device {
                 device: [2; 32],
                 cert: mine.clone(),
             },
-            Member {
+            Device {
                 device: [1; 32],
                 cert: lower,
             },
         ];
         assert!(
-            admits([2; 32], &grant(workspace, &mine), &members, [2; 32], 10),
-            "every host-capable member relays, so this one admits too"
+            admits([2; 32], &grant(workspace, &mine), &devices, [2; 32], 10),
+            "every host-capable device relays, so this one admits too"
         );
         let mut elsewhere = grant(workspace, &mine);
         elsewhere.scope =
             Scope::channel(workspace.to_string(), collab_types::ChannelId::default()).id();
         assert!(
-            !admits([2; 32], &elsewhere, &members, [2; 32], 10),
+            !admits([2; 32], &elsewhere, &devices, [2; 32], 10),
             "a scope this session carries no plane for is refused"
         );
     }
@@ -1163,12 +1163,12 @@ mod tests {
     fn an_expired_certificate_is_refused_at_the_preface() {
         let workspace = WorkspaceId::new();
         let expired = cert([1; 32], true, Some(5));
-        let members = vec![Member {
+        let devices = vec![Device {
             device: [1; 32],
             cert: expired.clone(),
         }];
         assert!(
-            !admits([1; 32], &grant(workspace, &expired), &members, [1; 32], 5),
+            !admits([1; 32], &grant(workspace, &expired), &devices, [1; 32], 5),
             "an expired certificate relays nothing and admits nothing"
         );
     }
