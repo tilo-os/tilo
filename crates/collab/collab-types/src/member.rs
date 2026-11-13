@@ -46,11 +46,15 @@ impl std::fmt::Display for PersonId {
 }
 
 /// A person as a surface shows them, in the colour they wear there.
+///
+/// Every field is written, absent ones too: the collaboration wire is postcard, which reads
+/// fields by position, so a field left out shifts every one after it and the frame does not
+/// decode.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Person {
     pub id: PersonId,
     pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub avatar: Option<AvatarBytes>,
     /// Their own colour: the one they chose, else the one their identity derives
     /// ([`PresenceHue::of_identity`]).
@@ -90,24 +94,28 @@ impl Person {
 }
 
 /// One row of a workspace's member list.
+///
+/// Every field is written, absent ones too, as for [`Person`]: an app's roster reaches it over
+/// the postcard collaboration wire, where a row that left out its role or avatar would not
+/// decode and the app would lose its connection.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Member {
     pub id: MemberId,
     /// The role preset they hold: none for software, which acts on the grants
     /// its members gave it, and none for a person this list has no policy row
     /// for.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub role: Option<Role>,
     pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub avatar: Option<AvatarBytes>,
     /// Assigned once, when they became a member; every surface reads it.
     pub colour: PresenceHue,
     /// When the workspace admitted them, Unix milliseconds.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub joined_at: Option<u64>,
     /// Whether this row is the reader's own.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default)]
     pub is_self: bool,
 }
 

@@ -699,4 +699,31 @@ mod tests {
         let read: HostFrame = FRAMING.read_value(&mut bytes.as_slice()).unwrap().unwrap();
         assert_eq!(read, receipt);
     }
+
+    /// A roster row without a role, avatar, join time or self mark reaches the endpoint as it
+    /// was sent: postcard reads fields by position, so a row that left one out would not decode
+    /// and the endpoint would take it for the host hanging up.
+    #[test]
+    fn a_roster_of_rows_without_their_optional_parts_round_trips() {
+        let bare = collab_types::Member::of_person(&collab_types::Person::new("p-1", "Ada"), None);
+        let full = collab_types::Member::of_person(
+            &collab_types::Person::new("p-2", "Grace"),
+            Some(collab_types::Role::Owner),
+        )
+        .joined_at(Some(5))
+        .claiming_self();
+        for collaborators in [vec![bare.clone()], vec![full.clone()], vec![bare, full]] {
+            let frame = HostFrame::Event {
+                subscription: 2,
+                event: Event::Context(ContextUpdate::Snapshot {
+                    collaborators,
+                    permissions: vec!["edit".into()],
+                    apps: Vec::new(),
+                }),
+            };
+            let bytes = FRAMING.encode_value(&frame).unwrap();
+            let read: HostFrame = FRAMING.read_value(&mut bytes.as_slice()).unwrap().unwrap();
+            assert_eq!(read, frame);
+        }
+    }
 }
