@@ -12,11 +12,14 @@ use tilo_user_identity::DeviceCert;
 
 use super::{Publication, RECORD_VERSION};
 
-/// The record's one layout.
+/// The record's one layout. The oldest version is written out rather than
+/// named by [`RECORD_VERSION`], which rises with every layout: that the build
+/// still brings up a version is a promise about the files machines hold, and
+/// it only ever falls, so it may not move with the number this build writes.
 pub(super) const FORMAT: Format = Format {
     name: "governed workspace record",
     version: RECORD_VERSION,
-    oldest: RECORD_VERSION,
+    oldest: 4,
     steps: &[],
 };
 

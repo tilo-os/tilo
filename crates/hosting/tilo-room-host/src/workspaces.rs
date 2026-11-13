@@ -134,8 +134,7 @@ pub use tilo_relay_session::workspaces::{
 use crate::peer::WorkspaceRegistry;
 use tilo_lock::RwLockRecover as _;
 
-/// The record's version this build writes. Version 3 reads a version 2
-/// record's grants in the invitation layout they were written in; version 4
+/// The record's version this build writes, and the one it reads: version 4
 /// keeps the publications and the join receipts in files beside the record
 /// (see [`record_format`]).
 const RECORD_VERSION: u32 = 4;
@@ -176,7 +175,8 @@ mod shared_bytes {
 /// of `peer` are files of their own ([`peer_parts`]), and the publications
 /// and join receipts are in files appended to beside it ([`appended`]), all
 /// written before it ([`record_format::StoredRecord`]). Its own encoding is the
-/// version 3 layout, which [`record_format`] brings up.
+/// version 3 layout, which is what a record holds once its files are read back
+/// into it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct WorkspaceRecord {
     version: u32,
@@ -436,10 +436,9 @@ impl GovernedWorkspace {
                 path.display()
             )
         })?;
-        // An older record comes up before it is read: a version 2 record's
-        // grants are in the invitation layout they were written in, which
-        // [`record_format`] reads by the invitation's own version. A newer
-        // one is left as it is and refused.
+        // A record of any version loads through [`record_format`]'s declaration,
+        // which names the one version it brings up: a record of another version
+        // is refused with the version it holds, and the file is left as it is.
         let bytes = record_format::FORMAT
             .bring_up(&path, bytes, version)
             .map_err(|error| error.to_string())?;
