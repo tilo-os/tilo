@@ -319,29 +319,33 @@ impl Drop for Helper {
 mod tests {
     use super::{JobDir, plugin_dirs};
 
-    #[test]
-    fn a_plugin_path_keeps_only_absolute_existing_directories_other_than_the_root() {
-        let dir = tempfile::tempdir().expect("a temporary directory");
-        let plugins = dir.path().join("gstreamer-1.0");
-        std::fs::create_dir(&plugins).expect("the plugin directory");
-        let file = dir.path().join("libgstsomething.dylib");
-        std::fs::write(&file, b"").expect("a file");
-        let path = std::env::join_paths([
-            plugins.clone(),
-            "relative/gstreamer-1.0".into(),
-            file,
-            dir.path().join("missing"),
-            "/".into(),
-            plugins.join("."),
-        ])
-        .expect("a joinable path");
-        let canonical = plugins.canonicalize().expect("the plugin directory exists");
-        assert_eq!(plugin_dirs(&path), vec![canonical]);
-    }
+    tilo_test_env::scenario! {
+        fn a_plugin_path_names_only_real_directories;
 
-    #[test]
-    fn an_empty_plugin_path_names_no_directory() {
-        assert!(plugin_dirs(std::ffi::OsStr::new("")).is_empty());
+        phase a_plugin_path_keeps_only_absolute_existing_directories_other_than_the_root;
+        {
+            let dir = tempfile::tempdir().expect("a temporary directory");
+            let plugins = dir.path().join("gstreamer-1.0");
+            std::fs::create_dir(&plugins).expect("the plugin directory");
+            let file = dir.path().join("libgstsomething.dylib");
+            std::fs::write(&file, b"").expect("a file");
+            let path = std::env::join_paths([
+                plugins.clone(),
+                "relative/gstreamer-1.0".into(),
+                file,
+                dir.path().join("missing"),
+                "/".into(),
+                plugins.join("."),
+            ])
+            .expect("a joinable path");
+            let canonical = plugins.canonicalize().expect("the plugin directory exists");
+            assert_eq!(plugin_dirs(&path), vec![canonical]);
+        }
+
+        phase an_empty_plugin_path_names_no_directory;
+        {
+            assert!(plugin_dirs(std::ffi::OsStr::new("")).is_empty());
+        }
     }
 
     #[test]
