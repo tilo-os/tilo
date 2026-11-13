@@ -39,25 +39,29 @@ fn key() -> TargetKey {
     }
 }
 
-#[test]
-fn a_small_damage_takes_only_the_parts_that_reach_it() {
-    let (scene, parts) = corners();
-    let caret = [Rect::new(10.0, 10.0, 30.0, 30.0)];
-    let culled =
-        culled_for_damage(&scene, Some(&parts), key(), &caret).expect("three corners are left out");
-    assert_eq!(culled.encoding().n_paths, 1);
-}
+tilo_test_env::scenario! {
+    fn a_damage_culls_the_parts_it_does_not_reach;
 
-#[test]
-fn a_damage_repainted_whole_takes_every_part() {
-    let (scene, parts) = corners();
-    // Two corners far apart: the window around them is the whole target,
-    // which is then repainted as one frame and must draw everything.
-    let apart = [
-        Rect::new(10.0, 10.0, 30.0, 30.0),
-        Rect::new(770.0, 370.0, 790.0, 390.0),
-    ];
-    assert!(culled_for_damage(&scene, Some(&parts), key(), &apart).is_none());
-    assert!(culled_for_damage(&scene, Some(&parts), key(), &[]).is_none());
-    assert!(culled_for_damage(&scene, None, key(), &apart[..1]).is_none());
+    phase a_small_damage_takes_only_the_parts_that_reach_it;
+    {
+        let (scene, parts) = corners();
+        let caret = [Rect::new(10.0, 10.0, 30.0, 30.0)];
+        let culled =
+            culled_for_damage(&scene, Some(&parts), key(), &caret).expect("three corners are left out");
+        assert_eq!(culled.encoding().n_paths, 1);
+    }
+
+    phase a_damage_repainted_whole_takes_every_part;
+    {
+        let (scene, parts) = corners();
+        // Two corners far apart: the window around them is the whole target,
+        // which is then repainted as one frame and must draw everything.
+        let apart = [
+            Rect::new(10.0, 10.0, 30.0, 30.0),
+            Rect::new(770.0, 370.0, 790.0, 390.0),
+        ];
+        assert!(culled_for_damage(&scene, Some(&parts), key(), &apart).is_none());
+        assert!(culled_for_damage(&scene, Some(&parts), key(), &[]).is_none());
+        assert!(culled_for_damage(&scene, None, key(), &apart[..1]).is_none());
+    }
 }

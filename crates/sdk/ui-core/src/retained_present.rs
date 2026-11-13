@@ -126,30 +126,34 @@ pub fn take_replayed() -> usize {
 mod tests {
     use super::*;
 
-    #[test]
-    fn scoped_draw_restores_nested_policy_after_unwind() {
-        assert!(!unbake_scroll());
-        let outer = RetainedScene::begin(true);
-        assert!(unbake_scroll());
-        let failed = std::panic::catch_unwind(|| {
-            let _inner = RetainedScene::begin(false);
-            assert!(!unbake_scroll());
-            panic!("draw failed");
-        });
-        assert!(failed.is_err());
-        assert!(unbake_scroll());
-        drop(outer);
-        assert!(!unbake_scroll());
-    }
+    tilo_test_env::scenario! {
+        fn scroll_is_unbaked_only_while_a_retained_scene_asks_for_it;
 
-    #[test]
-    fn strips_are_unbaked_only_between_begin_and_end() {
-        assert!(!unbake_scroll());
-        begin_retained_scene(false);
-        assert!(!unbake_scroll());
-        begin_retained_scene(true);
-        assert!(unbake_scroll());
-        end_retained_scene();
-        assert!(!unbake_scroll());
+        phase scoped_draw_restores_nested_policy_after_unwind;
+        {
+            assert!(!unbake_scroll());
+            let outer = RetainedScene::begin(true);
+            assert!(unbake_scroll());
+            let failed = std::panic::catch_unwind(|| {
+                let _inner = RetainedScene::begin(false);
+                assert!(!unbake_scroll());
+                panic!("draw failed");
+            });
+            assert!(failed.is_err());
+            assert!(unbake_scroll());
+            drop(outer);
+            assert!(!unbake_scroll());
+        }
+
+        phase strips_are_unbaked_only_between_begin_and_end;
+        {
+            assert!(!unbake_scroll());
+            begin_retained_scene(false);
+            assert!(!unbake_scroll());
+            begin_retained_scene(true);
+            assert!(unbake_scroll());
+            end_retained_scene();
+            assert!(!unbake_scroll());
+        }
     }
 }

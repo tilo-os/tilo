@@ -905,27 +905,31 @@ mod tests {
         assert!(!wake_after_drop(&Refusal::OverLimit("layers".to_owned())));
     }
 
-    #[test]
-    fn stopping_ends_a_wait_on_a_service_that_never_answers() {
-        let (app, _service) = channel();
-        let sink = Arc::new(Sink::default());
-        sink.replace(app.clone());
-        let waiting = std::thread::spawn(move || app.recv::<ServiceMessage>());
-        sink.stop();
-        let received = waiting.join().expect("the waiting thread");
-        assert!(matches!(received, Err(ChannelError::Closed)));
-        assert!(sink.stopped());
-    }
+    tilo_test_env::scenario! {
+        fn stopping_closes_the_channel_a_worker_waits_on;
 
-    #[test]
-    fn a_channel_opened_after_stopping_is_shut_at_once() {
-        let sink = Sink::default();
-        sink.stop();
-        let (app, _service) = channel();
-        sink.replace(app.clone());
-        assert!(matches!(
-            app.recv::<ServiceMessage>(),
-            Err(ChannelError::Closed)
-        ));
+        phase stopping_ends_a_wait_on_a_service_that_never_answers;
+        {
+            let (app, _service) = channel();
+            let sink = Arc::new(Sink::default());
+            sink.replace(app.clone());
+            let waiting = std::thread::spawn(move || app.recv::<ServiceMessage>());
+            sink.stop();
+            let received = waiting.join().expect("the waiting thread");
+            assert!(matches!(received, Err(ChannelError::Closed)));
+            assert!(sink.stopped());
+        }
+
+        phase a_channel_opened_after_stopping_is_shut_at_once;
+        {
+            let sink = Sink::default();
+            sink.stop();
+            let (app, _service) = channel();
+            sink.replace(app.clone());
+            assert!(matches!(
+                app.recv::<ServiceMessage>(),
+                Err(ChannelError::Closed)
+            ));
+        }
     }
 }

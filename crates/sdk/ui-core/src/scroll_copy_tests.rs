@@ -107,39 +107,185 @@ fn presented_damage(planned: &CopyPlan) -> Vec<Rect> {
     damage
 }
 
-#[test]
-fn an_offer_reaches_only_a_host_that_copies() {
-    let root = window(0.0);
-    assert!(
-        !offer(
-            scroller(&root),
-            scroller(&root).rect,
-            Vec2::new(0.0, -10.0),
-            Vec::new(),
-            Affine::IDENTITY
-        ),
-        "with no host collecting, the scroller damages its viewport"
-    );
-    let offers = accepting(|| {
-        assert!(offer(
-            scroller(&root),
-            scroller(&root).rect,
-            Vec2::new(0.0, -10.0),
-            Vec::new(),
-            Affine::IDENTITY
-        ));
-    });
-    assert_eq!(offers.len(), 1);
-    assert!(
-        !offer(
-            scroller(&root),
-            scroller(&root).rect,
-            Vec2::new(0.0, -10.0),
-            Vec::new(),
-            Affine::IDENTITY
-        ),
-        "the collection ends with the host's"
-    );
+tilo_test_env::scenario! {
+    fn a_scroll_offer_is_planned_as_a_copy_only_where_pixels_can_move;
+
+    phase an_offer_reaches_only_a_host_that_copies;
+    {
+        let root = window(0.0);
+        assert!(
+            !offer(
+                scroller(&root),
+                scroller(&root).rect,
+                Vec2::new(0.0, -10.0),
+                Vec::new(),
+                Affine::IDENTITY
+            ),
+            "with no host collecting, the scroller damages its viewport"
+        );
+        let offers = accepting(|| {
+            assert!(offer(
+                scroller(&root),
+                scroller(&root).rect,
+                Vec2::new(0.0, -10.0),
+                Vec::new(),
+                Affine::IDENTITY
+            ));
+        });
+        assert_eq!(offers.len(), 1);
+        assert!(
+            !offer(
+                scroller(&root),
+                scroller(&root).rect,
+                Vec2::new(0.0, -10.0),
+                Vec::new(),
+                Affine::IDENTITY
+            ),
+            "the collection ends with the host's"
+        );
+    }
+
+    phase a_planned_copy_keeps_what_stays_and_damages_what_was_exposed;
+    {
+        let root = window(10.0);
+        let offer = offer_from(&root, Vec2::new(0.0, -10.0), Vec::new());
+        let planned = plan(&[offer], &[&root], 1.0, (400, 300));
+        assert_eq!(
+            planned.copies,
+            vec![DeviceCopy {
+                x: 0,
+                y: 110,
+                width: 400,
+                height: 190,
+                dx: 0,
+                dy: -10,
+            }]
+        );
+        let presented = presented_damage(&planned);
+        let covers = |point: Point| presented.iter().any(|rect| rect.contains(point));
+        assert!(covers(Point::new(200.0, 295.0)), "{presented:?}");
+        assert!(!covers(Point::new(200.0, 200.0)), "{presented:?}");
+    }
+
+    phase what_reaches_into_the_viewport_repaints_where_it_is_and_where_the_copy_took_it;
+    {
+        let mut root = window(0.0);
+        // A toolbar tall enough that its effect reach (a shadow) falls 6 px into the
+        // viewport.
+        root.children[0].rect = Rect::new(0.0, 0.0, 400.0, 90.0);
+        let offer = offer_from(&root, Vec2::new(0.0, 10.0), Vec::new());
+        let planned = plan(&[offer], &[&root], 1.0, (400, 300));
+        assert_eq!(planned.copies.len(), 1);
+        let presented = presented_damage(&planned);
+        let covers = |point: Point| presented.iter().any(|rect| rect.contains(point));
+        // The exposed strip at the top, the shadow where it is, and where the copy took the
+        // shadow's old pixels: 10 px further down.
+        assert!(covers(Point::new(200.0, 105.0)), "{presented:?}");
+        assert!(covers(Point::new(200.0, 115.0)), "{presented:?}");
+        assert!(!covers(Point::new(200.0, 150.0)), "{presented:?}");
+    }
+
+    phase overlays_repaint_where_they_are_and_where_the_copy_took_them;
+    {
+        let root = window(10.0);
+        let bar = Rect::new(40.0, 260.0, 340.0, 268.0);
+        let offer = offer_from(&root, Vec2::new(0.0, -30.0), vec![bar]);
+        let planned = plan(&[offer], &[&root], 1.0, (400, 300));
+        assert_eq!(planned.copies.len(), 1);
+        let presented = presented_damage(&planned);
+        let covers = |point: Point| presented.iter().any(|rect| rect.contains(point));
+        assert!(covers(Point::new(200.0, 264.0)), "{presented:?}");
+        // The copy took the bar's old pixels 30 px up.
+        assert!(covers(Point::new(200.0, 234.0)), "{presented:?}");
+        assert!(!covers(Point::new(200.0, 220.0)), "{presented:?}");
+    }
+
+    phase a_fractional_device_delta_damages_the_viewport;
+    {
+        let root = window(10.5);
+        let offer = offer_from(&root, Vec2::new(0.0, -10.5), Vec::new());
+        let planned = plan(&[offer], &[&root], 1.0, (400, 300));
+        assert!(planned.copies.is_empty());
+        assert_eq!(planned.damage, vec![Rect::new(0.0, 100.0, 400.0, 300.0)]);
+        // At 150 % the same half pixel is three quarters of a device pixel; at 200 % it is
+        // one whole one.
+        let offer = offer_at(&root, Vec2::new(0.0, -10.5), Vec::new(), 1.5);
+        assert!(plan(&[offer], &[&root], 1.5, (600, 450)).copies.is_empty());
+        let offer = offer_at(&root, Vec2::new(0.0, -10.5), Vec::new(), 2.0);
+        let doubled = plan(&[offer], &[&root], 2.0, (800, 600));
+        assert_eq!(doubled.copies.len(), 1);
+        assert_eq!(doubled.copies[0].dy, -21);
+    }
+
+    phase a_scroller_drawn_under_another_transform_damages_the_window;
+    {
+        let root = window(10.0);
+        let scroller = scroller(&root);
+        let offers = accepting(|| {
+            assert!(offer(
+                scroller,
+                scroller.rect,
+                Vec2::new(0.0, -10.0),
+                Vec::new(),
+                Affine::translate((0.0, 30.0))
+            ));
+        });
+        let planned = plan(&offers, &[&root], 1.0, (400, 300));
+        assert!(planned.copies.is_empty());
+        assert_eq!(planned.damage, vec![Rect::new(0.0, 0.0, 400.0, 300.0)]);
+    }
+
+    phase an_ancestor_clip_bounds_the_copy;
+    {
+        let mut root = window(10.0);
+        // A parent that shows only the top half of the viewport.
+        let clipped = Rect::new(0.0, 100.0, 400.0, 200.0);
+        let list = root.children.remove(1);
+        root.children.push(Boxed {
+            rect: list.rect,
+            clip: Some(clipped),
+            children: vec![list],
+        });
+        let scroller = &root.children[1].children[0];
+        let offers = accepting(|| {
+            assert!(offer(
+                scroller,
+                scroller.rect,
+                Vec2::new(0.0, -10.0),
+                Vec::new(),
+                Affine::IDENTITY
+            ));
+        });
+        let planned = plan(&offers, &[&root], 1.0, (400, 300));
+        assert_eq!(planned.copies.len(), 1);
+        let copy = planned.copies[0];
+        assert!(copy.y + copy.height <= 200, "{copy:?}");
+        let presented = presented_damage(&planned);
+        assert!(
+            presented
+                .iter()
+                .all(|rect| rect.y1 <= 200.0 && rect.y0 >= 100.0),
+            "{presented:?}"
+        );
+    }
+
+    phase a_scroller_the_tree_does_not_hold_damages_its_viewport;
+    {
+        let root = window(10.0);
+        let stray = window(10.0);
+        let offers = accepting(|| {
+            assert!(offer(
+                scroller(&stray),
+                scroller(&stray).rect,
+                Vec2::new(0.0, -10.0),
+                Vec::new(),
+                Affine::IDENTITY
+            ));
+        });
+        let planned = plan(&offers, &[&root], 1.0, (400, 300));
+        assert!(planned.copies.is_empty());
+        assert_eq!(planned.damage, vec![Rect::new(0.0, 100.0, 400.0, 300.0)]);
+    }
 }
 
 #[test]
@@ -248,209 +394,100 @@ fn moves_inside_an_offering_scroller_by_its_delta_are_the_copys() {
     );
 }
 
-#[test]
-fn a_planned_copy_keeps_what_stays_and_damages_what_was_exposed() {
-    let root = window(10.0);
-    let offer = offer_from(&root, Vec2::new(0.0, -10.0), Vec::new());
-    let planned = plan(&[offer], &[&root], 1.0, (400, 300));
-    assert_eq!(
-        planned.copies,
-        vec![DeviceCopy {
+tilo_test_env::scenario! {
+    fn copied_pixels_move_in_bands_and_take_marks_with_them;
+
+    phase bands_never_read_what_an_earlier_band_wrote;
+    {
+        let copy = DeviceCopy {
             x: 0,
-            y: 110,
-            width: 400,
+            y: 10,
+            width: 100,
+            height: 300,
+            dx: 0,
+            dy: -10,
+        };
+        let up = bands(copy);
+        assert_eq!(up.len(), 3);
+        assert_eq!(up.iter().map(|band| band.height).sum::<u32>(), 300);
+        assert!(up.windows(2).all(|pair| pair[0].y < pair[1].y));
+        let down = bands(DeviceCopy { dy: 10, ..copy });
+        assert!(down.windows(2).all(|pair| pair[0].y > pair[1].y));
+        let left = bands(DeviceCopy {
+            width: 300,
+            dy: 0,
+            dx: -5,
+            ..copy
+        });
+        assert!(left.windows(2).all(|pair| pair[0].x < pair[1].x));
+        assert!(left.iter().all(|band| band.height == 300));
+    }
+
+    phase pixels_copy_within_an_image_in_either_direction;
+    {
+        // A 4×4 image whose every pixel holds its own index.
+        let image: Vec<u8> = (0..16_u8).flat_map(|index| [index, 0, 0, 255]).collect();
+        let at = |pixels: &[u8], x: usize, y: usize| pixels[(y * 4 + x) * 4];
+        let down = DeviceCopy {
+            x: 0,
+            y: 0,
+            width: 4,
+            height: 3,
+            dx: 0,
+            dy: 1,
+        };
+        let mut pixels = image.clone();
+        assert!(copy_pixels(&mut pixels, (4, 4, 16), &[down]));
+        assert_eq!(
+            (0..4).map(|y| at(&pixels, 1, y)).collect::<Vec<_>>(),
+            vec![1, 1, 5, 9]
+        );
+        let up_left = DeviceCopy {
+            x: 1,
+            y: 1,
+            width: 3,
+            height: 3,
+            dx: -1,
+            dy: -1,
+        };
+        let mut pixels = image.clone();
+        assert!(copy_pixels(&mut pixels, (4, 4, 16), &[up_left]));
+        assert_eq!(at(&pixels, 0, 0), 5);
+        assert_eq!(at(&pixels, 2, 2), 15);
+        let outside = DeviceCopy { dy: 2, ..down };
+        let mut pixels = image.clone();
+        assert!(!copy_pixels(&mut pixels, (4, 4, 16), &[outside]));
+        assert_eq!(pixels, image, "a refused copy changes nothing");
+    }
+
+    phase peer_marks_repaint_where_they_are_and_where_a_copy_took_them;
+    {
+        // Content moved up 10 px: rows 10..200 land at 0..190.
+        let copy = DeviceCopy {
+            x: 0,
+            y: 10,
+            width: 300,
             height: 190,
             dx: 0,
             dy: -10,
-        }]
-    );
-    let presented = presented_damage(&planned);
-    let covers = |point: Point| presented.iter().any(|rect| rect.contains(point));
-    assert!(covers(Point::new(200.0, 295.0)), "{presented:?}");
-    assert!(!covers(Point::new(200.0, 200.0)), "{presented:?}");
-}
-
-#[test]
-fn what_reaches_into_the_viewport_repaints_where_it_is_and_where_the_copy_took_it() {
-    let mut root = window(0.0);
-    // A toolbar tall enough that its effect reach (a shadow) falls 6 px into the
-    // viewport.
-    root.children[0].rect = Rect::new(0.0, 0.0, 400.0, 90.0);
-    let offer = offer_from(&root, Vec2::new(0.0, 10.0), Vec::new());
-    let planned = plan(&[offer], &[&root], 1.0, (400, 300));
-    assert_eq!(planned.copies.len(), 1);
-    let presented = presented_damage(&planned);
-    let covers = |point: Point| presented.iter().any(|rect| rect.contains(point));
-    // The exposed strip at the top, the shadow where it is, and where the copy took the
-    // shadow's old pixels: 10 px further down.
-    assert!(covers(Point::new(200.0, 105.0)), "{presented:?}");
-    assert!(covers(Point::new(200.0, 115.0)), "{presented:?}");
-    assert!(!covers(Point::new(200.0, 150.0)), "{presented:?}");
-}
-
-#[test]
-fn overlays_repaint_where_they_are_and_where_the_copy_took_them() {
-    let root = window(10.0);
-    let bar = Rect::new(40.0, 260.0, 340.0, 268.0);
-    let offer = offer_from(&root, Vec2::new(0.0, -30.0), vec![bar]);
-    let planned = plan(&[offer], &[&root], 1.0, (400, 300));
-    assert_eq!(planned.copies.len(), 1);
-    let presented = presented_damage(&planned);
-    let covers = |point: Point| presented.iter().any(|rect| rect.contains(point));
-    assert!(covers(Point::new(200.0, 264.0)), "{presented:?}");
-    // The copy took the bar's old pixels 30 px up.
-    assert!(covers(Point::new(200.0, 234.0)), "{presented:?}");
-    assert!(!covers(Point::new(200.0, 220.0)), "{presented:?}");
-}
-
-#[test]
-fn a_fractional_device_delta_damages_the_viewport() {
-    let root = window(10.5);
-    let offer = offer_from(&root, Vec2::new(0.0, -10.5), Vec::new());
-    let planned = plan(&[offer], &[&root], 1.0, (400, 300));
-    assert!(planned.copies.is_empty());
-    assert_eq!(planned.damage, vec![Rect::new(0.0, 100.0, 400.0, 300.0)]);
-    // At 150 % the same half pixel is three quarters of a device pixel; at 200 % it is
-    // one whole one.
-    let offer = offer_at(&root, Vec2::new(0.0, -10.5), Vec::new(), 1.5);
-    assert!(plan(&[offer], &[&root], 1.5, (600, 450)).copies.is_empty());
-    let offer = offer_at(&root, Vec2::new(0.0, -10.5), Vec::new(), 2.0);
-    let doubled = plan(&[offer], &[&root], 2.0, (800, 600));
-    assert_eq!(doubled.copies.len(), 1);
-    assert_eq!(doubled.copies[0].dy, -21);
-}
-
-#[test]
-fn a_scroller_drawn_under_another_transform_damages_the_window() {
-    let root = window(10.0);
-    let scroller = scroller(&root);
-    let offers = accepting(|| {
-        assert!(offer(
-            scroller,
-            scroller.rect,
-            Vec2::new(0.0, -10.0),
-            Vec::new(),
-            Affine::translate((0.0, 30.0))
-        ));
-    });
-    let planned = plan(&offers, &[&root], 1.0, (400, 300));
-    assert!(planned.copies.is_empty());
-    assert_eq!(planned.damage, vec![Rect::new(0.0, 0.0, 400.0, 300.0)]);
-}
-
-#[test]
-fn bands_never_read_what_an_earlier_band_wrote() {
-    let copy = DeviceCopy {
-        x: 0,
-        y: 10,
-        width: 100,
-        height: 300,
-        dx: 0,
-        dy: -10,
-    };
-    let up = bands(copy);
-    assert_eq!(up.len(), 3);
-    assert_eq!(up.iter().map(|band| band.height).sum::<u32>(), 300);
-    assert!(up.windows(2).all(|pair| pair[0].y < pair[1].y));
-    let down = bands(DeviceCopy { dy: 10, ..copy });
-    assert!(down.windows(2).all(|pair| pair[0].y > pair[1].y));
-    let left = bands(DeviceCopy {
-        width: 300,
-        dy: 0,
-        dx: -5,
-        ..copy
-    });
-    assert!(left.windows(2).all(|pair| pair[0].x < pair[1].x));
-    assert!(left.iter().all(|band| band.height == 300));
-}
-
-#[test]
-fn an_ancestor_clip_bounds_the_copy() {
-    let mut root = window(10.0);
-    // A parent that shows only the top half of the viewport.
-    let clipped = Rect::new(0.0, 100.0, 400.0, 200.0);
-    let list = root.children.remove(1);
-    root.children.push(Boxed {
-        rect: list.rect,
-        clip: Some(clipped),
-        children: vec![list],
-    });
-    let scroller = &root.children[1].children[0];
-    let offers = accepting(|| {
-        assert!(offer(
-            scroller,
-            scroller.rect,
-            Vec2::new(0.0, -10.0),
-            Vec::new(),
-            Affine::IDENTITY
-        ));
-    });
-    let planned = plan(&offers, &[&root], 1.0, (400, 300));
-    assert_eq!(planned.copies.len(), 1);
-    let copy = planned.copies[0];
-    assert!(copy.y + copy.height <= 200, "{copy:?}");
-    let presented = presented_damage(&planned);
-    assert!(
-        presented
-            .iter()
-            .all(|rect| rect.y1 <= 200.0 && rect.y0 >= 100.0),
-        "{presented:?}"
-    );
-}
-
-#[test]
-fn a_scroller_the_tree_does_not_hold_damages_its_viewport() {
-    let root = window(10.0);
-    let stray = window(10.0);
-    let offers = accepting(|| {
-        assert!(offer(
-            scroller(&stray),
-            scroller(&stray).rect,
-            Vec2::new(0.0, -10.0),
-            Vec::new(),
-            Affine::IDENTITY
-        ));
-    });
-    let planned = plan(&offers, &[&root], 1.0, (400, 300));
-    assert!(planned.copies.is_empty());
-    assert_eq!(planned.damage, vec![Rect::new(0.0, 100.0, 400.0, 300.0)]);
-}
-
-#[test]
-fn pixels_copy_within_an_image_in_either_direction() {
-    // A 4×4 image whose every pixel holds its own index.
-    let image: Vec<u8> = (0..16_u8).flat_map(|index| [index, 0, 0, 255]).collect();
-    let at = |pixels: &[u8], x: usize, y: usize| pixels[(y * 4 + x) * 4];
-    let down = DeviceCopy {
-        x: 0,
-        y: 0,
-        width: 4,
-        height: 3,
-        dx: 0,
-        dy: 1,
-    };
-    let mut pixels = image.clone();
-    assert!(copy_pixels(&mut pixels, (4, 4, 16), &[down]));
-    assert_eq!(
-        (0..4).map(|y| at(&pixels, 1, y)).collect::<Vec<_>>(),
-        vec![1, 1, 5, 9]
-    );
-    let up_left = DeviceCopy {
-        x: 1,
-        y: 1,
-        width: 3,
-        height: 3,
-        dx: -1,
-        dy: -1,
-    };
-    let mut pixels = image.clone();
-    assert!(copy_pixels(&mut pixels, (4, 4, 16), &[up_left]));
-    assert_eq!(at(&pixels, 0, 0), 5);
-    assert_eq!(at(&pixels, 2, 2), 15);
-    let outside = DeviceCopy { dy: 2, ..down };
-    let mut pixels = image.clone();
-    assert!(!copy_pixels(&mut pixels, (4, 4, 16), &[outside]));
-    assert_eq!(pixels, image, "a refused copy changes nothing");
+        };
+        let mark = Rect::new(100.0, 50.0, 124.0, 74.0);
+        let far = Rect::new(400.0, 50.0, 424.0, 74.0);
+        let mut damage = Vec::new();
+        marks_over_copies(&[copy], &[mark, far], &[mark, far], &mut damage);
+        assert_eq!(
+            damage,
+            vec![Rect::new(100.0, 40.0, 124.0, 64.0), mark],
+            "the stale mark one delta away and the mark where it is, not the far one"
+        );
+        let mut none = Vec::new();
+        marks_over_copies(&[], &[mark], &[mark], &mut none);
+        assert!(
+            none.is_empty(),
+            "without copies the marks cost nothing here"
+        );
+        assert_eq!(carried(&[copy], &[far]), Vec::<Rect>::new());
+    }
 }
 
 /// A copy through the scratch texture moves exactly the pixels it names, in either
@@ -502,35 +539,6 @@ fn a_gpu_copy_moves_pixels_within_the_target() {
         OffscreenRenderer::pixels_differing_beyond_aa(&actual, &expected),
         0
     );
-}
-
-#[test]
-fn peer_marks_repaint_where_they_are_and_where_a_copy_took_them() {
-    // Content moved up 10 px: rows 10..200 land at 0..190.
-    let copy = DeviceCopy {
-        x: 0,
-        y: 10,
-        width: 300,
-        height: 190,
-        dx: 0,
-        dy: -10,
-    };
-    let mark = Rect::new(100.0, 50.0, 124.0, 74.0);
-    let far = Rect::new(400.0, 50.0, 424.0, 74.0);
-    let mut damage = Vec::new();
-    marks_over_copies(&[copy], &[mark, far], &[mark, far], &mut damage);
-    assert_eq!(
-        damage,
-        vec![Rect::new(100.0, 40.0, 124.0, 64.0), mark],
-        "the stale mark one delta away and the mark where it is, not the far one"
-    );
-    let mut none = Vec::new();
-    marks_over_copies(&[], &[mark], &[mark], &mut none);
-    assert!(
-        none.is_empty(),
-        "without copies the marks cost nothing here"
-    );
-    assert_eq!(carried(&[copy], &[far]), Vec::<Rect>::new());
 }
 
 fn filled(rect: Rect, rgb: [u8; 3]) -> Scene {
@@ -616,79 +624,83 @@ fn painted_damage(
     (regions, offers)
 }
 
-#[test]
-fn rows_a_scroll_only_moved_are_offered_as_a_copy_and_repaint_nothing() {
-    // Scrolled 20 px down: row 0 went, row 5 came into the strip the copy exposes, rows
-    // 1–4 moved up.
-    let (regions, offers) = painted_damage(
-        painted_rows(0.0, 0..5, None),
-        painted_rows(20.0, 1..6, None),
-        true,
-    );
-    assert_eq!(offers.len(), 1);
-    assert_eq!(offers[0].delta(), Vec2::new(0.0, -20.0));
-    assert_eq!(offers[0].viewport(), VIEWPORT);
-    assert!(
-        regions.is_empty(),
-        "the row that came is in the exposed strip, the one that went left the view: {regions:?}"
-    );
-}
+tilo_test_env::scenario! {
+    fn painted_rows_offer_a_copy_and_repaint_only_what_changed;
 
-#[test]
-fn a_row_that_changed_during_a_scroll_repaints_where_it_is() {
-    let (regions, offers) = painted_damage(
-        painted_rows(0.0, 0..5, None),
-        painted_rows(20.0, 1..6, Some(3)),
-        true,
-    );
-    assert_eq!(offers.len(), 1);
-    assert!(!regions.is_empty());
-    assert!(regions.iter().all(|rect| *rect == row(40.0)), "{regions:?}");
-}
+    phase rows_a_scroll_only_moved_are_offered_as_a_copy_and_repaint_nothing;
+    {
+        // Scrolled 20 px down: row 0 went, row 5 came into the strip the copy exposes, rows
+        // 1–4 moved up.
+        let (regions, offers) = painted_damage(
+            painted_rows(0.0, 0..5, None),
+            painted_rows(20.0, 1..6, None),
+            true,
+        );
+        assert_eq!(offers.len(), 1);
+        assert_eq!(offers[0].delta(), Vec2::new(0.0, -20.0));
+        assert_eq!(offers[0].viewport(), VIEWPORT);
+        assert!(
+            regions.is_empty(),
+            "the row that came is in the exposed strip, the one that went left the view: {regions:?}"
+        );
+    }
 
-#[test]
-fn a_frame_that_did_not_scroll_repaints_only_the_rows_that_changed() {
-    let (regions, offers) = painted_damage(
-        painted_rows(20.0, 1..6, None),
-        painted_rows(20.0, 1..6, Some(2)),
-        true,
-    );
-    assert!(offers.is_empty(), "nothing moved: {offers:?}");
-    assert!(!regions.is_empty());
-    assert!(regions.iter().all(|rect| *rect == row(20.0)), "{regions:?}");
-}
+    phase a_row_that_changed_during_a_scroll_repaints_where_it_is;
+    {
+        let (regions, offers) = painted_damage(
+            painted_rows(0.0, 0..5, None),
+            painted_rows(20.0, 1..6, Some(3)),
+            true,
+        );
+        assert_eq!(offers.len(), 1);
+        assert!(!regions.is_empty());
+        assert!(regions.iter().all(|rect| *rect == row(40.0)), "{regions:?}");
+    }
 
-#[test]
-fn a_host_that_copies_nothing_repaints_the_whole_scroller() {
-    let (regions, _) = painted_damage(
-        painted_rows(0.0, 0..5, None),
-        painted_rows(20.0, 1..6, None),
-        false,
-    );
-    assert!(!regions.is_empty());
-    assert!(regions.iter().all(|rect| *rect == VIEWPORT), "{regions:?}");
-}
+    phase a_frame_that_did_not_scroll_repaints_only_the_rows_that_changed;
+    {
+        let (regions, offers) = painted_damage(
+            painted_rows(20.0, 1..6, None),
+            painted_rows(20.0, 1..6, Some(2)),
+            true,
+        );
+        assert!(offers.is_empty(), "nothing moved: {offers:?}");
+        assert!(!regions.is_empty());
+        assert!(regions.iter().all(|rect| *rect == row(20.0)), "{regions:?}");
+    }
 
-#[test]
-fn rows_that_share_a_key_prove_nothing() {
-    let piece = |top: f64| Piece {
-        key: piece_key(1_u32),
-        rect: row(top),
-        paint: Painted(filled(row(top), [1, 2, 3])),
-    };
-    let around = Around {
-        bounds: VIEWPORT,
-        outside: Painted(Scene::new()),
-    };
-    assert!(
-        Showing::painted(
-            Vec2::ZERO,
-            VIEWPORT,
-            Affine::IDENTITY,
-            around,
-            vec![piece(0.0), piece(20.0)],
-            Vec::new(),
-        )
-        .is_none()
-    );
+    phase a_host_that_copies_nothing_repaints_the_whole_scroller;
+    {
+        let (regions, _) = painted_damage(
+            painted_rows(0.0, 0..5, None),
+            painted_rows(20.0, 1..6, None),
+            false,
+        );
+        assert!(!regions.is_empty());
+        assert!(regions.iter().all(|rect| *rect == VIEWPORT), "{regions:?}");
+    }
+
+    phase rows_that_share_a_key_prove_nothing;
+    {
+        let piece = |top: f64| Piece {
+            key: piece_key(1_u32),
+            rect: row(top),
+            paint: Painted(filled(row(top), [1, 2, 3])),
+        };
+        let around = Around {
+            bounds: VIEWPORT,
+            outside: Painted(Scene::new()),
+        };
+        assert!(
+            Showing::painted(
+                Vec2::ZERO,
+                VIEWPORT,
+                Affine::IDENTITY,
+                around,
+                vec![piece(0.0), piece(20.0)],
+                Vec::new(),
+            )
+            .is_none()
+        );
+    }
 }

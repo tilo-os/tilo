@@ -155,126 +155,130 @@ mod tests {
     use vello::kurbo::Rect;
     use vello::peniko::{Color, Fill};
 
-    /// A login kiosk stretched over a 2944x1840 panel and a 1920x1080 monitor side by
-    /// side (4864x1840 logical) at scale 2 asked for a 9728-wide texture on a device that
-    /// allows 8192, and the window exited instead of drawing.
-    #[test]
-    fn a_window_past_the_texture_limit_draws_at_the_scale_that_fits() {
-        let limit = 8192;
-        let extent = fit_to_texture_limit((9728, 3680), 2.0, limit);
-        assert!(
-            extent.width <= limit && extent.height <= limit,
-            "{extent:?} exceeds {limit}"
-        );
-        assert_eq!(extent.width, limit, "the long edge uses the whole texture");
-        let (logical_w, logical_h) = logical_size((extent.width, extent.height), extent.scale);
-        assert!(
-            (logical_w - 4864.0).abs() <= 1.0 && (logical_h - 1840.0).abs() <= 1.0,
-            "the layout keeps the window's logical size: {logical_w}x{logical_h}"
-        );
-        assert!(extent.scale < 2.0 && extent.scale > 1.6, "{extent:?}");
-        // The window keeps buffer scale 2 where the compositor has no fractional scaling;
-        // the buffer must stay divisible by it.
-        assert_eq!((extent.width % 2, extent.height % 2), (0, 0), "{extent:?}");
+    tilo_test_env::scenario! {
+        fn scale_factors_and_safe_areas_keep_logical_sizes;
 
-        let tall = fit_to_texture_limit((2000, 20000), 1.0, limit);
-        assert_eq!(tall.height, limit);
-        assert!(tall.width <= limit && tall.width >= 800);
+        phase a_window_past_the_texture_limit_draws_at_the_scale_that_fits;
+        // A login kiosk stretched over a 2944x1840 panel and a 1920x1080 monitor side by
+        // side (4864x1840 logical) at scale 2 asked for a 9728-wide texture on a device that
+        // allows 8192, and the window exited instead of drawing.
+        {
+            let limit = 8192;
+            let extent = fit_to_texture_limit((9728, 3680), 2.0, limit);
+            assert!(
+                extent.width <= limit && extent.height <= limit,
+                "{extent:?} exceeds {limit}"
+            );
+            assert_eq!(extent.width, limit, "the long edge uses the whole texture");
+            let (logical_w, logical_h) = logical_size((extent.width, extent.height), extent.scale);
+            assert!(
+                (logical_w - 4864.0).abs() <= 1.0 && (logical_h - 1840.0).abs() <= 1.0,
+                "the layout keeps the window's logical size: {logical_w}x{logical_h}"
+            );
+            assert!(extent.scale < 2.0 && extent.scale > 1.6, "{extent:?}");
+            // The window keeps buffer scale 2 where the compositor has no fractional scaling;
+            // the buffer must stay divisible by it.
+            assert_eq!((extent.width % 2, extent.height % 2), (0, 0), "{extent:?}");
 
-        assert_eq!(
-            fit_to_texture_limit((5888, 3680), 2.0, limit),
-            RenderExtent {
-                width: 5888,
-                height: 3680,
-                scale: 2.0
+            let tall = fit_to_texture_limit((2000, 20000), 1.0, limit);
+            assert_eq!(tall.height, limit);
+            assert!(tall.width <= limit && tall.width >= 800);
+
+            assert_eq!(
+                fit_to_texture_limit((5888, 3680), 2.0, limit),
+                RenderExtent {
+                    width: 5888,
+                    height: 3680,
+                    scale: 2.0
+                }
+            );
+            // Degenerate input never yields an empty texture or a zero scale.
+            let empty = fit_to_texture_limit((0, 0), 0.0, limit);
+            assert_eq!((empty.width, empty.height), (1, 1));
+            assert!(empty.scale > 0.0);
+            let sliver = fit_to_texture_limit((1_000_000, 1), 1.0, limit);
+            assert_eq!((sliver.width, sliver.height), (limit, 1));
+        }
+
+        phase scale_factors_compose_device_and_user_scale_uniformly;
+        {
+            {
+                for scale in [1.0f64, 1.25, 1.5, 1.75, 2.0] {
+                    let t = composite_transform(scale);
+                    let p = t * vello::kurbo::Point::new(40.0, 30.0);
+                    assert!((p.x - 40.0 * scale).abs() < 1e-9);
+                    assert!((p.y - 30.0 * scale).abs() < 1e-9);
+                    let c = t.as_coeffs();
+                    assert!((c[0] - scale).abs() < 1e-9 && (c[3] - scale).abs() < 1e-9);
+                    assert!(c[1].abs() < 1e-12 && c[2].abs() < 1e-12);
+                    assert!(c[4].abs() < 1e-12 && c[5].abs() < 1e-12);
+                }
             }
-        );
-        // Degenerate input never yields an empty texture or a zero scale.
-        let empty = fit_to_texture_limit((0, 0), 0.0, limit);
-        assert_eq!((empty.width, empty.height), (1, 1));
-        assert!(empty.scale > 0.0);
-        let sliver = fit_to_texture_limit((1_000_000, 1), 1.0, limit);
-        assert_eq!((sliver.width, sliver.height), (limit, 1));
-    }
 
-    #[test]
-    fn scale_factors_compose_device_and_user_scale_uniformly() {
-        {
-            for scale in [1.0f64, 1.25, 1.5, 1.75, 2.0] {
-                let t = composite_transform(scale);
-                let p = t * vello::kurbo::Point::new(40.0, 30.0);
-                assert!((p.x - 40.0 * scale).abs() < 1e-9);
-                assert!((p.y - 30.0 * scale).abs() < 1e-9);
-                let c = t.as_coeffs();
-                assert!((c[0] - scale).abs() < 1e-9 && (c[3] - scale).abs() < 1e-9);
-                assert!(c[1].abs() < 1e-12 && c[2].abs() < 1e-12);
-                assert!(c[4].abs() < 1e-12 && c[5].abs() < 1e-12);
+            {
+                assert_eq!(logical_size((2560, 1600), 1.25), (2048.0, 1280.0));
+                assert_eq!(logical_size((1920, 1080), 1.5), (1280.0, 720.0));
+                let (lw, lh) = logical_size((3360, 1890), 1.75);
+                assert!((lw - 1920.0).abs() < 1e-9 && (lh - 1080.0).abs() < 1e-9);
+                // A zero/garbage scale degrades to 1.0 rather than dividing by zero.
+                assert_eq!(logical_size((800, 600), 0.0), (800.0, 600.0));
+            }
+
+            {
+                let px = physical_font_px(14.0, 1.25, 1.2, 1.5);
+                assert!((px - 14.0 * 1.25 * 1.2 * 1.5).abs() < 1e-4, "got {px}");
+                // Neutral user scales leave only the device factor.
+                assert!((physical_font_px(16.0, 1.0, 1.0, 1.75) - 28.0).abs() < 1e-4);
+                // Neutral device leaves only the user factors.
+                assert!((physical_font_px(10.0, 1.5, 1.0, 1.0) - 15.0).abs() < 1e-4);
+            }
+
+            {
+                let mut tr = TextRenderer::new();
+                let (lw, lh) = tr.measure("Fractional scaling", 16.0, None);
+                assert!(lw > 0.0 && lh > 0.0);
+                for scale in [1.0f64, 1.25, 1.5, 1.75] {
+                    let (w2, h2) = tr.measure("Fractional scaling", 16.0, None);
+                    assert_eq!(
+                        (w2, h2),
+                        (lw, lh),
+                        "measure is scale-free (logical) at {scale}"
+                    );
+                    let pw = physical_len(f64::from(lw), scale);
+                    assert!(
+                        (pw - f64::from(lw) * scale).abs() < 1e-6,
+                        "physical width = logical × {scale}"
+                    );
+                }
             }
         }
 
+        phase safe_area_insets_the_content_box_in_logical_pixels;
         {
-            assert_eq!(logical_size((2560, 1600), 1.25), (2048.0, 1280.0));
-            assert_eq!(logical_size((1920, 1080), 1.5), (1280.0, 720.0));
-            let (lw, lh) = logical_size((3360, 1890), 1.75);
-            assert!((lw - 1920.0).abs() < 1e-9 && (lh - 1080.0).abs() < 1e-9);
-            // A zero/garbage scale degrades to 1.0 rather than dividing by zero.
-            assert_eq!(logical_size((800, 600), 0.0), (800.0, 600.0));
+            let area = SafeArea::from_physical([0, 128, 0, 63], 2.625);
+            assert!((area.top - 128.0 / 2.625).abs() < 1e-9);
+            let (origin, size) = area.content((411.0, 914.0));
+            assert_eq!(origin.x, 0.0);
+            assert!((origin.y - area.top).abs() < 1e-9);
+            assert!((size.0 - 411.0).abs() < 1e-9);
+            assert!((size.1 - (914.0 - area.top - area.bottom)).abs() < 1e-9);
+
+            let (origin, size) = SafeArea::from_physical([128, 0, 0, 63], 2.0).content((1000.0, 400.0));
+            assert_eq!((origin.x, origin.y), (64.0, 0.0));
+            assert_eq!(size, (936.0, 368.5));
+
+            assert_eq!(
+                SafeArea::default().content((800.0, 600.0)),
+                (vello::kurbo::Point::ORIGIN, (800.0, 600.0))
+            );
+            // Negative reports and a zero scale are clamped, and insets larger than the
+            // viewport never produce a negative box.
+            let odd = SafeArea::from_physical([-4, 900, 0, 900], 0.0);
+            assert_eq!(odd.left, 0.0);
+            let (origin, size) = odd.content((300.0, 500.0));
+            assert_eq!(origin.y, 500.0);
+            assert_eq!(size, (300.0, 0.0));
         }
-
-        {
-            let px = physical_font_px(14.0, 1.25, 1.2, 1.5);
-            assert!((px - 14.0 * 1.25 * 1.2 * 1.5).abs() < 1e-4, "got {px}");
-            // Neutral user scales leave only the device factor.
-            assert!((physical_font_px(16.0, 1.0, 1.0, 1.75) - 28.0).abs() < 1e-4);
-            // Neutral device leaves only the user factors.
-            assert!((physical_font_px(10.0, 1.5, 1.0, 1.0) - 15.0).abs() < 1e-4);
-        }
-
-        {
-            let mut tr = TextRenderer::new();
-            let (lw, lh) = tr.measure("Fractional scaling", 16.0, None);
-            assert!(lw > 0.0 && lh > 0.0);
-            for scale in [1.0f64, 1.25, 1.5, 1.75] {
-                let (w2, h2) = tr.measure("Fractional scaling", 16.0, None);
-                assert_eq!(
-                    (w2, h2),
-                    (lw, lh),
-                    "measure is scale-free (logical) at {scale}"
-                );
-                let pw = physical_len(f64::from(lw), scale);
-                assert!(
-                    (pw - f64::from(lw) * scale).abs() < 1e-6,
-                    "physical width = logical × {scale}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn safe_area_insets_the_content_box_in_logical_pixels() {
-        let area = SafeArea::from_physical([0, 128, 0, 63], 2.625);
-        assert!((area.top - 128.0 / 2.625).abs() < 1e-9);
-        let (origin, size) = area.content((411.0, 914.0));
-        assert_eq!(origin.x, 0.0);
-        assert!((origin.y - area.top).abs() < 1e-9);
-        assert!((size.0 - 411.0).abs() < 1e-9);
-        assert!((size.1 - (914.0 - area.top - area.bottom)).abs() < 1e-9);
-
-        let (origin, size) = SafeArea::from_physical([128, 0, 0, 63], 2.0).content((1000.0, 400.0));
-        assert_eq!((origin.x, origin.y), (64.0, 0.0));
-        assert_eq!(size, (936.0, 368.5));
-
-        assert_eq!(
-            SafeArea::default().content((800.0, 600.0)),
-            (vello::kurbo::Point::ORIGIN, (800.0, 600.0))
-        );
-        // Negative reports and a zero scale are clamped, and insets larger than the
-        // viewport never produce a negative box.
-        let odd = SafeArea::from_physical([-4, 900, 0, 900], 0.0);
-        assert_eq!(odd.left, 0.0);
-        let (origin, size) = odd.content((300.0, 500.0));
-        assert_eq!(origin.y, 500.0);
-        assert_eq!(size, (300.0, 0.0));
     }
 
     #[test]

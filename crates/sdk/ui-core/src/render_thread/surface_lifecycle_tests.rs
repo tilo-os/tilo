@@ -135,80 +135,84 @@ fn surface(backend: &Backend) -> wgpu::Surface<'static> {
     .unwrap()
 }
 
-#[test]
-fn suboptimal_texture_is_discarded_before_reconfigure_and_next_frame_presents() {
-    let backend = Backend::default();
-    backend.0.lock().unwrap().statuses.extend([
-        wgpu::SurfaceStatus::Suboptimal,
-        wgpu::SurfaceStatus::Occluded,
-        wgpu::SurfaceStatus::Outdated,
-        wgpu::SurfaceStatus::Timeout,
-        wgpu::SurfaceStatus::Good,
-    ]);
-    let surface = surface(&backend);
-    let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-    let mut config = wgpu::SurfaceConfiguration {
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        format: wgpu::TextureFormat::Bgra8Unorm,
-        width: 800,
-        height: 600,
-        present_mode: wgpu::PresentMode::Fifo,
-        desired_maximum_frame_latency: 2,
-        alpha_mode: wgpu::CompositeAlphaMode::Opaque,
-        view_formats: vec![],
-    };
-    surface.configure(&device, &config);
+tilo_test_env::scenario! {
+    fn acquiring_a_surface_texture_reconfigures_skips_or_stops_by_its_status;
 
-    config.width = 1024;
-    assert!(matches!(
-        acquire_surface_texture(&surface, || {
-            surface.configure(&device, &config);
-            FrameOutcome::Reconfigured
-        }),
-        Err(FrameOutcome::Reconfigured)
-    ));
-    // Also catch a leaked/forgotten texture, not just a late discard.
-    assert_eq!(backend.0.lock().unwrap().discarded, 1);
-    assert!(matches!(
-        acquire_surface_texture(&surface, || panic!("occlusion must not reconfigure")),
-        Err(FrameOutcome::Occluded)
-    ));
-    config.height = 768;
-    assert!(matches!(
-        acquire_surface_texture(&surface, || {
-            surface.configure(&device, &config);
-            FrameOutcome::Reconfigured
-        }),
-        Err(FrameOutcome::Reconfigured)
-    ));
-    assert!(matches!(
-        acquire_surface_texture(&surface, || panic!("timeout must not reconfigure")),
-        Err(FrameOutcome::Skipped)
-    ));
-    let texture =
-        acquire_surface_texture(&surface, || panic!("success must not reconfigure")).unwrap();
-    assert!(backend.0.lock().unwrap().acquired);
-    texture.present();
-    let state = backend.0.lock().unwrap();
-    assert_eq!(state.discarded, 1);
-    assert_eq!(state.presented, 1);
-    assert!(!state.acquired);
-    assert!(state.statuses.is_empty());
-}
-
-#[test]
-fn lost_and_validation_acquisitions_still_stop_the_worker() {
-    for status in [wgpu::SurfaceStatus::Lost, wgpu::SurfaceStatus::Validation] {
+    phase suboptimal_texture_is_discarded_before_reconfigure_and_next_frame_presents;
+    {
         let backend = Backend::default();
-        backend.0.lock().unwrap().statuses.push_back(status);
+        backend.0.lock().unwrap().statuses.extend([
+            wgpu::SurfaceStatus::Suboptimal,
+            wgpu::SurfaceStatus::Occluded,
+            wgpu::SurfaceStatus::Outdated,
+            wgpu::SurfaceStatus::Timeout,
+            wgpu::SurfaceStatus::Good,
+        ]);
         let surface = surface(&backend);
-        backend.0.lock().unwrap().configured = true;
+        let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+        let mut config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            width: 800,
+            height: 600,
+            present_mode: wgpu::PresentMode::Fifo,
+            desired_maximum_frame_latency: 2,
+            alpha_mode: wgpu::CompositeAlphaMode::Opaque,
+            view_formats: vec![],
+        };
+        surface.configure(&device, &config);
+
+        config.width = 1024;
         assert!(matches!(
-            acquire_surface_texture(&surface, || panic!("lost surfaces need recreation")),
-            Err(FrameOutcome::SurfaceGone)
+            acquire_surface_texture(&surface, || {
+                surface.configure(&device, &config);
+                FrameOutcome::Reconfigured
+            }),
+            Err(FrameOutcome::Reconfigured)
         ));
+        // Also catch a leaked/forgotten texture, not just a late discard.
+        assert_eq!(backend.0.lock().unwrap().discarded, 1);
+        assert!(matches!(
+            acquire_surface_texture(&surface, || panic!("occlusion must not reconfigure")),
+            Err(FrameOutcome::Occluded)
+        ));
+        config.height = 768;
+        assert!(matches!(
+            acquire_surface_texture(&surface, || {
+                surface.configure(&device, &config);
+                FrameOutcome::Reconfigured
+            }),
+            Err(FrameOutcome::Reconfigured)
+        ));
+        assert!(matches!(
+            acquire_surface_texture(&surface, || panic!("timeout must not reconfigure")),
+            Err(FrameOutcome::Skipped)
+        ));
+        let texture =
+            acquire_surface_texture(&surface, || panic!("success must not reconfigure")).unwrap();
+        assert!(backend.0.lock().unwrap().acquired);
+        texture.present();
         let state = backend.0.lock().unwrap();
-        assert_eq!(state.discarded, 0);
+        assert_eq!(state.discarded, 1);
+        assert_eq!(state.presented, 1);
         assert!(!state.acquired);
+        assert!(state.statuses.is_empty());
+    }
+
+    phase lost_and_validation_acquisitions_still_stop_the_worker;
+    {
+        for status in [wgpu::SurfaceStatus::Lost, wgpu::SurfaceStatus::Validation] {
+            let backend = Backend::default();
+            backend.0.lock().unwrap().statuses.push_back(status);
+            let surface = surface(&backend);
+            backend.0.lock().unwrap().configured = true;
+            assert!(matches!(
+                acquire_surface_texture(&surface, || panic!("lost surfaces need recreation")),
+                Err(FrameOutcome::SurfaceGone)
+            ));
+            let state = backend.0.lock().unwrap();
+            assert_eq!(state.discarded, 0);
+            assert!(!state.acquired);
+        }
     }
 }

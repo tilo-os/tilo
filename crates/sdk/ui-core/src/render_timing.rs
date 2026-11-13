@@ -118,125 +118,129 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
 
-    #[test]
-    fn main_stages_record_named_bounds_or_stay_explicitly_missing() {
+    tilo_test_env::scenario! {
+        fn host_clock_brackets_are_recorded_once_or_stay_missing;
+
+        phase main_stages_record_named_bounds_or_stay_explicitly_missing;
         {
-            let mut stages = Some(MainStages::default());
-            for (index, stage) in [
-                MainStage::BeforeProfilerCommit,
-                MainStage::AfterProfilerCommit,
-                MainStage::AfterNativeFrameLog,
-                MainStage::AfterDebugOutlines,
-                MainStage::AfterDamageMarkDrawn,
-                MainStage::AfterAccessibility,
-                MainStage::AfterHudRequest,
-                MainStage::AfterNativeRedrawLog,
-            ]
-            .into_iter()
-            .enumerate()
             {
-                record_main_stage_with(&mut stages, stage, || {
-                    Some(HostClockBracket {
-                        lo_s: 100.0 + index as f64,
-                        hi_s: 100.25 + index as f64,
-                    })
+                let mut stages = Some(MainStages::default());
+                for (index, stage) in [
+                    MainStage::BeforeProfilerCommit,
+                    MainStage::AfterProfilerCommit,
+                    MainStage::AfterNativeFrameLog,
+                    MainStage::AfterDebugOutlines,
+                    MainStage::AfterDamageMarkDrawn,
+                    MainStage::AfterAccessibility,
+                    MainStage::AfterHudRequest,
+                    MainStage::AfterNativeRedrawLog,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    record_main_stage_with(&mut stages, stage, || {
+                        Some(HostClockBracket {
+                            lo_s: 100.0 + index as f64,
+                            hi_s: 100.25 + index as f64,
+                        })
+                    });
+                }
+                let row = stages.unwrap().row(Some(1293));
+                let decoded: serde_json::Value = serde_json::from_str(&row.to_string()).unwrap();
+                assert_eq!(decoded["cpu_frame_id"], 1293);
+                assert_eq!(decoded["host_clock"], host_clock::CLOCK_NAME);
+                for (index, name) in MAIN_STAGE_NAMES.into_iter().enumerate() {
+                    assert_eq!(decoded[format!("{name}_host_lo_s")], 100.0 + index as f64);
+                    assert_eq!(decoded[format!("{name}_host_hi_s")], 100.25 + index as f64);
+                }
+                assert_eq!(decoded.as_object().unwrap().len(), 18);
+            }
+
+            {
+                record_main_stage_with(&mut None, MainStage::BeforeProfilerCommit, || {
+                    panic!("disabled stage read a clock")
                 });
             }
-            let row = stages.unwrap().row(Some(1293));
-            let decoded: serde_json::Value = serde_json::from_str(&row.to_string()).unwrap();
-            assert_eq!(decoded["cpu_frame_id"], 1293);
-            assert_eq!(decoded["host_clock"], host_clock::CLOCK_NAME);
-            for (index, name) in MAIN_STAGE_NAMES.into_iter().enumerate() {
-                assert_eq!(decoded[format!("{name}_host_lo_s")], 100.0 + index as f64);
-                assert_eq!(decoded[format!("{name}_host_hi_s")], 100.25 + index as f64);
+
+            {
+                let mut stages = Some(MainStages::default());
+                record_main_stage_with(&mut stages, MainStage::BeforeProfilerCommit, || None);
+                let row = stages.unwrap().row(None);
+                for name in MAIN_STAGE_NAMES {
+                    assert_eq!(
+                        row.get(format!("{name}_host_lo_s")),
+                        Some(&serde_json::Value::Null)
+                    );
+                    assert_eq!(
+                        row.get(format!("{name}_host_hi_s")),
+                        Some(&serde_json::Value::Null)
+                    );
+                }
+                assert!(row["cpu_frame_id"].is_null());
             }
-            assert_eq!(decoded.as_object().unwrap().len(), 18);
-        }
 
-        {
-            record_main_stage_with(&mut None, MainStage::BeforeProfilerCommit, || {
-                panic!("disabled stage read a clock")
-            });
-        }
-
-        {
-            let mut stages = Some(MainStages::default());
-            record_main_stage_with(&mut stages, MainStage::BeforeProfilerCommit, || None);
-            let row = stages.unwrap().row(None);
-            for name in MAIN_STAGE_NAMES {
+            {
+                let (result, bounds) = around_with(true, || None, || 23);
+                assert_eq!(result, 23);
                 assert_eq!(
-                    row.get(format!("{name}_host_lo_s")),
-                    Some(&serde_json::Value::Null)
-                );
-                assert_eq!(
-                    row.get(format!("{name}_host_hi_s")),
-                    Some(&serde_json::Value::Null)
+                    bounds,
+                    Some(CallBounds {
+                        before: None,
+                        after: None
+                    })
                 );
             }
-            assert!(row["cpu_frame_id"].is_null());
         }
 
+        phase timed_operations_are_bracketed_once_and_keep_their_result;
         {
-            let (result, bounds) = around_with(true, || None, || 23);
-            assert_eq!(result, 23);
-            assert_eq!(
-                bounds,
-                Some(CallBounds {
-                    before: None,
-                    after: None
-                })
-            );
-        }
-    }
-
-    #[test]
-    fn timed_operations_are_bracketed_once_and_keep_their_result() {
-        {
-            let calls = RefCell::new(Vec::new());
-            let mut times = [
-                HostClockBracket {
-                    lo_s: 1.0,
-                    hi_s: 2.0,
-                },
-                HostClockBracket {
-                    lo_s: 4.0,
-                    hi_s: 5.0,
-                },
-            ]
-            .into_iter();
-            let (result, bounds) = around_with(
-                true,
-                || {
-                    calls.borrow_mut().push("clock");
-                    times.next()
-                },
-                || {
-                    calls.borrow_mut().push("operation");
-                    Err::<(), _>("closed")
-                },
-            );
-            assert_eq!(*calls.borrow(), ["clock", "operation", "clock"]);
-            assert_eq!(result, Err("closed"));
-            assert_eq!(
-                bounds,
-                Some(CallBounds {
-                    before: Some(HostClockBracket {
+            {
+                let calls = RefCell::new(Vec::new());
+                let mut times = [
+                    HostClockBracket {
                         lo_s: 1.0,
-                        hi_s: 2.0
-                    }),
-                    after: Some(HostClockBracket {
+                        hi_s: 2.0,
+                    },
+                    HostClockBracket {
                         lo_s: 4.0,
-                        hi_s: 5.0
-                    }),
-                })
-            );
-            assert!(times.next().is_none());
-        }
+                        hi_s: 5.0,
+                    },
+                ]
+                .into_iter();
+                let (result, bounds) = around_with(
+                    true,
+                    || {
+                        calls.borrow_mut().push("clock");
+                        times.next()
+                    },
+                    || {
+                        calls.borrow_mut().push("operation");
+                        Err::<(), _>("closed")
+                    },
+                );
+                assert_eq!(*calls.borrow(), ["clock", "operation", "clock"]);
+                assert_eq!(result, Err("closed"));
+                assert_eq!(
+                    bounds,
+                    Some(CallBounds {
+                        before: Some(HostClockBracket {
+                            lo_s: 1.0,
+                            hi_s: 2.0
+                        }),
+                        after: Some(HostClockBracket {
+                            lo_s: 4.0,
+                            hi_s: 5.0
+                        }),
+                    })
+                );
+                assert!(times.next().is_none());
+            }
 
-        {
-            let (result, bounds) = around_with(false, || panic!("disabled clock read"), || 17);
-            assert_eq!(result, 17);
-            assert!(bounds.is_none());
+            {
+                let (result, bounds) = around_with(false, || panic!("disabled clock read"), || 17);
+                assert_eq!(result, 17);
+                assert!(bounds.is_none());
+            }
         }
     }
 }

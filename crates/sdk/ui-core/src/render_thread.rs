@@ -1325,56 +1325,60 @@ mod present_damage_tests {
     use super::Rect;
     use crate::damage::bounded_present_damage;
 
-    #[test]
-    fn presentation_hints_cover_every_changed_framebuffer_pixel() {
-        let changed = [
-            Rect::new(-4.5, 1.2, 5.1, 7.8),
-            Rect::new(10.7, 12.4, 23.8, 29.2),
-            Rect::new(22.6, 28.1, 35.0, 37.0),
-        ];
-        let hints = bounded_present_damage(32, 32, &changed).expect("bounded damage");
-        // Pixel-cell intersection, independently of the outward-rounding
-        // implementation: every pixel touched by any submitted damage must
-        // be included, including fractional edges and output clipping.
-        for y in 0_u32..32 {
-            for x in 0_u32..32 {
-                let cell = Rect::new(
-                    f64::from(x),
-                    f64::from(y),
-                    f64::from(x.saturating_add(1)),
-                    f64::from(y.saturating_add(1)),
-                );
-                if changed
-                    .iter()
-                    .any(|rect| !rect.intersect(cell).is_zero_area())
-                {
-                    assert!(
-                        hints.iter().any(|hint| {
-                            x >= hint.x
-                                && y >= hint.y
-                                && x < hint.x.saturating_add(hint.width)
-                                && y < hint.y.saturating_add(hint.height)
-                        }),
-                        "changed framebuffer pixel ({x}, {y}) omitted"
+    tilo_test_env::scenario! {
+        fn present_damage_covers_what_changed_or_the_whole_surface;
+
+        phase presentation_hints_cover_every_changed_framebuffer_pixel;
+        {
+            let changed = [
+                Rect::new(-4.5, 1.2, 5.1, 7.8),
+                Rect::new(10.7, 12.4, 23.8, 29.2),
+                Rect::new(22.6, 28.1, 35.0, 37.0),
+            ];
+            let hints = bounded_present_damage(32, 32, &changed).expect("bounded damage");
+            // Pixel-cell intersection, independently of the outward-rounding
+            // implementation: every pixel touched by any submitted damage must
+            // be included, including fractional edges and output clipping.
+            for y in 0_u32..32 {
+                for x in 0_u32..32 {
+                    let cell = Rect::new(
+                        f64::from(x),
+                        f64::from(y),
+                        f64::from(x.saturating_add(1)),
+                        f64::from(y.saturating_add(1)),
                     );
+                    if changed
+                        .iter()
+                        .any(|rect| !rect.intersect(cell).is_zero_area())
+                    {
+                        assert!(
+                            hints.iter().any(|hint| {
+                                x >= hint.x
+                                    && y >= hint.y
+                                    && x < hint.x.saturating_add(hint.width)
+                                    && y < hint.y.saturating_add(hint.height)
+                            }),
+                            "changed framebuffer pixel ({x}, {y}) omitted"
+                        );
+                    }
                 }
             }
+            assert!(hints.iter().all(|hint| {
+                hint.x.saturating_add(hint.width) <= 32 && hint.y.saturating_add(hint.height) <= 32
+            }));
         }
-        assert!(hints.iter().all(|hint| {
-            hint.x.saturating_add(hint.width) <= 32 && hint.y.saturating_add(hint.height) <= 32
-        }));
-    }
 
-    #[test]
-    fn uncertain_damage_preserves_whole_surface_presentation() {
-        for damage in [
-            vec![],
-            vec![Rect::new(f64::NAN, 0.0, 1.0, 1.0)],
-            vec![Rect::new(0.0, 0.0, f64::INFINITY, 1.0)],
-            vec![Rect::new(3.0, 0.0, 2.0, 1.0)],
-            vec![Rect::new(0.0, 0.0, 1.0, 1.0); 129],
-        ] {
-            assert!(bounded_present_damage(32, 32, &damage).is_none());
+        phase uncertain_damage_preserves_whole_surface_presentation;
+        {
+            for damage in [
+                vec![],
+                vec![Rect::new(f64::NAN, 0.0, 1.0, 1.0)],
+                vec![Rect::new(0.0, 0.0, f64::INFINITY, 1.0)],
+                vec![Rect::new(3.0, 0.0, 2.0, 1.0)],
+                vec![Rect::new(0.0, 0.0, 1.0, 1.0); 129],
+            ] {
+                assert!(bounded_present_damage(32, 32, &damage).is_none());
+            }
         }
     }
 }

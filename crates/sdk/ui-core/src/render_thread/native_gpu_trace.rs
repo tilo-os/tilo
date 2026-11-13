@@ -234,75 +234,79 @@ mod tests {
         })
     }
 
-    #[test]
-    fn delayed_sample_keeps_original_frame_and_cannot_settle_newer_frame() {
-        let mut observer = enabled(true, 7).unwrap();
-        let first = observer.read(reading(1, None), Some(frame(10)));
-        assert!(first.iter().all(|row| row["missing_current"] == true));
-        observer.read(reading(2, None), Some(frame(11)));
-        let rows = observer.read(reading(2, Some(1)), None);
-        assert_eq!(rows.len(), 2);
-        for row in rows {
-            assert_eq!(row["worker_frame_ix"], 10);
-            assert_eq!(row["cpu_frame_id"], 110);
-            assert_eq!(row["worker_id"], 7);
-            assert_eq!(row["matched_current"], true);
-            assert_eq!(row["delayed"], true);
-            assert_eq!(row["sample_submission_id"], 1);
-        }
-        let rows = observer.read(reading(2, Some(1)), None);
-        assert!(
-            rows.iter()
-                .all(|row| row["stale_sample"] == true && row["cpu_frame_id"].is_null())
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_gpu_sample_is_attributed_to_the_frame_that_owned_it;
 
-    #[test]
-    fn immediate_missing_unknown_and_evicted_samples_are_explicit() {
-        let mut observer = enabled(true, 7).unwrap();
-        let rows = observer.read(reading(1, Some(1)), Some(frame(1)));
-        assert_eq!(
-            rows.iter()
-                .filter(|row| row["matched_current"] == true)
-                .count(),
-            2
-        );
-        for id in 2..36 {
-            observer.read(reading(id, None), Some(frame(id)));
+        phase delayed_sample_keeps_original_frame_and_cannot_settle_newer_frame;
+        {
+            let mut observer = enabled(true, 7).unwrap();
+            let first = observer.read(reading(1, None), Some(frame(10)));
+            assert!(first.iter().all(|row| row["missing_current"] == true));
+            observer.read(reading(2, None), Some(frame(11)));
+            let rows = observer.read(reading(2, Some(1)), None);
+            assert_eq!(rows.len(), 2);
+            for row in rows {
+                assert_eq!(row["worker_frame_ix"], 10);
+                assert_eq!(row["cpu_frame_id"], 110);
+                assert_eq!(row["worker_id"], 7);
+                assert_eq!(row["matched_current"], true);
+                assert_eq!(row["delayed"], true);
+                assert_eq!(row["sample_submission_id"], 1);
+            }
+            let rows = observer.read(reading(2, Some(1)), None);
+            assert!(
+                rows.iter()
+                    .all(|row| row["stale_sample"] == true && row["cpu_frame_id"].is_null())
+            );
         }
-        let rows = observer.read(reading(35, Some(2)), None);
-        assert!(rows.iter().all(|row| row["stale_sample"] == true));
-        assert!(
-            observer
-                .ledgers
-                .iter()
-                .all(|ledger| ledger.owners.len() == OWNER_LIMIT)
-        );
-    }
 
-    #[test]
-    fn disabled_unsupported_and_row_budget_never_poll_indefinitely() {
-        assert!(enabled(false, 7).is_none());
-        let mut observer = enabled(true, 7).unwrap();
-        let mut readings = reading(1, None);
-        for reading in &mut readings {
-            reading.supported = false;
-            reading.pending = false;
-            reading.latest = None;
-            reading.status = "Unsupported".into();
+        phase immediate_missing_unknown_and_evicted_samples_are_explicit;
+        {
+            let mut observer = enabled(true, 7).unwrap();
+            let rows = observer.read(reading(1, Some(1)), Some(frame(1)));
+            assert_eq!(
+                rows.iter()
+                    .filter(|row| row["matched_current"] == true)
+                    .count(),
+                2
+            );
+            for id in 2..36 {
+                observer.read(reading(id, None), Some(frame(id)));
+            }
+            let rows = observer.read(reading(35, Some(2)), None);
+            assert!(rows.iter().all(|row| row["stale_sample"] == true));
+            assert!(
+                observer
+                    .ledgers
+                    .iter()
+                    .all(|ledger| ledger.owners.len() == OWNER_LIMIT)
+            );
         }
-        let rows = observer.read(readings, Some(frame(0)));
-        assert!(
-            rows.iter()
-                .all(|row| row["supported"] == false && row["missing_current"] == true)
-        );
-        assert!(!observer.poll_pending());
-        for id in 1..2000 {
-            observer.read(reading(id, None), Some(frame(id)));
+
+        phase disabled_unsupported_and_row_budget_never_poll_indefinitely;
+        {
+            assert!(enabled(false, 7).is_none());
+            let mut observer = enabled(true, 7).unwrap();
+            let mut readings = reading(1, None);
+            for reading in &mut readings {
+                reading.supported = false;
+                reading.pending = false;
+                reading.latest = None;
+                reading.status = "Unsupported".into();
+            }
+            let rows = observer.read(readings, Some(frame(0)));
+            assert!(
+                rows.iter()
+                    .all(|row| row["supported"] == false && row["missing_current"] == true)
+            );
+            assert!(!observer.poll_pending());
+            for id in 1..2000 {
+                observer.read(reading(id, None), Some(frame(id)));
+            }
+            assert_eq!(observer.rows_left, 0);
+            assert!(!observer.poll_pending());
+            assert!(observer.read(reading(2000, Some(1)), None).is_empty());
         }
-        assert_eq!(observer.rows_left, 0);
-        assert!(!observer.poll_pending());
-        assert!(observer.read(reading(2000, Some(1)), None).is_empty());
     }
     #[test]
     fn real_vello_recording_reports_only_its_owned_native_frame() {

@@ -151,129 +151,133 @@ pub struct Scratch {
 mod tests {
     use super::*;
 
-    /// A frame drawn while the renderer's bump buffers overflowed shows with geometry missing.
-    #[test]
-    fn a_changed_scratch_repaints_the_whole_target_once() {
-        use crate::retained_raster::{Repaint, RetainedFrames, TargetKey, Unknown};
-        let scene = vello::Scene::new();
-        let parts = crate::scene_parts::SectionParts::default();
-        let key = TargetKey {
-            width: 800,
-            height: 600,
-            to_device: vello::kurbo::Affine::IDENTITY,
-            base_color: vello::peniko::Color::BLACK,
-            generation: 0,
-        };
-        let mut frames = RetainedFrames::default();
-        frames.presented(&scene, Some(&parts), key);
-        let unchanged = Repaint::Regions(Vec::new());
-        let quiet = Scratch {
-            collected: 0,
-            bump_bytes: 1 << 20,
-        };
+    tilo_test_env::scenario! {
+        fn a_bump_overflow_repaints_whole_and_gives_up_after_the_bound;
 
-        frames.note_scratch(quiet);
-        assert!(
-            !frames.shows_lost_geometry(quiet),
-            "the first frame is not one the renderer was short of"
-        );
-        assert_eq!(frames.repaint(&scene, Some(&parts), key), unchanged);
+        phase a_changed_scratch_repaints_the_whole_target_once;
+        // A frame drawn while the renderer's bump buffers overflowed shows with geometry missing.
+        {
+            use crate::retained_raster::{Repaint, RetainedFrames, TargetKey, Unknown};
+            let scene = vello::Scene::new();
+            let parts = crate::scene_parts::SectionParts::default();
+            let key = TargetKey {
+                width: 800,
+                height: 600,
+                to_device: vello::kurbo::Affine::IDENTITY,
+                base_color: vello::peniko::Color::BLACK,
+                generation: 0,
+            };
+            let mut frames = RetainedFrames::default();
+            frames.presented(&scene, Some(&parts), key);
+            let unchanged = Repaint::Regions(Vec::new());
+            let quiet = Scratch {
+                collected: 0,
+                bump_bytes: 1 << 20,
+            };
 
-        let grown = Scratch {
-            bump_bytes: 2 << 20,
-            ..quiet
-        };
-        assert!(
-            frames.shows_lost_geometry(grown),
-            "a grown reservation asks for a frame"
-        );
-        frames.note_scratch(grown);
-        assert_eq!(
-            frames.repaint(&scene, Some(&parts), key),
-            Repaint::Full(Unknown::LostGeometry),
-            "the frame after the reservation grew repaints whole"
-        );
-        frames.presented(&scene, Some(&parts), key);
-        assert!(!frames.shows_lost_geometry(grown));
-        assert_eq!(
-            frames.repaint(&scene, Some(&parts), key),
-            unchanged,
-            "once repainted, only changes repaint"
-        );
+            frames.note_scratch(quiet);
+            assert!(
+                !frames.shows_lost_geometry(quiet),
+                "the first frame is not one the renderer was short of"
+            );
+            assert_eq!(frames.repaint(&scene, Some(&parts), key), unchanged);
 
-        // An overflow collected while the reservation could not grow is the
-        // same loss, named by the count.
-        let collected = Scratch {
-            collected: 1,
-            ..grown
-        };
-        frames.note_scratch(collected);
-        assert!(
-            frames.shows_lost_geometry(collected),
-            "a collected overflow asks for a frame"
-        );
-        assert_eq!(
-            frames.repaint(&scene, Some(&parts), key),
-            Repaint::Full(Unknown::LostGeometry)
-        );
-        frames.presented(&scene, Some(&parts), key);
-        frames.note_scratch(collected);
-        assert_eq!(frames.repaint(&scene, Some(&parts), key), unchanged);
-    }
+            let grown = Scratch {
+                bump_bytes: 2 << 20,
+                ..quiet
+            };
+            assert!(
+                frames.shows_lost_geometry(grown),
+                "a grown reservation asks for a frame"
+            );
+            frames.note_scratch(grown);
+            assert_eq!(
+                frames.repaint(&scene, Some(&parts), key),
+                Repaint::Full(Unknown::LostGeometry),
+                "the frame after the reservation grew repaints whole"
+            );
+            frames.presented(&scene, Some(&parts), key);
+            assert!(!frames.shows_lost_geometry(grown));
+            assert_eq!(
+                frames.repaint(&scene, Some(&parts), key),
+                unchanged,
+                "once repainted, only changes repaint"
+            );
 
-    #[test]
-    fn overflow_repaints_until_it_fits_and_never_forever() {
-        let mut recovery = BumpRecovery::default();
-        assert_eq!(recovery.wait(), None, "nothing outstanding before a frame");
-        assert_eq!(
-            recovery.observe(Ok(BumpBudgetPoll::Pending)),
-            BumpStep::Pending
-        );
-        assert_eq!(
-            recovery.wait(),
-            Some(POLL_INTERVAL),
-            "an idle worker keeps polling an outstanding readback"
-        );
-        assert_eq!(
-            recovery.observe(Ok(BumpBudgetPoll::Complete { overflowed: true })),
-            BumpStep::Repaint
-        );
-        assert_eq!(recovery.wait(), None);
-        assert_eq!(
-            recovery.observe(Ok(BumpBudgetPoll::Complete { overflowed: true })),
-            BumpStep::Repaint
-        );
-        assert_eq!(
-            recovery.observe(Ok(BumpBudgetPoll::Complete { overflowed: false })),
-            BumpStep::Settled
-        );
+            // An overflow collected while the reservation could not grow is the
+            // same loss, named by the count.
+            let collected = Scratch {
+                collected: 1,
+                ..grown
+            };
+            frames.note_scratch(collected);
+            assert!(
+                frames.shows_lost_geometry(collected),
+                "a collected overflow asks for a frame"
+            );
+            assert_eq!(
+                frames.repaint(&scene, Some(&parts), key),
+                Repaint::Full(Unknown::LostGeometry)
+            );
+            frames.presented(&scene, Some(&parts), key);
+            frames.note_scratch(collected);
+            assert_eq!(frames.repaint(&scene, Some(&parts), key), unchanged);
+        }
 
-        // A reservation that cannot grow stops repainting after the bound,
-        // until a frame fits again.
-        for _ in 0..MAX_REPAINTS {
+        phase overflow_repaints_until_it_fits_and_never_forever;
+        {
+            let mut recovery = BumpRecovery::default();
+            assert_eq!(recovery.wait(), None, "nothing outstanding before a frame");
+            assert_eq!(
+                recovery.observe(Ok(BumpBudgetPoll::Pending)),
+                BumpStep::Pending
+            );
+            assert_eq!(
+                recovery.wait(),
+                Some(POLL_INTERVAL),
+                "an idle worker keeps polling an outstanding readback"
+            );
             assert_eq!(
                 recovery.observe(Ok(BumpBudgetPoll::Complete { overflowed: true })),
                 BumpStep::Repaint
             );
-        }
-        assert_eq!(
-            recovery.observe(Ok(BumpBudgetPoll::Complete { overflowed: true })),
-            BumpStep::Settled
-        );
-        assert_eq!(
-            recovery.observe(Ok(BumpBudgetPoll::Complete { overflowed: false })),
-            BumpStep::Settled
-        );
-        assert_eq!(
-            recovery.observe(Ok(BumpBudgetPoll::Complete { overflowed: true })),
-            BumpStep::Repaint
-        );
+            assert_eq!(recovery.wait(), None);
+            assert_eq!(
+                recovery.observe(Ok(BumpBudgetPoll::Complete { overflowed: true })),
+                BumpStep::Repaint
+            );
+            assert_eq!(
+                recovery.observe(Ok(BumpBudgetPoll::Complete { overflowed: false })),
+                BumpStep::Settled
+            );
 
-        // A failed readback stops polling instead of spinning on it.
-        assert_eq!(
-            recovery.observe(Err(BumpBudgetError::MapFailed)),
-            BumpStep::Settled
-        );
-        assert_eq!(recovery.wait(), None);
+            // A reservation that cannot grow stops repainting after the bound,
+            // until a frame fits again.
+            for _ in 0..MAX_REPAINTS {
+                assert_eq!(
+                    recovery.observe(Ok(BumpBudgetPoll::Complete { overflowed: true })),
+                    BumpStep::Repaint
+                );
+            }
+            assert_eq!(
+                recovery.observe(Ok(BumpBudgetPoll::Complete { overflowed: true })),
+                BumpStep::Settled
+            );
+            assert_eq!(
+                recovery.observe(Ok(BumpBudgetPoll::Complete { overflowed: false })),
+                BumpStep::Settled
+            );
+            assert_eq!(
+                recovery.observe(Ok(BumpBudgetPoll::Complete { overflowed: true })),
+                BumpStep::Repaint
+            );
+
+            // A failed readback stops polling instead of spinning on it.
+            assert_eq!(
+                recovery.observe(Err(BumpBudgetError::MapFailed)),
+                BumpStep::Settled
+            );
+            assert_eq!(recovery.wait(), None);
+        }
     }
 }
