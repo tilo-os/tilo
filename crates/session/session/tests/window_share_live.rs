@@ -1298,6 +1298,7 @@ fn a_window_shared_after_the_host_was_copied_again_stays_live() {
         &desktop,
         &tab,
         "the window shared before",
+        None,
     );
     the_share_stays_live(
         "the window was shared a second time",
