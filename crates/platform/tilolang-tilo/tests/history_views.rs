@@ -983,6 +983,86 @@ fn body_editor(view: &ViewInstance) -> String {
         )
 }
 
+/// A post of `paragraphs` paragraphs that all read the same, which Ada wrote on her board, and
+/// Bo's replica of the workspace holding it: a long note, as two people each have it.
+struct LongPost {
+    ada: Replica,
+    bo: Replica,
+    at: ResourceRef,
+    body: tilolang_runtime::store::FieldSpec,
+    paragraphs: usize,
+}
+
+/// The paragraph every paragraph of a [`LongPost`] starts as.
+const PARAGRAPH: &str = "The quick brown fox jumps over the lazy dog and keeps on going. ";
+
+impl LongPost {
+    fn new(paragraphs: usize) -> Self {
+        const RICHTEXT: &str = include_str!("../../../lang/tilolang/tests/fixtures/richtext.tl");
+        const RICHTEXT_APP: &str = "so.tilo.lang.richtext";
+        let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(RICHTEXT, "")]);
+        let ids = packages[0].ids.clone();
+        ada.commit();
+        let board = target(&Value::resource(&ada.host.root_of(RICHTEXT_APP).unwrap()));
+        let body = tilolang_runtime::store::FieldSpec {
+            id: crate::fixtures::field_id(
+                &ada.host.package(RICHTEXT_APP).unwrap().meta,
+                "Post",
+                "body",
+            ),
+            kind: tilolang_runtime::meta::FieldKind::RichText,
+        };
+        let post = call(
+            &ada,
+            "ada",
+            RICHTEXT_APP,
+            "say_text",
+            vec![
+                Value::resource(&board),
+                Value::text(vec![PARAGRAPH; paragraphs].join("\n")),
+            ],
+        );
+        ada.commit();
+        let at = target(&post);
+        let bo = ada.fork("bo", &[(RICHTEXT, &ids)]);
+        Self {
+            ada,
+            bo,
+            at,
+            body,
+            paragraphs,
+        }
+    }
+
+    /// The paragraphs of the post's body as `replica` reads it.
+    fn reads(&self, replica: &Replica) -> Vec<String> {
+        match replica.host.store().read(&self.at, &self.body).unwrap() {
+            tilolang_runtime::store::FieldValue::Rich(rich) => {
+                rich.blocks.into_iter().map(|block| block.text).collect()
+            }
+            other => panic!("the body is rich text: {other:?}"),
+        }
+    }
+
+    /// `who` (Ada or Bo) replaces `word` with `with` in the paragraph `at`, in the post's window
+    /// on their own replica, as its editor writes: the body as they read it, with that one
+    /// paragraph typed into.
+    fn type_into(&mut self, bo: bool, at: usize, word: &str, with: &str) {
+        let mut lines = self.reads(if bo { &self.bo } else { &self.ada });
+        assert_eq!(lines.len(), self.paragraphs, "every paragraph is there");
+        let line = lines.get_mut(at).unwrap();
+        *line = line.replacen(word, with, 1);
+        let value = Value::Rich(tilolang_runtime::rich::RichValue::from_text(&lines.join("\n")));
+        let replica = if bo { &mut self.bo } else { &mut self.ada };
+        let page = view_id(replica);
+        let editors = replica.host.open_resource(&self.at, Some(&page)).unwrap();
+        let body_field = body_editor(&editors);
+        editors.edit(&body_field, &value).unwrap();
+        drop(editors);
+        replica.commit();
+    }
+}
+
 /// The work reading one entry's body diff does in a post of `paragraphs` paragraphs: the
 /// store's reads of the record and the document's operations Automerge searches, counted.
 ///
@@ -990,57 +1070,27 @@ fn body_editor(view: &ViewInstance) -> String {
 /// the post's length, and that is not the entry's read.
 fn entry_work(paragraphs: usize) -> (u64, u64, usize) {
     use tilolang_runtime::store::Store as _;
-    const RICHTEXT: &str = include_str!("../../../lang/tilolang/tests/fixtures/richtext.tl");
-    const RICHTEXT_APP: &str = "so.tilo.lang.richtext";
-    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(RICHTEXT, "")]);
-    let ids = packages[0].ids.clone();
-    ada.commit();
-    let board = target(&Value::resource(&ada.host.root_of(RICHTEXT_APP).unwrap()));
-    let paragraph = "The quick brown fox jumps over the lazy dog and keeps on going. ";
-    let chars = paragraph.chars().count().saturating_mul(paragraphs);
-    let spec = tilolang_runtime::store::FieldSpec {
-        id: crate::fixtures::field_id(
-            &ada.host.package(RICHTEXT_APP).unwrap().meta,
-            "Post",
-            "body",
-        ),
-        kind: tilolang_runtime::meta::FieldKind::RichText,
-    };
-    let post = call(
-        &ada,
-        "ada",
-        RICHTEXT_APP,
-        "say_text",
-        vec![
-            Value::resource(&board),
-            Value::text(vec![paragraph; paragraphs].join("\n")),
-        ],
-    );
-    ada.commit();
-    let at = target(&post);
-    // Bo types one word in the first paragraph, in her own replica, and it reaches Ada's.
-    let body = |text: &str| Value::Rich(tilolang_runtime::rich::RichValue::from_text(text));
-    let mut bo = ada.fork("bo", &[(RICHTEXT, &ids)]);
-    let swift = paragraph.replacen("quick", "swift", 1);
-    let mut typed = vec![paragraph; paragraphs];
-    if let Some(first) = typed.first_mut() {
-        *first = &swift;
-    }
-    let page = view_id(&bo);
-    let editors = bo.host.open_resource(&at, Some(&page)).unwrap();
-    let body_field = body_editor(&editors);
-    editors.edit(&body_field, &body(&typed.join("\n"))).unwrap();
-    bo.commit();
-    drop(editors);
+    let mut post = LongPost::new(paragraphs);
+    let chars = PARAGRAPH.chars().count().saturating_mul(paragraphs);
+    // Bo types one word in the first paragraph, in his own replica, and it reaches Ada's.
+    post.type_into(true, 0, "quick", "swift");
+    let LongPost {
+        mut ada,
+        mut bo,
+        at,
+        body: spec,
+        ..
+    } = post;
     ada.sync_with(&mut bo);
     // Reading the entry's diff: the change Bo made, as the history reads it.
     let change = ada
         .host
         .store()
-        .field_changed(&at, "body")
+        .field_changed(&at, &spec.id)
         .unwrap()
-        .expect("the change that wrote the body")
-        .change;
+        .expect("the change that wrote the body");
+    assert_eq!(change.who, "bo", "the body was last changed by Bo's typing: {paragraphs} {change:?} {:?}", ada.host.store().versions(&at).unwrap().iter().map(|v| (v.who.clone(), v.fields.clone(), v.change.clone())).collect::<Vec<_>>());
+    let change = change.change;
     let before = ada.host.store().read_stats().doc;
     let work = automerge::work();
     let written = ada
@@ -1051,6 +1101,27 @@ fn entry_work(paragraphs: usize) -> (u64, u64, usize) {
     let after = ada.host.store().read_stats().doc;
     let done = automerge::work();
     assert_eq!(written.len(), 1, "the entry shows the body's change");
+    // What it shows is the paragraph Bo typed into, cut to the words around the change: the
+    // word he took away and the one he wrote, never the note.
+    let said = |value: &tilolang_runtime::store::FieldValue| match value {
+        tilolang_runtime::store::FieldValue::Rich(rich) => rich
+            .blocks
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        other => panic!("a rich text's change: {other:?}"),
+    };
+    let (_, was, now) = &written[0];
+    let (was, now) = (said(was), said(now));
+    assert!(
+        was.contains("quick") && !was.contains("swift") && now.contains("swift"),
+        "the entry shows the word Bo replaced: {was:?} -> {now:?}"
+    );
+    assert!(
+        was.len() <= PARAGRAPH.len() && now.len() <= PARAGRAPH.len(),
+        "the entry shows one paragraph at most: {was:?} -> {now:?}"
+    );
     let reads = after
         .fields
         .saturating_sub(before.fields)
@@ -1067,6 +1138,43 @@ fn entry_work(paragraphs: usize) -> (u64, u64, usize) {
         done.searched_slabs.saturating_sub(work.searched_slabs),
         chars,
     )
+}
+
+#[test]
+fn two_people_typing_into_different_paragraphs_of_a_long_note_at_once_both_keep_their_words() {
+    // A note past a hundred thousand characters: what its editor writes on each keystroke is
+    // the whole body, which its change records with the body kept as content.
+    let mut post = LongPost::new(1_571);
+    // Each types into their own copy before either hears of the other.
+    post.type_into(true, 0, "quick", "swift");
+    post.type_into(false, 1_200, "lazy", "sleepy");
+    let (ada_wrote, bo_wrote) = (post.reads(&post.ada), post.reads(&post.bo));
+    assert!(ada_wrote[1_200].contains("sleepy") && bo_wrote[0].contains("swift"));
+    let LongPost {
+        mut ada, mut bo, ..
+    } = post;
+    ada.sync_with(&mut bo);
+    let post = LongPost { ada, bo, ..post };
+    for (who, replica) in [("Ada", &post.ada), ("Bo", &post.bo)] {
+        let lines = post.reads(replica);
+        assert_eq!(lines.len(), 1_571, "{who} reads every paragraph once");
+        assert!(
+            lines[0].contains("swift") && !lines[0].contains("quick"),
+            "{who} reads Bo's word: {:?}",
+            lines[0]
+        );
+        assert!(
+            lines[1_200].contains("sleepy") && !lines[1_200].contains(" lazy"),
+            "{who} reads Ada's word: {:?}",
+            lines[1_200]
+        );
+        let untouched = lines
+            .iter()
+            .enumerate()
+            .filter(|(at, _)| *at != 0 && *at != 1_200)
+            .all(|(_, line)| line == PARAGRAPH.trim_end() || line == PARAGRAPH);
+        assert!(untouched, "{who} reads every other paragraph as it was");
+    }
 }
 
 #[test]

@@ -439,6 +439,11 @@ struct Inner {
     /// What changed during the trial runs under way, told to nobody: a trial run is taken back.
     held: Vec<ChangeSummary>,
     committed: VecDeque<Committed>,
+    /// The actions handed over to commit whose writes the mirror still holds as its own: what
+    /// the store knows its writes by in a change whose recorded action keeps its large parts as
+    /// content (a long note's whole body), which does not decode without that content
+    /// ([`sync::committed_edits`]). Each leaves once the record holds none of its writes.
+    sent: Vec<DynAction>,
     /// The burst of typing the person is in: the gesture its keystrokes share, and what its next
     /// one continues ([`burst`]).
     burst: Option<burst::Burst>,
@@ -761,6 +766,7 @@ impl TiloStore {
                 trials: 0,
                 held: Vec::new(),
                 committed: VecDeque::new(),
+                sent: Vec::new(),
                 burst: None,
                 edit_pause: DEFAULT_EDIT_PAUSE,
                 refused_commit: None,
@@ -1992,6 +1998,7 @@ impl Inner {
     fn enqueue(&mut self, action: DynAction) {
         let ticket = self.next_ticket;
         self.next_ticket = self.next_ticket.wrapping_add(1);
+        self.sent.push(action.clone());
         self.committed.push_back(Committed { ticket, action });
     }
 

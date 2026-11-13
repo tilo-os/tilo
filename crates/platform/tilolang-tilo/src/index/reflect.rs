@@ -692,9 +692,16 @@ fn versions_of_changes<'c>(
             let Some(stamp) = step_stamp(change) else {
                 continue;
             };
+            // A package action whose recorded action does not read here (its large parts kept
+            // as content) changed the fields it wrote, as its version names them; a step takes
+            // a change back rather than changing a field.
+            let action = is_package_action(change);
             let written = stepped(change, mirror, resources)
                 .into_iter()
-                .map(|version| (version.resource, Vec::new(), version.kind))
+                .map(|version| {
+                    let fields = if action { version.fields } else { Vec::new() };
+                    (version.resource, fields, version.kind)
+                })
                 .collect();
             (stamp, written)
         };
@@ -828,6 +835,16 @@ pub fn ends_of<'c>(
         }
     }
     out
+}
+
+/// Whether `change` records a package's action, read or not: one whose action does not decode
+/// here is still a package action that changed fields, never a step that took one back.
+fn is_package_action(change: &(impl ChangeHead + ?Sized)) -> bool {
+    parsed(change)
+        .context
+        .as_ref()
+        .and_then(|context| context.action.as_ref())
+        .is_some_and(|action| action.type_id == ACTION_TYPE)
 }
 
 /// The version a step on the record that is no readable action of a package was made by (an

@@ -296,12 +296,40 @@ fn attr_value(value: &AttrVal) -> ScalarValue {
 /// ones, so matching by id would pair nothing and rewrite everything. Two blocks
 /// pair here when they are equal, in order — the anchors an edit leaves alone —
 /// and everything between two anchors is the edit.
+///
+/// The blocks both start and end with pair first, by position: what an edit
+/// leaves around it stays where it is, so the paragraph it typed into pairs
+/// with the one it was and is spliced in place. Searched for alone, a block
+/// would pair with a later one that reads the same (an empty paragraph typed
+/// into, beside other empty ones; a line a note repeats), and every block
+/// between the two would be written anew, losing a peer's concurrent edit of
+/// any of them.
 fn anchors(live: &[BlockView], want: &[&BlockView]) -> Vec<(usize, usize)> {
-    let mut pairs = Vec::new();
-    let mut from = 0usize;
-    for (live_index, block) in live.iter().enumerate() {
+    let start = live
+        .iter()
+        .zip(want)
+        .take_while(|(have, view)| same_block(have, view))
+        .count();
+    let end = live
+        .get(start..)
+        .unwrap_or_default()
+        .iter()
+        .rev()
+        .zip(want.get(start..).unwrap_or_default().iter().rev())
+        .take_while(|(have, view)| same_block(have, view))
+        .count();
+    let (live_end, want_end) = (
+        live.len().saturating_sub(end),
+        want.len().saturating_sub(end),
+    );
+    let mut pairs: Vec<(usize, usize)> = (0..start).map(|at| (at, at)).collect();
+    let mut from = start;
+    for live_index in start..live_end {
+        let Some(block) = live.get(live_index) else {
+            continue;
+        };
         let Some(offset) = want
-            .get(from..)
+            .get(from..want_end)
             .and_then(|rest| rest.iter().position(|view| same_block(block, view)))
         else {
             continue;
@@ -310,6 +338,7 @@ fn anchors(live: &[BlockView], want: &[&BlockView]) -> Vec<(usize, usize)> {
         pairs.push((live_index, want_index));
         from = want_index.saturating_add(1);
     }
+    pairs.extend((0..end).map(|at| (live_end.saturating_add(at), want_end.saturating_add(at))));
     pairs
 }
 
@@ -760,5 +789,28 @@ mod tests {
         assert_eq!(text(&mine, &peer_block).as_str(), "second paragraph");
         let first = ids(&mine).first().expect("a first paragraph").clone();
         assert_eq!(text(&mine, &first).as_str(), "first, edited");
+    }
+
+    #[test]
+    fn typing_into_a_paragraph_that_reads_as_a_later_one_splices_it_in_place() {
+        // A note with empty lines between its paragraphs; the first empty one is typed into.
+        let (mut doc, _) = document(&["", "one", "", "two", ""]);
+        let before = ids(&doc);
+        let (_other, wanted) = document(&["a", "one", "", "two", ""]);
+        let stats = reconcile_document(&mut doc.doc, &wanted)
+            .expect("reconcile")
+            .expect("a document to reconcile into");
+        doc.doc.commit();
+        assert_eq!(before, ids(&doc), "every paragraph keeps its id");
+        assert_eq!(
+            (
+                stats.blocks_changed,
+                stats.blocks_inserted,
+                stats.blocks_removed
+            ),
+            (1, 0, 0),
+            "one paragraph spliced, none written anew: {stats:?}"
+        );
+        assert!(reads_as(&doc.doc, &automerge::ROOT, &wanted));
     }
 }
