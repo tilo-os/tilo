@@ -258,7 +258,10 @@ impl CodeApp {
         };
         let Some(path) = ui::portal::to_local_path(&url) else {
             Self::note(
-                format!("Definition is outside this machine: {}", loc.uri),
+                crate::resource::CATALOG.t_args(
+                    "code-editor-definition-on-another-computer",
+                    &[("uri", ui::i18n::ArgValue::Text(loc.uri))],
+                ),
                 ToastKind::Error,
             );
             return;

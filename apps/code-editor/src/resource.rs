@@ -741,7 +741,22 @@ mod german_catalogue_tests {
             catalogue.t("code-editor-code-help-try-again"),
             "Erneut versuchen"
         );
+        assert_eq!(
+            catalogue.t("code-editor-no-formatter"),
+            "Für diese Datei ist kein Formatierer eingerichtet"
+        );
+        assert_eq!(
+            catalogue.t_args("code-editor-replaced", &[("count", "3".into())]),
+            "3 Treffer ersetzt"
+        );
         catalogue.set_locale("en-US");
         assert_eq!(catalogue.t("code-editor-code-help-try-again"), "Try again");
+        assert_eq!(
+            catalogue.t_args(
+                "code-editor-edit-refused",
+                &[("detail", "the file has no head".into())]
+            ),
+            "The edit wasn't applied: the file has no head"
+        );
     }
 }
