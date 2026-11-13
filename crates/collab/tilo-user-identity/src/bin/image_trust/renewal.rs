@@ -228,176 +228,181 @@ mod tests {
         }
     }
 
-    #[test]
-    fn renewal_preserves_owner_grant_floors_and_parent_transaction() {
-        let fixture = fixture();
-        let trust = fixture.request.trust.clone();
-        let original = read_private_bounded(&trust.join("endorsement.bin")).unwrap();
-        let old: ImageEndorsement = from_canonical_bytes(&original).unwrap();
-        let lock_path = fixture.request.lock_path.clone();
-        renew(&fixture.request).unwrap();
-        let current: ImageEndorsement =
-            from_canonical_bytes(&read_private_bounded(&trust.join("endorsement.bin")).unwrap())
-                .unwrap();
-        assert_eq!(current.generation, 2);
-        assert_eq!(current.image_manifest_sha256, [2; 32]);
-        assert_eq!(current.signing_authorization, old.signing_authorization);
-        assert_eq!(current.device_certificate, old.device_certificate);
-        assert_eq!(
-            read_generation_floor(&trust.join("generation.state")).unwrap(),
-            Some(1)
-        );
-        assert_eq!(
-            read_generation_floor(&trust.join("time.state")).unwrap(),
-            Some(5)
-        );
-        let probe = open_readonly_without_symlinks(&lock_path).unwrap();
-        assert!(matches!(
-            advisory_lock::FileLock::try_exclusive(probe),
-            Err(advisory_lock::TryLockError::WouldBlock)
-        ));
-        verify_image_endorsement_at(&current, &old.device_certificate.user_public_key, 50).unwrap();
-    }
+    tilo_test_env::scenario! {
+        fn renewal_stays_within_the_grant_and_the_parent_transaction;
 
-    #[test]
-    fn exact_previously_endorsed_successor_can_retry_without_expanding_authority() {
-        let mut fixture = fixture();
-        renew(&fixture.request).unwrap();
-        let trust = fixture.request.trust.clone();
-        let previous: ImageEndorsement =
-            from_canonical_bytes(&read_private_bounded(&trust.join("endorsement.bin")).unwrap())
-                .unwrap();
-        fixture.request.now = 51;
-        renew(&fixture.request).unwrap();
-        let current: ImageEndorsement =
-            from_canonical_bytes(&read_private_bounded(&trust.join("endorsement.bin")).unwrap())
-                .unwrap();
-        assert_eq!(current.generation, previous.generation);
-        assert_eq!(
-            current.image_manifest_sha256,
-            previous.image_manifest_sha256
-        );
-        assert_eq!(
-            current.signing_authorization,
-            previous.signing_authorization
-        );
-        assert_eq!(current.device_certificate, previous.device_certificate);
-        fixture.request.image_manifest_sha256 = [9; 32];
-        assert!(renew(&fixture.request).is_err());
-        let retained: ImageEndorsement =
-            from_canonical_bytes(&read_private_bounded(&trust.join("endorsement.bin")).unwrap())
-                .unwrap();
-        assert_eq!(retained, current);
-    }
-
-    #[test]
-    fn renewal_refuses_expired_grant_rollback_and_backdating_without_writes() {
-        for (generation, now) in [(2, 90), (1, 50), (2, 4)] {
-            let mut fixture = fixture();
-            let original =
-                read_private_bounded(&fixture.request.trust.join("endorsement.bin")).unwrap();
-            let trust = fixture.request.trust.clone();
-            fixture.request.generation = generation;
-            fixture.request.now = now;
-            assert!(renew(&fixture.request).is_err());
-            assert_eq!(
-                read_private_bounded(&trust.join("endorsement.bin")).unwrap(),
-                original
-            );
-        }
-    }
-
-    #[test]
-    fn inherited_transaction_refuses_unlocked_unrelated_and_redirected_descriptors() {
-        let fixture = fixture();
-        let unrelated =
-            open_lock_without_symlinks(&fixture.directory.path().join("unrelated.lock")).unwrap();
-        assert!(inherited_lock(unrelated.as_raw_fd(), &fixture.request.lock_path).is_err());
-        let fresh_path = fixture.directory.path().join("fresh.lock");
-        let unlocked = open_lock_without_symlinks(&fresh_path).unwrap();
-        assert!(inherited_lock(unlocked.as_raw_fd(), &fresh_path).is_err());
-        let link = fixture.directory.path().join("redirected.lock");
-        std::os::unix::fs::symlink(&fixture.request.lock_path, &link).unwrap();
-        assert!(inherited_lock(fixture.request.lock_fd, &link).is_err());
-    }
-    #[test]
-    fn renewal_rechecks_current_revocations_and_refuses_forged_previous_authority() {
-        use tilo_user_identity::{RevocationReason, sign_revocation_entry};
-        for revoke in [true, false] {
+        phase renewal_preserves_owner_grant_floors_and_parent_transaction;
+        {
             let fixture = fixture();
             let trust = fixture.request.trust.clone();
-            let mut old: ImageEndorsement = from_canonical_bytes(
-                &read_private_bounded(&trust.join("endorsement.bin")).unwrap(),
+            let original = read_private_bounded(&trust.join("endorsement.bin")).unwrap();
+            let old: ImageEndorsement = from_canonical_bytes(&original).unwrap();
+            let lock_path = fixture.request.lock_path.clone();
+            renew(&fixture.request).unwrap();
+            let current: ImageEndorsement =
+                from_canonical_bytes(&read_private_bounded(&trust.join("endorsement.bin")).unwrap())
+                    .unwrap();
+            assert_eq!(current.generation, 2);
+            assert_eq!(current.image_manifest_sha256, [2; 32]);
+            assert_eq!(current.signing_authorization, old.signing_authorization);
+            assert_eq!(current.device_certificate, old.device_certificate);
+            assert_eq!(
+                read_generation_floor(&trust.join("generation.state")).unwrap(),
+                Some(1)
+            );
+            assert_eq!(
+                read_generation_floor(&trust.join("time.state")).unwrap(),
+                Some(5)
+            );
+            let probe = open_readonly_without_symlinks(&lock_path).unwrap();
+            assert!(matches!(
+                advisory_lock::FileLock::try_exclusive(probe),
+                Err(advisory_lock::TryLockError::WouldBlock)
+            ));
+            verify_image_endorsement_at(&current, &old.device_certificate.user_public_key, 50).unwrap();
+        }
+
+        phase exact_previously_endorsed_successor_can_retry_without_expanding_authority;
+        {
+            let mut fixture = fixture();
+            renew(&fixture.request).unwrap();
+            let trust = fixture.request.trust.clone();
+            let previous: ImageEndorsement =
+                from_canonical_bytes(&read_private_bounded(&trust.join("endorsement.bin")).unwrap())
+                    .unwrap();
+            fixture.request.now = 51;
+            renew(&fixture.request).unwrap();
+            let current: ImageEndorsement =
+                from_canonical_bytes(&read_private_bounded(&trust.join("endorsement.bin")).unwrap())
+                    .unwrap();
+            assert_eq!(current.generation, previous.generation);
+            assert_eq!(
+                current.image_manifest_sha256,
+                previous.image_manifest_sha256
+            );
+            assert_eq!(
+                current.signing_authorization,
+                previous.signing_authorization
+            );
+            assert_eq!(current.device_certificate, previous.device_certificate);
+            fixture.request.image_manifest_sha256 = [9; 32];
+            assert!(renew(&fixture.request).is_err());
+            let retained: ImageEndorsement =
+                from_canonical_bytes(&read_private_bounded(&trust.join("endorsement.bin")).unwrap())
+                    .unwrap();
+            assert_eq!(retained, current);
+        }
+
+        phase renewal_refuses_expired_grant_rollback_and_backdating_without_writes;
+        {
+            for (generation, now) in [(2, 90), (1, 50), (2, 4)] {
+                let mut fixture = fixture();
+                let original =
+                    read_private_bounded(&fixture.request.trust.join("endorsement.bin")).unwrap();
+                let trust = fixture.request.trust.clone();
+                fixture.request.generation = generation;
+                fixture.request.now = now;
+                assert!(renew(&fixture.request).is_err());
+                assert_eq!(
+                    read_private_bounded(&trust.join("endorsement.bin")).unwrap(),
+                    original
+                );
+            }
+        }
+
+        phase inherited_transaction_refuses_unlocked_unrelated_and_redirected_descriptors;
+        {
+            let fixture = fixture();
+            let unrelated =
+                open_lock_without_symlinks(&fixture.directory.path().join("unrelated.lock")).unwrap();
+            assert!(inherited_lock(unrelated.as_raw_fd(), &fixture.request.lock_path).is_err());
+            let fresh_path = fixture.directory.path().join("fresh.lock");
+            let unlocked = open_lock_without_symlinks(&fresh_path).unwrap();
+            assert!(inherited_lock(unlocked.as_raw_fd(), &fresh_path).is_err());
+            let link = fixture.directory.path().join("redirected.lock");
+            std::os::unix::fs::symlink(&fixture.request.lock_path, &link).unwrap();
+            assert!(inherited_lock(fixture.request.lock_fd, &link).is_err());
+        }
+
+        phase renewal_rechecks_current_revocations_and_refuses_forged_previous_authority;
+        {
+            use tilo_user_identity::{RevocationReason, sign_revocation_entry};
+            for revoke in [true, false] {
+                let fixture = fixture();
+                let trust = fixture.request.trust.clone();
+                let mut old: ImageEndorsement = from_canonical_bytes(
+                    &read_private_bounded(&trust.join("endorsement.bin")).unwrap(),
+                )
+                .unwrap();
+                if revoke {
+                    let mut entry = RevocationEntry {
+                        user_public_key: old.device_certificate.user_public_key,
+                        revoked_device_public_key: old.device_certificate.device_public_key,
+                        revoked_at_ns: 45,
+                        reason: RevocationReason::Lost,
+                        signature: [0; 64],
+                    };
+                    sign_revocation_entry(&mut entry, &fixture.root_key).unwrap();
+                    tilo_files::native::atomic::write_with_mode(
+                        &trust.join("revocations.bin"),
+                        &canonical_bytes(&vec![entry]).unwrap(),
+                        0o600,
+                    )
+                    .unwrap();
+                } else {
+                    old.signature[0] ^= 1;
+                    tilo_files::native::atomic::write_with_mode(
+                        &trust.join("endorsement.bin"),
+                        &canonical_bytes(&old).unwrap(),
+                        0o600,
+                    )
+                    .unwrap();
+                }
+                let before = read_private_bounded(&trust.join("endorsement.bin")).unwrap();
+                assert!(renew(&fixture.request).is_err());
+                assert_eq!(
+                    read_private_bounded(&trust.join("endorsement.bin")).unwrap(),
+                    before
+                );
+            }
+        }
+
+        phase stale_endorsement_can_use_still_current_grant_without_extending_its_expiry;
+        {
+            let mut fixture = fixture();
+            let trust = fixture.request.trust.clone();
+            let mut old: ImageEndorsement =
+                from_canonical_bytes(&read_private_bounded(&trust.join("endorsement.bin")).unwrap())
+                    .unwrap();
+            let expiry = tilo_user_identity::MAX_IMAGE_ENDORSEMENT_AGE_NS * 2;
+            old.device_certificate.expires_at_ns = Some(expiry);
+            sign_device_cert(&mut old.device_certificate, &fixture.root_key).unwrap();
+            old.signing_authorization.expires_at_ns = expiry;
+            sign_image_signing_authorization(&mut old.signing_authorization, &fixture.root_key)
+                .unwrap();
+            let device = read_device_key(&fixture.request.device_key).unwrap();
+            sign_image_endorsement(&mut old, &device).unwrap();
+            fixture.request.now = tilo_user_identity::MAX_IMAGE_ENDORSEMENT_AGE_NS + 6;
+            assert_eq!(
+                verify_image_endorsement_at(
+                    &old,
+                    &old.device_certificate.user_public_key,
+                    fixture.request.now
+                ),
+                Err(tilo_user_identity::ImageEndorsementError::TooOld)
+            );
+            tilo_files::native::atomic::write_with_mode(
+                &trust.join("endorsement.bin"),
+                &canonical_bytes(&old).unwrap(),
+                0o600,
             )
             .unwrap();
-            if revoke {
-                let mut entry = RevocationEntry {
-                    user_public_key: old.device_certificate.user_public_key,
-                    revoked_device_public_key: old.device_certificate.device_public_key,
-                    revoked_at_ns: 45,
-                    reason: RevocationReason::Lost,
-                    signature: [0; 64],
-                };
-                sign_revocation_entry(&mut entry, &fixture.root_key).unwrap();
-                tilo_files::native::atomic::write_with_mode(
-                    &trust.join("revocations.bin"),
-                    &canonical_bytes(&vec![entry]).unwrap(),
-                    0o600,
-                )
-                .unwrap();
-            } else {
-                old.signature[0] ^= 1;
-                tilo_files::native::atomic::write_with_mode(
-                    &trust.join("endorsement.bin"),
-                    &canonical_bytes(&old).unwrap(),
-                    0o600,
-                )
-                .unwrap();
-            }
-            let before = read_private_bounded(&trust.join("endorsement.bin")).unwrap();
-            assert!(renew(&fixture.request).is_err());
-            assert_eq!(
-                read_private_bounded(&trust.join("endorsement.bin")).unwrap(),
-                before
-            );
+            renew(&fixture.request).unwrap();
+            let current: ImageEndorsement =
+                from_canonical_bytes(&read_private_bounded(&trust.join("endorsement.bin")).unwrap())
+                    .unwrap();
+            assert_eq!(current.signing_authorization, old.signing_authorization);
+            assert_eq!(current.signing_authorization.expires_at_ns, expiry);
         }
-    }
-
-    #[test]
-    fn stale_endorsement_can_use_still_current_grant_without_extending_its_expiry() {
-        let mut fixture = fixture();
-        let trust = fixture.request.trust.clone();
-        let mut old: ImageEndorsement =
-            from_canonical_bytes(&read_private_bounded(&trust.join("endorsement.bin")).unwrap())
-                .unwrap();
-        let expiry = tilo_user_identity::MAX_IMAGE_ENDORSEMENT_AGE_NS * 2;
-        old.device_certificate.expires_at_ns = Some(expiry);
-        sign_device_cert(&mut old.device_certificate, &fixture.root_key).unwrap();
-        old.signing_authorization.expires_at_ns = expiry;
-        sign_image_signing_authorization(&mut old.signing_authorization, &fixture.root_key)
-            .unwrap();
-        let device = read_device_key(&fixture.request.device_key).unwrap();
-        sign_image_endorsement(&mut old, &device).unwrap();
-        fixture.request.now = tilo_user_identity::MAX_IMAGE_ENDORSEMENT_AGE_NS + 6;
-        assert_eq!(
-            verify_image_endorsement_at(
-                &old,
-                &old.device_certificate.user_public_key,
-                fixture.request.now
-            ),
-            Err(tilo_user_identity::ImageEndorsementError::TooOld)
-        );
-        tilo_files::native::atomic::write_with_mode(
-            &trust.join("endorsement.bin"),
-            &canonical_bytes(&old).unwrap(),
-            0o600,
-        )
-        .unwrap();
-        renew(&fixture.request).unwrap();
-        let current: ImageEndorsement =
-            from_canonical_bytes(&read_private_bounded(&trust.join("endorsement.bin")).unwrap())
-                .unwrap();
-        assert_eq!(current.signing_authorization, old.signing_authorization);
-        assert_eq!(current.signing_authorization.expires_at_ns, expiry);
     }
 }

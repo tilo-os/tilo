@@ -22,13 +22,14 @@ use tilo_user_identity::{
     mint_enrollment_token, sign_device_cert, verify_device_cert_at, verify_enrollment_token,
 };
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-)]
-fn enrollment_and_directory_sync_work_end_to_end_only_for_one_user() {
-    // Phase: full_enrollment_and_directory_sync_flow.
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn enrollment_and_directory_sync_work_end_to_end_only_for_one_user;
+
+    phase full_enrollment_and_directory_sync_flow;
     {
         // 1. User provisions their root identity on their primary device.
         let (root_sk, user) = UserIdentity::generate("Ada Lovelace", 1_000_000);
@@ -125,7 +126,7 @@ fn enrollment_and_directory_sync_work_end_to_end_only_for_one_user() {
         assert!(phone_cert.capabilities.can_own_workspaces);
     }
 
-    // Phase: peer_from_different_user_is_rejected.
+    phase peer_from_different_user_is_rejected;
     {
         // Two independent users. A device certified by Bob cannot
         // apply deltas to Alice's directory even if its byte layout is

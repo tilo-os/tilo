@@ -347,92 +347,96 @@ mod branch {
     mod tests {
         use super::*;
 
-        #[test]
-        fn people_are_the_login_accounts() {
-            let dir = tempfile::tempdir().unwrap();
-            let passwd = dir.path().join("passwd");
-            std::fs::write(
-                &passwd,
-                "root:x:0:0:root:/root:/bin/bash\n\
+        tilo_test_env::scenario! {
+            fn a_branch_finds_its_people_resets_the_relay_and_renames_the_machine;
+
+            phase people_are_the_login_accounts;
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let passwd = dir.path().join("passwd");
+                std::fs::write(
+                    &passwd,
+                    "root:x:0:0:root:/root:/bin/bash\n\
                  tilo-relay:x:985:985::/var/lib/tilo-relay:/sbin/nologin\n\
                  you:x:1000:1000:You:/var/home/you:/bin/bash\n\
                  broken:x:abc:1000::/home/broken:/bin/sh\n\
                  nobody:x:65534:65534:Kernel Overflow User:/:/sbin/nologin\n",
-            )
-            .unwrap();
-            let people = people(&passwd);
-            assert_eq!(people.len(), 1);
-            assert_eq!(people[0].name, "you");
-            assert_eq!((people[0].uid, people[0].gid), (1000, 1000));
-            assert_eq!(people[0].home, Path::new("/var/home/you"));
-            assert!(super::people(&dir.path().join("missing")).is_empty());
-        }
+                )
+                .unwrap();
+                let people = people(&passwd);
+                assert_eq!(people.len(), 1);
+                assert_eq!(people[0].name, "you");
+                assert_eq!((people[0].uid, people[0].gid), (1000, 1000));
+                assert_eq!(people[0].home, Path::new("/var/home/you"));
+                assert!(super::people(&dir.path().join("missing")).is_empty());
+            }
 
-        #[test]
-        fn the_relays_channel_members_are_dropped_and_its_routes_kept() {
-            let dir = tempfile::tempdir().unwrap();
-            let relay = RelayChannels {
-                root: dir.path().to_path_buf(),
-            };
-            let key = SigningKey::from_bytes(&[1; 32]);
-            assert_eq!(relay.reseal(&[], &key).unwrap(), Resealed::Absent);
-            let current = dir.path().join("channels/ws-1/channels");
-            let earlier = dir.path().join("rooms/ws-2.channels");
-            for directory in [&current, &earlier] {
-                std::fs::create_dir_all(directory).unwrap();
-                std::fs::write(directory.join("a.peer"), "member").unwrap();
-                std::fs::write(directory.join("a.route"), "route").unwrap();
+            phase the_relays_channel_members_are_dropped_and_its_routes_kept;
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let relay = RelayChannels {
+                    root: dir.path().to_path_buf(),
+                };
+                let key = SigningKey::from_bytes(&[1; 32]);
+                assert_eq!(relay.reseal(&[], &key).unwrap(), Resealed::Absent);
+                let current = dir.path().join("channels/ws-1/channels");
+                let earlier = dir.path().join("rooms/ws-2.channels");
+                for directory in [&current, &earlier] {
+                    std::fs::create_dir_all(directory).unwrap();
+                    std::fs::write(directory.join("a.peer"), "member").unwrap();
+                    std::fs::write(directory.join("a.route"), "route").unwrap();
+                }
+                assert_eq!(relay.reseal(&[], &key).unwrap(), Resealed::Reset);
+                for directory in [&current, &earlier] {
+                    assert!(!directory.join("a.peer").exists());
+                    assert!(directory.join("a.route").exists());
+                }
+                assert_eq!(relay.reseal(&[], &key).unwrap(), Resealed::Absent);
             }
-            assert_eq!(relay.reseal(&[], &key).unwrap(), Resealed::Reset);
-            for directory in [&current, &earlier] {
-                assert!(!directory.join("a.peer").exists());
-                assert!(directory.join("a.route").exists());
-            }
-            assert_eq!(relay.reseal(&[], &key).unwrap(), Resealed::Absent);
-        }
 
-        #[test]
-        fn a_branch_gets_a_machine_id_and_ssh_host_keys_of_its_own() {
-            let dir = tempfile::tempdir().unwrap();
-            let machine_id = dir.path().join("machine-id");
-            let ssh = dir.path().join("ssh");
-            std::fs::create_dir(&ssh).unwrap();
-            std::fs::write(&machine_id, "0123456789abcdef0123456789abcdef\n").unwrap();
-            for name in [
-                "ssh_host_ed25519_key",
-                "ssh_host_ed25519_key.pub",
-                "ssh_host_rsa_key",
-                "sshd_config",
-                "moduli",
-            ] {
-                std::fs::write(ssh.join(name), "x").unwrap();
-            }
-            MachineNames {
-                machine_id: machine_id.clone(),
-                ssh: ssh.clone(),
-            }
-            .renew()
-            .unwrap();
-            let id = std::fs::read_to_string(&machine_id).unwrap();
-            assert_ne!(id, "0123456789abcdef0123456789abcdef\n");
-            assert_eq!(id.len(), 33);
-            assert!(id.trim_end().chars().all(|c| c.is_ascii_hexdigit()));
-            let mut left: Vec<String> = std::fs::read_dir(&ssh)
-                .unwrap()
-                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-                .collect();
-            left.sort();
-            assert_eq!(left, vec!["moduli", "sshd_config"]);
+            phase a_branch_gets_a_machine_id_and_ssh_host_keys_of_its_own;
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let machine_id = dir.path().join("machine-id");
+                let ssh = dir.path().join("ssh");
+                std::fs::create_dir(&ssh).unwrap();
+                std::fs::write(&machine_id, "0123456789abcdef0123456789abcdef\n").unwrap();
+                for name in [
+                    "ssh_host_ed25519_key",
+                    "ssh_host_ed25519_key.pub",
+                    "ssh_host_rsa_key",
+                    "sshd_config",
+                    "moduli",
+                ] {
+                    std::fs::write(ssh.join(name), "x").unwrap();
+                }
+                MachineNames {
+                    machine_id: machine_id.clone(),
+                    ssh: ssh.clone(),
+                }
+                .renew()
+                .unwrap();
+                let id = std::fs::read_to_string(&machine_id).unwrap();
+                assert_ne!(id, "0123456789abcdef0123456789abcdef\n");
+                assert_eq!(id.len(), 33);
+                assert!(id.trim_end().chars().all(|c| c.is_ascii_hexdigit()));
+                let mut left: Vec<String> = std::fs::read_dir(&ssh)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                    .collect();
+                left.sort();
+                assert_eq!(left, vec!["moduli", "sshd_config"]);
 
-            // A machine without either is left without either.
-            let bare = tempfile::tempdir().unwrap();
-            MachineNames {
-                machine_id: bare.path().join("machine-id"),
-                ssh: bare.path().join("ssh"),
+                // A machine without either is left without either.
+                let bare = tempfile::tempdir().unwrap();
+                MachineNames {
+                    machine_id: bare.path().join("machine-id"),
+                    ssh: bare.path().join("ssh"),
+                }
+                .renew()
+                .unwrap();
+                assert!(!bare.path().join("machine-id").exists());
             }
-            .renew()
-            .unwrap();
-            assert!(!bare.path().join("machine-id").exists());
         }
     }
 }

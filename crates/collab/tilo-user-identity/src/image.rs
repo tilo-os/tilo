@@ -387,16 +387,21 @@ mod tests {
         )
     }
 
-    /// A complete chain verifies and digest tampering fails; generation zero is rejected on both
-    /// ends; signing refuses an invalid or not-yet-valid device certificate; old endorsements cannot
-    /// extend a registry freeze; a revoked signer is rejected even when it backdates.
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-    )]
-    fn image_trust_chains_verify_only_valid_current_signers() {
-        // Phase: complete_chain_verifies_and_digest_tampering_fails.
+    tilo_test_env::scenario! {
+        /// A complete chain verifies and digest tampering fails; generation zero is rejected on both
+        /// ends; signing refuses an invalid or not-yet-valid device certificate; old endorsements cannot
+        /// extend a registry freeze; a revoked signer is rejected even when it backdates.
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+        )]
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn image_trust_chains_verify_only_valid_current_signers;
+
+        phase complete_chain_verifies_and_digest_tampering_fails;
         {
             let (root, device, mut image) = endorsement(DeviceCapabilities::primary(), true);
             sign_image_endorsement(&mut image, &device).unwrap();
@@ -417,7 +422,7 @@ mod tests {
             );
         }
 
-        // Phase: generation_zero_is_rejected_before_signing_and_when_received.
+        phase generation_zero_is_rejected_before_signing_and_when_received;
         {
             let (root, device, mut image) = endorsement(DeviceCapabilities::primary(), true);
             image.generation = 0;
@@ -431,7 +436,7 @@ mod tests {
             );
         }
 
-        // Phase: signing_refuses_an_invalid_or_not_yet_valid_device_certificate.
+        phase signing_refuses_an_invalid_or_not_yet_valid_device_certificate;
         {
             let (_root, device, mut image) = endorsement(DeviceCapabilities::primary(), true);
             image.device_certificate.signature[0] ^= 1;
@@ -450,7 +455,7 @@ mod tests {
             );
         }
 
-        // Phase: old_endorsements_cannot_extend_a_registry_freeze.
+        phase old_endorsements_cannot_extend_a_registry_freeze;
         {
             let (root, device, mut image) = endorsement(DeviceCapabilities::primary(), true);
             sign_image_endorsement(&mut image, &device).unwrap();
@@ -464,7 +469,7 @@ mod tests {
             );
         }
 
-        // Phase: revoked_signer_is_rejected_even_if_it_backdates_an_endorsement.
+        phase revoked_signer_is_rejected_even_if_it_backdates_an_endorsement;
         {
             use crate::{RevocationEntry, RevocationReason, sign_revocation_entry};
 
@@ -520,11 +525,12 @@ mod tests {
         }
     }
 
-    /// Device admission does not imply image signing; a dedicated grant authorises an ordinary member
-    /// and expires; grants cannot encode effectively unbounded authority.
-    #[test]
-    fn image_signing_authority_is_granted_explicitly_and_bounded() {
-        // Phase: device_admission_authority_does_not_imply_image_signing_authority.
+    tilo_test_env::scenario! {
+        /// Device admission does not imply image signing; a dedicated grant authorises an ordinary member
+        /// and expires; grants cannot encode effectively unbounded authority.
+        fn image_signing_authority_is_granted_explicitly_and_bounded;
+
+        phase device_admission_authority_does_not_imply_image_signing_authority;
         {
             let (_root, device, mut image) = endorsement(DeviceCapabilities::primary(), false);
             assert!(matches!(
@@ -533,7 +539,7 @@ mod tests {
             ));
         }
 
-        // Phase: dedicated_grant_can_authorize_an_ordinary_member_and_expires.
+        phase dedicated_grant_can_authorize_an_ordinary_member_and_expires;
         {
             let (root, device, mut image) = endorsement(DeviceCapabilities::member(), true);
             sign_image_endorsement(&mut image, &device).unwrap();
@@ -546,7 +552,7 @@ mod tests {
             ));
         }
 
-        // Phase: image_signing_grants_cannot_encode_effectively_unbounded_authority.
+        phase image_signing_grants_cannot_encode_effectively_unbounded_authority;
         {
             let (root, user) = UserIdentity::generate("root", 1);
             let (_device, identity) = DeviceIdentity::generate("builder", 2);

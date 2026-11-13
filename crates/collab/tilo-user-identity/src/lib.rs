@@ -297,11 +297,12 @@ pub fn home_peer_registry_path(identity_root: &std::path::Path) -> std::path::Pa
 mod tests {
     use super::*;
 
-    /// The signing preimage is a frozen ABI, and user and device identities round-trip after
-    /// generation.
-    #[test]
-    fn identities_generate_round_trip_under_a_frozen_signing_preimage() {
-        // Phase: signing_preimage_is_frozen_abi.
+    tilo_test_env::scenario! {
+        /// The signing preimage is a frozen ABI, and user and device identities round-trip after
+        /// generation.
+        fn identities_generate_round_trip_under_a_frozen_signing_preimage;
+
+        phase signing_preimage_is_frozen_abi;
         // The signing-preimage byte constants are wire ABI. If any of
         // these byte sequences change, previously-issued
         // certificates and revocations stop verifying — that would
@@ -336,7 +337,7 @@ mod tests {
             assert_eq!(approval::APPROVAL_RESPONSE_TAG.len(), 33);
         }
 
-        // Phase: user_identity_generate_round_trip.
+        phase user_identity_generate_round_trip;
         {
             let (_sk, user) = UserIdentity::generate("Alice", 1_720_000_000_000_000_000);
             assert_eq!(user.label, "Alice");
@@ -348,7 +349,7 @@ mod tests {
             assert_eq!(user, back);
         }
 
-        // Phase: device_identity_generate_round_trip.
+        phase device_identity_generate_round_trip;
         {
             let (_sk, dev) = DeviceIdentity::generate("Framework 16", 1_720_000_000_000_000_000);
             assert_eq!(dev.label, "Framework 16");

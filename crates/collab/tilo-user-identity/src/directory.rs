@@ -947,15 +947,16 @@ mod tests {
         }
     }
 
-    /// A change's author is provable via its signature; deltas from a revoked device, the wrong
-    /// device or another user are rejected.
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-    )]
-    fn directory_deltas_are_accepted_only_from_the_users_live_devices() {
-        // Phase: author_of_change_is_provable_via_signature.
+    tilo_test_env::scenario! {
+        /// A change's author is provable via its signature; deltas from a revoked device, the wrong
+        /// device or another user are rejected.
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+        )]
+        fn directory_deltas_are_accepted_only_from_the_users_live_devices;
+
+        phase author_of_change_is_provable_via_signature;
         {
             let f = fresh_user();
             let (a_sk, a_pk, a_cert) = enrol_device(
@@ -988,7 +989,7 @@ mod tests {
             ));
         }
 
-        // Phase: revoked_device_delta_rejected.
+        phase revoked_device_delta_rejected;
         {
             let f = fresh_user();
             let (a_sk, a_pk, a_cert) = enrol_device(
@@ -1054,7 +1055,7 @@ mod tests {
             );
         }
 
-        // Phase: delta_signed_by_wrong_device_rejected.
+        phase delta_signed_by_wrong_device_rejected;
         {
             let f = fresh_user();
             let (_a_sk, a_pk, a_cert) = enrol_device(
@@ -1083,7 +1084,7 @@ mod tests {
             ));
         }
 
-        // Phase: cross_user_delta_rejected.
+        phase cross_user_delta_rejected;
         {
             let f_alice = fresh_user();
             let f_bob = fresh_user();
@@ -1138,231 +1139,235 @@ mod tests {
         }
     }
 
-    /// Republishing the same entry adds no history, and a signed snapshot
-    /// brings it to another device of the same person.
-    #[test]
-    fn an_unchanged_entry_writes_nothing_and_reaches_another_device() {
-        let f = fresh_user();
-        let (a_sk, a_pk, a_cert) = enrol_device(
-            &f.user_sk,
-            f.user_pk,
-            "laptop",
-            DeviceCapabilities::primary(),
-        );
-        let (b_sk, b_pk, _) =
-            enrol_device(&f.user_sk, f.user_pk, "board", DeviceCapabilities::member());
-        let workspace = WorkspaceId::from_u128(7);
+    tilo_test_env::scenario! {
+        fn what_one_device_records_reaches_the_persons_other_devices;
 
-        let mut laptop = WorkspaceDirectory::new(f.user_pk, a_pk);
-        laptop.add_workspace(workspace, "Research").unwrap();
-        let heads = laptop.doc.get_heads();
-        laptop.add_workspace(workspace, "Research").unwrap();
-        laptop.doc.commit();
-        assert_eq!(
-            laptop.doc.get_heads(),
-            heads,
-            "an unchanged entry writes nothing"
-        );
+        phase an_unchanged_entry_writes_nothing_and_reaches_another_device;
+        // Republishing the same entry adds no history, and a signed snapshot
+        // brings it to another device of the same person.
+        {
+            let f = fresh_user();
+            let (a_sk, a_pk, a_cert) = enrol_device(
+                &f.user_sk,
+                f.user_pk,
+                "laptop",
+                DeviceCapabilities::primary(),
+            );
+            let (b_sk, b_pk, _) =
+                enrol_device(&f.user_sk, f.user_pk, "board", DeviceCapabilities::member());
+            let workspace = WorkspaceId::from_u128(7);
 
-        let mut board = WorkspaceDirectory::new(f.user_pk, b_pk);
-        let snapshot = laptop.signed_snapshot(&a_sk, 1_000).unwrap();
-        board
-            .apply_incremental(&snapshot, &a_cert, &RevocationList::new(), 1_100)
-            .unwrap();
-        let listed = board.list_workspaces();
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].name, "Research");
-        assert_eq!(listed[0].id, workspace);
+            let mut laptop = WorkspaceDirectory::new(f.user_pk, a_pk);
+            laptop.add_workspace(workspace, "Research").unwrap();
+            let heads = laptop.doc.get_heads();
+            laptop.add_workspace(workspace, "Research").unwrap();
+            laptop.doc.commit();
+            assert_eq!(
+                laptop.doc.get_heads(),
+                heads,
+                "an unchanged entry writes nothing"
+            );
 
-        assert!(
-            board.covered_by(&snapshot.delta),
-            "the board holds nothing the laptop lacks"
-        );
-        assert!(laptop.covered_by(&board.signed_snapshot(&b_sk, 1_200).unwrap().delta));
-
-        laptop.add_workspace(workspace, "Thesis").unwrap();
-        assert!(
-            !laptop.covered_by(&snapshot.delta),
-            "the rename is news to the board"
-        );
-        let renamed = laptop.signed_snapshot(&a_sk, 2_000).unwrap();
-        board
-            .apply_incremental(&renamed, &a_cert, &RevocationList::new(), 2_100)
-            .unwrap();
-        assert_eq!(board.list_workspaces()[0].name, "Thesis");
-
-        // Snapshots taken between uncommitted edits stay one history: the
-        // second edit must not reuse the first snapshot's change.
-        let mut fresh = WorkspaceDirectory::new(f.user_pk, a_pk);
-        fresh
-            .add_workspace(WorkspaceId::from_u128(8), "One")
-            .unwrap();
-        let first = fresh.signed_snapshot(&a_sk, 3_000).unwrap();
-        fresh
-            .add_workspace(WorkspaceId::from_u128(8), "Two")
-            .unwrap();
-        let second = fresh.signed_snapshot(&a_sk, 3_100).unwrap();
-        let mut other = WorkspaceDirectory::new(f.user_pk, b_pk);
-        for update in [&first, &second] {
-            other
-                .apply_incremental(update, &a_cert, &RevocationList::new(), 3_200)
+            let mut board = WorkspaceDirectory::new(f.user_pk, b_pk);
+            let snapshot = laptop.signed_snapshot(&a_sk, 1_000).unwrap();
+            board
+                .apply_incremental(&snapshot, &a_cert, &RevocationList::new(), 1_100)
                 .unwrap();
+            let listed = board.list_workspaces();
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].name, "Research");
+            assert_eq!(listed[0].id, workspace);
+
+            assert!(
+                board.covered_by(&snapshot.delta),
+                "the board holds nothing the laptop lacks"
+            );
+            assert!(laptop.covered_by(&board.signed_snapshot(&b_sk, 1_200).unwrap().delta));
+
+            laptop.add_workspace(workspace, "Thesis").unwrap();
+            assert!(
+                !laptop.covered_by(&snapshot.delta),
+                "the rename is news to the board"
+            );
+            let renamed = laptop.signed_snapshot(&a_sk, 2_000).unwrap();
+            board
+                .apply_incremental(&renamed, &a_cert, &RevocationList::new(), 2_100)
+                .unwrap();
+            assert_eq!(board.list_workspaces()[0].name, "Thesis");
+
+            // Snapshots taken between uncommitted edits stay one history: the
+            // second edit must not reuse the first snapshot's change.
+            let mut fresh = WorkspaceDirectory::new(f.user_pk, a_pk);
+            fresh
+                .add_workspace(WorkspaceId::from_u128(8), "One")
+                .unwrap();
+            let first = fresh.signed_snapshot(&a_sk, 3_000).unwrap();
+            fresh
+                .add_workspace(WorkspaceId::from_u128(8), "Two")
+                .unwrap();
+            let second = fresh.signed_snapshot(&a_sk, 3_100).unwrap();
+            let mut other = WorkspaceDirectory::new(f.user_pk, b_pk);
+            for update in [&first, &second] {
+                other
+                    .apply_incremental(update, &a_cert, &RevocationList::new(), 3_200)
+                    .unwrap();
+            }
+            assert_eq!(other.list_workspaces()[0].name, "Two");
         }
-        assert_eq!(other.list_workspaces()[0].name, "Two");
-    }
 
-    /// Positions and the device roster travel like the rest of the list.
-    #[test]
-    fn order_and_devices_reach_another_device() {
-        let f = fresh_user();
-        let (a_sk, a_pk, a_cert) = enrol_device(
-            &f.user_sk,
-            f.user_pk,
-            "laptop",
-            DeviceCapabilities::primary(),
-        );
-        let (_b_sk, b_pk, _) =
-            enrol_device(&f.user_sk, f.user_pk, "board", DeviceCapabilities::member());
-        let mut laptop = WorkspaceDirectory::new(f.user_pk, a_pk);
-        laptop
-            .add_workspace(WorkspaceId::from_u128(1), "One")
-            .unwrap();
-        laptop.set_order(WorkspaceId::from_u128(1), 2.5).unwrap();
-        laptop.register_device(a_pk, "Laptop").unwrap();
-        let heads = laptop.doc.get_heads();
-        laptop.set_order(WorkspaceId::from_u128(1), 2.5).unwrap();
-        laptop.register_device(a_pk, "Laptop").unwrap();
-        assert_eq!(
-            laptop.doc.get_heads(),
-            heads,
-            "unchanged values write nothing"
-        );
-        let mut board = WorkspaceDirectory::new(f.user_pk, b_pk);
-        board
-            .apply_incremental(
-                &laptop.signed_snapshot(&a_sk, 1_000).unwrap(),
-                &a_cert,
-                &RevocationList::new(),
-                1_100,
-            )
-            .unwrap();
-        assert_eq!(board.list_workspaces()[0].order, Some(2.5));
-        assert_eq!(board.devices(), vec![(a_pk, "Laptop".to_string())]);
-    }
+        phase order_and_devices_reach_another_device;
+        // Positions and the device roster travel like the rest of the list.
+        {
+            let f = fresh_user();
+            let (a_sk, a_pk, a_cert) = enrol_device(
+                &f.user_sk,
+                f.user_pk,
+                "laptop",
+                DeviceCapabilities::primary(),
+            );
+            let (_b_sk, b_pk, _) =
+                enrol_device(&f.user_sk, f.user_pk, "board", DeviceCapabilities::member());
+            let mut laptop = WorkspaceDirectory::new(f.user_pk, a_pk);
+            laptop
+                .add_workspace(WorkspaceId::from_u128(1), "One")
+                .unwrap();
+            laptop.set_order(WorkspaceId::from_u128(1), 2.5).unwrap();
+            laptop.register_device(a_pk, "Laptop").unwrap();
+            let heads = laptop.doc.get_heads();
+            laptop.set_order(WorkspaceId::from_u128(1), 2.5).unwrap();
+            laptop.register_device(a_pk, "Laptop").unwrap();
+            assert_eq!(
+                laptop.doc.get_heads(),
+                heads,
+                "unchanged values write nothing"
+            );
+            let mut board = WorkspaceDirectory::new(f.user_pk, b_pk);
+            board
+                .apply_incremental(
+                    &laptop.signed_snapshot(&a_sk, 1_000).unwrap(),
+                    &a_cert,
+                    &RevocationList::new(),
+                    1_100,
+                )
+                .unwrap();
+            assert_eq!(board.list_workspaces()[0].order, Some(2.5));
+            assert_eq!(board.devices(), vec![(a_pk, "Laptop".to_string())]);
+        }
 
-    /// What the person decided about their community reaches their other
-    /// devices, and the decision stays once it is made: a person who left is
-    /// not put back by the directory.
-    #[test]
-    fn a_community_decision_is_the_persons_and_reaches_their_devices() {
-        let f = fresh_user();
-        let (a_sk, a_pk, a_cert) = enrol_device(
-            &f.user_sk,
-            f.user_pk,
-            "laptop",
-            DeviceCapabilities::primary(),
-        );
-        let (_b_sk, b_pk, _) =
-            enrol_device(&f.user_sk, f.user_pk, "board", DeviceCapabilities::member());
-        let site = "https://tilo.sh/";
-        let mut laptop = WorkspaceDirectory::new(f.user_pk, a_pk);
-        assert!(
-            laptop.community(site).is_none(),
-            "a person who decided nothing has no record"
-        );
-        assert!(
-            laptop.set_community(site, CommunityState::Pending).unwrap(),
-            "asking is a decision written down"
-        );
-        assert_eq!(laptop.community(site), Some(CommunityState::Pending));
-        let heads = laptop.doc.get_heads();
-        assert!(
-            !laptop.set_community(site, CommunityState::Pending).unwrap(),
-            "the same decision writes nothing"
-        );
-        assert_eq!(laptop.doc.get_heads(), heads);
-        assert!(
-            laptop.set_community(site, CommunityState::Decided).unwrap(),
-            "the join landed"
-        );
-        assert_eq!(
-            laptop.community("https://elsewhere.example/"),
-            None,
-            "another site is another decision"
-        );
+        phase a_community_decision_is_the_persons_and_reaches_their_devices;
+        // What the person decided about their community reaches their other
+        // devices, and the decision stays once it is made: a person who left is
+        // not put back by the directory.
+        {
+            let f = fresh_user();
+            let (a_sk, a_pk, a_cert) = enrol_device(
+                &f.user_sk,
+                f.user_pk,
+                "laptop",
+                DeviceCapabilities::primary(),
+            );
+            let (_b_sk, b_pk, _) =
+                enrol_device(&f.user_sk, f.user_pk, "board", DeviceCapabilities::member());
+            let site = "https://tilo.sh/";
+            let mut laptop = WorkspaceDirectory::new(f.user_pk, a_pk);
+            assert!(
+                laptop.community(site).is_none(),
+                "a person who decided nothing has no record"
+            );
+            assert!(
+                laptop.set_community(site, CommunityState::Pending).unwrap(),
+                "asking is a decision written down"
+            );
+            assert_eq!(laptop.community(site), Some(CommunityState::Pending));
+            let heads = laptop.doc.get_heads();
+            assert!(
+                !laptop.set_community(site, CommunityState::Pending).unwrap(),
+                "the same decision writes nothing"
+            );
+            assert_eq!(laptop.doc.get_heads(), heads);
+            assert!(
+                laptop.set_community(site, CommunityState::Decided).unwrap(),
+                "the join landed"
+            );
+            assert_eq!(
+                laptop.community("https://elsewhere.example/"),
+                None,
+                "another site is another decision"
+            );
 
-        let mut board = WorkspaceDirectory::new(f.user_pk, b_pk);
-        board
-            .apply_incremental(
-                &laptop.signed_snapshot(&a_sk, 1_000).unwrap(),
-                &a_cert,
-                &RevocationList::new(),
-                1_100,
-            )
-            .unwrap();
-        assert_eq!(
-            board.community(site),
-            Some(CommunityState::Decided),
-            "the person's other device knows they decided, and asks nobody"
-        );
-        // Leaving is a leave of the workspace, not an undo of the decision:
-        // the record outlives the workspace being taken off the desk.
-        laptop.remove_workspace(WorkspaceId::from_u128(7)).unwrap();
-        assert_eq!(laptop.community(site), Some(CommunityState::Decided));
-    }
+            let mut board = WorkspaceDirectory::new(f.user_pk, b_pk);
+            board
+                .apply_incremental(
+                    &laptop.signed_snapshot(&a_sk, 1_000).unwrap(),
+                    &a_cert,
+                    &RevocationList::new(),
+                    1_100,
+                )
+                .unwrap();
+            assert_eq!(
+                board.community(site),
+                Some(CommunityState::Decided),
+                "the person's other device knows they decided, and asks nobody"
+            );
+            // Leaving is a leave of the workspace, not an undo of the decision:
+            // the record outlives the workspace being taken off the desk.
+            laptop.remove_workspace(WorkspaceId::from_u128(7)).unwrap();
+            assert_eq!(laptop.community(site), Some(CommunityState::Decided));
+        }
 
-    /// A workspace kept off one device shows everywhere else, including on
-    /// a device linked afterwards, and concurrent toggles for different
-    /// devices both land.
-    #[test]
-    fn keeping_a_workspace_off_names_only_the_devices_that_opted_out() {
-        let f = fresh_user();
-        let (a_sk, a_pk, a_cert) = enrol_device(
-            &f.user_sk,
-            f.user_pk,
-            "laptop",
-            DeviceCapabilities::primary(),
-        );
-        let (b_sk, b_pk, b_cert) =
-            enrol_device(&f.user_sk, f.user_pk, "board", DeviceCapabilities::member());
-        let (_, later_pk, _) =
-            enrol_device(&f.user_sk, f.user_pk, "phone", DeviceCapabilities::member());
-        let mut laptop = WorkspaceDirectory::new(f.user_pk, a_pk);
-        laptop
-            .add_workspace(WorkspaceId::from_u128(4), "Work")
-            .unwrap();
-        let mut board = WorkspaceDirectory::new(f.user_pk, b_pk);
-        board
-            .apply_incremental(
-                &laptop.signed_snapshot(&a_sk, 1_000).unwrap(),
-                &a_cert,
-                &RevocationList::new(),
-                1_100,
-            )
-            .unwrap();
-        laptop
-            .set_kept_off(WorkspaceId::from_u128(4), a_pk, true)
-            .unwrap();
-        board
-            .set_kept_off(WorkspaceId::from_u128(4), b_pk, true)
-            .unwrap();
-        let revs = RevocationList::new();
-        laptop
-            .apply_incremental(
-                &board.signed_snapshot(&b_sk, 1_200).unwrap(),
-                &b_cert,
-                &revs,
-                1_300,
-            )
-            .unwrap();
-        let mut both = vec![a_pk, b_pk];
-        both.sort_unstable();
-        let entry = &laptop.list_workspaces()[0];
-        assert_eq!(entry.kept_off_devices, both);
-        assert!(!entry.kept_off_devices.contains(&later_pk));
-        laptop
-            .set_kept_off(WorkspaceId::from_u128(4), a_pk, false)
-            .unwrap();
-        assert_eq!(laptop.list_workspaces()[0].kept_off_devices, vec![b_pk]);
+        phase keeping_a_workspace_off_names_only_the_devices_that_opted_out;
+        // A workspace kept off one device shows everywhere else, including on
+        // a device linked afterwards, and concurrent toggles for different
+        // devices both land.
+        {
+            let f = fresh_user();
+            let (a_sk, a_pk, a_cert) = enrol_device(
+                &f.user_sk,
+                f.user_pk,
+                "laptop",
+                DeviceCapabilities::primary(),
+            );
+            let (b_sk, b_pk, b_cert) =
+                enrol_device(&f.user_sk, f.user_pk, "board", DeviceCapabilities::member());
+            let (_, later_pk, _) =
+                enrol_device(&f.user_sk, f.user_pk, "phone", DeviceCapabilities::member());
+            let mut laptop = WorkspaceDirectory::new(f.user_pk, a_pk);
+            laptop
+                .add_workspace(WorkspaceId::from_u128(4), "Work")
+                .unwrap();
+            let mut board = WorkspaceDirectory::new(f.user_pk, b_pk);
+            board
+                .apply_incremental(
+                    &laptop.signed_snapshot(&a_sk, 1_000).unwrap(),
+                    &a_cert,
+                    &RevocationList::new(),
+                    1_100,
+                )
+                .unwrap();
+            laptop
+                .set_kept_off(WorkspaceId::from_u128(4), a_pk, true)
+                .unwrap();
+            board
+                .set_kept_off(WorkspaceId::from_u128(4), b_pk, true)
+                .unwrap();
+            let revs = RevocationList::new();
+            laptop
+                .apply_incremental(
+                    &board.signed_snapshot(&b_sk, 1_200).unwrap(),
+                    &b_cert,
+                    &revs,
+                    1_300,
+                )
+                .unwrap();
+            let mut both = vec![a_pk, b_pk];
+            both.sort_unstable();
+            let entry = &laptop.list_workspaces()[0];
+            assert_eq!(entry.kept_off_devices, both);
+            assert!(!entry.kept_off_devices.contains(&later_pk));
+            laptop
+                .set_kept_off(WorkspaceId::from_u128(4), a_pk, false)
+                .unwrap();
+            assert_eq!(laptop.list_workspaces()[0].kept_off_devices, vec![b_pk]);
+        }
     }
 }

@@ -317,11 +317,12 @@ mod tests {
         certificate
     }
 
-    /// Validation rejects ambiguous or unpresentable rows, and v2 binds each device certificate to one
-    /// governed human root.
-    #[test]
-    fn identity_projections_are_unambiguous_and_bind_devices_to_one_root() {
-        // Phase: validation_rejects_ambiguous_or_unpresentable_rows.
+    tilo_test_env::scenario! {
+        /// Validation rejects ambiguous or unpresentable rows, and v2 binds each device certificate to one
+        /// governed human root.
+        fn identity_projections_are_unambiguous_and_bind_devices_to_one_root;
+
+        phase validation_rejects_ambiguous_or_unpresentable_rows;
         {
             let root = ed25519_dalek::SigningKey::from_bytes(&[4; 32])
                 .verifying_key()
@@ -348,7 +349,7 @@ mod tests {
             );
         }
 
-        // Phase: v2_binds_each_device_certificate_to_one_governed_human_root.
+        phase v2_binds_each_device_certificate_to_one_governed_human_root;
         {
             let root = ed25519_dalek::SigningKey::from_bytes(&[21; 32]);
             let certificate = certificate(&root, 22);

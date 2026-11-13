@@ -535,161 +535,165 @@ mod tests {
         SigningKey::from_bytes(&[5; 32])
     }
 
-    #[test]
-    fn opens_with_either_wrap_and_nothing_else() {
-        let recovery = RecoveryKey::generate().unwrap();
-        let mut envelope = RootEnvelope::create(&root(), &recovery).unwrap();
-        envelope
-            .add_passkey(&root(), b"credential", "tilo.so", &[9; 32], &[4; 32])
-            .unwrap();
-        let envelope: RootEnvelope =
-            serde_json::from_str(&serde_json::to_string(&envelope).unwrap()).unwrap();
-        let expected = root().verifying_key();
-        assert_eq!(
-            envelope
-                .open_with_recovery(&recovery)
-                .unwrap()
-                .verifying_key(),
-            expected
-        );
-        let typed = RecoveryKey::parse(&recovery.display().to_lowercase()).unwrap();
-        assert_eq!(
-            envelope.open_with_recovery(&typed).unwrap().verifying_key(),
-            expected
-        );
-        assert_eq!(
-            envelope
-                .open_with_passkey(b"credential", &[4; 32])
-                .unwrap()
-                .verifying_key(),
-            expected
-        );
-        assert_eq!(
-            envelope.open_with_passkey(b"credential", &[5; 32]).err(),
-            Some(RootEnvelopeError::Rejected)
-        );
-        assert_eq!(
-            envelope.open_with_passkey(b"another", &[4; 32]).err(),
-            Some(RootEnvelopeError::NoWrap)
-        );
-        assert_eq!(
-            envelope
-                .open_with_recovery(&RecoveryKey::generate().unwrap())
-                .err(),
-            Some(RootEnvelopeError::Rejected)
-        );
-        let other = SigningKey::from_bytes(&[6; 32]);
-        let mut copy = envelope;
-        assert_eq!(
-            copy.add_passkey(&other, b"c", "tilo.so", &[1; 32], &[1; 32]),
-            Err(RootEnvelopeError::WrongRoot)
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_root_envelope_opens_only_untampered_with_its_own_wraps;
 
-    #[test]
-    fn a_tampered_envelope_does_not_open() {
-        let recovery = RecoveryKey::generate().unwrap();
-        let mut envelope = RootEnvelope::create(&root(), &recovery).unwrap();
-        envelope
-            .add_passkey(&root(), b"credential", "tilo.so", &[9; 32], &[4; 32])
-            .unwrap();
-
-        // Another root's public key: the wraps are bound to the original.
-        let mut swapped = envelope.clone();
-        swapped.root_public_key =
-            hex::encode(SigningKey::from_bytes(&[6; 32]).verifying_key().to_bytes());
-        assert_eq!(
-            swapped.open_with_recovery(&recovery).err(),
-            Some(RootEnvelopeError::Rejected)
-        );
-
-        let mut flipped = envelope.clone();
-        if let RootWrap::Recovery { ciphertext, .. } = &mut flipped.wraps[0] {
-            let mut bytes = decode(ciphertext, "").unwrap();
-            bytes[3] ^= 0x80;
-            *ciphertext = encode(&bytes);
+        phase opens_with_either_wrap_and_nothing_else;
+        {
+            let recovery = RecoveryKey::generate().unwrap();
+            let mut envelope = RootEnvelope::create(&root(), &recovery).unwrap();
+            envelope
+                .add_passkey(&root(), b"credential", "tilo.so", &[9; 32], &[4; 32])
+                .unwrap();
+            let envelope: RootEnvelope =
+                serde_json::from_str(&serde_json::to_string(&envelope).unwrap()).unwrap();
+            let expected = root().verifying_key();
+            assert_eq!(
+                envelope
+                    .open_with_recovery(&recovery)
+                    .unwrap()
+                    .verifying_key(),
+                expected
+            );
+            let typed = RecoveryKey::parse(&recovery.display().to_lowercase()).unwrap();
+            assert_eq!(
+                envelope.open_with_recovery(&typed).unwrap().verifying_key(),
+                expected
+            );
+            assert_eq!(
+                envelope
+                    .open_with_passkey(b"credential", &[4; 32])
+                    .unwrap()
+                    .verifying_key(),
+                expected
+            );
+            assert_eq!(
+                envelope.open_with_passkey(b"credential", &[5; 32]).err(),
+                Some(RootEnvelopeError::Rejected)
+            );
+            assert_eq!(
+                envelope.open_with_passkey(b"another", &[4; 32]).err(),
+                Some(RootEnvelopeError::NoWrap)
+            );
+            assert_eq!(
+                envelope
+                    .open_with_recovery(&RecoveryKey::generate().unwrap())
+                    .err(),
+                Some(RootEnvelopeError::Rejected)
+            );
+            let other = SigningKey::from_bytes(&[6; 32]);
+            let mut copy = envelope;
+            assert_eq!(
+                copy.add_passkey(&other, b"c", "tilo.so", &[1; 32], &[1; 32]),
+                Err(RootEnvelopeError::WrongRoot)
+            );
         }
-        assert_eq!(
-            flipped.open_with_recovery(&recovery).err(),
-            Some(RootEnvelopeError::Rejected)
-        );
-        let mut moved = envelope.clone();
-        if let RootWrap::Passkey { credential_id, .. } = &mut moved.wraps[1] {
-            *credential_id = encode(b"stolen");
-        }
-        assert_eq!(
-            moved.open_with_passkey(b"stolen", &[4; 32]).err(),
-            Some(RootEnvelopeError::Rejected)
-        );
-        let mut salted = envelope.clone();
-        if let RootWrap::Passkey { prf_salt, .. } = &mut salted.wraps[1] {
-            *prf_salt = encode(&[8; 32]);
-        }
-        assert_eq!(
-            salted.open_with_passkey(b"credential", &[4; 32]).err(),
-            Some(RootEnvelopeError::Rejected)
-        );
 
-        let foreign = RootEnvelope::create(&SigningKey::from_bytes(&[6; 32]), &recovery).unwrap();
-        let mut pasted = envelope.clone();
-        pasted.wraps[0] = foreign.wraps[0].clone();
-        assert_eq!(
-            pasted.open_with_recovery(&recovery).err(),
-            Some(RootEnvelopeError::Rejected)
-        );
-
-        let mut future = envelope;
-        future.version = 2;
-        assert_eq!(
-            future.open_with_recovery(&recovery).err(),
-            Some(RootEnvelopeError::Version(2))
-        );
-    }
-
-    #[test]
-    fn recovery_keys_read_back_as_typed() {
-        let key = RecoveryKey::generate().unwrap();
-        let shown = key.display();
-        assert_eq!(shown.len(), 39);
-        assert_eq!(shown.split('-').count(), 8);
-        let sloppy = shown.replace('-', " ").to_lowercase();
-        assert_eq!(*RecoveryKey::parse(&sloppy).unwrap().0, *key.0);
-        assert_eq!(
-            RecoveryKey::parse("0000-OOOO-1111-IIII-LLLL-llll-oooo-0000")
-                .unwrap()
-                .display()
-                .as_str(),
-            "0000-0000-1111-1111-1111-1111-0000-0000"
-        );
-        assert!(RecoveryKey::parse("ABCD").is_err());
-        assert!(RecoveryKey::parse(&format!("{}U", shown.as_str())).is_err());
-    }
-
-    /// An envelope a page made with `WebCrypto` opens here.
-    #[test]
-    fn opens_an_envelope_a_page_made() {
-        let fixture: serde_json::Value =
-            serde_json::from_str(include_str!("../tests/fixtures/root-envelope.json")).unwrap();
-        let envelope: RootEnvelope = serde_json::from_value(fixture["envelope"].clone()).unwrap();
-        let expected: [u8; 32] = envelope.public_key().unwrap();
-        let recovery = RecoveryKey::parse(fixture["recoveryKey"].as_str().unwrap()).unwrap();
-        assert_eq!(
+        phase a_tampered_envelope_does_not_open;
+        {
+            let recovery = RecoveryKey::generate().unwrap();
+            let mut envelope = RootEnvelope::create(&root(), &recovery).unwrap();
             envelope
-                .open_with_recovery(&recovery)
-                .unwrap()
-                .verifying_key()
-                .to_bytes(),
-            expected
-        );
-        let credential = decode(fixture["credentialId"].as_str().unwrap(), "").unwrap();
-        let output = decode(fixture["prfOutput"].as_str().unwrap(), "").unwrap();
-        assert_eq!(
-            envelope
-                .open_with_passkey(&credential, &output)
-                .unwrap()
-                .verifying_key()
-                .to_bytes(),
-            expected
-        );
+                .add_passkey(&root(), b"credential", "tilo.so", &[9; 32], &[4; 32])
+                .unwrap();
+
+            // Another root's public key: the wraps are bound to the original.
+            let mut swapped = envelope.clone();
+            swapped.root_public_key =
+                hex::encode(SigningKey::from_bytes(&[6; 32]).verifying_key().to_bytes());
+            assert_eq!(
+                swapped.open_with_recovery(&recovery).err(),
+                Some(RootEnvelopeError::Rejected)
+            );
+
+            let mut flipped = envelope.clone();
+            if let RootWrap::Recovery { ciphertext, .. } = &mut flipped.wraps[0] {
+                let mut bytes = decode(ciphertext, "").unwrap();
+                bytes[3] ^= 0x80;
+                *ciphertext = encode(&bytes);
+            }
+            assert_eq!(
+                flipped.open_with_recovery(&recovery).err(),
+                Some(RootEnvelopeError::Rejected)
+            );
+            let mut moved = envelope.clone();
+            if let RootWrap::Passkey { credential_id, .. } = &mut moved.wraps[1] {
+                *credential_id = encode(b"stolen");
+            }
+            assert_eq!(
+                moved.open_with_passkey(b"stolen", &[4; 32]).err(),
+                Some(RootEnvelopeError::Rejected)
+            );
+            let mut salted = envelope.clone();
+            if let RootWrap::Passkey { prf_salt, .. } = &mut salted.wraps[1] {
+                *prf_salt = encode(&[8; 32]);
+            }
+            assert_eq!(
+                salted.open_with_passkey(b"credential", &[4; 32]).err(),
+                Some(RootEnvelopeError::Rejected)
+            );
+
+            let foreign = RootEnvelope::create(&SigningKey::from_bytes(&[6; 32]), &recovery).unwrap();
+            let mut pasted = envelope.clone();
+            pasted.wraps[0] = foreign.wraps[0].clone();
+            assert_eq!(
+                pasted.open_with_recovery(&recovery).err(),
+                Some(RootEnvelopeError::Rejected)
+            );
+
+            let mut future = envelope;
+            future.version = 2;
+            assert_eq!(
+                future.open_with_recovery(&recovery).err(),
+                Some(RootEnvelopeError::Version(2))
+            );
+        }
+
+        phase recovery_keys_read_back_as_typed;
+        {
+            let key = RecoveryKey::generate().unwrap();
+            let shown = key.display();
+            assert_eq!(shown.len(), 39);
+            assert_eq!(shown.split('-').count(), 8);
+            let sloppy = shown.replace('-', " ").to_lowercase();
+            assert_eq!(*RecoveryKey::parse(&sloppy).unwrap().0, *key.0);
+            assert_eq!(
+                RecoveryKey::parse("0000-OOOO-1111-IIII-LLLL-llll-oooo-0000")
+                    .unwrap()
+                    .display()
+                    .as_str(),
+                "0000-0000-1111-1111-1111-1111-0000-0000"
+            );
+            assert!(RecoveryKey::parse("ABCD").is_err());
+            assert!(RecoveryKey::parse(&format!("{}U", shown.as_str())).is_err());
+        }
+
+        phase opens_an_envelope_a_page_made;
+        // An envelope a page made with `WebCrypto` opens here.
+        {
+            let fixture: serde_json::Value =
+                serde_json::from_str(include_str!("../tests/fixtures/root-envelope.json")).unwrap();
+            let envelope: RootEnvelope = serde_json::from_value(fixture["envelope"].clone()).unwrap();
+            let expected: [u8; 32] = envelope.public_key().unwrap();
+            let recovery = RecoveryKey::parse(fixture["recoveryKey"].as_str().unwrap()).unwrap();
+            assert_eq!(
+                envelope
+                    .open_with_recovery(&recovery)
+                    .unwrap()
+                    .verifying_key()
+                    .to_bytes(),
+                expected
+            );
+            let credential = decode(fixture["credentialId"].as_str().unwrap(), "").unwrap();
+            let output = decode(fixture["prfOutput"].as_str().unwrap(), "").unwrap();
+            assert_eq!(
+                envelope
+                    .open_with_passkey(&credential, &output)
+                    .unwrap()
+                    .verifying_key()
+                    .to_bytes(),
+                expected
+            );
+        }
     }
 }

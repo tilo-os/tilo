@@ -222,90 +222,94 @@ mod tests {
         (device, page.verifying_key().to_bytes())
     }
 
-    #[test]
-    fn a_device_admits_its_transport_key_and_nothing_else() {
-        let (device, page) = keys();
-        let delegation = sign_endpoint_delegation(&device, page, NOW, HOUR).unwrap();
-        assert_eq!(
-            delegation.device_public_key,
-            device.verifying_key().to_bytes()
-        );
-        assert_eq!(verify_endpoint_delegation(&delegation, &page, NOW), Ok(()));
-        assert_eq!(
-            verify_endpoint_delegation(&delegation, &[3; 32], NOW),
-            Err(EndpointDelegationError::WrongEndpoint)
-        );
-    }
+    tilo_test_env::scenario! {
+        fn an_endpoint_delegation_binds_one_transport_key_to_its_device_for_a_bounded_time;
 
-    #[test]
-    fn a_delegation_expires_and_never_outlives_its_bound() {
-        let (device, page) = keys();
-        let delegation = sign_endpoint_delegation(&device, page, NOW, HOUR).unwrap();
-        assert_eq!(
-            verify_endpoint_delegation(&delegation, &page, NOW + HOUR),
-            Err(EndpointDelegationError::Expired)
-        );
-        assert_eq!(
-            verify_endpoint_delegation(&delegation, &page, NOW - 1),
-            Err(EndpointDelegationError::NotYetValid)
-        );
-        assert_eq!(
-            sign_endpoint_delegation(&device, page, NOW, MAX_LIFETIME_NS + 1),
-            Err(EndpointDelegationError::InvalidValidity)
-        );
-        assert_eq!(
-            sign_endpoint_delegation(&device, page, NOW, 0),
-            Err(EndpointDelegationError::InvalidValidity)
-        );
-    }
+        phase a_device_admits_its_transport_key_and_nothing_else;
+        {
+            let (device, page) = keys();
+            let delegation = sign_endpoint_delegation(&device, page, NOW, HOUR).unwrap();
+            assert_eq!(
+                delegation.device_public_key,
+                device.verifying_key().to_bytes()
+            );
+            assert_eq!(verify_endpoint_delegation(&delegation, &page, NOW), Ok(()));
+            assert_eq!(
+                verify_endpoint_delegation(&delegation, &[3; 32], NOW),
+                Err(EndpointDelegationError::WrongEndpoint)
+            );
+        }
 
-    #[test]
-    fn another_key_cannot_speak_for_the_device() {
-        let (device, page) = keys();
-        let mut delegation = sign_endpoint_delegation(&device, page, NOW, HOUR).unwrap();
-        delegation.signature = [0; 64];
-        assert_eq!(
-            verify_endpoint_delegation(&delegation, &page, NOW),
-            Err(EndpointDelegationError::Signature)
-        );
-        // A delegation the page signed for itself is not the device's.
-        let forged = sign_endpoint_delegation(
-            &ed25519_dalek::SigningKey::from_bytes(&[9; 32]),
-            page,
-            NOW,
-            HOUR,
-        )
-        .unwrap();
-        assert_eq!(
-            verify_endpoint_delegation(&forged, &page, NOW),
-            Ok(()),
-            "it is its own device's signature"
-        );
-        assert_ne!(forged.device_public_key, device.verifying_key().to_bytes());
-    }
+        phase a_delegation_expires_and_never_outlives_its_bound;
+        {
+            let (device, page) = keys();
+            let delegation = sign_endpoint_delegation(&device, page, NOW, HOUR).unwrap();
+            assert_eq!(
+                verify_endpoint_delegation(&delegation, &page, NOW + HOUR),
+                Err(EndpointDelegationError::Expired)
+            );
+            assert_eq!(
+                verify_endpoint_delegation(&delegation, &page, NOW - 1),
+                Err(EndpointDelegationError::NotYetValid)
+            );
+            assert_eq!(
+                sign_endpoint_delegation(&device, page, NOW, MAX_LIFETIME_NS + 1),
+                Err(EndpointDelegationError::InvalidValidity)
+            );
+            assert_eq!(
+                sign_endpoint_delegation(&device, page, NOW, 0),
+                Err(EndpointDelegationError::InvalidValidity)
+            );
+        }
 
-    #[test]
-    fn a_signer_that_keeps_its_key_attaches_the_same_signature() {
-        let (device, page) = keys();
-        let signed = sign_endpoint_delegation(&device, page, NOW, HOUR).unwrap();
-        let digest =
-            EndpointDelegation::unsigned(device.verifying_key().to_bytes(), page, NOW, NOW + HOUR)
-                .signing_digest()
-                .unwrap();
-        let attached =
-            EndpointDelegation::unsigned(device.verifying_key().to_bytes(), page, NOW, NOW + HOUR)
-                .with_signature(device.sign(&digest).to_bytes());
-        assert_eq!(attached, signed);
-    }
+        phase another_key_cannot_speak_for_the_device;
+        {
+            let (device, page) = keys();
+            let mut delegation = sign_endpoint_delegation(&device, page, NOW, HOUR).unwrap();
+            delegation.signature = [0; 64];
+            assert_eq!(
+                verify_endpoint_delegation(&delegation, &page, NOW),
+                Err(EndpointDelegationError::Signature)
+            );
+            // A delegation the page signed for itself is not the device's.
+            let forged = sign_endpoint_delegation(
+                &ed25519_dalek::SigningKey::from_bytes(&[9; 32]),
+                page,
+                NOW,
+                HOUR,
+            )
+            .unwrap();
+            assert_eq!(
+                verify_endpoint_delegation(&forged, &page, NOW),
+                Ok(()),
+                "it is its own device's signature"
+            );
+            assert_ne!(forged.device_public_key, device.verifying_key().to_bytes());
+        }
 
-    #[test]
-    fn a_delegation_round_trips_as_json() {
-        let (device, page) = keys();
-        let delegation = sign_endpoint_delegation(&device, page, NOW, HOUR).unwrap();
-        let json = serde_json::to_string(&delegation).unwrap();
-        assert_eq!(
-            serde_json::from_str::<EndpointDelegation>(&json).unwrap(),
-            delegation
-        );
+        phase a_signer_that_keeps_its_key_attaches_the_same_signature;
+        {
+            let (device, page) = keys();
+            let signed = sign_endpoint_delegation(&device, page, NOW, HOUR).unwrap();
+            let digest =
+                EndpointDelegation::unsigned(device.verifying_key().to_bytes(), page, NOW, NOW + HOUR)
+                    .signing_digest()
+                    .unwrap();
+            let attached =
+                EndpointDelegation::unsigned(device.verifying_key().to_bytes(), page, NOW, NOW + HOUR)
+                    .with_signature(device.sign(&digest).to_bytes());
+            assert_eq!(attached, signed);
+        }
+
+        phase a_delegation_round_trips_as_json;
+        {
+            let (device, page) = keys();
+            let delegation = sign_endpoint_delegation(&device, page, NOW, HOUR).unwrap();
+            let json = serde_json::to_string(&delegation).unwrap();
+            assert_eq!(
+                serde_json::from_str::<EndpointDelegation>(&json).unwrap(),
+                delegation
+            );
+        }
     }
 }

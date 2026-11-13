@@ -942,12 +942,17 @@ fn main() -> std::process::ExitCode {
 mod tests {
     use super::*;
 
-    /// The artifact writer refuses output the reader cannot accept; the canonical reader rejects
-    /// symlinks; the live trust reader rejects exposed or aliased artifacts; the required marker must
-    /// be exact, private and unaliased.
-    #[test]
-    fn trust_artifacts_are_written_and_read_only_as_exact_private_files() {
-        // Phase: artifact_writer_refuses_output_the_reader_cannot_accept.
+    tilo_test_env::scenario! {
+        /// The artifact writer refuses output the reader cannot accept; the canonical reader rejects
+        /// symlinks; the live trust reader rejects exposed or aliased artifacts; the required marker must
+        /// be exact, private and unaliased.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn trust_artifacts_are_written_and_read_only_as_exact_private_files;
+
+        phase artifact_writer_refuses_output_the_reader_cannot_accept;
         {
             let temp = tempfile::tempdir().expect("temporary directory");
             let output = temp.path().join("oversized.artifact");
@@ -957,7 +962,7 @@ mod tests {
             assert!(!output.exists());
         }
 
-        // Phase: canonical_artifact_reader_rejects_symlinks.
+        phase canonical_artifact_reader_rejects_symlinks;
         {
             use std::os::unix::fs::symlink;
 
@@ -974,7 +979,7 @@ mod tests {
             assert!(read_private_bounded(&linked_parent.join("artifact")).is_err());
         }
 
-        // Phase: live_trust_reader_rejects_exposed_or_aliased_artifacts.
+        phase live_trust_reader_rejects_exposed_or_aliased_artifacts;
         {
             let temp = tempfile::tempdir().expect("temporary directory");
             let artifact = temp.path().join("root.pub");
@@ -992,7 +997,7 @@ mod tests {
             assert!(read_private_bounded(&artifact).is_err());
         }
 
-        // Phase: required_marker_must_be_exact_private_and_unaliased.
+        phase required_marker_must_be_exact_private_and_unaliased;
         {
             let temp = tempfile::tempdir().expect("temporary trust directory");
             let marker = temp.path().join("required");
@@ -1026,132 +1031,136 @@ mod tests {
         sign_device_cert, sign_revocation_entry,
     };
 
-    /// The bootc status parser requires the staged schema, and refuses digests a
-    /// shell or a line reader would read differently.
-    #[test]
-    fn bootc_status_parser_requires_the_staged_schema() {
-        assert_eq!(
-            parse_bootc_status_bytes(br#"{"status":{"staged":null}}"#).unwrap(),
-            None
-        );
-        assert_eq!(
-            parse_bootc_status_bytes(
-                br#"{"status":{"staged":{"image":{"imageDigest":"sha256:abc"},"composefs":{"verity":"sha512:def"}}}}"#,
-            )
-            .unwrap(),
-            Some(("sha256:abc".into(), "sha512:def".into()))
-        );
-        assert!(parse_bootc_status_bytes(b"not-json").is_err());
-        assert!(parse_bootc_status_bytes(br#"{"status":{}}"#).is_err());
-        assert!(parse_bootc_status_bytes(br#"{"status":{"staged":false}}"#).is_err());
-        assert!(
-            parse_bootc_status_bytes(
-                br#"{"status":{"staged":{"image":{"imageDigest":"sha256:abc\ninjected"},"composefs":{"verity":"sha512:def"}}}}"#,
-            )
-            .is_err()
-        );
-    }
+    tilo_test_env::scenario! {
+        fn bootc_status_is_read_by_schema_selector_and_transport;
 
-    /// The bootc status field parser uses fixed bounded selectors, never an
-    /// expression over the document.
-    #[test]
-    fn bootc_status_field_parser_uses_fixed_bounded_selectors() {
-        let status = br#"{"status":{"booted":{"image":{"image":{"image":"registry/tilo:current"}},"composefs":{"verity":"sha512:booted"}},"staged":{"image":{"image":{"image":"registry/tilo:next"}},"composefs":{"verity":"sha512:staged"}},"rollback":null}}"#;
-        assert_eq!(
-            bootc_status_field_bytes(status, "booted-image").unwrap(),
-            "registry/tilo:current"
-        );
-        assert_eq!(
-            bootc_status_field_bytes(status, "staged-composefs").unwrap(),
-            "sha512:staged"
-        );
-        assert_eq!(
-            bootc_status_field_bytes(status, "rollback-image").unwrap(),
-            ""
-        );
-        let rollback = br#"{"status":{"rollback":{"image":{"version":"2026.10.18","timestamp":"2026-10-18T04:12:00Z"}}}}"#;
-        assert_eq!(
-            bootc_status_field_bytes(rollback, "rollback-version").unwrap(),
-            "2026.10.18"
-        );
-        assert_eq!(
-            bootc_status_field_bytes(rollback, "rollback-timestamp").unwrap(),
-            "2026-10-18T04:12:00Z"
-        );
-        assert_eq!(
-            bootc_status_field_bytes(status, "rollback-composefs").unwrap(),
-            ""
-        );
-        let queued = br#"{"status":{"rollbackQueued":true,"rollback":null}}"#;
-        assert_eq!(
-            bootc_status_field_bytes(queued, "rollback-queued").unwrap(),
-            "true"
-        );
-        assert_eq!(
-            bootc_status_field_bytes(br#"{"status":{"rollbackQueued":false}}"#, "rollback-queued")
+        phase bootc_status_parser_requires_the_staged_schema;
+        // The bootc status parser requires the staged schema, and refuses digests a
+        // shell or a line reader would read differently.
+        {
+            assert_eq!(
+                parse_bootc_status_bytes(br#"{"status":{"staged":null}}"#).unwrap(),
+                None
+            );
+            assert_eq!(
+                parse_bootc_status_bytes(
+                    br#"{"status":{"staged":{"image":{"imageDigest":"sha256:abc"},"composefs":{"verity":"sha512:def"}}}}"#,
+                )
                 .unwrap(),
-            "false"
-        );
-        assert_eq!(
-            bootc_status_field_bytes(status, "rollback-queued").unwrap(),
-            ""
-        );
-        assert!(
-            bootc_status_field_bytes(br#"{"status":{"rollbackQueued":"yes"}}"#, "rollback-queued")
+                Some(("sha256:abc".into(), "sha512:def".into()))
+            );
+            assert!(parse_bootc_status_bytes(b"not-json").is_err());
+            assert!(parse_bootc_status_bytes(br#"{"status":{}}"#).is_err());
+            assert!(parse_bootc_status_bytes(br#"{"status":{"staged":false}}"#).is_err());
+            assert!(
+                parse_bootc_status_bytes(
+                    br#"{"status":{"staged":{"image":{"imageDigest":"sha256:abc\ninjected"},"composefs":{"verity":"sha512:def"}}}}"#,
+                )
                 .is_err()
-        );
-        let dated = br#"{"status":{"booted":{"image":{"timestamp":"2026-10-09T13:20:59Z"}},"staged":{"image":{"timestamp":"2026-10-20T08:00:00Z"}},"rollback":{"composefs":{"verity":"abc"}}}}"#;
-        assert_eq!(
-            bootc_status_field_bytes(dated, "booted-timestamp").unwrap(),
-            "2026-10-09T13:20:59Z"
-        );
-        assert_eq!(
-            bootc_status_field_bytes(dated, "staged-timestamp").unwrap(),
-            "2026-10-20T08:00:00Z"
-        );
-        assert_eq!(
-            bootc_status_field_bytes(dated, "rollback-composefs").unwrap(),
-            "abc"
-        );
-        assert!(bootc_status_field_bytes(status, "arbitrary-expression").is_err());
-    }
+            );
+        }
 
-    /// The bootc status transport tells a deployment installed from a local medium
-    /// from one installed from a registry.
-    #[test]
-    fn bootc_status_transport_tells_a_local_install_from_a_registry_one() {
-        // A deployment installed from a local medium records that transport;
-        // this is what keeps the update policy from replacing a developer's
-        // own image with a registry build.
-        let local = br#"{"status":{"booted":{"image":{"image":{"image":"/var/tmp/image.oci.tar","transport":"oci-archive"}}},"staged":null}}"#;
-        assert_eq!(
-            bootc_status_field_bytes(local, "booted-transport").unwrap(),
-            "oci-archive"
-        );
-        assert_eq!(
-            bootc_status_field_bytes(local, "staged-transport").unwrap(),
-            ""
-        );
-        let registry = br#"{"status":{"booted":{"image":{"image":{"image":"registry.tilo.so/tilo/tilo:latest","transport":"registry"}}}}}"#;
-        assert_eq!(
-            bootc_status_field_bytes(registry, "booted-transport").unwrap(),
-            "registry"
-        );
-        // No deployment, or a deployment that records no transport: nothing,
-        // which the update policy reads as the registry default bootc uses.
-        assert_eq!(
-            bootc_status_field_bytes(br#"{"status":{"booted":null}}"#, "booted-transport").unwrap(),
-            ""
-        );
-        assert_eq!(
-            bootc_status_field_bytes(
-                br#"{"status":{"booted":{"image":{"image":{"image":"registry.tilo.so/tilo/tilo:latest"}}}}}"#,
-                "booted-transport"
-            )
-            .unwrap(),
-            ""
-        );
-        assert!(bootc_status_field_bytes(br#"{"status":{}}"#, "booted-transport").is_err());
+        phase bootc_status_field_parser_uses_fixed_bounded_selectors;
+        // The bootc status field parser uses fixed bounded selectors, never an
+        // expression over the document.
+        {
+            let status = br#"{"status":{"booted":{"image":{"image":{"image":"registry/tilo:current"}},"composefs":{"verity":"sha512:booted"}},"staged":{"image":{"image":{"image":"registry/tilo:next"}},"composefs":{"verity":"sha512:staged"}},"rollback":null}}"#;
+            assert_eq!(
+                bootc_status_field_bytes(status, "booted-image").unwrap(),
+                "registry/tilo:current"
+            );
+            assert_eq!(
+                bootc_status_field_bytes(status, "staged-composefs").unwrap(),
+                "sha512:staged"
+            );
+            assert_eq!(
+                bootc_status_field_bytes(status, "rollback-image").unwrap(),
+                ""
+            );
+            let rollback = br#"{"status":{"rollback":{"image":{"version":"2026.10.18","timestamp":"2026-10-18T04:12:00Z"}}}}"#;
+            assert_eq!(
+                bootc_status_field_bytes(rollback, "rollback-version").unwrap(),
+                "2026.10.18"
+            );
+            assert_eq!(
+                bootc_status_field_bytes(rollback, "rollback-timestamp").unwrap(),
+                "2026-10-18T04:12:00Z"
+            );
+            assert_eq!(
+                bootc_status_field_bytes(status, "rollback-composefs").unwrap(),
+                ""
+            );
+            let queued = br#"{"status":{"rollbackQueued":true,"rollback":null}}"#;
+            assert_eq!(
+                bootc_status_field_bytes(queued, "rollback-queued").unwrap(),
+                "true"
+            );
+            assert_eq!(
+                bootc_status_field_bytes(br#"{"status":{"rollbackQueued":false}}"#, "rollback-queued")
+                    .unwrap(),
+                "false"
+            );
+            assert_eq!(
+                bootc_status_field_bytes(status, "rollback-queued").unwrap(),
+                ""
+            );
+            assert!(
+                bootc_status_field_bytes(br#"{"status":{"rollbackQueued":"yes"}}"#, "rollback-queued")
+                    .is_err()
+            );
+            let dated = br#"{"status":{"booted":{"image":{"timestamp":"2026-10-09T13:20:59Z"}},"staged":{"image":{"timestamp":"2026-10-20T08:00:00Z"}},"rollback":{"composefs":{"verity":"abc"}}}}"#;
+            assert_eq!(
+                bootc_status_field_bytes(dated, "booted-timestamp").unwrap(),
+                "2026-10-09T13:20:59Z"
+            );
+            assert_eq!(
+                bootc_status_field_bytes(dated, "staged-timestamp").unwrap(),
+                "2026-10-20T08:00:00Z"
+            );
+            assert_eq!(
+                bootc_status_field_bytes(dated, "rollback-composefs").unwrap(),
+                "abc"
+            );
+            assert!(bootc_status_field_bytes(status, "arbitrary-expression").is_err());
+        }
+
+        phase bootc_status_transport_tells_a_local_install_from_a_registry_one;
+        // The bootc status transport tells a deployment installed from a local medium
+        // from one installed from a registry.
+        {
+            // A deployment installed from a local medium records that transport;
+            // this is what keeps the update policy from replacing a developer's
+            // own image with a registry build.
+            let local = br#"{"status":{"booted":{"image":{"image":{"image":"/var/tmp/image.oci.tar","transport":"oci-archive"}}},"staged":null}}"#;
+            assert_eq!(
+                bootc_status_field_bytes(local, "booted-transport").unwrap(),
+                "oci-archive"
+            );
+            assert_eq!(
+                bootc_status_field_bytes(local, "staged-transport").unwrap(),
+                ""
+            );
+            let registry = br#"{"status":{"booted":{"image":{"image":{"image":"registry.tilo.so/tilo/tilo:latest","transport":"registry"}}}}}"#;
+            assert_eq!(
+                bootc_status_field_bytes(registry, "booted-transport").unwrap(),
+                "registry"
+            );
+            // No deployment, or a deployment that records no transport: nothing,
+            // which the update policy reads as the registry default bootc uses.
+            assert_eq!(
+                bootc_status_field_bytes(br#"{"status":{"booted":null}}"#, "booted-transport").unwrap(),
+                ""
+            );
+            assert_eq!(
+                bootc_status_field_bytes(
+                    br#"{"status":{"booted":{"image":{"image":{"image":"registry.tilo.so/tilo/tilo:latest"}}}}}"#,
+                    "booted-transport"
+                )
+                .unwrap(),
+                ""
+            );
+            assert!(bootc_status_field_bytes(br#"{"status":{}}"#, "booted-transport").is_err());
+        }
     }
 
     fn arguments(values: &[&str]) -> impl Iterator<Item = std::ffi::OsString> {
@@ -1162,11 +1171,12 @@ mod tests {
             .into_iter()
     }
 
-    /// The generation floor rejects symlinks and shared state and the generation lock rejects an
-    /// aliased inode.
-    #[test]
-    fn generation_state_refuses_symlinks_sharing_and_aliases() {
-        // Phase: generation_floor_rejects_symlinks_and_shared_state.
+    tilo_test_env::scenario! {
+        /// The generation floor rejects symlinks and shared state and the generation lock rejects an
+        /// aliased inode.
+        fn generation_state_refuses_symlinks_sharing_and_aliases;
+
+        phase generation_floor_rejects_symlinks_and_shared_state;
         {
             use std::os::unix::fs::{PermissionsExt, symlink};
 
@@ -1192,7 +1202,7 @@ mod tests {
             assert!(read_generation_floor(&state).is_err());
         }
 
-        // Phase: generation_lock_rejects_an_aliased_inode.
+        phase generation_lock_rejects_an_aliased_inode;
         {
             use std::os::unix::fs::symlink;
 
@@ -1211,15 +1221,16 @@ mod tests {
         }
     }
 
-    /// External signers complete a grant and endorsement without key files, and trust rotation
-    /// cannot roll back the root or revocations.
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-    )]
-    fn trust_changes_are_signed_externally_and_never_roll_back() {
-        // Phase: external_signers_complete_grant_and_endorsement_without_key_files.
+    tilo_test_env::scenario! {
+        /// External signers complete a grant and endorsement without key files, and trust rotation
+        /// cannot roll back the root or revocations.
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+        )]
+        fn trust_changes_are_signed_externally_and_never_roll_back;
+
+        phase external_signers_complete_grant_and_endorsement_without_key_files;
         {
             let temp = tempfile::tempdir().expect("temporary directory");
             let cert_path = temp.path().join("device.cert");
@@ -1296,7 +1307,7 @@ mod tests {
             assert!(!temp.path().join("device.key").exists());
         }
 
-        // Phase: trust_rotation_cannot_rollback_root_or_revocations.
+        phase trust_rotation_cannot_rollback_root_or_revocations;
         {
             let temp = tempfile::tempdir().expect("temporary directory");
             let trust_dir = temp.path();

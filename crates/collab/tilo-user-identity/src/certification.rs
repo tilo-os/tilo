@@ -460,189 +460,197 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn root_issues_a_clamped_expiring_certificate() {
-        let (root, user) = UserIdentity::generate("Ada", 1);
-        let device = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let request = request(user.public_key, &device);
-        let policy = CertificationPolicy::browser();
-        let revocations = RevocationList::new();
-        let cert = issue_device_cert(&request, &root, &policy, &revocations, NOW + 1).unwrap();
-        assert_eq!(cert.capabilities, DeviceCapabilities::member());
-        assert!(!cert.capabilities.can_admit_devices);
-        assert_eq!(cert.expires_at_ns, Some(NOW + 1 + policy.lifetime_ns));
-        verify_issued_cert(&request, &cert, &policy, &revocations, NOW + 2).unwrap();
-        assert_eq!(request.pairing_code().unwrap().len(), 6);
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn certification_issues_only_what_root_policy_and_revocation_allow;
 
-    #[test]
-    fn external_signer_produces_the_same_request() {
-        let (_, user) = UserIdentity::generate("Ada", 1);
-        let device = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let signed = request(user.public_key, &device);
-        let mut unsigned = signed.clone();
-        unsigned.signature = [0; 64];
-        let digest = unsigned.signing_digest().unwrap();
-        let external = unsigned
-            .with_signature(device.sign(&digest).to_bytes())
-            .unwrap();
-        assert_eq!(external, signed);
-        assert_eq!(external.pairing_code(), signed.pairing_code());
-    }
+        phase root_issues_a_clamped_expiring_certificate;
+        {
+            let (root, user) = UserIdentity::generate("Ada", 1);
+            let device = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+            let request = request(user.public_key, &device);
+            let policy = CertificationPolicy::browser();
+            let revocations = RevocationList::new();
+            let cert = issue_device_cert(&request, &root, &policy, &revocations, NOW + 1).unwrap();
+            assert_eq!(cert.capabilities, DeviceCapabilities::member());
+            assert!(!cert.capabilities.can_admit_devices);
+            assert_eq!(cert.expires_at_ns, Some(NOW + 1 + policy.lifetime_ns));
+            verify_issued_cert(&request, &cert, &policy, &revocations, NOW + 2).unwrap();
+            assert_eq!(request.pairing_code().unwrap().len(), 6);
+        }
 
-    #[test]
-    fn substituted_key_foreign_root_and_escalation_fail_closed() {
-        let (root, user) = UserIdentity::generate("Ada", 1);
-        let (foreign_root, _) = UserIdentity::generate("Mallory", 1);
-        let device = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let other = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let policy = CertificationPolicy::browser();
-        let revocations = RevocationList::new();
-
-        let mut swapped = request(user.public_key, &device);
-        swapped.device_public_key = other.verifying_key().to_bytes();
-        assert_eq!(
-            swapped.verify_at(NOW + 1),
-            Err(CertificationError::Signature)
-        );
-
-        let request = request(user.public_key, &device);
-        assert_eq!(
-            issue_device_cert(&request, &foreign_root, &policy, &revocations, NOW + 1),
-            Err(CertificationError::DifferentIdentity)
-        );
-        assert_eq!(
-            request.verify_at(NOW + 60_000_000_000),
-            Err(CertificationError::Expired)
-        );
-
-        let mut escalated =
-            prepare_device_cert(&request, user.public_key, &policy, &revocations, NOW + 1).unwrap();
-        escalated.capabilities.can_admit_devices = true;
-        sign_device_cert(&mut escalated, &root).unwrap();
-        assert_eq!(
-            verify_issued_cert(&request, &escalated, &policy, &revocations, NOW + 2),
-            Err(CertificationError::Policy)
-        );
-    }
-
-    #[test]
-    fn an_approver_may_grant_less_than_requested() {
-        let (root, user) = UserIdentity::generate("Ada", 1);
-        let device = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let request = request(user.public_key, &device);
-        let revocations = RevocationList::new();
-        let cert = issue_device_cert(
-            &request,
-            &root,
-            &CertificationPolicy::agent(),
-            &revocations,
-            NOW + 1,
-        )
-        .unwrap();
-        assert_eq!(cert.capabilities, CertificationPolicy::agent().ceiling);
-        assert_eq!(
-            verify_issued_cert(
-                &request,
-                &cert,
-                &CertificationPolicy::browser(),
-                &revocations,
-                NOW + 2
-            ),
-            Ok(()),
-            "a host checking the browser policy accepts a narrower agent certificate"
-        );
-    }
-
-    #[test]
-    fn a_stand_in_answers_a_request_as_a_browser_until_it_is_revoked() {
-        let (root, user) = UserIdentity::generate("Ada", 1);
-        let stand_in_key = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let mut stand_in = crate::prepare_stand_in_cert(
-            user.public_key,
-            stand_in_key.verifying_key().to_bytes(),
-            "Stand-in on tilo.example",
-            NOW - 1,
-            NOW - 1 + crate::STAND_IN_LIFETIME_NS,
-        );
-        sign_device_cert(&mut stand_in, &root).unwrap();
-        let device = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let request = request(user.public_key, &device);
-        let policy = CertificationPolicy::browser();
-        let none = RevocationList::new();
-
-        let cert =
-            issue_device_cert_as_stand_in(&request, &stand_in_key, &stand_in, &none, NOW + 1)
+        phase external_signer_produces_the_same_request;
+        {
+            let (_, user) = UserIdentity::generate("Ada", 1);
+            let device = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+            let signed = request(user.public_key, &device);
+            let mut unsigned = signed.clone();
+            unsigned.signature = [0; 64];
+            let digest = unsigned.signing_digest().unwrap();
+            let external = unsigned
+                .with_signature(device.sign(&digest).to_bytes())
                 .unwrap();
-        assert_eq!(cert.capabilities, DeviceCapabilities::member());
-        assert_eq!(cert.expires_at_ns, Some(NOW + 1 + policy.lifetime_ns));
-        assert_eq!(cert.issuer.as_deref(), Some(&stand_in));
-        verify_issued_cert(&request, &cert, &policy, &none, NOW + 2).unwrap();
+            assert_eq!(external, signed);
+            assert_eq!(external.pairing_code(), signed.pairing_code());
+        }
 
-        // Not with another key, nor once the stand-in is gone.
-        let other = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        assert_eq!(
-            issue_device_cert_as_stand_in(&request, &other, &stand_in, &none, NOW + 1),
-            Err(CertificationError::Certificate)
-        );
-        assert_eq!(
-            issue_device_cert_as_stand_in(
+        phase substituted_key_foreign_root_and_escalation_fail_closed;
+        {
+            let (root, user) = UserIdentity::generate("Ada", 1);
+            let (foreign_root, _) = UserIdentity::generate("Mallory", 1);
+            let device = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+            let other = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+            let policy = CertificationPolicy::browser();
+            let revocations = RevocationList::new();
+
+            let mut swapped = request(user.public_key, &device);
+            swapped.device_public_key = other.verifying_key().to_bytes();
+            assert_eq!(
+                swapped.verify_at(NOW + 1),
+                Err(CertificationError::Signature)
+            );
+
+            let request = request(user.public_key, &device);
+            assert_eq!(
+                issue_device_cert(&request, &foreign_root, &policy, &revocations, NOW + 1),
+                Err(CertificationError::DifferentIdentity)
+            );
+            assert_eq!(
+                request.verify_at(NOW + 60_000_000_000),
+                Err(CertificationError::Expired)
+            );
+
+            let mut escalated =
+                prepare_device_cert(&request, user.public_key, &policy, &revocations, NOW + 1).unwrap();
+            escalated.capabilities.can_admit_devices = true;
+            sign_device_cert(&mut escalated, &root).unwrap();
+            assert_eq!(
+                verify_issued_cert(&request, &escalated, &policy, &revocations, NOW + 2),
+                Err(CertificationError::Policy)
+            );
+        }
+
+        phase an_approver_may_grant_less_than_requested;
+        {
+            let (root, user) = UserIdentity::generate("Ada", 1);
+            let device = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+            let request = request(user.public_key, &device);
+            let revocations = RevocationList::new();
+            let cert = issue_device_cert(
                 &request,
-                &stand_in_key,
-                &stand_in,
-                &none,
-                NOW - 1 + crate::STAND_IN_LIFETIME_NS
-            ),
-            Err(CertificationError::Certificate)
-        );
-        let mut entry = RevocationEntry {
-            user_public_key: user.public_key,
-            revoked_device_public_key: stand_in.device_public_key,
-            revoked_at_ns: NOW + 2,
-            reason: RevocationReason::Retired,
-            signature: [0; 64],
-        };
-        sign_revocation_entry(&mut entry, &root).unwrap();
-        let mut revoked = RevocationList::new();
-        revoked.insert(entry).unwrap();
-        assert_eq!(
-            issue_device_cert_as_stand_in(&request, &stand_in_key, &stand_in, &revoked, NOW + 2),
-            Err(CertificationError::Revoked)
-        );
-        // What it issued before stays valid.
-        verify_issued_cert(&request, &cert, &policy, &revoked, NOW + 3).unwrap();
-        // A stand-in is never what a device's request is answered with.
-        assert_eq!(
-            verify_issued_cert(&request, &stand_in, &policy, &none, NOW + 1),
-            Err(CertificationError::Certificate)
-        );
-    }
+                &root,
+                &CertificationPolicy::agent(),
+                &revocations,
+                NOW + 1,
+            )
+            .unwrap();
+            assert_eq!(cert.capabilities, CertificationPolicy::agent().ceiling);
+            assert_eq!(
+                verify_issued_cert(
+                    &request,
+                    &cert,
+                    &CertificationPolicy::browser(),
+                    &revocations,
+                    NOW + 2
+                ),
+                Ok(()),
+                "a host checking the browser policy accepts a narrower agent certificate"
+            );
+        }
 
-    #[test]
-    fn revoked_device_is_neither_issued_nor_accepted() {
-        let (root, user) = UserIdentity::generate("Ada", 1);
-        let device = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let request = request(user.public_key, &device);
-        let policy = CertificationPolicy::browser();
-        let cert =
-            issue_device_cert(&request, &root, &policy, &RevocationList::new(), NOW + 1).unwrap();
-        let mut entry = RevocationEntry {
-            user_public_key: user.public_key,
-            revoked_device_public_key: request.device_public_key,
-            revoked_at_ns: NOW,
-            reason: RevocationReason::Compromised,
-            signature: [0; 64],
-        };
-        sign_revocation_entry(&mut entry, &root).unwrap();
-        let mut revocations = RevocationList::new();
-        revocations.insert(entry).unwrap();
-        assert_eq!(
-            issue_device_cert(&request, &root, &policy, &revocations, NOW + 1),
-            Err(CertificationError::Revoked)
-        );
-        assert_eq!(
-            verify_issued_cert(&request, &cert, &policy, &revocations, NOW + 2),
-            Err(CertificationError::Revoked)
-        );
+        phase a_stand_in_answers_a_request_as_a_browser_until_it_is_revoked;
+        {
+            let (root, user) = UserIdentity::generate("Ada", 1);
+            let stand_in_key = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+            let mut stand_in = crate::prepare_stand_in_cert(
+                user.public_key,
+                stand_in_key.verifying_key().to_bytes(),
+                "Stand-in on tilo.example",
+                NOW - 1,
+                NOW - 1 + crate::STAND_IN_LIFETIME_NS,
+            );
+            sign_device_cert(&mut stand_in, &root).unwrap();
+            let device = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+            let request = request(user.public_key, &device);
+            let policy = CertificationPolicy::browser();
+            let none = RevocationList::new();
+
+            let cert =
+                issue_device_cert_as_stand_in(&request, &stand_in_key, &stand_in, &none, NOW + 1)
+                    .unwrap();
+            assert_eq!(cert.capabilities, DeviceCapabilities::member());
+            assert_eq!(cert.expires_at_ns, Some(NOW + 1 + policy.lifetime_ns));
+            assert_eq!(cert.issuer.as_deref(), Some(&stand_in));
+            verify_issued_cert(&request, &cert, &policy, &none, NOW + 2).unwrap();
+
+            // Not with another key, nor once the stand-in is gone.
+            let other = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+            assert_eq!(
+                issue_device_cert_as_stand_in(&request, &other, &stand_in, &none, NOW + 1),
+                Err(CertificationError::Certificate)
+            );
+            assert_eq!(
+                issue_device_cert_as_stand_in(
+                    &request,
+                    &stand_in_key,
+                    &stand_in,
+                    &none,
+                    NOW - 1 + crate::STAND_IN_LIFETIME_NS
+                ),
+                Err(CertificationError::Certificate)
+            );
+            let mut entry = RevocationEntry {
+                user_public_key: user.public_key,
+                revoked_device_public_key: stand_in.device_public_key,
+                revoked_at_ns: NOW + 2,
+                reason: RevocationReason::Retired,
+                signature: [0; 64],
+            };
+            sign_revocation_entry(&mut entry, &root).unwrap();
+            let mut revoked = RevocationList::new();
+            revoked.insert(entry).unwrap();
+            assert_eq!(
+                issue_device_cert_as_stand_in(&request, &stand_in_key, &stand_in, &revoked, NOW + 2),
+                Err(CertificationError::Revoked)
+            );
+            // What it issued before stays valid.
+            verify_issued_cert(&request, &cert, &policy, &revoked, NOW + 3).unwrap();
+            // A stand-in is never what a device's request is answered with.
+            assert_eq!(
+                verify_issued_cert(&request, &stand_in, &policy, &none, NOW + 1),
+                Err(CertificationError::Certificate)
+            );
+        }
+
+        phase revoked_device_is_neither_issued_nor_accepted;
+        {
+            let (root, user) = UserIdentity::generate("Ada", 1);
+            let device = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+            let request = request(user.public_key, &device);
+            let policy = CertificationPolicy::browser();
+            let cert =
+                issue_device_cert(&request, &root, &policy, &RevocationList::new(), NOW + 1).unwrap();
+            let mut entry = RevocationEntry {
+                user_public_key: user.public_key,
+                revoked_device_public_key: request.device_public_key,
+                revoked_at_ns: NOW,
+                reason: RevocationReason::Compromised,
+                signature: [0; 64],
+            };
+            sign_revocation_entry(&mut entry, &root).unwrap();
+            let mut revocations = RevocationList::new();
+            revocations.insert(entry).unwrap();
+            assert_eq!(
+                issue_device_cert(&request, &root, &policy, &revocations, NOW + 1),
+                Err(CertificationError::Revoked)
+            );
+            assert_eq!(
+                verify_issued_cert(&request, &cert, &policy, &revocations, NOW + 2),
+                Err(CertificationError::Revoked)
+            );
+        }
     }
 }

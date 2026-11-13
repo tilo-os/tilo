@@ -19,25 +19,26 @@ fn fresh_cert(caps: DeviceCapabilities) -> (ed25519_dalek::SigningKey, DeviceCer
     (root_sk, cert)
 }
 
-/// Certificates sign and verify, honour expiry, round-trip canonically, reproduce their
-/// signature vector, and every capability preset is distinct.
-#[allow(
-    clippy::similar_names,
-    reason = "the _sk/_pk keypair naming convention is deliberate and used throughout this crate's tests"
-)]
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-)]
-fn device_certificates_sign_verify_expire_and_round_trip() {
-    // Phase: sign_and_verify.
+tilo_test_env::scenario! {
+    /// Certificates sign and verify, honour expiry, round-trip canonically, reproduce their
+    /// signature vector, and every capability preset is distinct.
+    #[allow(
+        clippy::similar_names,
+        reason = "the _sk/_pk keypair naming convention is deliberate and used throughout this crate's tests"
+    )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn device_certificates_sign_verify_expire_and_round_trip;
+
+    phase sign_and_verify;
     {
         let (_root, cert) = fresh_cert(DeviceCapabilities::primary());
         verify_device_cert(&cert).unwrap();
     }
 
-    // Phase: expiry_semantics.
+    phase expiry_semantics;
     {
         let (root_sk, user) = UserIdentity::generate("Alice", 1);
         let (_dev_sk, dev) = crate::DeviceIdentity::generate("dev", 2);
@@ -77,7 +78,7 @@ fn device_certificates_sign_verify_expire_and_round_trip() {
         );
     }
 
-    // Phase: cert_round_trips_through_canonical.
+    phase cert_round_trips_through_canonical;
     {
         let (_root, cert) = fresh_cert(DeviceCapabilities::administrator());
         let bytes = crate::canonical::canonical_bytes(&cert).unwrap();
@@ -86,7 +87,7 @@ fn device_certificates_sign_verify_expire_and_round_trip() {
         verify_device_cert(&back).unwrap();
     }
 
-    // Phase: signature_vector_is_reproducible.
+    phase signature_vector_is_reproducible;
     // Signature outputs must be reproducible from the same inputs
     // (Ed25519 is deterministic and we build the preimage
     // deterministically). Locks in the wire vectors — if this ever
@@ -137,7 +138,7 @@ fn device_certificates_sign_verify_expire_and_round_trip() {
         assert_eq!(sig_1, cert2.signature);
     }
 
-    // Phase: all_capability_presets_are_distinct.
+    phase all_capability_presets_are_distinct;
     {
         // Each preset must produce a different signature — otherwise
         // a peer could substitute one preset for another without
@@ -169,11 +170,12 @@ fn device_certificates_sign_verify_expire_and_round_trip() {
     }
 }
 
-/// Tampering with the capability, device key, signature or user key, or signing by a different
-/// root, fails verification.
-#[test]
-fn tampering_with_any_certificate_field_or_root_fails_verification() {
-    // Phase: tampered_capability_fails.
+tilo_test_env::scenario! {
+    /// Tampering with the capability, device key, signature or user key, or signing by a different
+    /// root, fails verification.
+    fn tampering_with_any_certificate_field_or_root_fails_verification;
+
+    phase tampered_capability_fails;
     {
         let (_root, mut cert) = fresh_cert(DeviceCapabilities::member());
         cert.capabilities.can_admit_devices = true;
@@ -183,7 +185,7 @@ fn tampering_with_any_certificate_field_or_root_fails_verification() {
         );
     }
 
-    // Phase: tampered_device_pubkey_fails.
+    phase tampered_device_pubkey_fails;
     {
         let (_root, mut cert) = fresh_cert(DeviceCapabilities::primary());
         cert.device_public_key[0] ^= 0x01;
@@ -193,7 +195,7 @@ fn tampering_with_any_certificate_field_or_root_fails_verification() {
         );
     }
 
-    // Phase: tampered_signature_fails.
+    phase tampered_signature_fails;
     {
         let (_root, mut cert) = fresh_cert(DeviceCapabilities::primary());
         cert.signature[0] ^= 0x01;
@@ -203,7 +205,7 @@ fn tampering_with_any_certificate_field_or_root_fails_verification() {
         );
     }
 
-    // Phase: tampered_user_pubkey_fails.
+    phase tampered_user_pubkey_fails;
     {
         let (_root, mut cert) = fresh_cert(DeviceCapabilities::primary());
         // Flip a bit in the embedded user pubkey. The signature no
@@ -216,7 +218,7 @@ fn tampering_with_any_certificate_field_or_root_fails_verification() {
         ));
     }
 
-    // Phase: signed_by_different_root_fails.
+    phase signed_by_different_root_fails;
     {
         // Alice's cert signed with Bob's root key — mismatch caught
         // by the pre-sign guard (BadSignature).
@@ -237,6 +239,25 @@ fn tampering_with_any_certificate_field_or_root_fails_verification() {
             sign_device_cert(&mut cert, &bob_sk).unwrap_err(),
             DeviceCertError::BadSignature
         );
+    }
+
+    phase remembered_verification_never_accepts_a_changed_certificate;
+    {
+        let (_root, cert) = fresh_cert(DeviceCapabilities::primary());
+        // Verify twice: the second check is answered by the remembered triple.
+        verify_device_cert(&cert).unwrap();
+        verify_device_cert(&cert).unwrap();
+        for tamper in [0usize, 1, 2, 3] {
+            let mut changed = cert.clone();
+            match tamper {
+                0 => changed.signature[5] ^= 0x01,
+                1 => changed.device_public_key[3] ^= 0x01,
+                2 => changed.issued_at_ns ^= 1,
+                _ => changed.user_public_key[7] ^= 0x01,
+            }
+            assert!(verify_device_cert(&changed).is_err(), "tamper {tamper}");
+        }
+        verify_device_cert(&cert).unwrap();
     }
 }
 
@@ -267,58 +288,165 @@ const GOLDEN_V1_JSON: &str = r#"{"user_public_key":[138,136,227,221,116,9,241,14
 const GOLDEN_V1_POSTCARD: &str = "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c020202020202020202020202020202020202020202020202020202020202020206676f6c64656e01000000c0843d0180897a40c15e0b3f1bd5d67a239d8d189dc8784bb4f3bd99b1bde0932f8e170feaaaef09af81b0a863fe66ae6141f85bbbb55d8df1d3087b29426eac242e274bbd0eed01";
 const GOLDEN_V1_DIGEST: &str = "0d8271d3aadb5438af000ff5f96b6355102b57a271885ed26142fb698884e623";
 
-/// The certificate encodings and signing digest as they were before the
-/// foreign marker existed, pinned from the pre-change build.
-#[test]
-fn native_certificates_keep_their_v1_encoding_and_digest() {
-    let cert = golden_cert(false);
-    assert_eq!(serde_json::to_string(&cert).unwrap(), GOLDEN_V1_JSON);
-    assert_eq!(
-        hex::encode(crate::canonical::canonical_bytes(&cert).unwrap()),
-        GOLDEN_V1_POSTCARD
-    );
-    assert_eq!(
-        hex::encode(device_cert_signing_digest(&cert).unwrap()),
-        GOLDEN_V1_DIGEST
-    );
-    let from_json: DeviceCert = serde_json::from_str(GOLDEN_V1_JSON).unwrap();
-    let from_postcard: DeviceCert =
-        crate::canonical::from_canonical_bytes(&hex::decode(GOLDEN_V1_POSTCARD).unwrap()).unwrap();
-    assert_eq!(from_json, cert);
-    assert_eq!(from_postcard, cert);
-    verify_device_cert(&from_postcard).unwrap();
-}
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
+    fn certificate_markers_keep_their_encodings_and_old_verifiers_refuse_them;
 
-#[test]
-fn foreign_certificates_sign_under_their_own_tag() {
-    let foreign = golden_cert(true);
-    verify_device_cert(&foreign).unwrap();
-    assert_eq!(
-        device_cert_signing_digest(&foreign).unwrap(),
-        signing_digest(DEVCERT_V2_PREIMAGE_TAG, &foreign.view()).unwrap()
-    );
+    phase native_certificates_keep_their_v1_encoding_and_digest;
+    // The certificate encodings and signing digest as they were before the
+    // foreign marker existed, pinned from the pre-change build.
+    {
+        let cert = golden_cert(false);
+        assert_eq!(serde_json::to_string(&cert).unwrap(), GOLDEN_V1_JSON);
+        assert_eq!(
+            hex::encode(crate::canonical::canonical_bytes(&cert).unwrap()),
+            GOLDEN_V1_POSTCARD
+        );
+        assert_eq!(
+            hex::encode(device_cert_signing_digest(&cert).unwrap()),
+            GOLDEN_V1_DIGEST
+        );
+        let from_json: DeviceCert = serde_json::from_str(GOLDEN_V1_JSON).unwrap();
+        let from_postcard: DeviceCert =
+            crate::canonical::from_canonical_bytes(&hex::decode(GOLDEN_V1_POSTCARD).unwrap()).unwrap();
+        assert_eq!(from_json, cert);
+        assert_eq!(from_postcard, cert);
+        verify_device_cert(&from_postcard).unwrap();
+    }
 
-    let json = serde_json::to_string(&foreign).unwrap();
-    assert!(json.contains(r#""foreign":true"#));
-    assert_eq!(serde_json::from_str::<DeviceCert>(&json).unwrap(), foreign);
-    let bytes = crate::canonical::canonical_bytes(&foreign).unwrap();
-    assert_eq!(
-        crate::canonical::from_canonical_bytes::<DeviceCert>(&bytes).unwrap(),
-        foreign
-    );
+    phase foreign_certificates_sign_under_their_own_tag;
+    {
+        let foreign = golden_cert(true);
+        verify_device_cert(&foreign).unwrap();
+        assert_eq!(
+            device_cert_signing_digest(&foreign).unwrap(),
+            signing_digest(DEVCERT_V2_PREIMAGE_TAG, &foreign.view()).unwrap()
+        );
 
-    let mut stripped = foreign;
-    stripped.capabilities.foreign = false;
-    assert_eq!(
-        verify_device_cert(&stripped).unwrap_err(),
-        DeviceCertError::BadSignature
-    );
-    let mut marked = golden_cert(false);
-    marked.capabilities.foreign = true;
-    assert_eq!(
-        verify_device_cert(&marked).unwrap_err(),
-        DeviceCertError::BadSignature
-    );
+        let json = serde_json::to_string(&foreign).unwrap();
+        assert!(json.contains(r#""foreign":true"#));
+        assert_eq!(serde_json::from_str::<DeviceCert>(&json).unwrap(), foreign);
+        let bytes = crate::canonical::canonical_bytes(&foreign).unwrap();
+        assert_eq!(
+            crate::canonical::from_canonical_bytes::<DeviceCert>(&bytes).unwrap(),
+            foreign
+        );
+
+        let mut stripped = foreign;
+        stripped.capabilities.foreign = false;
+        assert_eq!(
+            verify_device_cert(&stripped).unwrap_err(),
+            DeviceCertError::BadSignature
+        );
+        let mut marked = golden_cert(false);
+        marked.capabilities.foreign = true;
+        assert_eq!(
+            verify_device_cert(&marked).unwrap_err(),
+            DeviceCertError::BadSignature
+        );
+    }
+
+    phase verifiers_that_predate_the_marker_reject_foreign_certificates;
+    {
+        let native = golden_cert(false);
+        let foreign = golden_cert(true);
+        let nonce = [9u8; 32];
+
+        let old: v1::DeviceCert =
+            serde_json::from_str(&serde_json::to_string(&native).unwrap()).unwrap();
+        assert_eq!(serde_json::to_string(&old).unwrap(), GOLDEN_V1_JSON);
+        let old_wire = postcard::to_allocvec(&(&old, nonce)).unwrap();
+        assert_eq!(postcard::to_allocvec(&(&native, nonce)).unwrap(), old_wire);
+        let (_, old_nonce): (DeviceCert, [u8; 32]) = postcard::from_bytes(&old_wire).unwrap();
+        assert_eq!(old_nonce, nonce);
+
+        let foreign_json = serde_json::to_string(&foreign).unwrap();
+        let json_error = serde_json::from_str::<v1::DeviceCert>(&foreign_json).unwrap_err();
+        assert!(json_error.to_string().contains("unknown field `foreign`"));
+        // Embedded in a larger message, the old decoder stops at the marker
+        // instead of misreading the fields that follow.
+        let foreign_wire = postcard::to_allocvec(&(&foreign, nonce)).unwrap();
+        assert!(postcard::from_bytes::<(v1::DeviceCert, [u8; 32])>(&foreign_wire).is_err());
+    }
+
+    phase administration_certificates_sign_under_their_own_tag_and_old_verifiers_refuse_them;
+    // Administration signs under its own tag, round-trips in both encodings
+    // (alone and together with the foreign marker), survives no flip of the
+    // flag, and is refused by every verifier that predates it.
+    {
+        let native = golden_cert(false);
+        let nonce = [9u8; 32];
+        for foreign in [false, true] {
+            let admin = golden_cert_with(DeviceCapabilities {
+                foreign,
+                ..DeviceCapabilities::administrator()
+            });
+            verify_device_cert(&admin).unwrap();
+            assert_eq!(
+                device_cert_signing_digest(&admin).unwrap(),
+                signing_digest(DEVCERT_V3_PREIMAGE_TAG, &admin.view()).unwrap()
+            );
+            let json = serde_json::to_string(&admin).unwrap();
+            assert!(json.contains(r#""can_administer_devices":true"#));
+            assert_eq!(serde_json::from_str::<DeviceCert>(&json).unwrap(), admin);
+            let bytes = crate::canonical::canonical_bytes(&admin).unwrap();
+            let marker = 32 + 32 + 1 + "golden".len();
+            assert_eq!(bytes[marker], EXTENDED_BINARY_MARKER);
+            assert_eq!(
+                crate::canonical::from_canonical_bytes::<DeviceCert>(&bytes).unwrap(),
+                admin
+            );
+
+            let mut stripped = admin.clone();
+            stripped.capabilities.can_administer_devices = false;
+            assert_eq!(
+                verify_device_cert(&stripped).unwrap_err(),
+                DeviceCertError::BadSignature
+            );
+
+            let json_error = serde_json::from_str::<v1::DeviceCert>(&json).unwrap_err();
+            assert!(
+                json_error.to_string().contains("unknown field"),
+                "{json_error}"
+            );
+            let wire = postcard::to_allocvec(&(&admin, nonce)).unwrap();
+            assert!(postcard::from_bytes::<(v1::DeviceCert, [u8; 32])>(&wire).is_err());
+        }
+        let mut granted = native;
+        granted.capabilities.can_administer_devices = true;
+        assert_eq!(
+            verify_device_cert(&granted).unwrap_err(),
+            DeviceCertError::BadSignature
+        );
+    }
+
+    phase extended_capabilities_refuse_bytes_that_do_not_grant_administration;
+    {
+        let admin = golden_cert_with(DeviceCapabilities::administrator());
+        let bytes = crate::canonical::canonical_bytes(&admin).unwrap();
+        let marker = 32 + 32 + 1 + "golden".len();
+        assert_eq!(bytes[marker + 1], EXTENDED_ADMINISTER);
+        for extended in [0, EXTENDED_FOREIGN, 4, 0x80] {
+            let mut changed = bytes.clone();
+            changed[marker + 1] = extended;
+            assert!(
+                crate::canonical::from_canonical_bytes::<DeviceCert>(&changed).is_err(),
+                "extended byte {extended}"
+            );
+        }
+    }
+
+    phase binary_capabilities_refuse_flag_bytes_other_than_zero_or_one;
+    {
+        let mut bytes = crate::canonical::canonical_bytes(&golden_cert(true)).unwrap();
+        let marker = 32 + 32 + 1 + "golden".len();
+        assert_eq!(bytes[marker], FOREIGN_BINARY_MARKER);
+        bytes[marker + 1] = 3;
+        assert!(crate::canonical::from_canonical_bytes::<DeviceCert>(&bytes).is_err());
+    }
 }
 
 /// A frozen copy of the certificate types as they were before the
@@ -428,115 +556,230 @@ fn certificates_signed_with_retired_grants_keep_their_bytes_and_signature() {
     assert!(!grant.agent_grant_holds());
 }
 
-/// An agent's grant signs under its own tag, round-trips with its scope
-/// in both encodings, must expire and grant nothing else, survives no
-/// change of scope, and is refused by verifiers that predate it.
-#[test]
-fn agent_grants_carry_their_scope_expire_and_old_verifiers_refuse_them() {
-    let workspace = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
-    let one = AgentScope::parse(workspace).unwrap();
-    assert_eq!(one.name(), workspace);
-    assert!(one.reaches(workspace));
-    assert!(!one.reaches("0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f1"));
-    assert!(!one.makes_workspaces());
-    assert!(AgentScope::AllWorkspaces.reaches(workspace));
-    assert!(AgentScope::AllWorkspaces.makes_workspaces());
-    // One workspace narrows what all of them was, and never the reverse.
-    assert!(one.within(AgentScope::AllWorkspaces));
-    assert!(one.within(one));
-    assert!(AgentScope::AllWorkspaces.within(AgentScope::AllWorkspaces));
-    assert!(!AgentScope::AllWorkspaces.within(one));
-    for malformed in [
-        "",
-        "ALL",
-        "0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0",
-        "00000000-0000-0000-0000-000000000000",
-        "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
-    ] {
-        assert_eq!(AgentScope::parse(malformed), None, "{malformed}");
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
+    fn agent_grants_keep_their_scope_and_what_they_mint_stays_within_them;
+
+    phase agent_grants_carry_their_scope_expire_and_old_verifiers_refuse_them;
+    // An agent's grant signs under its own tag, round-trips with its scope
+    // in both encodings, must expire and grant nothing else, survives no
+    // change of scope, and is refused by verifiers that predate it.
+    {
+        let workspace = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
+        let one = AgentScope::parse(workspace).unwrap();
+        assert_eq!(one.name(), workspace);
+        assert!(one.reaches(workspace));
+        assert!(!one.reaches("0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f1"));
+        assert!(!one.makes_workspaces());
+        assert!(AgentScope::AllWorkspaces.reaches(workspace));
+        assert!(AgentScope::AllWorkspaces.makes_workspaces());
+        // One workspace narrows what all of them was, and never the reverse.
+        assert!(one.within(AgentScope::AllWorkspaces));
+        assert!(one.within(one));
+        assert!(AgentScope::AllWorkspaces.within(AgentScope::AllWorkspaces));
+        assert!(!AgentScope::AllWorkspaces.within(one));
+        for malformed in [
+            "",
+            "ALL",
+            "0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0",
+            "00000000-0000-0000-0000-000000000000",
+            "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        ] {
+            assert_eq!(AgentScope::parse(malformed), None, "{malformed}");
+        }
+
+        for scope in [AgentScope::AllWorkspaces, one] {
+            let grant = golden_cert_with(DeviceCapabilities::agent_grant(scope));
+            verify_device_cert(&grant).unwrap();
+            assert_eq!(
+                device_cert_signing_digest(&grant).unwrap(),
+                signing_digest(DEVCERT_V4_PREIMAGE_TAG, &grant.view()).unwrap()
+            );
+            let json = serde_json::to_string(&grant).unwrap();
+            assert_eq!(serde_json::from_str::<DeviceCert>(&json).unwrap(), grant);
+            let bytes = postcard::to_allocvec(&(&grant, [9u8; 32])).unwrap();
+            let (back, nonce): (DeviceCert, [u8; 32]) = postcard::from_bytes(&bytes).unwrap();
+            assert_eq!((back, nonce), (grant.clone(), [9u8; 32]));
+            // Verifiers that predate grants stop at the marker.
+            assert!(postcard::from_bytes::<(v1::DeviceCert, [u8; 32])>(&bytes).is_err());
+            assert!(serde_json::from_str::<v1::DeviceCert>(&json).is_err());
+            // Another scope under the same signature does not verify.
+            let mut moved = grant.clone();
+            moved.capabilities.agent = Some(match scope {
+                AgentScope::AllWorkspaces => one,
+                AgentScope::Workspace(_) => AgentScope::AllWorkspaces,
+            });
+            assert_eq!(
+                verify_device_cert(&moved),
+                Err(DeviceCertError::BadSignature)
+            );
+            // A grant is not renewed into another scope or a person's device.
+            let mut wider = grant.clone();
+            wider.capabilities = DeviceCapabilities::member();
+            wider.issued_at_ns += 1;
+            assert!(!wider.renews(&grant));
+        }
+
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
+        let unsigned = |capabilities: DeviceCapabilities, expires_at_ns: Option<u64>| DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: [2u8; 32],
+            device_label: "Claude Code via mcp.example".to_owned(),
+            capabilities,
+            issued_at_ns: 1_000,
+            expires_at_ns,
+            signature: [0u8; 64],
+            issuer: None,
+        };
+        // A grant that never expires, outlives the bound, or grants a flag
+        // besides its scope is neither signed nor taken.
+        let wide = DeviceCapabilities {
+            can_admit_devices: true,
+            ..DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces)
+        };
+        for (capabilities, expiry) in [
+            (DeviceCapabilities::agent_grant(one), None),
+            (
+                DeviceCapabilities::agent_grant(one),
+                Some(1_000 + MAX_AGENT_GRANT_LIFETIME_NS + 1),
+            ),
+            (wide, Some(2_000)),
+        ] {
+            let mut cert = unsigned(capabilities, expiry);
+            assert_eq!(
+                sign_device_cert(&mut cert, &root),
+                Err(DeviceCertError::InvalidAgentGrant)
+            );
+            // Signed anyway by a root that skips the check: still refused.
+            cert.signature = root
+                .sign(&signing_digest(DEVCERT_V4_PREIMAGE_TAG, &cert.view()).unwrap())
+                .to_bytes();
+            assert_eq!(
+                verify_device_cert(&cert),
+                Err(DeviceCertError::InvalidAgentGrant)
+            );
+        }
+        let mut bounded = unsigned(
+            DeviceCapabilities::agent_grant(one),
+            Some(1_000 + MAX_AGENT_GRANT_LIFETIME_NS),
+        );
+        sign_device_cert(&mut bounded, &root).unwrap();
+        verify_device_cert_at(&bounded, 2_000).unwrap();
+        assert_eq!(
+            verify_device_cert_at(&bounded, 1_000 + MAX_AGENT_GRANT_LIFETIME_NS),
+            Err(DeviceCertError::Expired)
+        );
     }
 
-    for scope in [AgentScope::AllWorkspaces, one] {
-        let grant = golden_cert_with(DeviceCapabilities::agent_grant(scope));
-        verify_device_cert(&grant).unwrap();
+    phase a_grant_mints_a_narrower_grant;
+    // An all-workspaces grant mints a grant for one workspace that verifies
+    // as one, under its issuer, and round-trips both encodings.
+    {
+        let (key, grant) = make_grant(DAY_NS);
+        let mut minted = prepare_minted_grant(&grant, [12; 32], [7; 16], "Jane Doe", 2_000, 3_000);
+        sign_device_cert(&mut minted, &key).unwrap();
+        verify_device_cert_at(&minted, 2_500).unwrap();
+        assert_eq!(minted.signer_public_key(), grant.device_public_key);
         assert_eq!(
-            device_cert_signing_digest(&grant).unwrap(),
-            signing_digest(DEVCERT_V4_PREIMAGE_TAG, &grant.view()).unwrap()
+            minted.capabilities.agent,
+            Some(AgentScope::Workspace([7; 16]))
         );
-        let json = serde_json::to_string(&grant).unwrap();
-        assert_eq!(serde_json::from_str::<DeviceCert>(&json).unwrap(), grant);
-        let bytes = postcard::to_allocvec(&(&grant, [9u8; 32])).unwrap();
-        let (back, nonce): (DeviceCert, [u8; 32]) = postcard::from_bytes(&bytes).unwrap();
-        assert_eq!((back, nonce), (grant.clone(), [9u8; 32]));
-        // Verifiers that predate grants stop at the marker.
-        assert!(postcard::from_bytes::<(v1::DeviceCert, [u8; 32])>(&bytes).is_err());
-        assert!(serde_json::from_str::<v1::DeviceCert>(&json).is_err());
-        // Another scope under the same signature does not verify.
-        let mut moved = grant.clone();
-        moved.capabilities.agent = Some(match scope {
-            AgentScope::AllWorkspaces => one,
-            AgentScope::Workspace(_) => AgentScope::AllWorkspaces,
-        });
+        let wire = postcard::to_allocvec(&minted).unwrap();
+        assert_eq!(postcard::from_bytes::<DeviceCert>(&wire).unwrap(), minted);
+        let json = serde_json::to_string(&minted).unwrap();
+        assert_eq!(serde_json::from_str::<DeviceCert>(&json).unwrap(), minted);
+        // The root's own signature does not stand in for the grant's.
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
         assert_eq!(
-            verify_device_cert(&moved),
+            verify_device_cert(&forced(minted.clone(), &root)),
             Err(DeviceCertError::BadSignature)
         );
-        // A grant is not renewed into another scope or a person's device.
-        let mut wider = grant.clone();
-        wider.capabilities = DeviceCapabilities::member();
-        wider.issued_at_ns += 1;
-        assert!(!wider.renews(&grant));
     }
 
-    let root = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
-    let unsigned = |capabilities: DeviceCapabilities, expires_at_ns: Option<u64>| DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: [2u8; 32],
-        device_label: "Claude Code via mcp.example".to_owned(),
-        capabilities,
-        issued_at_ns: 1_000,
-        expires_at_ns,
-        signature: [0u8; 64],
-        issuer: None,
-    };
-    // A grant that never expires, outlives the bound, or grants a flag
-    // besides its scope is neither signed nor taken.
-    let wide = DeviceCapabilities {
-        can_admit_devices: true,
-        ..DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces)
-    };
-    for (capabilities, expiry) in [
-        (DeviceCapabilities::agent_grant(one), None),
-        (
-            DeviceCapabilities::agent_grant(one),
-            Some(1_000 + MAX_AGENT_GRANT_LIFETIME_NS + 1),
-        ),
-        (wide, Some(2_000)),
-    ] {
-        let mut cert = unsigned(capabilities, expiry);
+    phase a_minted_grant_stays_within_its_issuer;
+    // A minted grant never reaches more, lasts longer, or chains further
+    // than its issuer, and only an all-workspaces grant mints.
+    {
+        let (key, grant) = make_grant(DAY_NS);
+        let refused = |cert: DeviceCert| {
+            assert_eq!(
+                verify_device_cert(&forced(cert.clone(), &key)),
+                Err(DeviceCertError::InvalidIssuer)
+            );
+            let mut signed = cert;
+            assert_eq!(
+                sign_device_cert(&mut signed, &key),
+                Err(DeviceCertError::InvalidIssuer)
+            );
+        };
+        let minted = || prepare_minted_grant(&grant, [12; 32], [7; 16], "Jane", 2_000, 3_000);
+        // All workspaces again: wider than a mint may be.
+        let mut wide = minted();
+        wide.capabilities = DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces);
+        refused(wide);
+        // Anything besides the scope.
+        let mut member = minted();
+        member.capabilities = DeviceCapabilities::member();
+        refused(member);
+        // Past its issuer's expiry.
+        let mut longer = minted();
+        longer.expires_at_ns = Some(1_000 + DAY_NS + 1);
+        refused(longer);
+        // Before its issuer was valid.
+        let mut early = minted();
+        early.issued_at_ns = 500;
+        refused(early);
+        // The issuer's own key.
+        let mut same = minted();
+        same.device_public_key = grant.device_public_key;
+        refused(same);
+        // Another person's grant.
+        let mut other = minted();
+        other.user_public_key = [3; 32];
+        refused(other);
+        // A one-workspace grant mints nothing.
+        let mut narrow = grant.clone();
+        narrow.capabilities = DeviceCapabilities::agent_grant(AgentScope::Workspace([7; 16]));
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        sign_device_cert(&mut narrow, &root).unwrap();
+        let mut from_narrow = prepare_minted_grant(&narrow, [12; 32], [7; 16], "Jane", 2_000, 3_000);
         assert_eq!(
-            sign_device_cert(&mut cert, &root),
-            Err(DeviceCertError::InvalidAgentGrant)
+            sign_device_cert(&mut from_narrow, &key),
+            Err(DeviceCertError::InvalidIssuer)
         );
-        // Signed anyway by a root that skips the check: still refused.
-        cert.signature = root
-            .sign(&signing_digest(DEVCERT_V4_PREIMAGE_TAG, &cert.view()).unwrap())
-            .to_bytes();
-        assert_eq!(
-            verify_device_cert(&cert),
-            Err(DeviceCertError::InvalidAgentGrant)
-        );
+        // A minted grant mints nothing: the chain does not decode.
+        let mut first = minted();
+        sign_device_cert(&mut first, &key).unwrap();
+        let chained = prepare_minted_grant(&first, [13; 32], [7; 16], "Jane", 2_500, 2_900);
+        let encoded = postcard::to_allocvec(&chained).unwrap();
+        assert!(postcard::from_bytes::<DeviceCert>(&encoded).is_err());
     }
-    let mut bounded = unsigned(
-        DeviceCapabilities::agent_grant(one),
-        Some(1_000 + MAX_AGENT_GRANT_LIFETIME_NS),
-    );
-    sign_device_cert(&mut bounded, &root).unwrap();
-    verify_device_cert_at(&bounded, 2_000).unwrap();
-    assert_eq!(
-        verify_device_cert_at(&bounded, 1_000 + MAX_AGENT_GRANT_LIFETIME_NS),
-        Err(DeviceCertError::Expired)
-    );
+
+    phase revoking_a_grant_ends_what_it_minted;
+    // Revoking a grant refuses every grant it minted, whenever minted.
+    {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let (key, grant) = make_grant(DAY_NS);
+        let mut minted = prepare_minted_grant(&grant, [12; 32], [7; 16], "Jane", 2_000, 9_000);
+        sign_device_cert(&mut minted, &key).unwrap();
+        let mut entry = crate::RevocationEntry {
+            user_public_key: grant.user_public_key,
+            revoked_device_public_key: grant.device_public_key,
+            revoked_at_ns: 5_000,
+            reason: crate::RevocationReason::Retired,
+            signature: [0; 64],
+        };
+        crate::sign_revocation_entry(&mut entry, &root).unwrap();
+        let mut revocations = crate::RevocationList::new();
+        assert!(!revocations.refuses(&minted));
+        revocations.insert(entry).unwrap();
+        assert!(revocations.refuses(&grant));
+        assert!(revocations.refuses(&minted));
+        assert!(revocations.refuses_at(&minted, 2_500));
+    }
 }
 
 const DAY_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
@@ -583,95 +826,157 @@ fn forced(mut cert: DeviceCert, key: &ed25519_dalek::SigningKey) -> DeviceCert {
     cert
 }
 
-/// A stand-in's certificate verifies as one, is no device, carries
-/// nothing besides being a stand-in, and always expires within 30 days.
-#[test]
-fn a_stand_in_is_certified_by_its_root_and_is_no_device() {
-    let (key, cert) = make_stand_in(1);
-    verify_stand_in_cert(&cert).unwrap();
-    verify_stand_in_cert_at(&cert, 2_000).unwrap();
-    assert_eq!(
-        verify_stand_in_cert_at(&cert, 1_000 + STAND_IN_LIFETIME_NS),
-        Err(DeviceCertError::Expired)
-    );
-    assert_eq!(
-        verify_device_cert(&cert),
-        Err(DeviceCertError::StandInIsNoDevice)
-    );
-    assert_eq!(
-        verify_device_cert_at(&cert, 2_000),
-        Err(DeviceCertError::StandInIsNoDevice)
-    );
-    assert_eq!(
-        device_cert_signing_digest(&cert).unwrap(),
-        signing_digest(DEVCERT_V5_PREIMAGE_TAG, &cert.view()).unwrap()
-    );
-    // A device's certificate is no stand-in's.
-    assert_eq!(
-        verify_stand_in_cert(&golden_cert(false)),
-        Err(DeviceCertError::InvalidStandIn)
-    );
-    // Its marker does not come off under the same signature.
-    let mut stripped = cert.clone();
-    stripped.capabilities.stand_in = false;
-    assert_eq!(
-        verify_device_cert(&stripped),
-        Err(DeviceCertError::BadSignature)
-    );
+tilo_test_env::scenario! {
+    fn a_stand_in_is_bounded_by_its_root_and_its_revocation;
 
-    // It round-trips in both encodings, and verifiers that predate it
-    // refuse it.
-    let json = serde_json::to_string(&cert).unwrap();
-    assert!(json.contains(r#""stand_in":true"#));
-    assert_eq!(serde_json::from_str::<DeviceCert>(&json).unwrap(), cert);
-    assert!(serde_json::from_str::<v1::DeviceCert>(&json).is_err());
-    let wire = postcard::to_allocvec(&(&cert, [9u8; 32])).unwrap();
-    let (back, nonce): (DeviceCert, [u8; 32]) = postcard::from_bytes(&wire).unwrap();
-    assert_eq!((back, nonce), (cert.clone(), [9u8; 32]));
-    assert!(postcard::from_bytes::<(v1::DeviceCert, [u8; 32])>(&wire).is_err());
+    phase a_stand_in_is_certified_by_its_root_and_is_no_device;
+    // A stand-in's certificate verifies as one, is no device, carries
+    // nothing besides being a stand-in, and always expires within 30 days.
+    {
+        let (key, cert) = make_stand_in(1);
+        verify_stand_in_cert(&cert).unwrap();
+        verify_stand_in_cert_at(&cert, 2_000).unwrap();
+        assert_eq!(
+            verify_stand_in_cert_at(&cert, 1_000 + STAND_IN_LIFETIME_NS),
+            Err(DeviceCertError::Expired)
+        );
+        assert_eq!(
+            verify_device_cert(&cert),
+            Err(DeviceCertError::StandInIsNoDevice)
+        );
+        assert_eq!(
+            verify_device_cert_at(&cert, 2_000),
+            Err(DeviceCertError::StandInIsNoDevice)
+        );
+        assert_eq!(
+            device_cert_signing_digest(&cert).unwrap(),
+            signing_digest(DEVCERT_V5_PREIMAGE_TAG, &cert.view()).unwrap()
+        );
+        // A device's certificate is no stand-in's.
+        assert_eq!(
+            verify_stand_in_cert(&golden_cert(false)),
+            Err(DeviceCertError::InvalidStandIn)
+        );
+        // Its marker does not come off under the same signature.
+        let mut stripped = cert.clone();
+        stripped.capabilities.stand_in = false;
+        assert_eq!(
+            verify_device_cert(&stripped),
+            Err(DeviceCertError::BadSignature)
+        );
 
-    // Any other capability beside it, no expiry, a longer life, or its
-    // root's own key is neither signed nor taken.
-    let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
-    let mut others = Vec::new();
-    for widen in [
-        |c: &mut DeviceCapabilities| c.can_own_workspaces = true,
-        |c: &mut DeviceCapabilities| c.can_admit_devices = true,
-        |c: &mut DeviceCapabilities| c.foreign = true,
-        |c: &mut DeviceCapabilities| c.can_administer_devices = true,
-        |c: &mut DeviceCapabilities| c.agent = Some(AgentScope::AllWorkspaces),
-    ] {
-        let mut widened = cert.clone();
-        widen(&mut widened.capabilities);
-        others.push(widened);
+        // It round-trips in both encodings, and verifiers that predate it
+        // refuse it.
+        let json = serde_json::to_string(&cert).unwrap();
+        assert!(json.contains(r#""stand_in":true"#));
+        assert_eq!(serde_json::from_str::<DeviceCert>(&json).unwrap(), cert);
+        assert!(serde_json::from_str::<v1::DeviceCert>(&json).is_err());
+        let wire = postcard::to_allocvec(&(&cert, [9u8; 32])).unwrap();
+        let (back, nonce): (DeviceCert, [u8; 32]) = postcard::from_bytes(&wire).unwrap();
+        assert_eq!((back, nonce), (cert.clone(), [9u8; 32]));
+        assert!(postcard::from_bytes::<(v1::DeviceCert, [u8; 32])>(&wire).is_err());
+
+        // Any other capability beside it, no expiry, a longer life, or its
+        // root's own key is neither signed nor taken.
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let mut others = Vec::new();
+        for widen in [
+            |c: &mut DeviceCapabilities| c.can_own_workspaces = true,
+            |c: &mut DeviceCapabilities| c.can_admit_devices = true,
+            |c: &mut DeviceCapabilities| c.foreign = true,
+            |c: &mut DeviceCapabilities| c.can_administer_devices = true,
+            |c: &mut DeviceCapabilities| c.agent = Some(AgentScope::AllWorkspaces),
+        ] {
+            let mut widened = cert.clone();
+            widen(&mut widened.capabilities);
+            others.push(widened);
+        }
+        let mut forever = cert.clone();
+        forever.expires_at_ns = None;
+        let mut longer = cert.clone();
+        longer.expires_at_ns = Some(1_001 + STAND_IN_LIFETIME_NS);
+        let mut itself = cert.clone();
+        itself.device_public_key = cert.user_public_key;
+        others.extend([forever, longer, itself]);
+        for mut other in others {
+            assert!(sign_device_cert(&mut other, &root).is_err(), "{other:?}");
+            let other = forced(other, &root);
+            assert!(verify_stand_in_cert(&other).is_err(), "{other:?}");
+            assert!(verify_device_cert(&other).is_err(), "{other:?}");
+        }
+
+        // A stand-in certifies no other stand-in.
+        let mut second = prepare_stand_in_cert(
+            cert.user_public_key,
+            [8; 32],
+            "Another stand-in",
+            2_000,
+            2_000 + DAY_NS,
+        );
+        second.issuer = Some(Box::new(cert));
+        assert!(sign_device_cert(&mut second, &key).is_err());
+        let second = forced(second, &key);
+        assert!(verify_stand_in_cert(&second).is_err());
+        assert!(verify_device_cert(&second).is_err());
     }
-    let mut forever = cert.clone();
-    forever.expires_at_ns = None;
-    let mut longer = cert.clone();
-    longer.expires_at_ns = Some(1_001 + STAND_IN_LIFETIME_NS);
-    let mut itself = cert.clone();
-    itself.device_public_key = cert.user_public_key;
-    others.extend([forever, longer, itself]);
-    for mut other in others {
-        assert!(sign_device_cert(&mut other, &root).is_err(), "{other:?}");
-        let other = forced(other, &root);
-        assert!(verify_stand_in_cert(&other).is_err(), "{other:?}");
-        assert!(verify_device_cert(&other).is_err(), "{other:?}");
+
+    phase an_issuer_with_an_issuer_does_not_decode;
+    // A certificate whose issuer names an issuer of its own is refused by
+    // the binary decoder before it recurses, and by the JSON one.
+    {
+        let (key, stand_in) = make_stand_in(1);
+        let mut member = issued_by(&stand_in, 2_000);
+        sign_device_cert(&mut member, &key).unwrap();
+        let mut chained = issued_by(&member, 3_000);
+        chained.device_public_key = [10; 32];
+        let wire = postcard::to_allocvec(&chained).unwrap();
+        assert!(postcard::from_bytes::<DeviceCert>(&wire).is_err());
+        let json = serde_json::to_string(&chained).unwrap();
+        assert!(serde_json::from_str::<DeviceCert>(&json).is_err());
     }
 
-    // A stand-in certifies no other stand-in.
-    let mut second = prepare_stand_in_cert(
-        cert.user_public_key,
-        [8; 32],
-        "Another stand-in",
-        2_000,
-        2_000 + DAY_NS,
-    );
-    second.issuer = Some(Box::new(cert));
-    assert!(sign_device_cert(&mut second, &key).is_err());
-    let second = forced(second, &key);
-    assert!(verify_stand_in_cert(&second).is_err());
-    assert!(verify_device_cert(&second).is_err());
+    phase revoking_a_stand_in_keeps_what_it_issued_before;
+    // Revoking a stand-in refuses what it issues from then on and keeps
+    // what it issued before.
+    {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let (key, stand_in) = make_stand_in(1);
+        let mut entry = crate::RevocationEntry {
+            user_public_key: stand_in.user_public_key,
+            revoked_device_public_key: stand_in.device_public_key,
+            revoked_at_ns: 5_000,
+            reason: crate::RevocationReason::Retired,
+            signature: [0; 64],
+        };
+        crate::sign_revocation_entry(&mut entry, &root).unwrap();
+        let mut revocations = crate::RevocationList::new();
+        revocations.insert(entry).unwrap();
+
+        let mut before = issued_by(&stand_in, 4_999);
+        sign_device_cert(&mut before, &key).unwrap();
+        let mut after = issued_by(&stand_in, 5_000);
+        sign_device_cert(&mut after, &key).unwrap();
+        verify_device_cert(&before).unwrap();
+        verify_device_cert(&after).unwrap();
+        assert!(!revocations.refuses(&before));
+        assert!(!revocations.refuses_at(&before, 10_000));
+        assert!(revocations.refuses(&after));
+        assert!(revocations.refuses_at(&after, 10_000));
+        assert!(revocations.refuses(&stand_in));
+        assert!(!revocations.refuses_at(&stand_in, 4_999));
+        // The device's own revocation still counts.
+        let mut device = crate::RevocationEntry {
+            user_public_key: stand_in.user_public_key,
+            revoked_device_public_key: before.device_public_key,
+            revoked_at_ns: 20_000,
+            reason: crate::RevocationReason::Lost,
+            signature: [0; 64],
+        };
+        crate::sign_revocation_entry(&mut device, &root).unwrap();
+        revocations.insert(device).unwrap();
+        assert!(revocations.refuses(&before));
+        assert!(!revocations.refuses_at(&before, 19_999));
+    }
 }
 
 /// A member certificate a stand-in issued verifies, binds its issuer, and
@@ -828,21 +1133,6 @@ fn a_stand_in_issues_nothing_beyond_its_bounds() {
     );
 }
 
-/// A certificate whose issuer names an issuer of its own is refused by
-/// the binary decoder before it recurses, and by the JSON one.
-#[test]
-fn an_issuer_with_an_issuer_does_not_decode() {
-    let (key, stand_in) = make_stand_in(1);
-    let mut member = issued_by(&stand_in, 2_000);
-    sign_device_cert(&mut member, &key).unwrap();
-    let mut chained = issued_by(&member, 3_000);
-    chained.device_public_key = [10; 32];
-    let wire = postcard::to_allocvec(&chained).unwrap();
-    assert!(postcard::from_bytes::<DeviceCert>(&wire).is_err());
-    let json = serde_json::to_string(&chained).unwrap();
-    assert!(serde_json::from_str::<DeviceCert>(&json).is_err());
-}
-
 /// Root `[1; 32]`'s all-workspaces grant (key `[4; 32]`) from 1 000 ns,
 /// lasting `lifetime`.
 fn make_grant(lifetime: u64) -> (ed25519_dalek::SigningKey, DeviceCert) {
@@ -860,113 +1150,6 @@ fn make_grant(lifetime: u64) -> (ed25519_dalek::SigningKey, DeviceCert) {
     };
     sign_device_cert(&mut cert, &root).unwrap();
     (key, cert)
-}
-
-/// An all-workspaces grant mints a grant for one workspace that verifies
-/// as one, under its issuer, and round-trips both encodings.
-#[test]
-fn a_grant_mints_a_narrower_grant() {
-    let (key, grant) = make_grant(DAY_NS);
-    let mut minted = prepare_minted_grant(&grant, [12; 32], [7; 16], "Jane Doe", 2_000, 3_000);
-    sign_device_cert(&mut minted, &key).unwrap();
-    verify_device_cert_at(&minted, 2_500).unwrap();
-    assert_eq!(minted.signer_public_key(), grant.device_public_key);
-    assert_eq!(
-        minted.capabilities.agent,
-        Some(AgentScope::Workspace([7; 16]))
-    );
-    let wire = postcard::to_allocvec(&minted).unwrap();
-    assert_eq!(postcard::from_bytes::<DeviceCert>(&wire).unwrap(), minted);
-    let json = serde_json::to_string(&minted).unwrap();
-    assert_eq!(serde_json::from_str::<DeviceCert>(&json).unwrap(), minted);
-    // The root's own signature does not stand in for the grant's.
-    let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
-    assert_eq!(
-        verify_device_cert(&forced(minted.clone(), &root)),
-        Err(DeviceCertError::BadSignature)
-    );
-}
-
-/// A minted grant never reaches more, lasts longer, or chains further
-/// than its issuer, and only an all-workspaces grant mints.
-#[test]
-fn a_minted_grant_stays_within_its_issuer() {
-    let (key, grant) = make_grant(DAY_NS);
-    let refused = |cert: DeviceCert| {
-        assert_eq!(
-            verify_device_cert(&forced(cert.clone(), &key)),
-            Err(DeviceCertError::InvalidIssuer)
-        );
-        let mut signed = cert;
-        assert_eq!(
-            sign_device_cert(&mut signed, &key),
-            Err(DeviceCertError::InvalidIssuer)
-        );
-    };
-    let minted = || prepare_minted_grant(&grant, [12; 32], [7; 16], "Jane", 2_000, 3_000);
-    // All workspaces again: wider than a mint may be.
-    let mut wide = minted();
-    wide.capabilities = DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces);
-    refused(wide);
-    // Anything besides the scope.
-    let mut member = minted();
-    member.capabilities = DeviceCapabilities::member();
-    refused(member);
-    // Past its issuer's expiry.
-    let mut longer = minted();
-    longer.expires_at_ns = Some(1_000 + DAY_NS + 1);
-    refused(longer);
-    // Before its issuer was valid.
-    let mut early = minted();
-    early.issued_at_ns = 500;
-    refused(early);
-    // The issuer's own key.
-    let mut same = minted();
-    same.device_public_key = grant.device_public_key;
-    refused(same);
-    // Another person's grant.
-    let mut other = minted();
-    other.user_public_key = [3; 32];
-    refused(other);
-    // A one-workspace grant mints nothing.
-    let mut narrow = grant.clone();
-    narrow.capabilities = DeviceCapabilities::agent_grant(AgentScope::Workspace([7; 16]));
-    let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
-    sign_device_cert(&mut narrow, &root).unwrap();
-    let mut from_narrow = prepare_minted_grant(&narrow, [12; 32], [7; 16], "Jane", 2_000, 3_000);
-    assert_eq!(
-        sign_device_cert(&mut from_narrow, &key),
-        Err(DeviceCertError::InvalidIssuer)
-    );
-    // A minted grant mints nothing: the chain does not decode.
-    let mut first = minted();
-    sign_device_cert(&mut first, &key).unwrap();
-    let chained = prepare_minted_grant(&first, [13; 32], [7; 16], "Jane", 2_500, 2_900);
-    let encoded = postcard::to_allocvec(&chained).unwrap();
-    assert!(postcard::from_bytes::<DeviceCert>(&encoded).is_err());
-}
-
-/// Revoking a grant refuses every grant it minted, whenever minted.
-#[test]
-fn revoking_a_grant_ends_what_it_minted() {
-    let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
-    let (key, grant) = make_grant(DAY_NS);
-    let mut minted = prepare_minted_grant(&grant, [12; 32], [7; 16], "Jane", 2_000, 9_000);
-    sign_device_cert(&mut minted, &key).unwrap();
-    let mut entry = crate::RevocationEntry {
-        user_public_key: grant.user_public_key,
-        revoked_device_public_key: grant.device_public_key,
-        revoked_at_ns: 5_000,
-        reason: crate::RevocationReason::Retired,
-        signature: [0; 64],
-    };
-    crate::sign_revocation_entry(&mut entry, &root).unwrap();
-    let mut revocations = crate::RevocationList::new();
-    assert!(!revocations.refuses(&minted));
-    revocations.insert(entry).unwrap();
-    assert!(revocations.refuses(&grant));
-    assert!(revocations.refuses(&minted));
-    assert!(revocations.refuses_at(&minted, 2_500));
 }
 
 /// Root `[1; 32]`'s server key (key `[4; 32]`) from 1 000 ns until
@@ -988,144 +1171,148 @@ fn make_server_key(expires_at_ns: Option<u64>) -> (ed25519_dalek::SigningKey, De
     (key, cert)
 }
 
-/// A server key reaches all workspaces and lasts until revoked, or until
-/// the expiry its person chose; its marker is in both encodings and under
-/// its signature, and verifiers that predate it refuse it. A grant
-/// without the marker still expires within the bound.
-#[test]
-fn a_server_key_lasts_until_revoked_or_its_chosen_expiry() {
-    let capabilities = DeviceCapabilities::server_key_grant();
-    assert_eq!(
-        postcard::to_allocvec(&capabilities).unwrap(),
-        [
-            EXTENDED_BINARY_MARKER,
-            EXTENDED_AGENT | 32,
-            SCOPE_ALL,
-            0,
-            0,
-            0,
-            0
-        ]
-    );
-    assert_eq!(
-        serde_json::to_string(&capabilities).unwrap(),
-        r#"{"can_own_workspaces":false,"can_admit_devices":false,"can_act_as_host":false,"can_read_all_workspaces":false,"agent":"all","server_key":true}"#
-    );
-    // A bit the decoder does not know is refused, as decoders before the
-    // marker refuse the marker's.
-    assert!(
-        postcard::from_bytes::<DeviceCapabilities>(&[3, EXTENDED_AGENT | 128, 0, 0, 0, 0, 0])
-            .is_err()
-    );
-    let lasting = [None, Some(1_000 + 10 * MAX_AGENT_GRANT_LIFETIME_NS)];
-    for expiry in lasting {
-        let (_, key) = make_server_key(expiry);
-        verify_device_cert_at(&key, 1_000 + 5 * MAX_AGENT_GRANT_LIFETIME_NS).unwrap();
-        let bytes = postcard::to_allocvec(&(&key, [9u8; 32])).unwrap();
-        let (back, _): (DeviceCert, [u8; 32]) = postcard::from_bytes(&bytes).unwrap();
-        assert_eq!(back, key);
-        assert!(postcard::from_bytes::<(v1::DeviceCert, [u8; 32])>(&bytes).is_err());
-        let json = serde_json::to_string(&key).unwrap();
-        assert_eq!(serde_json::from_str::<DeviceCert>(&json).unwrap(), key);
-        assert!(serde_json::from_str::<v1::DeviceCert>(&json).is_err());
-        // The marker is signed: the same signature on a plain grant fails.
-        let mut plain = key.clone();
-        plain.capabilities = DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces);
-        plain.expires_at_ns = Some(2_000);
-        assert_eq!(
-            verify_device_cert(&plain),
-            Err(DeviceCertError::BadSignature)
-        );
-    }
-    let (_, chosen) = make_server_key(Some(5_000));
-    verify_device_cert_at(&chosen, 4_999).unwrap();
-    assert_eq!(
-        verify_device_cert_at(&chosen, 5_000),
-        Err(DeviceCertError::Expired)
-    );
+tilo_test_env::scenario! {
+    fn a_server_key_is_what_its_person_signed;
 
-    // Only a grant reaching all workspaces is a server key, and a grant
-    // without the marker (an agent's, through consent) still expires.
-    let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
-    for capabilities in [
-        DeviceCapabilities {
-            server_key: true,
-            ..DeviceCapabilities::agent_grant(AgentScope::Workspace([7; 16]))
-        },
-        DeviceCapabilities {
-            agent: None,
-            ..DeviceCapabilities::server_key_grant()
-        },
-        DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
-    ] {
-        let mut cert = chosen.clone();
-        cert.capabilities = capabilities;
-        cert.expires_at_ns = None;
+    phase a_server_key_lasts_until_revoked_or_its_chosen_expiry;
+    // A server key reaches all workspaces and lasts until revoked, or until
+    // the expiry its person chose; its marker is in both encodings and under
+    // its signature, and verifiers that predate it refuse it. A grant
+    // without the marker still expires within the bound.
+    {
+        let capabilities = DeviceCapabilities::server_key_grant();
         assert_eq!(
-            sign_device_cert(&mut cert, &root),
-            Err(DeviceCertError::InvalidAgentGrant)
+            postcard::to_allocvec(&capabilities).unwrap(),
+            [
+                EXTENDED_BINARY_MARKER,
+                EXTENDED_AGENT | 32,
+                SCOPE_ALL,
+                0,
+                0,
+                0,
+                0
+            ]
         );
         assert_eq!(
-            verify_device_cert(&forced(cert, &root)),
-            Err(DeviceCertError::InvalidAgentGrant)
+            serde_json::to_string(&capabilities).unwrap(),
+            r#"{"can_own_workspaces":false,"can_admit_devices":false,"can_act_as_host":false,"can_read_all_workspaces":false,"agent":"all","server_key":true}"#
         );
-    }
-}
+        // A bit the decoder does not know is refused, as decoders before the
+        // marker refuse the marker's.
+        assert!(
+            postcard::from_bytes::<DeviceCapabilities>(&[3, EXTENDED_AGENT | 128, 0, 0, 0, 0, 0])
+                .is_err()
+        );
+        let lasting = [None, Some(1_000 + 10 * MAX_AGENT_GRANT_LIFETIME_NS)];
+        for expiry in lasting {
+            let (_, key) = make_server_key(expiry);
+            verify_device_cert_at(&key, 1_000 + 5 * MAX_AGENT_GRANT_LIFETIME_NS).unwrap();
+            let bytes = postcard::to_allocvec(&(&key, [9u8; 32])).unwrap();
+            let (back, _): (DeviceCert, [u8; 32]) = postcard::from_bytes(&bytes).unwrap();
+            assert_eq!(back, key);
+            assert!(postcard::from_bytes::<(v1::DeviceCert, [u8; 32])>(&bytes).is_err());
+            let json = serde_json::to_string(&key).unwrap();
+            assert_eq!(serde_json::from_str::<DeviceCert>(&json).unwrap(), key);
+            assert!(serde_json::from_str::<v1::DeviceCert>(&json).is_err());
+            // The marker is signed: the same signature on a plain grant fails.
+            let mut plain = key.clone();
+            plain.capabilities = DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces);
+            plain.expires_at_ns = Some(2_000);
+            assert_eq!(
+                verify_device_cert(&plain),
+                Err(DeviceCertError::BadSignature)
+            );
+        }
+        let (_, chosen) = make_server_key(Some(5_000));
+        verify_device_cert_at(&chosen, 4_999).unwrap();
+        assert_eq!(
+            verify_device_cert_at(&chosen, 5_000),
+            Err(DeviceCertError::Expired)
+        );
 
-/// A key that may operate web pages in Browser is one its person signed,
-/// and a key minted from it keeps that and can be given no more.
-#[test]
-fn operating_web_pages_is_what_the_person_signed_and_a_mint_keeps() {
-    let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
-    let key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
-    let granted = |capabilities| {
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: "Jane Doe's agent".to_owned(),
-            capabilities,
-            issued_at_ns: 1_000,
-            expires_at_ns: Some(1_000 + MAX_AGENT_GRANT_LIFETIME_NS),
-            signature: [0; 64],
-            issuer: None,
+        // Only a grant reaching all workspaces is a server key, and a grant
+        // without the marker (an agent's, through consent) still expires.
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        for capabilities in [
+            DeviceCapabilities {
+                server_key: true,
+                ..DeviceCapabilities::agent_grant(AgentScope::Workspace([7; 16]))
+            },
+            DeviceCapabilities {
+                agent: None,
+                ..DeviceCapabilities::server_key_grant()
+            },
+            DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+        ] {
+            let mut cert = chosen.clone();
+            cert.capabilities = capabilities;
+            cert.expires_at_ns = None;
+            assert_eq!(
+                sign_device_cert(&mut cert, &root),
+                Err(DeviceCertError::InvalidAgentGrant)
+            );
+            assert_eq!(
+                verify_device_cert(&forced(cert, &root)),
+                Err(DeviceCertError::InvalidAgentGrant)
+            );
+        }
+    }
+
+    phase operating_web_pages_is_what_the_person_signed_and_a_mint_keeps;
+    // A key that may operate web pages in Browser is one its person signed,
+    // and a key minted from it keeps that and can be given no more.
+    {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+        let granted = |capabilities| {
+            let mut cert = DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: key.verifying_key().to_bytes(),
+                device_label: "Jane Doe's agent".to_owned(),
+                capabilities,
+                issued_at_ns: 1_000,
+                expires_at_ns: Some(1_000 + MAX_AGENT_GRANT_LIFETIME_NS),
+                signature: [0; 64],
+                issuer: None,
+            };
+            sign_device_cert(&mut cert, &root).map(|()| cert)
         };
-        sign_device_cert(&mut cert, &root).map(|()| cert)
-    };
-    let scope = AgentScope::Workspace([7; 16]);
-    let operating = granted(DeviceCapabilities::agent_grant(scope).with_browser_pages(true))
-        .expect("a person signs the key their agent acts with");
-    verify_device_cert_at(&operating, 2_000).unwrap();
-    assert!(operating.capabilities.browser_pages);
-    assert!(
-        !granted(DeviceCapabilities::agent_grant(scope))
-            .unwrap()
-            .capabilities
-            .browser_pages,
-        "a key not asked about operates no page"
-    );
-    // A device's capabilities never carry it: only a key's do.
-    assert!(
-        !DeviceCapabilities::member()
-            .with_browser_pages(false)
-            .browser_pages
-    );
-    // Minted from a key that operates pages, the mint keeps it.
-    let mine = granted(
-        DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces).with_browser_pages(true),
-    )
-    .unwrap();
-    let mut minted = prepare_minted_grant(&mine, [12; 32], [7; 16], "Jane", 2_000, 3_000);
-    sign_device_cert(&mut minted, &key).unwrap();
-    verify_device_cert_at(&minted, 2_500).unwrap();
-    assert!(minted.capabilities.browser_pages);
-    // From one that does not, a mint cannot gain it.
-    let plain = granted(DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces)).unwrap();
-    let mut gained = prepare_minted_grant(&plain, [12; 32], [7; 16], "Jane", 2_000, 3_000);
-    gained.capabilities.browser_pages = true;
-    assert_eq!(
-        sign_device_cert(&mut gained, &key),
-        Err(DeviceCertError::InvalidIssuer)
-    );
+        let scope = AgentScope::Workspace([7; 16]);
+        let operating = granted(DeviceCapabilities::agent_grant(scope).with_browser_pages(true))
+            .expect("a person signs the key their agent acts with");
+        verify_device_cert_at(&operating, 2_000).unwrap();
+        assert!(operating.capabilities.browser_pages);
+        assert!(
+            !granted(DeviceCapabilities::agent_grant(scope))
+                .unwrap()
+                .capabilities
+                .browser_pages,
+            "a key not asked about operates no page"
+        );
+        // A device's capabilities never carry it: only a key's do.
+        assert!(
+            !DeviceCapabilities::member()
+                .with_browser_pages(false)
+                .browser_pages
+        );
+        // Minted from a key that operates pages, the mint keeps it.
+        let mine = granted(
+            DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces).with_browser_pages(true),
+        )
+        .unwrap();
+        let mut minted = prepare_minted_grant(&mine, [12; 32], [7; 16], "Jane", 2_000, 3_000);
+        sign_device_cert(&mut minted, &key).unwrap();
+        verify_device_cert_at(&minted, 2_500).unwrap();
+        assert!(minted.capabilities.browser_pages);
+        // From one that does not, a mint cannot gain it.
+        let plain = granted(DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces)).unwrap();
+        let mut gained = prepare_minted_grant(&plain, [12; 32], [7; 16], "Jane", 2_000, 3_000);
+        gained.capabilities.browser_pages = true;
+        assert_eq!(
+            sign_device_cert(&mut gained, &key),
+            Err(DeviceCertError::InvalidIssuer)
+        );
+    }
 }
 
 /// A server key that never expires mints keys for one workspace that
@@ -1169,165 +1356,4 @@ fn a_server_key_mints_keys_that_expire_and_end_with_it() {
     revocations.insert(entry).unwrap();
     assert!(revocations.refuses(&server));
     assert!(revocations.refuses_at(&minted, 2_500));
-}
-
-/// Revoking a stand-in refuses what it issues from then on and keeps
-/// what it issued before.
-#[test]
-fn revoking_a_stand_in_keeps_what_it_issued_before() {
-    let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
-    let (key, stand_in) = make_stand_in(1);
-    let mut entry = crate::RevocationEntry {
-        user_public_key: stand_in.user_public_key,
-        revoked_device_public_key: stand_in.device_public_key,
-        revoked_at_ns: 5_000,
-        reason: crate::RevocationReason::Retired,
-        signature: [0; 64],
-    };
-    crate::sign_revocation_entry(&mut entry, &root).unwrap();
-    let mut revocations = crate::RevocationList::new();
-    revocations.insert(entry).unwrap();
-
-    let mut before = issued_by(&stand_in, 4_999);
-    sign_device_cert(&mut before, &key).unwrap();
-    let mut after = issued_by(&stand_in, 5_000);
-    sign_device_cert(&mut after, &key).unwrap();
-    verify_device_cert(&before).unwrap();
-    verify_device_cert(&after).unwrap();
-    assert!(!revocations.refuses(&before));
-    assert!(!revocations.refuses_at(&before, 10_000));
-    assert!(revocations.refuses(&after));
-    assert!(revocations.refuses_at(&after, 10_000));
-    assert!(revocations.refuses(&stand_in));
-    assert!(!revocations.refuses_at(&stand_in, 4_999));
-    // The device's own revocation still counts.
-    let mut device = crate::RevocationEntry {
-        user_public_key: stand_in.user_public_key,
-        revoked_device_public_key: before.device_public_key,
-        revoked_at_ns: 20_000,
-        reason: crate::RevocationReason::Lost,
-        signature: [0; 64],
-    };
-    crate::sign_revocation_entry(&mut device, &root).unwrap();
-    revocations.insert(device).unwrap();
-    assert!(revocations.refuses(&before));
-    assert!(!revocations.refuses_at(&before, 19_999));
-}
-
-#[test]
-fn verifiers_that_predate_the_marker_reject_foreign_certificates() {
-    let native = golden_cert(false);
-    let foreign = golden_cert(true);
-    let nonce = [9u8; 32];
-
-    let old: v1::DeviceCert =
-        serde_json::from_str(&serde_json::to_string(&native).unwrap()).unwrap();
-    assert_eq!(serde_json::to_string(&old).unwrap(), GOLDEN_V1_JSON);
-    let old_wire = postcard::to_allocvec(&(&old, nonce)).unwrap();
-    assert_eq!(postcard::to_allocvec(&(&native, nonce)).unwrap(), old_wire);
-    let (_, old_nonce): (DeviceCert, [u8; 32]) = postcard::from_bytes(&old_wire).unwrap();
-    assert_eq!(old_nonce, nonce);
-
-    let foreign_json = serde_json::to_string(&foreign).unwrap();
-    let json_error = serde_json::from_str::<v1::DeviceCert>(&foreign_json).unwrap_err();
-    assert!(json_error.to_string().contains("unknown field `foreign`"));
-    // Embedded in a larger message, the old decoder stops at the marker
-    // instead of misreading the fields that follow.
-    let foreign_wire = postcard::to_allocvec(&(&foreign, nonce)).unwrap();
-    assert!(postcard::from_bytes::<(v1::DeviceCert, [u8; 32])>(&foreign_wire).is_err());
-}
-
-/// Administration signs under its own tag, round-trips in both encodings
-/// (alone and together with the foreign marker), survives no flip of the
-/// flag, and is refused by every verifier that predates it.
-#[test]
-fn administration_certificates_sign_under_their_own_tag_and_old_verifiers_refuse_them() {
-    let native = golden_cert(false);
-    let nonce = [9u8; 32];
-    for foreign in [false, true] {
-        let admin = golden_cert_with(DeviceCapabilities {
-            foreign,
-            ..DeviceCapabilities::administrator()
-        });
-        verify_device_cert(&admin).unwrap();
-        assert_eq!(
-            device_cert_signing_digest(&admin).unwrap(),
-            signing_digest(DEVCERT_V3_PREIMAGE_TAG, &admin.view()).unwrap()
-        );
-        let json = serde_json::to_string(&admin).unwrap();
-        assert!(json.contains(r#""can_administer_devices":true"#));
-        assert_eq!(serde_json::from_str::<DeviceCert>(&json).unwrap(), admin);
-        let bytes = crate::canonical::canonical_bytes(&admin).unwrap();
-        let marker = 32 + 32 + 1 + "golden".len();
-        assert_eq!(bytes[marker], EXTENDED_BINARY_MARKER);
-        assert_eq!(
-            crate::canonical::from_canonical_bytes::<DeviceCert>(&bytes).unwrap(),
-            admin
-        );
-
-        let mut stripped = admin.clone();
-        stripped.capabilities.can_administer_devices = false;
-        assert_eq!(
-            verify_device_cert(&stripped).unwrap_err(),
-            DeviceCertError::BadSignature
-        );
-
-        let json_error = serde_json::from_str::<v1::DeviceCert>(&json).unwrap_err();
-        assert!(
-            json_error.to_string().contains("unknown field"),
-            "{json_error}"
-        );
-        let wire = postcard::to_allocvec(&(&admin, nonce)).unwrap();
-        assert!(postcard::from_bytes::<(v1::DeviceCert, [u8; 32])>(&wire).is_err());
-    }
-    let mut granted = native;
-    granted.capabilities.can_administer_devices = true;
-    assert_eq!(
-        verify_device_cert(&granted).unwrap_err(),
-        DeviceCertError::BadSignature
-    );
-}
-
-#[test]
-fn extended_capabilities_refuse_bytes_that_do_not_grant_administration() {
-    let admin = golden_cert_with(DeviceCapabilities::administrator());
-    let bytes = crate::canonical::canonical_bytes(&admin).unwrap();
-    let marker = 32 + 32 + 1 + "golden".len();
-    assert_eq!(bytes[marker + 1], EXTENDED_ADMINISTER);
-    for extended in [0, EXTENDED_FOREIGN, 4, 0x80] {
-        let mut changed = bytes.clone();
-        changed[marker + 1] = extended;
-        assert!(
-            crate::canonical::from_canonical_bytes::<DeviceCert>(&changed).is_err(),
-            "extended byte {extended}"
-        );
-    }
-}
-
-#[test]
-fn binary_capabilities_refuse_flag_bytes_other_than_zero_or_one() {
-    let mut bytes = crate::canonical::canonical_bytes(&golden_cert(true)).unwrap();
-    let marker = 32 + 32 + 1 + "golden".len();
-    assert_eq!(bytes[marker], FOREIGN_BINARY_MARKER);
-    bytes[marker + 1] = 3;
-    assert!(crate::canonical::from_canonical_bytes::<DeviceCert>(&bytes).is_err());
-}
-
-#[test]
-fn remembered_verification_never_accepts_a_changed_certificate() {
-    let (_root, cert) = fresh_cert(DeviceCapabilities::primary());
-    // Verify twice: the second check is answered by the remembered triple.
-    verify_device_cert(&cert).unwrap();
-    verify_device_cert(&cert).unwrap();
-    for tamper in [0usize, 1, 2, 3] {
-        let mut changed = cert.clone();
-        match tamper {
-            0 => changed.signature[5] ^= 0x01,
-            1 => changed.device_public_key[3] ^= 0x01,
-            2 => changed.issued_at_ns ^= 1,
-            _ => changed.user_public_key[7] ^= 0x01,
-        }
-        assert!(verify_device_cert(&changed).is_err(), "tamper {tamper}");
-    }
-    verify_device_cert(&cert).unwrap();
 }

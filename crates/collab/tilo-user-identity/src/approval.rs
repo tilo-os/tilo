@@ -410,11 +410,12 @@ mod tests {
         .unwrap()
     }
 
-    /// Exact certified devices approve once; a wrong target, expiry, denial or mutation fails
-    /// closed; a foreign identity or a future decision fails closed.
-    #[test]
-    fn device_approvals_count_once_and_fail_closed_on_anything_unexpected() {
-        // Phase: exact_certified_devices_approve_once.
+    tilo_test_env::scenario! {
+        /// Exact certified devices approve once; a wrong target, expiry, denial or mutation fails
+        /// closed; a foreign identity or a future decision fails closed.
+        fn device_approvals_count_once_and_fail_closed_on_anything_unexpected;
+
+        phase exact_certified_devices_approve_once;
         {
             let mut rng = UnwrapErr(SysRng);
             let root = ed25519_dalek::SigningKey::generate(&mut rng);
@@ -437,7 +438,7 @@ mod tests {
             );
         }
 
-        // Phase: wrong_target_expiry_denial_and_mutation_fail_closed.
+        phase wrong_target_expiry_denial_and_mutation_fail_closed;
         {
             let mut rng = UnwrapErr(SysRng);
             let root = ed25519_dalek::SigningKey::generate(&mut rng);
@@ -481,7 +482,7 @@ mod tests {
             );
         }
 
-        // Phase: foreign_identity_and_future_decision_fail_closed.
+        phase foreign_identity_and_future_decision_fail_closed;
         {
             let mut rng = UnwrapErr(SysRng);
             let requester_root = ed25519_dalek::SigningKey::generate(&mut rng);

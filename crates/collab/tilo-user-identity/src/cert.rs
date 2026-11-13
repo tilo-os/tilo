@@ -1688,17 +1688,21 @@ mod tests;
 mod device_name_tests {
     use super::{UNNAMED_PRIMARY_DEVICE, UNNAMED_SHARED_DEVICE, device_name};
 
-    #[test]
-    fn a_name_the_person_gave_is_the_name() {
-        assert_eq!(device_name("  Studio phone "), Some("Studio phone"));
-        assert_eq!(device_name("Laptop"), Some("Laptop"));
-    }
+    tilo_test_env::scenario! {
+        fn a_device_name_is_what_the_person_gave_and_never_a_stand_in;
 
-    #[test]
-    fn the_stand_in_provisioning_fills_in_is_no_name() {
-        assert_eq!(device_name(UNNAMED_PRIMARY_DEVICE), None);
-        assert_eq!(device_name(UNNAMED_SHARED_DEVICE), None);
-        assert_eq!(device_name("   "), None);
-        assert_eq!(device_name(""), None);
+        phase a_name_the_person_gave_is_the_name;
+        {
+            assert_eq!(device_name("  Studio phone "), Some("Studio phone"));
+            assert_eq!(device_name("Laptop"), Some("Laptop"));
+        }
+
+        phase the_stand_in_provisioning_fills_in_is_no_name;
+        {
+            assert_eq!(device_name(UNNAMED_PRIMARY_DEVICE), None);
+            assert_eq!(device_name(UNNAMED_SHARED_DEVICE), None);
+            assert_eq!(device_name("   "), None);
+            assert_eq!(device_name(""), None);
+        }
     }
 }

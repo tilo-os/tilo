@@ -287,40 +287,93 @@ mod tests {
         )
     }
 
-    #[test]
-    fn a_host_s_witness_verifies_for_its_window_and_arguments() {
-        let mut signed = witness(2, 1_000);
-        signed.sign(&key(2)).unwrap();
-        assert_eq!(signed.verify(2_000), Ok(()));
-        let decoded = HostWitness::decode(&signed.encode()).expect("a token names its witness");
-        assert_eq!(decoded, signed);
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn a_host_witness_binds_its_host_window_and_arguments;
 
-    #[test]
-    fn another_key_s_witness_and_a_changed_word_are_refused() {
-        let mut signed = witness(2, 1_000);
-        signed.sign(&key(2)).unwrap();
-        let mut changed = signed.clone();
-        changed.action = "fill-page".into();
-        assert_eq!(changed.verify(2_000), Err(HostWitnessError::Signature));
-        let mut elsewhere = witness(5, 1_000);
-        elsewhere.sign(&key(5)).unwrap();
-        assert_eq!(elsewhere.verify(2_000), Ok(()), "it is that host's own");
-        assert_eq!(HostWitness::decode("not a witness"), None);
-    }
+        phase a_host_s_witness_verifies_for_its_window_and_arguments;
+        {
+            let mut signed = witness(2, 1_000);
+            signed.sign(&key(2)).unwrap();
+            assert_eq!(signed.verify(2_000), Ok(()));
+            let decoded = HostWitness::decode(&signed.encode()).expect("a token names its witness");
+            assert_eq!(decoded, signed);
+        }
 
-    #[test]
-    fn a_witness_is_only_good_for_its_window() {
-        let mut signed = witness(2, 1_000);
-        signed.sign(&key(2)).unwrap();
-        assert_eq!(
-            signed.verify(1_000 + 61 * 1_000_000_000),
-            Err(HostWitnessError::Expired)
-        );
-        assert_eq!(signed.verify(500), Err(HostWitnessError::NotYetValid));
-        let mut long = witness(2, 1_000);
-        long.expires_at_ns = long.issued_at_ns + MAX_LIFETIME_NS + 1;
-        assert_eq!(long.sign(&key(2)), Err(HostWitnessError::InvalidValidity));
+        phase another_key_s_witness_and_a_changed_word_are_refused;
+        {
+            let mut signed = witness(2, 1_000);
+            signed.sign(&key(2)).unwrap();
+            let mut changed = signed.clone();
+            changed.action = "fill-page".into();
+            assert_eq!(changed.verify(2_000), Err(HostWitnessError::Signature));
+            let mut elsewhere = witness(5, 1_000);
+            elsewhere.sign(&key(5)).unwrap();
+            assert_eq!(elsewhere.verify(2_000), Ok(()), "it is that host's own");
+            assert_eq!(HostWitness::decode("not a witness"), None);
+        }
+
+        phase a_witness_is_only_good_for_its_window;
+        {
+            let mut signed = witness(2, 1_000);
+            signed.sign(&key(2)).unwrap();
+            assert_eq!(
+                signed.verify(1_000 + 61 * 1_000_000_000),
+                Err(HostWitnessError::Expired)
+            );
+            assert_eq!(signed.verify(500), Err(HostWitnessError::NotYetValid));
+            let mut long = witness(2, 1_000);
+            long.expires_at_ns = long.issued_at_ns + MAX_LIFETIME_NS + 1;
+            assert_eq!(long.sign(&key(2)), Err(HostWitnessError::InvalidValidity));
+        }
+
+        phase only_the_host_that_certified_a_device_answers_for_it;
+        {
+            let host = key(2);
+            let cert = certified_by(&host);
+            let mut witness = HostWitness::unsigned(
+                Parties {
+                    person: cert.user_public_key,
+                    host: host.verifying_key().to_bytes(),
+                    caller: [7; 32],
+                    target: cert.device_public_key,
+                },
+                answered(),
+                (1_000, 1_000 + 60 * 1_000_000_000),
+            );
+            witness.sign(&host).unwrap();
+            assert!(witness.stands_for(&cert, 2_000));
+
+            // Another host's word, for this very device, is no answer at all.
+            let elsewhere = key(5);
+            let mut other = witness.clone();
+            other.host_device_public_key = elsewhere.verifying_key().to_bytes();
+            other.sign(&elsewhere).unwrap();
+            assert!(!other.stands_for(&cert, 2_000));
+            // Nor is an answer for another person, or for another device.
+            let mut stranger = witness.clone();
+            stranger.person_public_key = [0x42; 32];
+            stranger.sign(&host).unwrap();
+            assert!(!stranger.stands_for(&cert, 2_000));
+            let mut elsewhere_device = witness.clone();
+            elsewhere_device.target_device_public_key = [0x43; 32];
+            elsewhere_device.sign(&host).unwrap();
+            assert!(!elsewhere_device.stands_for(&cert, 2_000));
+            // And a device no host certified has nobody to answer for it.
+            let mut uncertified = cert;
+            uncertified.issuer = None;
+            assert!(!witness.stands_for(&uncertified, 2_000));
+        }
+
+        phase a_host_signs_only_with_the_key_its_certificate_names;
+        {
+            let mut signed = witness(2, 1_000);
+            assert_eq!(signed.sign(&key(3)), Err(HostWitnessError::Signature));
+            assert_eq!(signed.verify(2_000), Err(HostWitnessError::Unsigned));
+        }
     }
 
     /// The certificate a host certified a device with: the device's, issued
@@ -349,50 +402,5 @@ mod tests {
         };
         crate::sign_device_cert(&mut cert, host).unwrap();
         cert
-    }
-
-    #[test]
-    fn only_the_host_that_certified_a_device_answers_for_it() {
-        let host = key(2);
-        let cert = certified_by(&host);
-        let mut witness = HostWitness::unsigned(
-            Parties {
-                person: cert.user_public_key,
-                host: host.verifying_key().to_bytes(),
-                caller: [7; 32],
-                target: cert.device_public_key,
-            },
-            answered(),
-            (1_000, 1_000 + 60 * 1_000_000_000),
-        );
-        witness.sign(&host).unwrap();
-        assert!(witness.stands_for(&cert, 2_000));
-
-        // Another host's word, for this very device, is no answer at all.
-        let elsewhere = key(5);
-        let mut other = witness.clone();
-        other.host_device_public_key = elsewhere.verifying_key().to_bytes();
-        other.sign(&elsewhere).unwrap();
-        assert!(!other.stands_for(&cert, 2_000));
-        // Nor is an answer for another person, or for another device.
-        let mut stranger = witness.clone();
-        stranger.person_public_key = [0x42; 32];
-        stranger.sign(&host).unwrap();
-        assert!(!stranger.stands_for(&cert, 2_000));
-        let mut elsewhere_device = witness.clone();
-        elsewhere_device.target_device_public_key = [0x43; 32];
-        elsewhere_device.sign(&host).unwrap();
-        assert!(!elsewhere_device.stands_for(&cert, 2_000));
-        // And a device no host certified has nobody to answer for it.
-        let mut uncertified = cert;
-        uncertified.issuer = None;
-        assert!(!witness.stands_for(&uncertified, 2_000));
-    }
-
-    #[test]
-    fn a_host_signs_only_with_the_key_its_certificate_names() {
-        let mut signed = witness(2, 1_000);
-        assert_eq!(signed.sign(&key(3)), Err(HostWitnessError::Signature));
-        assert_eq!(signed.verify(2_000), Err(HostWitnessError::Unsigned));
     }
 }
