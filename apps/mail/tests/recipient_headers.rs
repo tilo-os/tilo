@@ -38,3 +38,26 @@ fn escaped_quotes_and_unicode_survive_recipient_parsing() {
     assert_eq!(parsed[0].email, "mei@example.test");
     assert_eq!(parsed[1].email, "next@example.test");
 }
+
+/// A recipient field as a person leaves it: empty, blank, one address, and
+/// with the separator a completion leaves after the last one.
+#[test]
+fn a_field_names_as_many_recipients_as_it_holds_addresses() {
+    let cases: [(&str, &[&str]); 5] = [
+        ("", &[]),
+        ("   ", &[]),
+        ("solo@example.test", &["solo@example.test"]),
+        ("Maya Chen <maya@example.test>, ", &["maya@example.test"]),
+        (
+            "maya@example.test, solo@example.test, ",
+            &["maya@example.test", "solo@example.test"],
+        ),
+    ];
+    for (field, expected) in cases {
+        let emails: Vec<String> = parse_addr_list(field)
+            .into_iter()
+            .map(|recipient| recipient.email)
+            .collect();
+        assert_eq!(emails, expected, "{field:?}");
+    }
+}
