@@ -266,42 +266,46 @@ mod tests {
     use super::*;
     use std::io::Write as _;
 
-    #[test]
-    fn a_request_crosses_the_door_with_its_descriptors() {
-        let (shell, app) = pair().unwrap();
-        let (mut ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
-        let theirs = Descriptor::from(theirs);
-        send_open(&shell, br#"{"instance":7}"#, &[&theirs]).unwrap();
-        drop(theirs);
-        let (request, fds) = receive_open(&app).unwrap().unwrap();
-        assert_eq!(request, br#"{"instance":7}"#);
-        assert_eq!(fds.len(), 1, "the window's connection came with it");
-        ours.write_all(b"x").unwrap();
-        let mut received = std::os::unix::net::UnixStream::from(fds.into_iter().next().unwrap());
-        let mut byte = [0_u8; 1];
-        std::io::Read::read_exact(&mut received, &mut byte).unwrap();
-        assert_eq!(&byte, b"x");
-        drop(shell);
-        assert!(receive_open(&app).unwrap().is_none(), "closed door ends");
-    }
+    tilo_test_env::scenario! {
+        fn the_window_door;
 
-    #[test]
-    fn an_app_that_reads_its_door_says_so_and_an_older_one_never_does() {
-        let (shell, app) = pair().unwrap();
-        assert!(
-            !take_serves(&shell).unwrap(),
-            "an app built before the door says nothing"
-        );
-        send_serves(&app).unwrap();
-        assert!(take_serves(&shell).unwrap());
-        assert!(!take_serves(&shell).unwrap(), "said once");
-    }
+        phase a_request_crosses_the_door_with_its_descriptors;
+        {
+            let (shell, app) = pair().unwrap();
+            let (mut ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+            let theirs = Descriptor::from(theirs);
+            send_open(&shell, br#"{"instance":7}"#, &[&theirs]).unwrap();
+            drop(theirs);
+            let (request, fds) = receive_open(&app).unwrap().unwrap();
+            assert_eq!(request, br#"{"instance":7}"#);
+            assert_eq!(fds.len(), 1, "the window's connection came with it");
+            ours.write_all(b"x").unwrap();
+            let mut received = std::os::unix::net::UnixStream::from(fds.into_iter().next().unwrap());
+            let mut byte = [0_u8; 1];
+            std::io::Read::read_exact(&mut received, &mut byte).unwrap();
+            assert_eq!(&byte, b"x");
+            drop(shell);
+            assert!(receive_open(&app).unwrap().is_none(), "closed door ends");
+        }
 
-    #[test]
-    fn anything_but_a_request_is_refused() {
-        use std::os::fd::AsFd as _;
-        let (shell, app) = pair().unwrap();
-        crate::door::send(shell.as_fd(), &[b"job", b"label"], &[]).unwrap();
-        assert!(receive_open(&app).is_err());
+        phase an_app_that_reads_its_door_says_so_and_an_older_one_never_does;
+        {
+            let (shell, app) = pair().unwrap();
+            assert!(
+                !take_serves(&shell).unwrap(),
+                "an app built before the door says nothing"
+            );
+            send_serves(&app).unwrap();
+            assert!(take_serves(&shell).unwrap());
+            assert!(!take_serves(&shell).unwrap(), "said once");
+        }
+
+        phase anything_but_a_request_is_refused;
+        {
+            use std::os::fd::AsFd as _;
+            let (shell, app) = pair().unwrap();
+            crate::door::send(shell.as_fd(), &[b"job", b"label"], &[]).unwrap();
+            assert!(receive_open(&app).is_err());
+        }
     }
 }

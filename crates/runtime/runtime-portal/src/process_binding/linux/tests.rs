@@ -116,148 +116,154 @@ fn child(socket: &UnixStream, proof: Option<&UnixStream>) -> std::process::Child
     let _spawning = crate::spawning();
     command.spawn_locked().expect("real child")
 }
-#[test]
-fn executing_peer_pins_child_not_socket_launcher_and_rejects_reused_launch_start() {
-    let (mut host, app) = UnixStream::pair().expect("inherited service");
-    let nonce = [51; 32];
-    challenge(&mut host, &nonce);
-    let mut child = child(&app, None);
-    let peer =
-        receive(&host, &nonce, rustix::process::geteuid().as_raw()).expect("kernel-attested child");
-    assert_eq!(peer.pid(), child.id());
-    assert_ne!(peer.pid(), std::process::id());
-    assert!(peer.current());
-    assert_eq!(peer.uid(), rustix::process::geteuid().as_raw());
-    assert_eq!(peer.gid(), rustix::process::getegid().as_raw());
-    assert_eq!(
-        peer.start_time().unwrap(),
-        process_stat(child.id()).unwrap().1
-    );
-    peer.matches_transferred_pidfd(peer.pidfd())
-        .expect("actual same-task kernel handle");
-    let parent_fd = unsafe { libc::syscall(libc::SYS_pidfd_open, std::process::id(), 0) };
-    assert!(
-        parent_fd >= 0,
-        "owned parent pidfd: {}",
-        io::Error::last_os_error()
-    );
-    let parent_fd = i32::try_from(parent_fd).expect("kernel pidfd fits a file descriptor");
-    let parent_fd = unsafe { OwnedFd::from_raw_fd(parent_fd) };
-    assert!(
-        peer.matches_transferred_pidfd(parent_fd.as_fd()).is_err(),
-        "different live kernel task refused"
-    );
-    let unrelated = std::fs::File::open("/dev/null").unwrap();
-    assert!(
-        peer.matches_transferred_pidfd(unrelated.as_fd()).is_err(),
-        "descriptor is not a kernel process handle"
-    );
-    assert!(peer.belongs_to(std::process::id(), start()));
-    assert!(!peer.belongs_to(
-        std::process::id(),
-        start().checked_add(1).expect("different launch")
-    ));
-    assert!(!peer.belongs_to(u32::MAX, start()));
-    host.write_all(&[1]).expect("host admission ack");
-    assert!(child.wait().expect("reap child").success());
-    assert!(
-        !peer.current(),
-        "a exited task cannot regain custody through numeric PID reuse"
-    );
-    assert!(
-        peer.start_time().is_err(),
-        "stopped task cannot furnish a fresh launch time"
-    );
-    assert!(
-        peer.matches_transferred_pidfd(peer.pidfd()).is_err(),
-        "stopped same-task descriptor is not current authority"
-    );
-    let mut restarted = {
-        let _spawning = crate::spawning();
-        std::process::Command::new("/bin/true")
-            .spawn_locked()
-            .expect("new process")
-    };
-    assert!(
-        !peer.current(),
-        "a new application process cannot revive an old kernel handle"
-    );
-    assert!(restarted.wait().expect("reap new process").success());
-}
-#[test]
-fn executing_peer_refuses_an_inherited_launcher_proof_from_a_different_sender() {
-    let (mut host, app) = UnixStream::pair().expect("inherited service");
-    let (_owned, proof) = UnixStream::pair().expect("foreign parent-created proof");
-    let nonce = [71; 32];
-    challenge(&mut host, &nonce);
-    let mut child = child(&app, Some(&proof));
-    let error = receive(&host, &nonce, rustix::process::geteuid().as_raw())
-        .err()
-        .expect("foreign creator refused");
-    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-    assert!(child.wait().expect("reap child").success());
-}
-#[test]
-fn executing_peer_refuses_wrong_nonce_user_missing_extra_or_non_socket_rights() {
-    for case in 0..5 {
-        let (host, app) = UnixStream::pair().expect("service pair");
-        arm(&host).expect("kernel sender credentials");
-        host.set_read_timeout(Some(tilo_test_env::hang_bound()))
-            .expect("bounded receive");
-        let (_owned, proof) = UnixStream::pair().expect("proof pair");
-        let file = std::fs::File::open("/dev/null").expect("non-socket proof");
-        let rights = match case {
-            2 => vec![],
-            3 => vec![proof.as_fd(), app.as_fd()],
-            4 => vec![file.as_fd()],
-            _ => vec![proof.as_fd()],
-        };
-        let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(2))];
-        let mut ancillary = SendAncillaryBuffer::new(&mut space);
-        if !rights.is_empty() {
-            assert!(ancillary.push(SendAncillaryMessage::ScmRights(&rights)));
-        }
-        let nonce = if case == 0 { [29; 32] } else { [31; 32] };
+tilo_test_env::scenario! {
+    fn an_executing_peer_is_the_kernel_attested_task;
+
+    phase executing_peer_pins_child_not_socket_launcher_and_rejects_reused_launch_start;
+    {
+        let (mut host, app) = UnixStream::pair().expect("inherited service");
+        let nonce = [51; 32];
+        challenge(&mut host, &nonce);
+        let mut child = child(&app, None);
+        let peer =
+            receive(&host, &nonce, rustix::process::geteuid().as_raw()).expect("kernel-attested child");
+        assert_eq!(peer.pid(), child.id());
+        assert_ne!(peer.pid(), std::process::id());
+        assert!(peer.current());
+        assert_eq!(peer.uid(), rustix::process::geteuid().as_raw());
+        assert_eq!(peer.gid(), rustix::process::getegid().as_raw());
         assert_eq!(
-            rustix::net::sendmsg(
-                &app,
-                &[IoSlice::new(&nonce)],
-                &mut ancillary,
-                SendFlags::NOSIGNAL
-            )
-            .expect("actual ancillary message"),
-            32
+            peer.start_time().unwrap(),
+            process_stat(child.id()).unwrap().1
         );
-        let uid = rustix::process::geteuid().as_raw();
-        let expected_uid = if case == 1 { uid.wrapping_add(1) } else { uid };
+        peer.matches_transferred_pidfd(peer.pidfd())
+            .expect("actual same-task kernel handle");
+        let parent_fd = unsafe { libc::syscall(libc::SYS_pidfd_open, std::process::id(), 0) };
         assert!(
-            receive(&host, &[31; 32], expected_uid).is_err(),
-            "invalid case {case} must refuse"
+            parent_fd >= 0,
+            "owned parent pidfd: {}",
+            io::Error::last_os_error()
         );
+        let parent_fd = i32::try_from(parent_fd).expect("kernel pidfd fits a file descriptor");
+        let parent_fd = unsafe { OwnedFd::from_raw_fd(parent_fd) };
+        assert!(
+            peer.matches_transferred_pidfd(parent_fd.as_fd()).is_err(),
+            "different live kernel task refused"
+        );
+        let unrelated = std::fs::File::open("/dev/null").unwrap();
+        assert!(
+            peer.matches_transferred_pidfd(unrelated.as_fd()).is_err(),
+            "descriptor is not a kernel process handle"
+        );
+        assert!(peer.belongs_to(std::process::id(), start()));
+        assert!(!peer.belongs_to(
+            std::process::id(),
+            start().checked_add(1).expect("different launch")
+        ));
+        assert!(!peer.belongs_to(u32::MAX, start()));
+        host.write_all(&[1]).expect("host admission ack");
+        assert!(child.wait().expect("reap child").success());
+        assert!(
+            !peer.current(),
+            "a exited task cannot regain custody through numeric PID reuse"
+        );
+        assert!(
+            peer.start_time().is_err(),
+            "stopped task cannot furnish a fresh launch time"
+        );
+        assert!(
+            peer.matches_transferred_pidfd(peer.pidfd()).is_err(),
+            "stopped same-task descriptor is not current authority"
+        );
+        let mut restarted = {
+            let _spawning = crate::spawning();
+            std::process::Command::new("/bin/true")
+                .spawn_locked()
+                .expect("new process")
+        };
+        assert!(
+            !peer.current(),
+            "a new application process cannot revive an old kernel handle"
+        );
+        assert!(restarted.wait().expect("reap new process").success());
     }
-}
 
-#[test]
-fn root_only_unclassified_authentication_never_admits_the_calling_process() {
-    // A non-root controller refuses before IO; a root controller refuses its
-    // own root sender after the real kernel SCM/socket-creator proof.
-    let (host, app) = UnixStream::pair().unwrap();
-    arm(&host).unwrap();
-    let (_owned, proof) = UnixStream::pair().unwrap();
-    let nonce = [97; 32];
-    send_answer(&app, &nonce, &proof).unwrap();
-    let error = receive_nonroot_for_authentication(&host, &nonce)
-        .err()
-        .expect("root controller plus non-root sender are independently mandatory");
-    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    phase executing_peer_refuses_an_inherited_launcher_proof_from_a_different_sender;
+    {
+        let (mut host, app) = UnixStream::pair().expect("inherited service");
+        let (_owned, proof) = UnixStream::pair().expect("foreign parent-created proof");
+        let nonce = [71; 32];
+        challenge(&mut host, &nonce);
+        let mut child = child(&app, Some(&proof));
+        let error = receive(&host, &nonce, rustix::process::geteuid().as_raw())
+            .err()
+            .expect("foreign creator refused");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(child.wait().expect("reap child").success());
+    }
 
-    let (host, app) = UnixStream::pair().unwrap();
-    arm(&host).unwrap();
-    let (_owned, proof) = UnixStream::pair().unwrap();
-    send_answer(&app, &nonce, &proof).unwrap();
-    let peer = receive(&host, &nonce, rustix::process::geteuid().as_raw()).unwrap();
-    assert_eq!(peer.uid(), rustix::process::geteuid().as_raw());
-    assert_eq!(peer.gid(), rustix::process::getegid().as_raw());
-    assert_eq!(peer.start_time().unwrap(), start());
-    peer.matches_transferred_pidfd(peer.as_fd()).unwrap();
+    phase executing_peer_refuses_wrong_nonce_user_missing_extra_or_non_socket_rights;
+    {
+        for case in 0..5 {
+            let (host, app) = UnixStream::pair().expect("service pair");
+            arm(&host).expect("kernel sender credentials");
+            host.set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .expect("bounded receive");
+            let (_owned, proof) = UnixStream::pair().expect("proof pair");
+            let file = std::fs::File::open("/dev/null").expect("non-socket proof");
+            let rights = match case {
+                2 => vec![],
+                3 => vec![proof.as_fd(), app.as_fd()],
+                4 => vec![file.as_fd()],
+                _ => vec![proof.as_fd()],
+            };
+            let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(2))];
+            let mut ancillary = SendAncillaryBuffer::new(&mut space);
+            if !rights.is_empty() {
+                assert!(ancillary.push(SendAncillaryMessage::ScmRights(&rights)));
+            }
+            let nonce = if case == 0 { [29; 32] } else { [31; 32] };
+            assert_eq!(
+                rustix::net::sendmsg(
+                    &app,
+                    &[IoSlice::new(&nonce)],
+                    &mut ancillary,
+                    SendFlags::NOSIGNAL
+                )
+                .expect("actual ancillary message"),
+                32
+            );
+            let uid = rustix::process::geteuid().as_raw();
+            let expected_uid = if case == 1 { uid.wrapping_add(1) } else { uid };
+            assert!(
+                receive(&host, &[31; 32], expected_uid).is_err(),
+                "invalid case {case} must refuse"
+            );
+        }
+    }
+
+    phase root_only_unclassified_authentication_never_admits_the_calling_process;
+    {
+        // A non-root controller refuses before IO; a root controller refuses its
+        // own root sender after the real kernel SCM/socket-creator proof.
+        let (host, app) = UnixStream::pair().unwrap();
+        arm(&host).unwrap();
+        let (_owned, proof) = UnixStream::pair().unwrap();
+        let nonce = [97; 32];
+        send_answer(&app, &nonce, &proof).unwrap();
+        let error = receive_nonroot_for_authentication(&host, &nonce)
+            .err()
+            .expect("root controller plus non-root sender are independently mandatory");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+
+        let (host, app) = UnixStream::pair().unwrap();
+        arm(&host).unwrap();
+        let (_owned, proof) = UnixStream::pair().unwrap();
+        send_answer(&app, &nonce, &proof).unwrap();
+        let peer = receive(&host, &nonce, rustix::process::geteuid().as_raw()).unwrap();
+        assert_eq!(peer.uid(), rustix::process::geteuid().as_raw());
+        assert_eq!(peer.gid(), rustix::process::getegid().as_raw());
+        assert_eq!(peer.start_time().unwrap(), start());
+        peer.matches_transferred_pidfd(peer.as_fd()).unwrap();
+    }
 }

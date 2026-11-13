@@ -292,39 +292,43 @@ mod tests {
     use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;
 
-    #[test]
-    fn a_reader_takes_the_end_a_peer_reports_and_then_sees_it_closed() {
-        let (ours, peer) = UnixStream::pair().expect("socket pair");
-        let lifetime = SessionLifetime::new(ours);
-        let reader = lifetime.clone_for_reader().expect("reader duplicate");
-        assert_eq!(reader.state(), LeaseState::Open);
-        (&peer)
-            .write_all(b"{\"ended\":\"lost\"}\n")
-            .expect("peer reports");
-        peer.shutdown(std::net::Shutdown::Both)
-            .expect("peer closes");
-        assert_eq!(
-            reader.state(),
-            LeaseState::Reported(b"{\"ended\":\"lost\"}".to_vec())
-        );
-        assert_eq!(reader.state(), LeaseState::Closed);
+    tilo_test_env::scenario! {
+        fn a_reader_lifetime;
 
-        let (ours, peer) = UnixStream::pair().expect("socket pair");
-        let lifetime = SessionLifetime::new(ours);
-        let reader = lifetime.clone_for_reader().expect("reader duplicate");
-        drop(peer);
-        assert_eq!(reader.state(), LeaseState::Closed, "closed without a word");
-    }
+        phase a_reader_takes_the_end_a_peer_reports_and_then_sees_it_closed;
+        {
+            let (ours, peer) = UnixStream::pair().expect("socket pair");
+            let lifetime = SessionLifetime::new(ours);
+            let reader = lifetime.clone_for_reader().expect("reader duplicate");
+            assert_eq!(reader.state(), LeaseState::Open);
+            (&peer)
+                .write_all(b"{\"ended\":\"lost\"}\n")
+                .expect("peer reports");
+            peer.shutdown(std::net::Shutdown::Both)
+                .expect("peer closes");
+            assert_eq!(
+                reader.state(),
+                LeaseState::Reported(b"{\"ended\":\"lost\"}".to_vec())
+            );
+            assert_eq!(reader.state(), LeaseState::Closed);
 
-    #[test]
-    fn reader_lifetime_sees_the_peer_close_its_end() {
-        let (ours, peer) = UnixStream::pair().expect("socket pair");
-        let lifetime = SessionLifetime::new(ours);
-        let reader = lifetime.clone_for_reader().expect("reader duplicate");
-        assert!(reader.is_open());
-        peer.shutdown(std::net::Shutdown::Both)
-            .expect("peer closes");
-        assert!(!reader.is_open());
+            let (ours, peer) = UnixStream::pair().expect("socket pair");
+            let lifetime = SessionLifetime::new(ours);
+            let reader = lifetime.clone_for_reader().expect("reader duplicate");
+            drop(peer);
+            assert_eq!(reader.state(), LeaseState::Closed, "closed without a word");
+        }
+
+        phase reader_lifetime_sees_the_peer_close_its_end;
+        {
+            let (ours, peer) = UnixStream::pair().expect("socket pair");
+            let lifetime = SessionLifetime::new(ours);
+            let reader = lifetime.clone_for_reader().expect("reader duplicate");
+            assert!(reader.is_open());
+            peer.shutdown(std::net::Shutdown::Both)
+                .expect("peer closes");
+            assert!(!reader.is_open());
+        }
     }
 
     #[test]

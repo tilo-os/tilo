@@ -369,121 +369,125 @@ mod tests {
         frame
     }
 
-    #[test]
-    fn protected_replies_cannot_disclose_a_buffer_or_lease() {
-        let ready = ready("private text");
-        assert_eq!(decode(&ready).unwrap().text, "private text");
-        for status in [1, 3, 4, 5, 6, 7, 8, 9] {
-            let mut frame = ready.clone();
-            frame[6] = status;
-            assert!(
-                decode(&frame).is_err(),
-                "status {status} disclosed private text"
-            );
-            frame[7] = 0;
-            assert!(
-                decode(&frame).is_err(),
-                "status {status} disclosed an unmarked buffer"
-            );
+    tilo_test_env::scenario! {
+        fn editor_frames;
+
+        phase protected_replies_cannot_disclose_a_buffer_or_lease;
+        {
+            let ready = ready("private text");
+            assert_eq!(decode(&ready).unwrap().text, "private text");
+            for status in [1, 3, 4, 5, 6, 7, 8, 9] {
+                let mut frame = ready.clone();
+                frame[6] = status;
+                assert!(
+                    decode(&frame).is_err(),
+                    "status {status} disclosed private text"
+                );
+                frame[7] = 0;
+                assert!(
+                    decode(&frame).is_err(),
+                    "status {status} disclosed an unmarked buffer"
+                );
+            }
         }
-    }
 
-    #[test]
-    fn the_producers_half_reads_requests_and_writes_replies() {
-        let replace = Request::Replace {
-            lease: lease(),
-            transaction: 7,
-            text: "héllo".into(),
-        };
-        let (id, decoded) = decode_request(&encode(3, &replace).unwrap()).unwrap();
-        assert_eq!(id, 3);
-        assert!(decoded == replace);
-        let (_, inspect) = decode_request(&encode(4, &Request::Inspect).unwrap()).unwrap();
-        assert!(inspect == Request::Inspect);
-        let mut fielded = encode(5, &Request::Inspect).unwrap();
-        fielded[20] = 1;
-        assert!(
-            decode_request(&fielded).is_err(),
-            "an Inspect carries no lease"
-        );
+        phase the_producers_half_reads_requests_and_writes_replies;
+        {
+            let replace = Request::Replace {
+                lease: lease(),
+                transaction: 7,
+                text: "héllo".into(),
+            };
+            let (id, decoded) = decode_request(&encode(3, &replace).unwrap()).unwrap();
+            assert_eq!(id, 3);
+            assert!(decoded == replace);
+            let (_, inspect) = decode_request(&encode(4, &Request::Inspect).unwrap()).unwrap();
+            assert!(inspect == Request::Inspect);
+            let mut fielded = encode(5, &Request::Inspect).unwrap();
+            fielded[20] = 1;
+            assert!(
+                decode_request(&fielded).is_err(),
+                "an Inspect carries no lease"
+            );
 
-        let ready = Reply {
-            request: 0,
-            status: Status::Ready,
-            lease: Some(Lease {
-                anchor: 3,
-                focus: 4,
-                ..lease()
-            }),
-            transaction: 0,
-            can_undo: true,
-            can_redo: false,
-            text: "héllo".into(),
-        };
-        let back = decode(&encode_reply(&ready).unwrap()).unwrap();
-        assert_eq!(back.text, "héllo");
-        assert_eq!(back.lease, ready.lease);
-        assert!(back.can_undo && !back.can_redo);
-        let applied = Reply {
-            request: 3,
-            status: Status::Applied,
-            lease: None,
-            transaction: 7,
-            can_undo: false,
-            can_redo: false,
-            text: String::new(),
-        };
-        let back = decode(&encode_reply(&applied).unwrap()).unwrap();
-        assert_eq!(
-            (back.request, back.status, back.transaction),
-            (3, Status::Applied, 7)
-        );
-        let split = Reply {
-            lease: Some(Lease {
-                focus: 2,
-                ..lease()
-            }),
-            text: "界".into(),
-            ..ready
-        };
-        assert!(encode_reply(&split).is_err(), "a selection inside a scalar");
-    }
+            let ready = Reply {
+                request: 0,
+                status: Status::Ready,
+                lease: Some(Lease {
+                    anchor: 3,
+                    focus: 4,
+                    ..lease()
+                }),
+                transaction: 0,
+                can_undo: true,
+                can_redo: false,
+                text: "héllo".into(),
+            };
+            let back = decode(&encode_reply(&ready).unwrap()).unwrap();
+            assert_eq!(back.text, "héllo");
+            assert_eq!(back.lease, ready.lease);
+            assert!(back.can_undo && !back.can_redo);
+            let applied = Reply {
+                request: 3,
+                status: Status::Applied,
+                lease: None,
+                transaction: 7,
+                can_undo: false,
+                can_redo: false,
+                text: String::new(),
+            };
+            let back = decode(&encode_reply(&applied).unwrap()).unwrap();
+            assert_eq!(
+                (back.request, back.status, back.transaction),
+                (3, Status::Applied, 7)
+            );
+            let split = Reply {
+                lease: Some(Lease {
+                    focus: 2,
+                    ..lease()
+                }),
+                text: "界".into(),
+                ..ready
+            };
+            assert!(encode_reply(&split).is_err(), "a selection inside a scalar");
+        }
 
-    #[test]
-    fn native_selection_and_packet_bounds_reject_malformed_input() {
-        let mut frame = ready("界");
-        frame[60..64].copy_from_slice(&1u32.to_le_bytes());
-        assert!(decode(&frame).is_err(), "selection splits a UTF-8 scalar");
-        frame[60..64].copy_from_slice(&3u32.to_le_bytes());
-        assert!(decode(&frame).is_ok());
-        assert!(decode(&frame[..frame.len() - 1]).is_err());
-        frame.push(0);
-        assert!(decode(&frame).is_err(), "trailing bytes accepted");
-        for text in ["execute\n", "\r", "\0", "\u{1b}[A"] {
+        phase native_selection_and_packet_bounds_reject_malformed_input;
+        {
+            let mut frame = ready("界");
+            frame[60..64].copy_from_slice(&1u32.to_le_bytes());
+            assert!(decode(&frame).is_err(), "selection splits a UTF-8 scalar");
+            frame[60..64].copy_from_slice(&3u32.to_le_bytes());
+            assert!(decode(&frame).is_ok());
+            assert!(decode(&frame[..frame.len() - 1]).is_err());
+            frame.push(0);
+            assert!(decode(&frame).is_err(), "trailing bytes accepted");
+            for text in ["execute\n", "\r", "\0", "\u{1b}[A"] {
+                assert!(
+                    encode(
+                        1,
+                        &Request::Replace {
+                            lease: lease(),
+                            transaction: 1,
+                            text: text.into(),
+                        }
+                    )
+                    .is_err(),
+                    "control text could enter the command channel"
+                );
+            }
             assert!(
                 encode(
                     1,
                     &Request::Replace {
                         lease: lease(),
                         transaction: 1,
-                        text: text.into(),
+                        text: "x".repeat(TEXT_BYTES + 1),
                     }
                 )
-                .is_err(),
-                "control text could enter the command channel"
+                .is_err()
             );
+            assert!(encode(0, &Request::Inspect).is_err());
         }
-        assert!(
-            encode(
-                1,
-                &Request::Replace {
-                    lease: lease(),
-                    transaction: 1,
-                    text: "x".repeat(TEXT_BYTES + 1),
-                }
-            )
-            .is_err()
-        );
-        assert!(encode(0, &Request::Inspect).is_err());
     }
 }

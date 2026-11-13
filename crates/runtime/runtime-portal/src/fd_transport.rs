@@ -126,68 +126,91 @@ mod tests {
     use std::os::fd::{AsRawFd, RawFd};
     use std::os::unix::net::{UnixDatagram, UnixStream};
 
-    #[test]
-    fn a_descriptor_survives_the_socket_and_arrives_close_on_exec() {
-        {
-            let (a, b) = UnixStream::pair().unwrap();
-            let (mut source, target) = UnixStream::pair().unwrap();
-            send_with_fd(&a, b"session", &target).unwrap();
-            let (payload, fd) = recv_with_fd(&b).unwrap();
-            assert_eq!(payload, b"session");
-            let mut received = UnixStream::from(fd.unwrap());
-            source.write_all(b"hello").unwrap();
-            let mut bytes = [0; 5];
-            received.read_exact(&mut bytes).unwrap();
-            assert_eq!(&bytes, b"hello");
-        }
-        {
-            let (a, b) = UnixStream::pair().unwrap();
-            send_with_fd(&a, b"session", &a).unwrap();
-            let (_, fd) = recv_with_fd(&b).unwrap();
-            let flags = rustix::io::fcntl_getfd(fd.unwrap()).unwrap();
-            assert!(flags.contains(rustix::io::FdFlags::CLOEXEC));
-        }
-    }
+    tilo_test_env::scenario! {
+        fn descriptors_sent_over_a_socket;
 
-    #[test]
-    fn negotiated_bundle_preserves_roles_and_closes_on_exec() {
-        let (sender, receiver) = UnixStream::pair().unwrap();
-        let (mut first, first_fd) = UnixStream::pair().unwrap();
-        let (mut second, second_fd) = UnixStream::pair().unwrap();
-        send_with_fds(
-            &sender,
-            b"pty-and-editor-v1",
-            &[first_fd.as_fd(), second_fd.as_fd()],
-        )
-        .unwrap();
-        let (payload, fds) = recv_with_fds(&receiver).unwrap();
-        assert_eq!(payload, b"pty-and-editor-v1");
-        assert_eq!(fds.len(), 2);
-        first.write_all(b"P").unwrap();
-        second.write_all(b"E").unwrap();
-        for (fd, expected) in fds.into_iter().zip(*b"PE") {
-            assert!(
-                rustix::io::fcntl_getfd(&fd)
-                    .unwrap()
-                    .contains(rustix::io::FdFlags::CLOEXEC)
-            );
-            let mut stream = UnixStream::from(fd);
-            let mut byte = [0];
-            stream.read_exact(&mut byte).unwrap();
-            assert_eq!(byte, [expected]);
+        phase a_descriptor_survives_the_socket_and_arrives_close_on_exec;
+        {
+            {
+                let (a, b) = UnixStream::pair().unwrap();
+                let (mut source, target) = UnixStream::pair().unwrap();
+                send_with_fd(&a, b"session", &target).unwrap();
+                let (payload, fd) = recv_with_fd(&b).unwrap();
+                assert_eq!(payload, b"session");
+                let mut received = UnixStream::from(fd.unwrap());
+                source.write_all(b"hello").unwrap();
+                let mut bytes = [0; 5];
+                received.read_exact(&mut bytes).unwrap();
+                assert_eq!(&bytes, b"hello");
+            }
+            {
+                let (a, b) = UnixStream::pair().unwrap();
+                send_with_fd(&a, b"session", &a).unwrap();
+                let (_, fd) = recv_with_fd(&b).unwrap();
+                let flags = rustix::io::fcntl_getfd(fd.unwrap()).unwrap();
+                assert!(flags.contains(rustix::io::FdFlags::CLOEXEC));
+            }
         }
-    }
 
-    #[test]
-    fn oversized_negotiated_bundle_closes_every_received_descriptor() {
-        let _quiet = crate::no_spawns();
-        let (sender, receiver) = UnixDatagram::pair().unwrap();
-        let (mut reader, writer) = UnixStream::pair().unwrap();
-        reader.set_nonblocking(true).unwrap();
-        send_many(&sender, b"invalid", &[writer.as_raw_fd(); MAX_BUNDLE + 1]);
-        drop(writer);
-        assert!(recv_with_fds(&receiver).is_err());
-        assert_eq!(reader.read(&mut [0]).unwrap(), 0);
+        phase negotiated_bundle_preserves_roles_and_closes_on_exec;
+        {
+            let (sender, receiver) = UnixStream::pair().unwrap();
+            let (mut first, first_fd) = UnixStream::pair().unwrap();
+            let (mut second, second_fd) = UnixStream::pair().unwrap();
+            send_with_fds(
+                &sender,
+                b"pty-and-editor-v1",
+                &[first_fd.as_fd(), second_fd.as_fd()],
+            )
+            .unwrap();
+            let (payload, fds) = recv_with_fds(&receiver).unwrap();
+            assert_eq!(payload, b"pty-and-editor-v1");
+            assert_eq!(fds.len(), 2);
+            first.write_all(b"P").unwrap();
+            second.write_all(b"E").unwrap();
+            for (fd, expected) in fds.into_iter().zip(*b"PE") {
+                assert!(
+                    rustix::io::fcntl_getfd(&fd)
+                        .unwrap()
+                        .contains(rustix::io::FdFlags::CLOEXEC)
+                );
+                let mut stream = UnixStream::from(fd);
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                assert_eq!(byte, [expected]);
+            }
+        }
+
+        phase oversized_negotiated_bundle_closes_every_received_descriptor;
+        {
+            let _quiet = crate::no_spawns();
+            let (sender, receiver) = UnixDatagram::pair().unwrap();
+            let (mut reader, writer) = UnixStream::pair().unwrap();
+            reader.set_nonblocking(true).unwrap();
+            send_many(&sender, b"invalid", &[writer.as_raw_fd(); MAX_BUNDLE + 1]);
+            drop(writer);
+            assert!(recv_with_fds(&receiver).is_err());
+            assert_eq!(reader.read(&mut [0]).unwrap(), 0);
+        }
+
+        phase rejected_messages_close_every_delivered_descriptor;
+        {
+            #[cfg(target_os = "macos")]
+            let maximum_rights = 254;
+            #[cfg(not(target_os = "macos"))]
+            let maximum_rights = 253;
+            // (case, descriptor count, payload bytes)
+            let cases = [
+                ("multiple descriptors are rejected and closed", 2, 1),
+                ("excess descriptors that truncated control", 32, 1),
+                ("maximum rights message", maximum_rights, 1),
+                ("truncated payload closes the delivered descriptor", 1, 1024),
+            ];
+            for (case, count, bytes) in cases {
+                eprintln!("case: {case}");
+                rejected_message_closes_descriptors(count, bytes);
+            }
+        }
     }
 
     fn send_many(socket: &UnixDatagram, payload: &[u8], fds: &[RawFd]) {
@@ -243,24 +266,5 @@ mod tests {
             0,
             "a rejected descriptor leaked"
         );
-    }
-
-    #[test]
-    fn rejected_messages_close_every_delivered_descriptor() {
-        #[cfg(target_os = "macos")]
-        let maximum_rights = 254;
-        #[cfg(not(target_os = "macos"))]
-        let maximum_rights = 253;
-        // (case, descriptor count, payload bytes)
-        let cases = [
-            ("multiple descriptors are rejected and closed", 2, 1),
-            ("excess descriptors that truncated control", 32, 1),
-            ("maximum rights message", maximum_rights, 1),
-            ("truncated payload closes the delivered descriptor", 1, 1024),
-        ];
-        for (case, count, bytes) in cases {
-            eprintln!("case: {case}");
-            rejected_message_closes_descriptors(count, bytes);
-        }
     }
 }
