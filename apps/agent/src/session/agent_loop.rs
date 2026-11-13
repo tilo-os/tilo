@@ -1802,12 +1802,7 @@ impl Session {
                 ))));
             }
             if let Some(id) = id {
-                *results.entry(id).or_default() =
-                    "Not finished: nothing in this run did anything, and no reply was written. \
-                     Do the request now with invoke, then call `plan` with your reply — or, when \
-                     the operations available cannot do it, call `plan` with done: false and say \
-                     why in the reply."
-                        .into();
+                *results.entry(id).or_default() = tools::NOTHING_DONE_REPLY.into();
             }
             finish = None;
         } else {
@@ -2840,13 +2835,7 @@ fn newly_available(
             break;
         }
         revealed.reveal(id.clone());
-        let mut line = format!("{id} — {}", offer.descriptor.action_label);
-        let signature = tools::parameter_signature(offer);
-        if !signature.is_empty() {
-            line.push(' ');
-            line.push_str(&signature);
-        }
-        out.push(line);
+        out.push(tools::operation_line(offer));
     }
     out
 }
