@@ -307,18 +307,20 @@ mod tests {
         assert!(!WorkSetting::own_person().takes_nothing());
     }
 
-    /// A device answers with the first thing its setting says no about, and takes the work in the
-    /// state it is in when nothing in the setting does.
-    #[test]
-    fn a_device_answers_with_the_first_limit_its_setting_sets() {
-        let roomy = Machine {
+    fn roomy() -> Machine {
+        Machine {
             power: Power::External,
             busy_permille: 100,
             free_memory_percent: Some(80),
-        };
+        }
+    }
+
+    /// A device answers with the first thing its setting says no about.
+    #[test]
+    fn a_device_answers_with_the_first_limit_its_setting_sets() {
         assert_eq!(
             WorkSetting::none()
-                .answer(roomy, true, None, Vec::new())
+                .answer(roomy(), true, None, Vec::new())
                 .verdict,
             Err(Decline::NotTakingWork),
             "a device that takes nothing says so"
@@ -326,18 +328,18 @@ mod tests {
         let mut no_actions = WorkSetting::own_person();
         no_actions.kinds.actions = false;
         assert_eq!(
-            no_actions.answer(roomy, true, None, Vec::new()).verdict,
+            no_actions.answer(roomy(), true, None, Vec::new()).verdict,
             Err(Decline::NotTakingWork)
         );
         assert_eq!(
             WorkSetting::own_person()
-                .answer(roomy, false, None, Vec::new())
+                .answer(roomy(), false, None, Vec::new())
                 .verdict,
             Err(Decline::AppNotInstalled)
         );
         assert_eq!(
             WorkSetting::own_person()
-                .answer(roomy, true, Some(0), Vec::new())
+                .answer(roomy(), true, Some(0), Vec::new())
                 .verdict,
             Err(Decline::AtCapacity)
         );
@@ -345,7 +347,7 @@ mod tests {
         let charging = WorkSetting {
             when: super::WorkWhen {
                 charging_only: true,
-                ..super::WorkWhen::default()
+                ..super::WorkWhen::always()
             },
             ..WorkSetting::own_person()
         };
@@ -354,7 +356,7 @@ mod tests {
                 .answer(
                     Machine {
                         power: Power::Battery,
-                        ..roomy
+                        ..roomy()
                     },
                     true,
                     None,
@@ -369,7 +371,7 @@ mod tests {
                 .answer(
                     Machine {
                         power: Power::Charging,
-                        ..roomy
+                        ..roomy()
                     },
                     true,
                     None,
@@ -378,7 +380,12 @@ mod tests {
                 .verdict
                 .is_ok()
         );
+    }
 
+    /// The room a setting wants is the room it gets, and a device told nothing about its states
+    /// takes work whatever the machine is doing.
+    #[test]
+    fn a_setting_that_wants_room_is_turned_away_where_it_has_none() {
         let room_kept = WorkSetting {
             when: super::WorkWhen {
                 free_cpu_percent: 20,
@@ -389,7 +396,7 @@ mod tests {
         };
         let busy = Machine {
             busy_permille: 900,
-            ..roomy
+            ..roomy()
         };
         assert_eq!(busy.free_cpu_percent(), 10);
         assert_eq!(
@@ -399,7 +406,7 @@ mod tests {
         );
         let full = Machine {
             free_memory_percent: Some(2),
-            ..roomy
+            ..roomy()
         };
         assert_eq!(
             room_kept.answer(full, true, None, Vec::new()).verdict,
@@ -412,7 +419,7 @@ mod tests {
                 .is_ok(),
             "a device told nothing about the states it takes work in takes it whatever its load"
         );
-        let answer = WorkSetting::own_person().answer(roomy, true, None, vec![[7; 32]]);
+        let answer = WorkSetting::own_person().answer(roomy(), true, None, vec![[7; 32]]);
         assert!(answer.verdict.is_ok(), "a machine with room takes the work");
         assert_eq!(answer.holds, vec![[7; 32]]);
     }
