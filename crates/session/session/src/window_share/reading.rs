@@ -11,6 +11,11 @@
 //! another device asks it for. Two devices in one plane that hear nothing of each other read there
 //! whether they seal under keys the other lacks. A device in a plane on keys its host lent it
 //! (`lent_keys`) sends what it shares and opens nothing: a window it watches says so.
+//!
+//! A relay tells the device it turns away nothing but that. So a plane that was refused says which
+//! epoch's keys this device presented (`presented`), and the plane of the device that relays the
+//! workspace lists the endpoints it turned away and has not let in since, each with why
+//! (`turned_away`): the two readings side by side say what the refused device alone cannot.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -21,7 +26,7 @@ use tilo_desktop_surface::i18n::{t, t_args};
 use tilo_live::plane::Plane;
 
 use super::WindowShares;
-use crate::live::{Relayer, Standing};
+use crate::live::{Refusal, Relayer, Standing, TurnedAway};
 use crate::sync::Client;
 
 impl WindowShares {
@@ -34,6 +39,7 @@ impl WindowShares {
         }
         self.live_seen = seen;
         self.live = sync.live_standings();
+        self.turned = sync.live_turned_away();
         // Held weakly: a plane that ended is its session's to drop.
         self.planes = crate::calls::planes_of(sync)
             .into_iter()
@@ -188,7 +194,8 @@ impl WindowShares {
                     .planes
                     .get(workspace)
                     .and_then(std::sync::Weak::upgrade);
-                live_row(workspace, standing, plane.as_deref())
+                let turned = self.turned.get(workspace).map_or(&[][..], Vec::as_slice);
+                live_row(workspace, standing, plane.as_deref(), turned)
             })
             .collect();
         json!({
@@ -239,7 +246,7 @@ fn waiting_for(standing: Option<&Standing>) -> String {
             "session-window-share-live-unreached",
             &[("device", called(relay).into())],
         ),
-        Some(Standing::Refused { relay }) => t_args(
+        Some(Standing::Refused { relay, .. }) => t_args(
             "session-window-share-live-refused",
             &[("device", called(relay).into())],
         ),
@@ -251,18 +258,30 @@ fn waiting_for(standing: Option<&Standing>) -> String {
 /// waits to reach, and what it waits for; and of `plane`, the one open here, the epoch it seals
 /// under, whether it does so on keys its host lent it, how many objects of other devices it
 /// opened, the ones it could not open by reason, and the tabs of this device's windows another
-/// device asks it for.
-fn live_row(workspace: &str, standing: &Standing, plane: Option<&Plane>) -> Value {
+/// device asks it for. A plane its relay refused says the epoch whose keys this device presented,
+/// and `turned` are the endpoints this device's own relay turned away from the workspace's plane,
+/// each with why.
+fn live_row(
+    workspace: &str,
+    standing: &Standing,
+    plane: Option<&Plane>,
+    turned: &[TurnedAway],
+) -> Value {
     let relay = match standing {
         Standing::Open { relay, .. }
         | Standing::Unreached { relay }
-        | Standing::Refused { relay } => Some(relay),
+        | Standing::Refused { relay, .. } => Some(relay),
         _ => None,
     };
     let epoch = match standing {
         Standing::Open { epoch, .. } => Some(*epoch),
         _ => None,
     };
+    let presented = match standing {
+        Standing::Refused { epoch, .. } => Some(*epoch),
+        _ => None,
+    };
+    let turned_away: Vec<Value> = turned.iter().map(turned_row).collect();
     let asked_for: Vec<String> = plane
         .map(Plane::wanted_windows)
         .unwrap_or_default()
@@ -278,9 +297,30 @@ fn live_row(workspace: &str, standing: &Standing, plane: Option<&Plane>) -> Valu
         "waiting_for": waiting_for(Some(standing)),
         "epoch": epoch,
         "lent_keys": matches!(standing, Standing::Open { lent: true, .. }),
+        "presented": presented,
+        "turned_away": turned_away,
         "heard": plane.map_or(0, Plane::heard_total),
         "refused": plane.map(Plane::refusals).unwrap_or_default(),
         "asked_for": asked_for,
+    })
+}
+
+/// One endpoint this device's relay turned away, as the reading says it: the endpoint's key, the
+/// name of the device when the workspace holds it and its person named it, why in the word a tool
+/// branches on, how often it asked, and for a device whose keys are behind the epoch it presented
+/// and the one the relay is at.
+fn turned_row(turned: &TurnedAway) -> Value {
+    let (presented, newest) = match turned.why {
+        Refusal::KeysBehind { presented, newest } => (Some(presented), Some(newest)),
+        _ => (None, None),
+    };
+    json!({
+        "device": hex::encode(turned.peer),
+        "name": turned.name,
+        "why": turned.why.word(),
+        "presented": presented,
+        "newest": newest,
+        "times": turned.times,
     })
 }
 
@@ -309,9 +349,12 @@ mod tests {
                 lent: false,
             },
             None,
+            &[],
         );
         assert_eq!(row["epoch"], json!(3));
         assert_eq!(row["lent_keys"], json!(false));
+        assert_eq!(row["presented"], Value::Null);
+        assert_eq!(row["turned_away"], json!([]));
         assert_eq!(row["room"], json!(WORKSPACE));
         assert_eq!(row["state"], json!("open"));
         assert_eq!(row["waiting_for"], json!(""));
@@ -329,7 +372,7 @@ mod tests {
             epoch: 4,
             lent: true,
         };
-        let row = live_row(WORKSPACE, &lent, None);
+        let row = live_row(WORKSPACE, &lent, None, &[]);
         assert_eq!(row["state"], json!("open"));
         assert_eq!(row["lent_keys"], json!(true));
         assert_eq!(row["waiting_for"], json!(""));
@@ -343,7 +386,7 @@ mod tests {
         let named = Standing::Unreached {
             relay: relay("Ada's desktop", false),
         };
-        let row = live_row(WORKSPACE, &named, None);
+        let row = live_row(WORKSPACE, &named, None, &[]);
         assert_eq!(
             row["epoch"],
             Value::Null,
@@ -361,12 +404,69 @@ mod tests {
 
         let refused = Standing::Refused {
             relay: relay("Ada's desktop", false),
+            epoch: 3,
         };
-        let row = live_row(WORKSPACE, &refused, None);
+        let row = live_row(WORKSPACE, &refused, None, &[]);
         assert_eq!(row["state"], json!("refused"));
+        assert_eq!(
+            row["presented"],
+            json!(3),
+            "a refused plane says whose epoch's keys it presented"
+        );
+        assert_eq!(row["epoch"], Value::Null);
         let refusal = row["waiting_for"].as_str().expect("what it waits for");
         assert!(refusal.contains("Ada's desktop"), "{refusal}");
         assert_ne!(refusal, waits);
+    }
+
+    /// The device that relays a workspace says which endpoints it turned away from its plane and
+    /// why: a device whose keys are behind with both epochs, any other by its reason alone.
+    #[test]
+    fn a_relay_says_which_devices_it_turned_away_and_why() {
+        let open = Standing::Open {
+            relay: relay("Ada's desktop", true),
+            epoch: 4,
+            lent: false,
+        };
+        let turned = [
+            TurnedAway {
+                peer: [0x0f; 32],
+                name: "Ada's laptop".to_owned(),
+                why: Refusal::KeysBehind {
+                    presented: 3,
+                    newest: 4,
+                },
+                times: 7,
+            },
+            TurnedAway {
+                peer: [0x19; 32],
+                name: String::new(),
+                why: Refusal::NotAMember,
+                times: 1,
+            },
+        ];
+        let row = live_row(WORKSPACE, &open, None, &turned);
+        assert_eq!(
+            row["turned_away"],
+            json!([
+                {
+                    "device": hex::encode([0x0f; 32]),
+                    "name": "Ada's laptop",
+                    "why": "keys-behind",
+                    "presented": 3,
+                    "newest": 4,
+                    "times": 7,
+                },
+                {
+                    "device": hex::encode([0x19; 32]),
+                    "name": "",
+                    "why": "not-a-member",
+                    "presented": null,
+                    "newest": null,
+                    "times": 1,
+                },
+            ])
+        );
     }
 
     /// Every standing but an open one says something, each its own, and a workspace no plane runs

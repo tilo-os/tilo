@@ -686,6 +686,24 @@ impl Seat {
             .unwrap_or_default()
     }
 
+    /// The endpoints this device's relay turned away from each workspace's live plane and has not
+    /// let in since, by workspace, and why ([`crate::live::TurnedAway`]): nothing for a session
+    /// that runs no live plane.
+    #[must_use]
+    #[cfg(target_os = "linux")]
+    pub(crate) fn live_turned_away(
+        &self,
+    ) -> std::collections::BTreeMap<String, Vec<crate::live::TurnedAway>> {
+        self.live()
+            .map(|live| {
+                live.turned_away()
+                    .into_iter()
+                    .map(|(workspace, turned)| (workspace.to_string(), turned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Show `tracks` of `sender` on `plane`, and no other of its tracks: the plane's readers start
     /// on the runtime the planes run on, not on the session's own thread.
     #[cfg(target_os = "linux")]
@@ -1548,6 +1566,16 @@ impl Client {
         &self,
     ) -> std::collections::BTreeMap<String, crate::live::Standing> {
         self.hosting.seat.live_standings()
+    }
+
+    /// The endpoints this device's relay turned away from each workspace's live plane and has not
+    /// let in since, by workspace, and why ([`crate::live::TurnedAway`]).
+    #[must_use]
+    #[cfg(target_os = "linux")]
+    pub(crate) fn live_turned_away(
+        &self,
+    ) -> std::collections::BTreeMap<String, Vec<crate::live::TurnedAway>> {
+        self.hosting.seat.live_turned_away()
     }
 
     /// Join this session to `planes`, by workspace, running on `runtime`, in place of a live plane

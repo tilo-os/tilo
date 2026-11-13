@@ -253,6 +253,8 @@ pub(crate) struct WindowShares {
     /// again when `live_seen` moved, and the windows a member's desk is sent pictures of now: what
     /// the reading says beside the shares ([`reading`]).
     live: BTreeMap<String, crate::live::Standing>,
+    /// The endpoints this device's relay turned away from each workspace's plane, and why.
+    turned: BTreeMap<String, Vec<crate::live::TurnedAway>>,
     live_seen: u64,
     planes: BTreeMap<String, std::sync::Weak<Plane>>,
     streaming: BTreeSet<TabId>,
