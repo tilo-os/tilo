@@ -18,6 +18,53 @@ fn request(dir: PathBuf) -> NewAppRequest {
     }
 }
 
+/// One scaffolded app that the phases of a scenario test each take a copy of, where every phase
+/// used to scaffold the same app again. A copy holds what `create_app` wrote for the phase's own
+/// directory, byte for byte: the request names the app, not its directory, and the one thing
+/// the directory decides is the relative path to the SDK in `Cargo.toml`, which is the same for
+/// two directories that lie equally deep under one parent (`copy_to` checks that they do).
+struct Scaffold {
+    temp: tempfile::TempDir,
+}
+
+impl Scaffold {
+    fn new(template: Template) -> Self {
+        let temp = tempfile::tempdir().unwrap();
+        let mut new_app = request(temp.path().join("scaffold"));
+        new_app.template = Some(template);
+        create_app(new_app).unwrap();
+        Self { temp }
+    }
+
+    /// The scaffold's files and directories, with their permissions, at `destination`, which
+    /// does not exist yet.
+    fn copy_to(&self, destination: &Path) {
+        assert_eq!(
+            destination.parent().and_then(Path::parent),
+            self.temp.path().parent(),
+            "{} must lie as deep as the scaffold for its SDK path to be the scaffold's",
+            destination.display()
+        );
+        copy_tree(&self.temp.path().join("scaffold"), destination);
+    }
+}
+
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        let kind = entry.file_type().unwrap();
+        assert!(!kind.is_symlink(), "{}", entry.path().display());
+        if kind.is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+    std::fs::set_permissions(to, std::fs::metadata(from).unwrap().permissions()).unwrap();
+}
+
 fn fixture_sdk(workspace_member: bool) -> AppSdk {
     if workspace_member {
         AppSdk::Workspace {
@@ -1400,12 +1447,11 @@ fn component_generation_is_safe_localised_and_transactional() {
     reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
 )]
 fn screen_scenarios_scaffold_plan_and_run_isolated_workflows() {
+    let graph = Scaffold::new(Template::Graph);
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("preferences");
-        let mut new_app = request(app.clone());
-        new_app.template = Some(Template::Graph);
-        create_app(new_app).unwrap();
+        graph.copy_to(&app);
         add_app_artifact(AddRequest {
             start: app.clone(),
             artifact: AddArtifact::Screen {
@@ -1489,9 +1535,7 @@ fn screen_scenarios_scaffold_plan_and_run_isolated_workflows() {
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("scenario-app");
-        let mut new_app = request(app.clone());
-        new_app.template = Some(Template::Graph);
-        create_app(new_app).unwrap();
+        graph.copy_to(&app);
         let scenario_dir = app.join("tests/scenarios");
         std::fs::create_dir_all(&scenario_dir).unwrap();
         std::fs::write(scenario_dir.join("zeta.json"), "[]\n").unwrap();
@@ -1533,9 +1577,7 @@ fn screen_scenarios_scaffold_plan_and_run_isolated_workflows() {
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("scenario-app");
-        let mut new_app = request(app.clone());
-        new_app.template = Some(Template::Graph);
-        create_app(new_app).unwrap();
+        graph.copy_to(&app);
         std::fs::create_dir_all(app.join("tests/scenarios")).unwrap();
         std::fs::write(app.join("tests/scenarios/smoke.json"), "[]\n").unwrap();
 
@@ -1748,10 +1790,11 @@ fn add_artifact_protects_work_and_stays_inside_the_app() {
     reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
 )]
 fn locales_are_registered_validated_and_synced_without_losing_translations() {
+    let starter = Scaffold::new(Template::Starter);
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("reading-list");
-        create_app(request(app.clone())).unwrap();
+        starter.copy_to(&app);
 
         let outcome = add_app_artifact(AddRequest {
             start: app.clone(),
@@ -1879,7 +1922,7 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("reading-list");
-        create_app(request(app.clone())).unwrap();
+        starter.copy_to(&app);
         let registry_path = app.join("src/locales.rs");
         let registry_before = std::fs::read(&registry_path).unwrap();
         std::fs::write(app.join("locales/en-US.ftl"), "broken = { $value\n").unwrap();
@@ -1901,7 +1944,7 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("reading-list");
-        create_app(request(app.clone())).unwrap();
+        starter.copy_to(&app);
         add_app_artifact(AddRequest {
             start: app.clone(),
             artifact: AddArtifact::Locale {
@@ -2004,7 +2047,7 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("reading-list");
-        create_app(request(app.clone())).unwrap();
+        starter.copy_to(&app);
         for locale in ["de", "fr"] {
             add_app_artifact(AddRequest {
                 start: app.clone(),
@@ -2043,7 +2086,7 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("reading-list");
-        create_app(request(app.clone())).unwrap();
+        starter.copy_to(&app);
         // A translation that arrived without `tilo-app add locale`: registering
         // it must not be a choice between hand-editing the generated registry
         // and overwriting the translator's work with the source copy.
@@ -2075,7 +2118,7 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("reading-list");
-        create_app(request(app.clone())).unwrap();
+        starter.copy_to(&app);
         let library_path = app.join("src/lib.rs");
         std::fs::remove_file(app.join("src/locales.rs")).unwrap();
         let before = std::fs::read_to_string(&library_path).unwrap();
@@ -2981,12 +3024,11 @@ fn doctor_reports_actionable_failures_in_app_manifests() {
     reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
 )]
 fn doctor_validates_generated_screens_components_and_contracts() {
+    let graph = Scaffold::new(Template::Graph);
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("project-maker");
-        let mut new_app = request(destination.clone());
-        new_app.template = Some(Template::Graph);
-        create_app(new_app).unwrap();
+        graph.copy_to(&destination);
         add_app_artifact(AddRequest {
             start: destination.clone(),
             artifact: AddArtifact::Locale {
@@ -3064,9 +3106,7 @@ fn doctor_validates_generated_screens_components_and_contracts() {
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("component-app");
-        let mut new_app = request(destination.clone());
-        new_app.template = Some(Template::Graph);
-        create_app(new_app).unwrap();
+        graph.copy_to(&destination);
         add_app_artifact(AddRequest {
             start: destination.clone(),
             artifact: AddArtifact::GraphComponent {
@@ -3631,6 +3671,7 @@ fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
     reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
 )]
 fn app_task_plans_are_scoped_to_the_app_and_gated_by_doctor() {
+    let starter = Scaffold::new(Template::Starter);
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let discovered = resolve_ui_dir(temp.path(), None, None).expect("discovered toolkit");
@@ -3651,7 +3692,7 @@ fn app_task_plans_are_scoped_to_the_app_and_gated_by_doctor() {
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("reading-list");
-        create_app(request(destination.clone())).expect("create app");
+        starter.copy_to(&destination);
         let descendant = destination.join("src/lib.rs");
         let forwarded = vec![OsString::from("--shots"), OsString::from("preview.png")];
 
@@ -3691,7 +3732,7 @@ fn app_task_plans_are_scoped_to_the_app_and_gated_by_doctor() {
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("reading-list");
-        create_app(request(destination.clone())).expect("create app");
+        starter.copy_to(&destination);
         let forwarded = [OsString::from("--nocapture")];
 
         let plan = plan_app_quality(
@@ -3756,7 +3797,7 @@ fn app_task_plans_are_scoped_to_the_app_and_gated_by_doctor() {
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("reading-list");
-        create_app(request(destination.clone())).expect("create app");
+        starter.copy_to(&destination);
         let host = PackageArch::host().expect("an x86_64 or aarch64 host");
         for platform in [PackagePlatform::Tilo, PackagePlatform::Linux] {
             assert_eq!(
@@ -3816,10 +3857,11 @@ fn app_task_plans_are_scoped_to_the_app_and_gated_by_doctor() {
 
 #[test]
 fn shot_and_inspection_plans_are_built_strictly() {
+    let starter = Scaffold::new(Template::Starter);
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("gallery");
-        create_app(request(destination.clone())).expect("create app");
+        starter.copy_to(&destination);
 
         let plan = plan_app_shot(
             &destination.join("src"),
@@ -3851,7 +3893,7 @@ fn shot_and_inspection_plans_are_built_strictly() {
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("inspector");
-        create_app(request(destination.clone())).expect("create app");
+        starter.copy_to(&destination);
         let actions = destination.join("tests/actions.json");
         std::fs::write(
             &actions,
@@ -3891,7 +3933,7 @@ fn shot_and_inspection_plans_are_built_strictly() {
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("inspector");
-        create_app(request(destination.clone())).expect("create app");
+        starter.copy_to(&destination);
         let actions = temp.path().join("actions.json");
         std::fs::write(&actions, r#"{"actions":[]}"#).expect("actions file");
 
@@ -4029,10 +4071,11 @@ fn package_size_is_reported_against_the_app_budget() {
     reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
 )]
 fn packaging_is_scoped_safe_and_never_clobbers_output() {
+    let starter = Scaffold::new(Template::Starter);
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("reading-list");
-        create_app(request(destination.clone())).expect("create app");
+        starter.copy_to(&destination);
 
         let spec = load_app_package_spec(destination.clone()).expect("package spec");
         assert_eq!(spec.app_dir, destination);
@@ -4095,7 +4138,7 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("reading-list");
-        create_app(request(destination.clone())).expect("create app");
+        starter.copy_to(&destination);
         std::fs::create_dir(destination.join("dist")).expect("dist directory");
         std::fs::write(destination.join("dist/reading-list.tapp"), "existing")
             .expect("existing package");
@@ -4123,7 +4166,7 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("reading-list");
-        create_app(request(destination.clone())).expect("create app");
+        starter.copy_to(&destination);
         let cargo = destination.join("Cargo.toml");
         let source = std::fs::read_to_string(&cargo).expect("Cargo.toml");
         let without = source.replace("thin = [\"dep:runtime-dylib\"]\n", "");
@@ -4157,7 +4200,7 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("reading-list");
-        create_app(request(destination.clone())).expect("create app");
+        starter.copy_to(&destination);
         let spec = load_app_package_spec(destination).expect("spec");
         assert!(spec.thin_feature);
         let payload = temp.path().join("payload");
@@ -5163,6 +5206,12 @@ fn a_capability_the_code_uses_must_be_declared_before_a_build() {
 fn platform_specific_app(root: &Path) -> PathBuf {
     let app = root.join("platform");
     create_app(request(app.clone())).unwrap();
+    add_platform_code(&app);
+    app
+}
+
+/// Writes platform-specific dependencies, modules and attributes into the starter app at `app`.
+fn add_platform_code(app: &Path) {
     let cargo = std::fs::read_to_string(app.join("Cargo.toml")).unwrap();
     let cargo = cargo
         .replacen("[dependencies]\n", "[dependencies]\nlibc = \"0.2\"\n", 1)
@@ -5244,7 +5293,6 @@ pub fn gated() {
         format!("#![cfg_attr(windows, windows_subsystem = \"windows\")]\n{main}"),
     )
     .unwrap();
-    app
 }
 
 #[test]
@@ -5348,7 +5396,10 @@ fn narrow_platforms(app: &Path, platforms: &str, reason: &str) {
 #[test]
 fn narrowed_platforms_replace_line_exceptions() {
     let root = tempfile::tempdir().unwrap();
-    let desktop = platform_specific_app(root.path());
+    let starter = Scaffold::new(Template::Starter);
+    let desktop = root.path().join("platform");
+    starter.copy_to(&desktop);
+    add_platform_code(&desktop);
     narrow_platforms(
         &desktop,
         "[\"linux\", \"macos\"]",
@@ -5371,7 +5422,7 @@ fn narrowed_platforms_replace_line_exceptions() {
     // Narrowing needs no platform code of its own (a C dependency the lint
     // cannot see is a reason too), but the report says when it found none.
     let portable = root.path().join("portable");
-    create_app(request(portable.clone())).unwrap();
+    starter.copy_to(&portable);
     narrow_platforms(&portable, "[\"linux\"]", "Links a C library.");
     let report = lint_portability(&portable).unwrap();
     assert!(report.passed());
