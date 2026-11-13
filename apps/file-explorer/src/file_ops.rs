@@ -1415,7 +1415,9 @@ mod tests {
         let at = |name: &str| root.path().join(name);
         std::fs::create_dir_all(at("src/Big")).unwrap();
         let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
-        for i in 0..8 {
+        // Noise does not compress, so the archive is as long as its three files: longer
+        // than one progress report, which is where the stop below lands, in the third.
+        for i in 0..3 {
             let noise: Vec<u8> = (0..3 << 20)
                 .map(|_| {
                     seed ^= seed << 13;
@@ -1434,6 +1436,10 @@ mod tests {
             &(),
         )
         .unwrap();
+        assert!(
+            std::fs::metadata(&archive).unwrap().len() > REPORT_EVERY,
+            "the archive outlasts the first progress report, where the stop lands"
+        );
         let out = at("out");
         std::fs::create_dir(&out).unwrap();
         std::fs::write(out.join("kept.txt"), b"k").unwrap();
