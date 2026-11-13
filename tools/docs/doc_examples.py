@@ -11,9 +11,9 @@ importing `tilo-sdk`, a shell program running the `tilo` command. A block
 whose info string says `fragment` is a partial snippet and is not run.
 
 `check` enforces the conventions and runs nothing. `list` prints what the pages
-carry. `run` executes every block against a local Tilo: `--door` names the
-`door-on-relay` example of `tilo-agent-participant`, which serves a host with
-its API and runs the program with `TILO_DOOR` and `TILO_API_KEY` set, so an
+carry. `run` executes every block against a local Tilo: `--api` names the
+`api-on-relay` example of `tilo-agent-participant`, which serves a host with
+its API and runs the program with `TILO_API_URL` and `TILO_API_KEY` set, so an
 example reaches the API the way the published one reaches tilo.sh. Python runs
 from `sdk/python` with uv, TypeScript resolves `tilo-sdk` to the tree's
 `sdk/typescript` and runs with bun, and `sh` runs the `tilo` command `--tilo`
@@ -40,13 +40,13 @@ from types import ModuleType
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = "docs/tilo-sh/pages.toml"
-# The languages the convention marks examples with. `curl` is one the pages may
-# use once there is an HTTP endpoint to show; see `command_for`.
+# The languages the convention marks examples with. A `curl` block is a shell
+# script that calls the REST API with curl (and jq to read its answers).
 LANGUAGES = ("python", "typescript", "sh", "curl")
 # The languages a block is a whole program in: one without an example id and
 # without `fragment` is a program nobody runs, so it is a problem.
 PROGRAMS = ("python", "typescript", "curl")
-FILENAMES = {"python": "example.py", "typescript": "example.ts", "sh": "example.sh"}
+FILENAMES = {"python": "example.py", "typescript": "example.ts", "sh": "example.sh", "curl": "example.sh"}
 TYPESCRIPT_CONFIG = "tsconfig.json"
 
 
@@ -297,9 +297,7 @@ def command_for(block: Block, repository: Path, tilo: Path | None) -> list[str]:
             )
         return ["bash", "-euo", "pipefail", FILENAMES["sh"]]
     if block.lang == "curl":
-        raise DocsError(
-            f"{block.location}: curl examples cannot run yet; this check runs python, typescript and sh"
-        )
+        return ["bash", "-euo", "pipefail", FILENAMES["curl"]]
     raise DocsError(f"{block.location}: cannot run a {block.lang} block")
 
 
@@ -310,8 +308,8 @@ class Outcome:
     seconds: float
 
 
-def execute(block: Block, repository: Path, door: Path, tilo: Path | None, timeout: float) -> Outcome:
-    """Run one block with a door of its own, so it sees a fresh Tilo and a key of its own."""
+def execute(block: Block, repository: Path, api: Path, tilo: Path | None, timeout: float) -> Outcome:
+    """Run one block with an API server of its own, so it sees a fresh Tilo and a key of its own."""
     command = command_for(block, repository, tilo)
     with tempfile.TemporaryDirectory(prefix=f"docs-example-{block.example or block.lang}.") as scratch:
         directory = Path(scratch)
@@ -326,7 +324,7 @@ def execute(block: Block, repository: Path, door: Path, tilo: Path | None, timeo
         started = time.monotonic()
         try:
             process = subprocess.Popen(
-                [str(door), "--", *command],
+                [str(api), "--", *command],
                 cwd=directory,
                 env=environment,
                 stdout=subprocess.PIPE,
@@ -341,7 +339,7 @@ def execute(block: Block, repository: Path, door: Path, tilo: Path | None, timeo
             output = process.communicate(timeout=timeout)[0]
             ok = process.returncode == 0
         except subprocess.TimeoutExpired:
-            # The door runs the program in a process of its own: end the group, not the door alone.
+            # The API server runs the program in a process of its own: end the group, not the server alone.
             os.killpg(process.pid, signal.SIGKILL)
             output = process.communicate()[0] + f"\ntimed out after {timeout:g}s\n"
             ok = False
@@ -368,12 +366,12 @@ def check(book: Book) -> int:
     return 0
 
 
-def run(book: Book, door: Path, tilo: Path | None, only: Sequence[str], timeout: float) -> int:
+def run(book: Book, api: Path, tilo: Path | None, only: Sequence[str], timeout: float) -> int:
     """Run every selected block, naming each by its example, language and place in the page."""
     if book.problems:
         return report(book.problems)
-    if not door.exists():
-        raise DocsError(f"{door}: no door to serve the examples with")
+    if not api.exists():
+        raise DocsError(f"{api}: no API server to serve the examples with")
     selected = book.examples
     if only:
         known = {example.id for example in book.examples}
@@ -386,7 +384,7 @@ def run(book: Book, door: Path, tilo: Path | None, only: Sequence[str], timeout:
     for example in selected:
         for block in example.blocks:
             try:
-                outcome = execute(block, ROOT, door, tilo, timeout)
+                outcome = execute(block, ROOT, api, tilo, timeout)
             except DocsError as error:
                 outcome = Outcome(ok=False, output=f"{error}\n", seconds=0.0)
             state = "ok  " if outcome.ok else "FAIL"
@@ -413,8 +411,8 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("check", help="fail on an example that breaks the conventions")
     running = commands.add_parser("run", help="run every example against a local Tilo")
     running.add_argument(
-        "--door", type=Path, required=True,
-        help="the door-on-relay example: it serves a host with its API and sets TILO_DOOR and TILO_API_KEY",
+        "--api", type=Path, required=True,
+        help="the api-on-relay example: it serves a host with its API and sets TILO_API_URL and TILO_API_KEY",
     )
     running.add_argument("--tilo", type=Path, help="the tilo command sh examples run (cargo build -p tilo-cli)")
     running.add_argument("--only", action="append", default=[], metavar="ID", help="run one example (repeatable)")
@@ -427,7 +425,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "check":
             return check(book)
-        return run(book, args.door.resolve(), args.tilo.resolve() if args.tilo else None, args.only, args.timeout)
+        return run(book, args.api.resolve(), args.tilo.resolve() if args.tilo else None, args.only, args.timeout)
     except DocsError as error:
         print(f"docs examples: {error}", file=sys.stderr)
         return 1

@@ -10,7 +10,7 @@ Three places name the host, and they agree:
 | | How |
 | :--- | :--- |
 | The SDKs | `TILO_API_URL` in the environment, or `Tilo(url="…")` / `new Tilo({ url: "…" })` |
-| The command | `--door`, or `TILO_DOOR` |
+| The command | `--api`, or `TILO_API_URL` |
 | An agent's MCP client | the URL you add: `<host>/mcp`, or `<host>/w/<workspace>/mcp` for one workspace |
 
 The key comes from the host it is used on. A key made at tilo.sh reaches nothing at your host, and the
@@ -25,7 +25,7 @@ production's entrypoints and environment:
 git clone https://code.tilo.so/tilo/tilo
 cd tilo
 os/containers/tilo-sh/stack.sh up
-eval "$(os/containers/tilo-sh/stack.sh env)"   # TILO_DOOR, TILO_SITE, and the local CA
+eval "$(os/containers/tilo-sh/stack.sh env)"   # TILO_API_URL, TILO_SITE, and the local CA
 ```
 
 That gives you, on loopback ports, the API the SDKs and agents use, the host your workspaces live on, and

@@ -1,7 +1,7 @@
 # One example, every language
 
 An example is a whole program: it creates what it needs, and reaches the API at
-`TILO_DOOR` with the key in `TILO_API_KEY`. Consecutive blocks with one id are
+`TILO_API_URL` with the key in `TILO_API_KEY`. Consecutive blocks with one id are
 the same example in each language, so a reader picks the SDK they use.
 
 ```python example=create-a-workspace
@@ -13,7 +13,7 @@ from tilo import AsyncTilo
 
 
 async def main() -> None:
-    async with AsyncTilo() as tilo:  # the key is TILO_API_KEY, the door TILO_DOOR
+    async with AsyncTilo() as tilo:  # the key is TILO_API_KEY, the API server TILO_API_URL
         created = await tilo.workspaces.create("Example customer")
         listing = await tilo.workspaces.list()
         print(created.name)
@@ -26,7 +26,7 @@ asyncio.run(main())
 ```typescript example=create-a-workspace
 import { Tilo } from "tilo-sdk";
 
-const tilo = new Tilo(); // the key is TILO_API_KEY, the door TILO_DOOR
+const tilo = new Tilo(); // the key is TILO_API_KEY, the API server TILO_API_URL
 const created = await tilo.workspaces.create("Example customer");
 const listing = await tilo.workspaces.list();
 console.log(created.name);

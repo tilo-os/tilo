@@ -3,12 +3,14 @@
 import contextlib
 import importlib.util
 import io
+import os
 from pathlib import Path
 import stat
 import sys
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("doc_examples", ROOT / "tools/docs/doc_examples.py")
@@ -55,9 +57,9 @@ console.log(Tilo);
 ```
 """
 
-DOOR = """\
+API = """\
 #!/bin/sh
-# Stands in for door-on-relay: its program runs with the environment it was handed.
+# Stands in for api-on-relay: its program runs with the environment it was handed.
 shift
 exec "$@"
 """
@@ -106,10 +108,10 @@ class DocExampleTests(unittest.TestCase):
         return doc_examples.load(self.root)
 
     def shell_book(self, *parts: str) -> tuple[Path, Path]:
-        """A book whose examples are shell, with a door and a tilo command of its own."""
+        """A book whose examples are shell, with an API server and a tilo command of its own."""
         self.book(MANIFEST.replace('["python", "typescript"]', '["sh"]'))
         self.page(*parts)
-        return self.executable("door", DOOR), self.executable("bin/tilo", "#!/bin/sh\necho \"tilo $*\"\n")
+        return self.executable("api", API), self.executable("bin/tilo", "#!/bin/sh\necho \"tilo $*\"\n")
 
     def test_the_fixture_page_follows_the_conventions(self) -> None:
         book = doc_examples.load(ROOT, "tools/tests/fixtures/docs-examples/pages.toml")
@@ -273,7 +275,7 @@ class DocExampleTests(unittest.TestCase):
         self.assertIn("docs/tilo-sh/index.md: does not exist", output)
 
     def test_run_passes_and_fails_each_block(self) -> None:
-        door, tilo = self.shell_book("""
+        api, tilo = self.shell_book("""
             ```sh example=listing
             tilo account workspaces ls
             ```
@@ -283,7 +285,7 @@ class DocExampleTests(unittest.TestCase):
             exit 3
             ```
             """)
-        status, output = self.run_tool("run", "--door", str(door), "--tilo", str(tilo))
+        status, output = self.run_tool("run", "--api", str(api), "--tilo", str(tilo))
         self.assertEqual(status, 1, output)
         self.assertIn("ok   listing [sh] docs/tilo-sh/index.md:3", output)
         self.assertIn("FAIL broken [sh] docs/tilo-sh/index.md:7", output)
@@ -291,7 +293,7 @@ class DocExampleTests(unittest.TestCase):
         self.assertIn("docs examples: 1 passed, 1 failed", output)
 
     def test_run_only_runs_the_named_example(self) -> None:
-        door, tilo = self.shell_book("""
+        api, tilo = self.shell_book("""
             ```sh example=listing
             tilo account workspaces ls
             ```
@@ -300,61 +302,62 @@ class DocExampleTests(unittest.TestCase):
             exit 3
             ```
             """)
-        status, output = self.run_tool("run", "--door", str(door), "--tilo", str(tilo), "--only", "listing")
+        status, output = self.run_tool("run", "--api", str(api), "--tilo", str(tilo), "--only", "listing")
         self.assertEqual(status, 0, output)
         self.assertEqual(output.count("[sh]"), 1, output)
 
     def test_run_names_an_unknown_example(self) -> None:
-        door, tilo = self.shell_book("""
+        api, tilo = self.shell_book("""
             ```sh example=listing
             tilo account workspaces ls
             ```
             """)
-        status, output = self.run_tool("run", "--door", str(door), "--tilo", str(tilo), "--only", "missing")
+        status, output = self.run_tool("run", "--api", str(api), "--tilo", str(tilo), "--only", "missing")
         self.assertEqual(status, 1)
         self.assertIn("--only missing: no such example", output)
 
     def test_run_says_what_a_shell_example_needs(self) -> None:
-        door, _ = self.shell_book("""
+        api, _ = self.shell_book("""
             ```sh example=listing
             tilo account workspaces ls
             ```
             """)
-        status, output = self.run_tool("run", "--door", str(door))
+        status, output = self.run_tool("run", "--api", str(api))
         self.assertEqual(status, 1)
         self.assertIn("a sh example runs the tilo command", output)
 
-    def test_run_says_curl_examples_cannot_run_yet(self) -> None:
+    def test_run_runs_a_curl_example_as_a_shell_script(self) -> None:
         self.book(MANIFEST.replace('["python", "typescript"]', '["curl"]'))
         self.page("""
             ```curl example=listing
-            curl "$TILO_DOOR/mcp"
+            test "$TILO_API_URL" = http://api.test
             ```
             """)
-        status, output = self.run_tool("run", "--door", str(self.executable("door", DOOR)))
-        self.assertEqual(status, 1, output)
-        self.assertIn("curl examples cannot run yet", output)
+        with mock.patch.dict(os.environ, {"TILO_API_URL": "http://api.test"}):
+            status, output = self.run_tool("run", "--api", str(self.executable("api", API)))
+        self.assertEqual(status, 0, output)
+        self.assertIn("ok   listing [curl]", output)
 
     def test_run_fails_on_the_conventions_before_running_anything(self) -> None:
-        door, tilo = self.shell_book("""
+        api, tilo = self.shell_book("""
             ```sh example=Listing
             exit 0
             ```
             """)
-        status, output = self.run_tool("run", "--door", str(door), "--tilo", str(tilo))
+        status, output = self.run_tool("run", "--api", str(api), "--tilo", str(tilo))
         self.assertEqual(status, 1)
         self.assertIn("is not lowercase kebab case", output)
         self.assertNotIn("[sh]", output)
 
     def test_run_needs_a_door(self) -> None:
-        door, tilo = self.shell_book("""
+        api, tilo = self.shell_book("""
             ```sh example=listing
             exit 0
             ```
             """)
-        status, output = self.run_tool("run", "--door", str(self.root / "no-door"), "--tilo", str(tilo))
+        status, output = self.run_tool("run", "--api", str(self.root / "no-api"), "--tilo", str(tilo))
         self.assertEqual(status, 1)
-        self.assertIn("no door to serve the examples with", output)
+        self.assertIn("no API server to serve the examples with", output)
 
 
 if __name__ == "__main__":
