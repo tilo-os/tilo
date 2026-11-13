@@ -1,43 +1,14 @@
 //! The one async runtime model for Tilo processes.
 //!
-//! Tokio is the only async runtime in Tilo. This crate decides how a process
-//! runs it, so that no app, daemon or CLI builds runtimes of its own:
+//! Tokio is the only async runtime in Tilo, and this crate decides how a process runs it,
+//! so no app, daemon or CLI builds runtimes of its own: [`app()`] for an app's one
+//! current-thread runtime, [`daemon()`] for a bounded multi-thread one, [`block_on`] for a
+//! synchronous entry point, [`cpu()`] and [`io`] for bulk work off the async workers,
+//! [`background`] for the host's executor and timers, [`spawn_thread`] for a thread of its
+//! own and [`sleep`] for a pause. Every thread this crate starts is named.
 //!
-//! - **Apps** share one current-thread runtime, [`app()`], on a dedicated
-//!   background thread named `tilo-rt`. It is never the UI or render thread.
-//!   The UI spawns onto it and gets results back through the event loop's
-//!   existing wake mechanism (`tilo_ui`'s `LatestRequest::spawn` and
-//!   `LatestTask::spawn` wrap that handoff); nothing on the UI thread waits
-//!   on a future.
-//! - **Daemons and services** build one multi-thread runtime with
-//!   [`daemon()`]: a bounded worker count, a bounded blocking pool, named
-//!   threads.
-//! - **Synchronous entry points** — a CLI's `main`, a test — use
-//!   [`block_on`]. It refuses to run inside a runtime, this crate's or
-//!   another's, or on the UI thread, where it would deadlock or freeze a
-//!   frame.
-//! - **CPU-bound bulk work** — hashing, chunking, decoding, indexing — goes to
-//!   [`cpu()`], a dedicated pool, never onto an async worker.
-//! - **Bulk file I/O** goes through [`io`], std I/O on dedicated threads
-//!   behind an interface narrow enough to swap for `io_uring`.
-//! - **Toolkit background work and timers** go through [`background`], the
-//!   executor a host installs, and wake the UI through [`wake`].
-//! - **A long-lived thread of its own** — an event loop, a device poller —
-//!   comes from [`spawn_thread`], never `std::thread::spawn`.
-//! - **A pause inside async work** — a retry backoff, a poll interval — is
-//!   [`sleep`], never `std::thread::sleep`.
-//! - **A helper a process can lose and restart** runs inside
-//!   [`panic_boundary::isolate`], so a process whose panic hook aborts for
-//!   every other thread lets that one unwind (see [`panic_boundary`]).
-//!
-//! Every thread this crate starts is named, so a stack dump or `top -H`
-//! attributes it.
-//!
-//! In a browser (`target_family = "wasm"`) no thread is started: [`app()`]
-//! tasks run on the page thread from its microtask queue, [`cpu()`] work runs
-//! there as an app task, [`io`] refuses, [`spawn_thread`] fails, and nothing
-//! may block. [`availability`] answers which [`Feature`]s the running target
-//! has, and each feature's `targets` for every target.
+//! In a browser no thread is started: [`app()`] tasks run on the page's microtask queue,
+//! and nothing may block. [`availability`] answers which [`Feature`]s the target has.
 
 #[cfg(not(target_family = "wasm"))]
 mod app;
