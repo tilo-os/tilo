@@ -176,86 +176,90 @@ pub fn decide(signature: &CodeSignature) -> MacLaunchMode {
 mod tests {
     use super::*;
 
-    #[test]
-    fn only_a_trusted_signature_enabling_app_sandbox_escapes_seatbelt() {
-        let cases = [
-            (
-                CodeSignature::Unreadable {
-                    reason: "missing".into(),
-                },
-                MacLaunchMode::Seatbelt(SeatbeltReason::Unreadable),
-            ),
-            (
-                CodeSignature::Unsigned,
-                MacLaunchMode::Seatbelt(SeatbeltReason::Unsigned),
-            ),
-            (
-                CodeSignature::Invalid { status: -67061 },
-                MacLaunchMode::Seatbelt(SeatbeltReason::InvalidSignature),
-            ),
-            (
-                CodeSignature::AdHoc { app_sandbox: false },
-                MacLaunchMode::Seatbelt(SeatbeltReason::AdHoc),
-            ),
-            (
-                CodeSignature::AdHoc { app_sandbox: true },
-                MacLaunchMode::Seatbelt(SeatbeltReason::AdHoc),
-            ),
-            (
-                CodeSignature::Identified {
-                    trusted: false,
-                    app_sandbox: true,
-                },
-                MacLaunchMode::Seatbelt(SeatbeltReason::UntrustedSigner),
-            ),
-            (
-                CodeSignature::Identified {
-                    trusted: true,
-                    app_sandbox: false,
-                },
-                MacLaunchMode::Seatbelt(SeatbeltReason::NoAppSandboxEntitlement),
-            ),
-            (
-                CodeSignature::Identified {
-                    trusted: true,
-                    app_sandbox: true,
-                },
-                MacLaunchMode::AppSandbox,
-            ),
-        ];
-        for (signature, expected) in cases {
-            assert_eq!(decide(&signature), expected, "{signature:?}");
+    tilo_test_env::scenario! {
+        fn signatures_are_classified_by_trust_and_entitlement;
+
+        phase only_a_trusted_signature_enabling_app_sandbox_escapes_seatbelt;
+        {
+            let cases = [
+                (
+                    CodeSignature::Unreadable {
+                        reason: "missing".into(),
+                    },
+                    MacLaunchMode::Seatbelt(SeatbeltReason::Unreadable),
+                ),
+                (
+                    CodeSignature::Unsigned,
+                    MacLaunchMode::Seatbelt(SeatbeltReason::Unsigned),
+                ),
+                (
+                    CodeSignature::Invalid { status: -67061 },
+                    MacLaunchMode::Seatbelt(SeatbeltReason::InvalidSignature),
+                ),
+                (
+                    CodeSignature::AdHoc { app_sandbox: false },
+                    MacLaunchMode::Seatbelt(SeatbeltReason::AdHoc),
+                ),
+                (
+                    CodeSignature::AdHoc { app_sandbox: true },
+                    MacLaunchMode::Seatbelt(SeatbeltReason::AdHoc),
+                ),
+                (
+                    CodeSignature::Identified {
+                        trusted: false,
+                        app_sandbox: true,
+                    },
+                    MacLaunchMode::Seatbelt(SeatbeltReason::UntrustedSigner),
+                ),
+                (
+                    CodeSignature::Identified {
+                        trusted: true,
+                        app_sandbox: false,
+                    },
+                    MacLaunchMode::Seatbelt(SeatbeltReason::NoAppSandboxEntitlement),
+                ),
+                (
+                    CodeSignature::Identified {
+                        trusted: true,
+                        app_sandbox: true,
+                    },
+                    MacLaunchMode::AppSandbox,
+                ),
+            ];
+            for (signature, expected) in cases {
+                assert_eq!(decide(&signature), expected, "{signature:?}");
+            }
         }
-    }
 
-    #[test]
-    fn requirements_pin_developer_id_and_notarization() {
-        let any = TrustRequirement::DeveloperId;
-        assert!(any.static_requirement().ends_with(" and notarized"));
-        assert!(any.static_requirement().starts_with(DEVELOPER_ID_ANCHOR));
-        assert!(!any.identity_requirement().contains("notarized"));
+        phase requirements_pin_developer_id_and_notarization;
+        {
+            let any = TrustRequirement::DeveloperId;
+            assert!(any.static_requirement().ends_with(" and notarized"));
+            assert!(any.static_requirement().starts_with(DEVELOPER_ID_ANCHOR));
+            assert!(!any.identity_requirement().contains("notarized"));
 
-        let team = TrustRequirement::DeveloperIdTeam(TeamId::new("ABCDE12345").unwrap());
-        assert!(
-            team.identity_requirement()
-                .ends_with("certificate leaf[subject.OU] = \"ABCDE12345\"")
-        );
-        assert!(team.static_requirement().contains("ABCDE12345"));
-    }
-
-    #[test]
-    fn a_team_id_cannot_inject_requirement_text() {
-        for bad in [
-            "",
-            "ABCDE1234",
-            "ABCDE123456",
-            "abcde12345",
-            "ABCDE\"1234",
-            "ABC\" or tr",
-            "ABCDE 1234",
-        ] {
-            assert!(TeamId::new(bad).is_err(), "{bad:?} was accepted");
+            let team = TrustRequirement::DeveloperIdTeam(TeamId::new("ABCDE12345").unwrap());
+            assert!(
+                team.identity_requirement()
+                    .ends_with("certificate leaf[subject.OU] = \"ABCDE12345\"")
+            );
+            assert!(team.static_requirement().contains("ABCDE12345"));
         }
-        assert_eq!(TeamId::new("Z9Y8X7W6V5").unwrap().as_str(), "Z9Y8X7W6V5");
+
+        phase a_team_id_cannot_inject_requirement_text;
+        {
+            for bad in [
+                "",
+                "ABCDE1234",
+                "ABCDE123456",
+                "abcde12345",
+                "ABCDE\"1234",
+                "ABC\" or tr",
+                "ABCDE 1234",
+            ] {
+                assert!(TeamId::new(bad).is_err(), "{bad:?} was accepted");
+            }
+            assert_eq!(TeamId::new("Z9Y8X7W6V5").unwrap().as_str(), "Z9Y8X7W6V5");
+        }
     }
 }
