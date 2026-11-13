@@ -755,13 +755,17 @@ impl Staged {
         {
             // A frame a widget asks for is named by the widget; one a motion asks for is named
             // where the motion was started; and what else the window is owed — a frame at rest, an
-            // image on its way — is named, since none of those is a motion that never ends.
+            // image on its way, work whose answer replaces a placeholder — is named, since none of
+            // those is a motion that never ends.
             let now = ui::time::now();
             return Err(format!(
                 "the window still moves after two seconds: {:?} asked, {:?} started motions, \
+                 {:?} waiting on an answer, the frame held until {:?}, \
                  the schedule {:?} with {} images on their way",
                 self.harness.frame_requesters(),
                 ui::motion::frames_wanted_by(now),
+                self.harness.pending_visual_work(),
+                self.harness.root_widget().holds_frame_until(now),
                 self.harness.frame_schedule(),
                 ui::image_store::loads_in_flight(),
             ));

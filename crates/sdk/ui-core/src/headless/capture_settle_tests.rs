@@ -96,6 +96,27 @@ fn capture_awaits_visual_work_started_by_the_final_frame() {
     assert!(!pending.load(std::sync::atomic::Ordering::SeqCst));
 }
 
+/// A window already at rest has settled, however little of the bound is left: a loaded machine whose
+/// frames took longer than the capture allowed is not a motion that never ends.
+#[test]
+fn a_window_at_rest_settles_whatever_the_bound_it_had() {
+    let drawn = std::rc::Rc::new(std::cell::Cell::new(0));
+    let mut harness = FrameHarness::new(
+        State::new(),
+        Box::new(CountedFrames {
+            frames: 0,
+            drawn: std::rc::Rc::clone(&drawn),
+        }),
+        (200, 100),
+    );
+    harness.relayout();
+    assert!(!harness.frame_schedule().needs_animation_frame);
+    assert!(
+        harness.settle_for_capture(crate::time::Duration::ZERO),
+        "the window rests, so the capture settled"
+    );
+}
+
 #[test]
 fn capture_bound_includes_the_initial_frame_pipeline() {
     let draws = std::rc::Rc::new(std::cell::Cell::new(usize::MAX));

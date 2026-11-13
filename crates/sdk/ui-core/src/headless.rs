@@ -2642,30 +2642,62 @@ impl FrameHarness {
         })
     }
 
+    /// The widgets waiting on work whose completion will replace a placeholder
+    /// ([`Widget::has_pending_visual_work`]) that none of their children explains, each as its path
+    /// of names from its root: what a capture waits for that asks for no frame of its own, which
+    /// names a read that never answers where an empty frame schedule alone would not.
+    pub fn pending_visual_work(&self) -> Vec<String> {
+        self.explained_by(
+            |widget| widget.has_pending_visual_work(),
+            |widget| widget.name().to_owned(),
+        )
+    }
+
     /// The widgets that make a retained frame re-solve sizes rather than only re-apply positions: each
     /// widget reporting `layout_needs_measure` that none of its children explains, as its path from the
     /// root with a test id in brackets.
     pub fn layout_measure_requesters(&self) -> Vec<String> {
-        fn visit(widget: &dyn Widget, path: &mut Vec<String>, out: &mut Vec<String>) {
+        self.explained_by(
+            |widget| widget.layout_needs_measure(),
+            |widget| {
+                widget.test_id().map_or_else(
+                    || widget.name().to_owned(),
+                    |id| format!("{}[{id}]", widget.name()),
+                )
+            },
+        )
+    }
+
+    /// Each widget of the tree `found` holds of that none of its children explains, as its path from
+    /// the root, each named by `name`.
+    fn explained_by(
+        &self,
+        found: fn(&dyn Widget) -> bool,
+        name: fn(&dyn Widget) -> String,
+    ) -> Vec<String> {
+        fn visit(
+            widget: &dyn Widget,
+            path: &mut Vec<String>,
+            out: &mut Vec<String>,
+            found: fn(&dyn Widget) -> bool,
+            name: fn(&dyn Widget) -> String,
+        ) {
             let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
                 return;
             };
-            if !widget.layout_needs_measure() {
+            if !found(widget) {
                 return;
             }
-            path.push(match widget.test_id() {
-                Some(id) => format!("{}[{id}]", widget.name()),
-                None => widget.name().to_owned(),
-            });
+            path.push(name(widget));
             let before = out.len();
-            widget.for_each_child(&mut |child| visit(child, path, out));
+            widget.for_each_child(&mut |child| visit(child, path, out, found, name));
             if out.len() == before {
                 out.push(path.join("/"));
             }
             path.pop();
         }
         let mut out = Vec::new();
-        visit(self.root.as_ref(), &mut Vec::new(), &mut out);
+        visit(self.root.as_ref(), &mut Vec::new(), &mut out, found, name);
         out
     }
 
@@ -4192,7 +4224,10 @@ impl FrameHarness {
     ///
     /// Animations run on the toolkit's clock ([`crate::time::now`]), so the
     /// bound is measured on it too: an executor with a virtual clock (a
-    /// pumped test) cannot run the bound out before an entrance has ended.
+    /// pumped test) cannot run the bound out before an entrance has ended. A
+    /// window at rest has settled whatever the bound, however long the frames
+    /// before it took: the bound says how long to wait for it, so a loaded
+    /// machine does not read as a motion that never ends.
     pub fn settle_for_capture(&mut self, bound: crate::time::Duration) -> bool {
         self.invalidate_local();
         const CAPTURE_IDLE_SLICE: crate::time::Duration = crate::time::Duration::from_millis(16);
@@ -4208,25 +4243,27 @@ impl FrameHarness {
             if self.frame_schedule_demands_frame() {
                 self.relayout();
             }
+            if self.capture_is_ready() {
+                return true;
+            }
             if crate::time::now() > deadline {
                 return false;
             }
             let slice = crate::time::now()
                 .checked_add(CAPTURE_IDLE_SLICE)
                 .map_or(deadline, |slice| slice.min(deadline));
-            if !self.capture_is_ready()
-                && !self.wait_until_deadline(slice, crate::time::now, |driver| {
-                    crate::time::now() <= deadline && driver.capture_is_ready()
-                })
-            {
+            if !self.wait_until_deadline(slice, crate::time::now, |driver| {
+                crate::time::now() <= deadline && driver.capture_is_ready()
+            }) {
+                if self.capture_is_ready() {
+                    return true;
+                }
                 if crate::time::now() >= deadline {
                     return false;
                 }
                 continue;
             }
-            if self.frame_schedule_demands_frame()
-                && (self.try_relayout().is_err() || crate::time::now() > deadline)
-            {
+            if self.frame_schedule_demands_frame() && self.try_relayout().is_err() {
                 return false;
             }
             if self.capture_is_ready() {
