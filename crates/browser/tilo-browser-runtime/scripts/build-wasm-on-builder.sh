@@ -5,7 +5,7 @@
 #
 # usage: build-wasm-on-builder.sh STAGE RUN [build.sh arguments...]
 #
-# Runs in the build container as `rcargo --fetch STAGE exec bash
+# Runs in the build container as `$CARGO --fetch STAGE exec bash
 # crates/browser/tilo-browser-runtime/scripts/build-wasm-on-builder.sh STAGE
 # RUN ...`, which brings $CARGO_TARGET_DIR/STAGE back to this tree's
 # target dir (build.sh reads it there). STAGE is rebuilt from nothing each

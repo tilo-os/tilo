@@ -64,7 +64,7 @@
 # alone wants more, which is the build's memory, not the compile's. `auto`
 # (the default, or $TILO_BUNDLE_WASM_STEPS) runs them on the builder when
 # `$CARGO` is a drop-in that runs a program there and brings a directory of
-# the target dir back (`rcargo exec`), and beside the compile otherwise;
+# the target dir back (`$CARGO exec --fetch`), and beside the compile otherwise;
 # `builder` refuses to run them here, `local` never sends them away. The
 # fetched directory holds what a local run writes — pkg/, data/, apps.json
 # and wasm.json — so a builder build and a local one record the same
@@ -217,11 +217,11 @@ fi
 bindgen=${WASM_BINDGEN:-wasm-bindgen}
 cargo=${CARGO:-cargo}
 # Whether this cargo both compiles elsewhere and runs a program there,
-# bringing a directory of the target dir back (`rcargo exec`): asked of the
-# cargo itself, whose help for exec names `--fetch`, so a wrapper around one
-# (os/containers/tilo-sh/cargo.sh) counts, and a local cargo answers `no such
-# command`. The steps that turn the linked module into pkg/ then go with the
-# compile.
+# bringing a directory of the target dir back (`$CARGO exec --fetch`): asked of
+# the cargo itself, whose help for exec names `--fetch`, so a wrapper around
+# one (os/containers/tilo-sh/cargo.sh) counts, and a local cargo answers `no
+# such command`. The steps that turn the linked module into pkg/ then go with
+# the compile.
 runs_on_builder() {
   local help
   help=$("$cargo" exec --help 2>/dev/null) && [[ $help == *--fetch* ]]
@@ -231,7 +231,7 @@ if [[ $steps == auto ]]; then
   if [[ -z $wasm_from && -z $manifest && $module_only == 0 ]] && runs_on_builder; then steps=builder; else steps=local; fi
 elif [[ $steps == builder ]]; then
   runs_on_builder || {
-    echo "--wasm-steps builder needs a cargo that runs a program on its builder (\`rcargo exec\`), and CARGO ($cargo) has no exec" >&2
+    echo "--wasm-steps builder needs a cargo that runs a program on its builder (\`$CARGO exec --fetch\`), and CARGO ($cargo) has no exec" >&2
     exit 2
   }
   [[ -z $wasm_from && -z $manifest && $module_only == 0 ]] || {
@@ -291,8 +291,9 @@ linked="$target_dir/wasm32-unknown-unknown/$artifact/${package//-/_}.wasm"
 # such a pkg/ is never reused.
 made_from=""
 # Its content, not its modification time: a cargo that compiles elsewhere (t,
-# rcargo) writes the module it brings back anew on every build, changed or not,
-# and a new time alone would bind and split it again (minutes) for nothing.
+# or any drop-in that builds on a builder) writes the module it brings back
+# anew on every build, changed or not, and a new time alone would bind and
+# split it again (minutes) for nothing.
 file_stamp() { { sha256sum "$1" 2>/dev/null || shasum -a 256 "$1"; } | cut -d' ' -f1; }
 if [[ -f "$linked" ]]; then made_from="$(file_stamp "$linked") split=$split"; fi
 if [[ -n "$made_from" ]] && kept pkg/.made-from && [[ "$(cat "$out/pkg/.made-from")" == "$made_from" ]]; then
