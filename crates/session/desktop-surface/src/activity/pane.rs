@@ -1607,27 +1607,11 @@ impl WorkspaceActivityPane {
         }
 
         // Bind the local automerge actor to the Tilo identity, or local user id; a peer's actor
-        // stays unresolved until collaboration says who.
-        let actor = tree.document_mut().get_actor().to_hex_string();
-        if !self.source.authors().is_registered(&actor) {
-            let principal = if let Some(local) = &self.explicit_local_user {
-                Some(local.clone())
-            } else {
-                self.host.local_author(self.source.authors_mut(), &actor)
-            };
-            // The hue follows the person, as receipt rows' does: one person editing from this
-            // device and acting through a receipt is one colour, not one per key.
-            if let Some(principal) = principal {
-                let rgb = self.source.authors().colour_for(&principal);
-                self.source.authors_mut().register(
-                    &actor,
-                    ui::history_source::author_coloured(
-                        principal,
-                        ui::history_source::short_id(&actor),
-                        rgb,
-                    ),
-                );
-            }
+        // stays unresolved until collaboration says who. The workspace's own document is written by
+        // this device too, and its rows read as the same person's.
+        self.register_writer(tree.document_mut().get_actor().to_hex_string());
+        if let Some(document) = tree.governance_document() {
+            self.register_writer(document.get_actor().to_hex_string());
         }
 
         let mut entries = self
@@ -1727,6 +1711,31 @@ impl WorkspaceActivityPane {
         // edits.
         self.named = ui::history_groups::read_named_ranges(tree.document(), self.source.authors());
         self.apply_scope(tree);
+    }
+
+    /// Register the actor `actor` as whoever writes here, where it is not known yet.
+    fn register_writer(&mut self, actor: String) {
+        if self.source.authors().is_registered(&actor) {
+            return;
+        }
+        let principal = if let Some(local) = &self.explicit_local_user {
+            Some(local.clone())
+        } else {
+            self.host.local_author(self.source.authors_mut(), &actor)
+        };
+        // The hue follows the person, as receipt rows' does: one person editing from this device
+        // and acting through a receipt is one colour, not one per key.
+        if let Some(principal) = principal {
+            let rgb = self.source.authors().colour_for(&principal);
+            self.source.authors_mut().register(
+                &actor,
+                ui::history_source::author_coloured(
+                    principal,
+                    ui::history_source::short_id(&actor),
+                    rgb,
+                ),
+            );
+        }
     }
 
     /// The heads of the workspace's own document, where one is read.

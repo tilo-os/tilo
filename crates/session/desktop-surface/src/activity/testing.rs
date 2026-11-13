@@ -326,7 +326,7 @@ impl TestTree {
         cap: CapOverride,
     ) -> Option<String> {
         let granted = self.grant_uncommitted(slot, grantor, cap)?;
-        self.govern(slot);
+        self.commit_governance_change(slot);
         Some(granted)
     }
 
@@ -444,6 +444,20 @@ impl TestTree {
             .into_iter()
             .map(|change| change.raw_bytes().to_vec())
             .collect()
+    }
+
+    /// Apply `changes`, another device's, to `slot`'s own document.
+    pub fn apply_governance_changes(
+        &mut self,
+        slot: WorkspaceSlot,
+        changes: &[Vec<u8>],
+    ) -> Result<(), automerge::AutomergeError> {
+        let parsed: Result<Vec<automerge::Change>, _> = changes
+            .iter()
+            .map(|bytes| automerge::Change::try_from(bytes.as_slice()))
+            .collect();
+        self.governance_of(slot).apply_incoming(parsed?)?;
+        Ok(())
     }
 
     pub fn apply_changes(&mut self, changes: &[Vec<u8>]) -> Result<(), automerge::AutomergeError> {
