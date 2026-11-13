@@ -38,7 +38,7 @@ mod cases {
 
     const REQUESTER: [u8; 32] = [1; 32];
     const WORKER: [u8; 32] = [2; 32];
-    const WORKSPACE: u64 = 7;
+    const WORKSPACE: tilo_relay::WorkspaceId = tilo_relay::WorkspaceId::from_u128(7);
 
     const CASES: &[(&str, fn())] = &[
         (
