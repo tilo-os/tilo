@@ -1,9 +1,5 @@
-//! The staging-relevant facts of a validated internal bundle manifest:
-//! component sizes and digests, partition minimums and the loader path.
-//!
-//! Validation stays in `internal_bundle::validate_internal_bundle`; this only
-//! reads the extra fields its view does not expose, from bytes that already
-//! passed it.
+//! The staging-relevant facts of a validated internal bundle manifest: component sizes
+//! and digests, partition minimums and the loader path.
 
 use serde::Deserialize;
 
@@ -14,7 +10,6 @@ pub struct ComponentFacts {
     pub byte_size: u64,
     pub sha256: String,
     pub minimum_partition_bytes: u64,
-    /// Btrfs fsid (root) or FAT serial (ESP) the exporter bound.
     pub filesystem_uuid: String,
 }
 
@@ -24,7 +19,6 @@ pub struct BundleFacts {
     pub architecture: String,
     pub esp: ComponentFacts,
     pub root: ComponentFacts,
-    /// `boot_binding.efi_path`, forward-slash form (`/EFI/BOOT/BOOTX64.EFI`).
     pub efi_path: String,
 }
 
@@ -60,7 +54,6 @@ struct LooseBinding {
     efi_path: String,
 }
 
-/// Validate `manifest` with the shared validator, then read its staging facts.
 pub fn facts(manifest: &[u8]) -> Result<BundleFacts, String> {
     let bundle = crate::setup::internal_bundle::validate_internal_bundle(manifest)?;
     facts_unchecked(manifest).and_then(|facts| {
@@ -71,7 +64,6 @@ pub fn facts(manifest: &[u8]) -> Result<BundleFacts, String> {
     })
 }
 
-/// Read staging facts without validation (tests and already-validated bytes).
 pub(crate) fn facts_unchecked(manifest: &[u8]) -> Result<BundleFacts, String> {
     let loose: Loose = serde_json::from_slice(manifest).map_err(|e| e.to_string())?;
     let find = |role: &str| {

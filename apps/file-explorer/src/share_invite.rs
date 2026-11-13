@@ -1,12 +1,4 @@
-//! Sharing what Files shows: the desk's own invite sheet.
-//!
-//! A folder is shared by the workspace it lives in, so what Files offers on it
-//! is the sheet the bar's invite button opens — the one place a link into the
-//! workspace is made, the part it brings someone in at picked and the people
-//! the directory knows offered. Files asks the desk for it through the action
-//! broker, as the person using Files ([`session_actions::SHOW_INVITE`]); whether
-//! they may invite at all is the workspace's own governance, decided where the
-//! sheet and the invitation are.
+//! Sharing what Files shows: the desk's own invite sheet, asked for and followed.
 
 use tilo_actions::InvocationId;
 use tilo_actions::remote::session_actions;
@@ -15,8 +7,6 @@ use tilo_actions::remote::{
 };
 use ui::collaboration::{CollabEvent, CollabRequest};
 
-/// The sheet Files has asked the desk to open and not yet been answered, and
-/// the requests it makes for the session.
 #[derive(Debug, Default)]
 pub struct ShareInvite {
     requests: Vec<CollabRequest>,
@@ -24,9 +14,6 @@ pub struct ShareInvite {
 }
 
 impl ShareInvite {
-    /// Ask the desk to open its invite sheet on the workspace in front. One at
-    /// a time: a second ask before the first is answered says so instead of
-    /// opening it twice.
     pub fn ask(&mut self) -> Result<(), String> {
         if self.asking.is_some() {
             return Err("The invite sheet is already opening".to_owned());
@@ -49,18 +36,15 @@ impl ShareInvite {
         Ok(())
     }
 
-    /// Whether the sheet is still being opened.
     #[must_use]
     pub fn asking(&self) -> bool {
         self.asking.is_some()
     }
 
-    /// Requests for the session, oldest first.
     pub fn take_requests(&mut self) -> Vec<CollabRequest> {
         std::mem::take(&mut self.requests)
     }
 
-    /// The desk's answer to the sheet asked for here, when `event` is it.
     pub fn handle_event(&mut self, event: &CollabEvent) -> Option<Result<(), String>> {
         let CollabEvent::RemoteAction { message } = event else {
             return None;
@@ -74,7 +58,6 @@ impl ShareInvite {
         let answer = match message {
             RemoteActionMessage::Receipt(InvocationReceipt { status, .. }) => match status {
                 ReceiptStatus::Accepted => {
-                    // Follow it: the desk answers once the sheet is up.
                     self.requests.push(CollabRequest::RemoteAction {
                         message: RemoteActionMessage::Observe {
                             invocation,
@@ -129,7 +112,6 @@ mod tests {
         }
     }
 
-    /// The invocation the desk is asked with, which asks for its invite sheet.
     fn asked(invite: &mut ShareInvite) -> InvocationId {
         let requests = invite.take_requests();
         let [

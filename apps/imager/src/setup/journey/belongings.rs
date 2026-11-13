@@ -1,5 +1,4 @@
-//! Read-only inventory after migration consent. Credentials stay in their
-//! source stores until a reviewed import or connection is executed.
+//! The read-only inventory taken after migration consent: what the other computer holds.
 
 use super::source_selection::{SourceSelection, SourceSet};
 use imager_backend::{account_transfer, home_transfer, setup::flatpak_transfer};
@@ -17,21 +16,13 @@ pub(super) struct Belongings {
     pub browser_unavailable: bool,
     pub sessions: super::service_sessions::Selection,
     pub sessions_unavailable: bool,
-    /// The discovered folders, Steam libraries and games, with the person's
-    /// selection over them. Its exclusions are the form the copy producers
-    /// accept and revalidate under their own pinned root.
     pub source_selection: SourceSelection,
-    /// One mail selection per reviewed Thunderbird profile, keyed by that
-    /// profile's opaque identity. Each carries the exact accounts, folders,
-    /// address books and calendars the mail import will take.
     pub thunderbird: std::collections::BTreeMap<String, account_transfer::ThunderbirdSelection>,
     pub home_unavailable: bool,
     pub flatpak_unavailable: bool,
 }
 
 impl Belongings {
-    /// Windows inventory accepts only individually selected exact roots. This
-    /// does not invoke host Home, Linux account, browser or Flatpak discovery.
     pub fn from_windows_roots(
         selected: &[imager_backend::windows_inventory::SelectedRoot],
     ) -> Result<Self, String> {
@@ -91,8 +82,6 @@ impl Belongings {
         let browser = super::browser::Selection::discover(&home, &accounts.candidates);
         let sessions = imager_backend::service_selection::supported()
             .then(|| super::service_sessions::Selection::discover(&home, &accounts.candidates));
-        // Every discovered mail profile starts fully selected, exactly as the
-        // mail import reads it. A later toggle edits this same selection.
         let thunderbird = accounts
             .thunderbird_reviewed
             .iter()
@@ -123,15 +112,11 @@ impl Belongings {
             home_unavailable: false,
             flatpak_unavailable,
         };
-        // Metadata only, on the consented discovery worker: it reads the same
-        // inventory a copy would, and it never grants access.
         let selection = SourceSelection::discover(&belongings, &SourceSet::Home(home));
         belongings.source_selection = selection;
         belongings
     }
 
-    /// Discovery is metadata, not proof of a working login or a service grant.
-    /// Keep identifying labels in the account review, not the overview.
     pub(super) fn accounts_overview_hint(&self) -> String {
         use super::super::strings::{t, t_args};
         use imager_backend::account_transfer::Provider;
@@ -207,8 +192,6 @@ impl Belongings {
         warnings
     }
 
-    /// The Windows sources as a typed tree. Discovery is metadata only; the
-    /// inventory's own grants, identities and coverage gaps are reused.
     pub fn windows_source_tree(
         &self,
         catalog: imager_backend::setup::source_tree::SteamCatalog,
@@ -218,8 +201,6 @@ impl Belongings {
         })
     }
 
-    /// The Home sources as a typed tree. The caller supplies the Home that was
-    /// explicitly granted on the Files page; this never resolves one itself.
     pub fn home_source_tree(
         &self,
         home: &std::path::Path,
@@ -258,26 +239,16 @@ impl Belongings {
         })
     }
 
-    /// The root-relative exclusions the Home or Windows copy must apply, or
-    /// `None` while discovery has not finished. The preparation call site hands
-    /// them to the reviewed plan; an empty set means every selectable folder
-    /// stays.
     pub fn source_exclusions(&self) -> Option<imager_backend::setup::source_tree::Exclusions> {
         self.source_selection.exclusions()
     }
 
-    /// The reviewed mail profiles with the exact selection the mail import will
-    /// take. The profile keeps its private source handles; none of them is
-    /// reachable from presentation.
     pub(super) fn thunderbird_profiles(
         &self,
     ) -> impl Iterator<Item = &imager_backend::account_sources::ThunderbirdProfile> {
         self.accounts.thunderbird.iter()
     }
 
-    /// The selection for one reviewed mail profile. An empty account list is
-    /// the honest "nothing is imported" and stays readable here; the export
-    /// path takes [`Self::thunderbird_export`], which refuses it.
     pub(super) fn thunderbird_selection(
         &self,
         profile_id: &str,
@@ -285,8 +256,6 @@ impl Belongings {
         self.thunderbird.get(profile_id)
     }
 
-    /// The validated selection and its reviewed source, exactly what the mail
-    /// import seals. `None` while nothing is selected.
     pub(super) fn thunderbird_export(
         &self,
         profile_id: &str,
@@ -310,7 +279,6 @@ impl Belongings {
             .find(|profile| profile.profile.source_id == profile_id)
     }
 
-    /// Select or exclude every account and child of one mail profile.
     pub(super) fn set_thunderbird_all(
         &mut self,
         profile_id: &str,
@@ -327,7 +295,6 @@ impl Belongings {
         self.replace_thunderbird(profile_id, replacement)
     }
 
-    /// Select or exclude one reviewed mail account with all of its folders.
     pub(super) fn set_thunderbird_account(
         &mut self,
         profile_id: &str,
@@ -372,8 +339,6 @@ impl Belongings {
         })
     }
 
-    /// Select or exclude one folder of one mail account. The account stays
-    /// selected: an account whose folders are all removed carries no mail.
     pub(super) fn set_thunderbird_folder(
         &mut self,
         profile_id: &str,
@@ -396,8 +361,6 @@ impl Belongings {
         })
     }
 
-    /// Select or exclude one address book or calendar. Both are profile-wide,
-    /// so the decision is applied to every selected account.
     pub(super) fn set_thunderbird_personal(
         &mut self,
         profile_id: &str,
@@ -439,9 +402,6 @@ impl Belongings {
         Ok(changed)
     }
 
-    /// Apply one mail edit and validate it against the reviewed source before
-    /// it becomes the selection the import reads. A refused edit leaves the
-    /// previous selection exactly as it was.
     fn edit_thunderbird(
         &mut self,
         profile_id: &str,
@@ -456,8 +416,6 @@ impl Belongings {
             .cloned()
             .ok_or("installer-your-data-changed")?;
         change(&mut candidate);
-        // An empty account list is the honest "no mail selected"; every other
-        // shape must name only children that the reviewed source still has.
         if !candidate.accounts.is_empty() && candidate.validate(reviewed).is_err() {
             return Err("installer-your-data-changed");
         }
@@ -508,10 +466,8 @@ mod tests {
             originAttributes TEXT,isPartitionedAttributeSet INTEGER,inBrowserElement INTEGER);
             INSERT INTO moz_cookies VALUES(1,'.slack.com','d','private-home-cookie-sentinel','/',2000000000000,1,1,256,'',0,0);").unwrap();
         drop(cookies);
-        // An actual invalid external root is refused by production admission.
         let external = fixture.path().join("external-config");
         std::fs::write(&external, b"external-private-config-sentinel").unwrap();
-        // An otherwise valid Home/.config connection is NOT a substitute grant.
         let fallback = home_path.join(".config/Nextcloud/nextcloud.cfg");
         std::fs::create_dir_all(fallback.parent().unwrap()).unwrap();
         std::fs::write(

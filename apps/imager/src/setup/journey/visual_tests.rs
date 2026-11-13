@@ -93,9 +93,6 @@ pub(super) fn paint_app<A: ui::framework::ResourceApp>(
     }
 }
 
-/// Resize the production widget tree, rasterize it, then click its current
-/// rectangles. Neither a paint-only fixture nor a separate input transform is
-/// involved: the same host theme drives layout, text and pointer dispatch.
 #[test]
 fn viewport_growth_keeps_logical_type_and_controls_and_pointer_mapping() {
     fn heading_font(root: &mut dyn Widget, theme: &Theme) -> Option<f32> {
@@ -121,8 +118,6 @@ fn viewport_growth_keeps_logical_type_and_controls_and_pointer_mapping() {
     for theme in [Theme::dark(), Theme::light()] {
         let mut unscaled: Option<(f32, f64, f64, f64)> = None;
         for host_scale in [1.0, 1.5, 2.0] {
-            // Keep the initial logical workspace constant across host DPI.
-            // Compact-page tests separately exercise small-window scrolling.
             let initial = match host_scale {
                 1.0 => (1180, 820),
                 1.5 => (1770, 1230),
@@ -237,8 +232,6 @@ fn destination_review_edit_exposes_cancel_and_restores_choices_through_public_ac
     for (viewport, theme) in [((480, 800), Theme::dark()), ((1180, 820), Theme::light())] {
         let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
-            // Keep the launched resource's real action registration. Only
-            // stage the reviewed choices, rather than using a static capture.
             preview.live = false;
             preview.capture = true;
             preview.restart = restart_controller::Restart::default();
@@ -343,8 +336,6 @@ fn review_summary_scrolls_without_moving_navigation_at_large_text_sizes() {
             heading.y0 >= 0.0 && heading.y1 < next.y0,
             "Review heading must initially be visible above footer: heading={heading:?}, next={next:?}, back={back:?}, last={last:?}"
         );
-        // Pointer input is in logical window coordinates. Anchor it to the
-        // visible heading inside the real scroll body, not window padding.
         app.harness().click_at(
             f64::midpoint(heading.x0, heading.x1),
             f64::midpoint(heading.y0, heading.y1),
@@ -520,14 +511,10 @@ fn choose(app: &mut TestApp<ImagerShell>, choice: &str) {
 
 #[cfg(target_os = "linux")]
 fn pairing_name_app(viewport: (u32, u32), theme: Theme) -> TestApp<ImagerShell> {
-    // Live semantic actions hosted offscreen on a fresh test profile; capture mode
-    // intentionally omits this mutable action registry.
     let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
     app.harness().set_theme(theme.with_reduce_motion(true));
     app.harness().resize(viewport).unwrap();
     wait_for_fresh_preparation(&mut app);
-    // This route prepares another computer without opening the current host's
-    // disk compatibility check, which owns navigation until explicitly reviewed.
     for choice in ["another", "fresh", "existing"] {
         choose(&mut app, choice);
     }
@@ -563,8 +550,6 @@ fn pairing_name_and_approval_code_paint_at_all_host_scales_in_both_themes() {
             let (_custody, waiting) = pairing::waiting_fixture();
             app.with_widget::<InstallerPreview, _>(|preview| {
                 preview.pairing = waiting;
-                // The fixture substitutes only the owned process started by the
-                // action; production apply marks this initial transition dirty.
                 preview.dirty = true;
             })
             .unwrap();
@@ -609,7 +594,6 @@ fn account_overview_and_explicit_provider_choice_paint_with_matching_navigation(
             env.set("XDG_STATE_HOME", root.join(format!("{tag}-{}", viewport.0)));
             let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
             wait_for_fresh_preparation(&mut app);
-            // Identity/account rendering does not require a writable host disk.
             for choice in ["another", "fresh", "new"] {
                 choose(&mut app, choice);
             }
@@ -777,8 +761,6 @@ fn motion_frames(app: &mut TestApp<ImagerShell>, name: &str, direction: f64) {
     for percent in [0, 25, 50, 75, 100] {
         app.with_widget::<InstallerPreview, _>(|preview| {
             let presence = if percent == 100 {
-                // The last frame is the settled page, which the production draw
-                // must release instead of keeping a capture pose forever.
                 ui::motion::Presence::opened()
             } else {
                 ui::motion::Presence::held_at(u16::try_from(percent * 10).unwrap())
@@ -786,8 +768,6 @@ fn motion_frames(app: &mut TestApp<ImagerShell>, name: &str, direction: f64) {
             preview.slide = Some((direction, presence));
         })
         .unwrap();
-        // with_widget relays the production layout/draw pass; this rasterizes
-        // that actual cached scene without substituting a screenshot widget.
         let pixels = app.harness().render_rgba();
         assert_eq!(pixels.len(), 1180 * 820 * 4);
         if let Some(previous) = previous.replace(pixels.clone()) {
@@ -800,8 +780,6 @@ fn motion_frames(app: &mut TestApp<ImagerShell>, name: &str, direction: f64) {
                 .render_png(&directory.join(format!("{name}-{percent:03}.png")));
         }
     }
-    // A held capture pose stays until released; at rest at its end, the
-    // next frame retires the transition and its departing scene.
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.slide = Some((direction, ui::motion::Presence::opened()));
     })
@@ -814,9 +792,6 @@ fn motion_frames(app: &mut TestApp<ImagerShell>, name: &str, direction: f64) {
     .unwrap();
 }
 
-/// Sample the actual page scene while the production transition is active.
-/// Stretch only the test's clock so rasterization speed cannot finish the
-/// animation before assertions; neither page is replaced by a fixture widget.
 fn personal_motion_frames(
     app: &mut TestApp<ImagerShell>,
     name: &str,
@@ -868,8 +843,6 @@ fn personal_motion_frames(
             )));
         }
     }
-    // A held capture pose stays until released; at rest at its end, the
-    // next frame retires the transition and its departing scene.
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.slide = Some((direction, ui::motion::Presence::opened()));
     })
@@ -1015,8 +988,6 @@ fn personal_pages_keep_navigation_fixed_and_scroll_errors_above_it() {
             assert_eq!(control(preview, "installer.next").unwrap().get_rect(), next);
         })
         .unwrap();
-        // Submit a real short password through the semantic action (the
-        // visible Continue is disabled), then overflow the error/form.
         app.effect(&InstallerPreviewEffect::SetPreviewPassword {
             value: "short".into(),
         })
@@ -1101,8 +1072,6 @@ fn personal_pages_keep_control_scale_and_rasterize_forward_and_back_motion() {
     for (viewport, host_scale) in [((1180, 820), 1.0), ((2560, 1440), 1.0), ((2560, 1440), 2.0)] {
         let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
-            // Synthetic public profile only; keep the launched app's real
-            // effect registry, journey navigation, shared widgets and painter.
             preview.live = false;
             preview.capture = false;
             preview.restart = restart_controller::Restart::default();
@@ -1185,8 +1154,6 @@ fn resizing_or_changing_host_scale_discards_old_transition_geometry() {
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_STATE_HOME", custody.path().join("state"));
     environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
-    // Captures publish inert descriptions, not executable action bindings.
-    // Exercise transitions on the launched root's real effect runner.
     let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = false;
@@ -1272,7 +1239,6 @@ fn account_decision_pages_slide_forward_back_and_block_pointer_until_settled() {
         );
     })
     .unwrap();
-    // A deliberate public action remains usable by automation while painting.
     app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
     motion_frames(&mut app, "accounts-consent-to-purpose", -1.0);
     account_motion_step(&mut app, "back", None);
@@ -1345,8 +1311,6 @@ fn account_field_pages_advance_through_public_continue_and_preserve_keyboard_foc
     })
     .unwrap();
     motion_frames(&mut app, "accounts-user-to-password", 1.0);
-    // No final confirmation: this story proves field navigation, not a network
-    // login, and never launches an authorization browser or a graphical app.
 }
 
 /// Called only after native qualification discovered an actual signed
@@ -1360,7 +1324,6 @@ pub(super) fn paint_native_flatpak_inventory(
     for destination in [Destination::Computer, Destination::Another] {
         for (tag, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
             for (viewport, scale) in [((480, 800), 1.0), ((1180, 820), 1.0), ((2560, 1440), 2.0)] {
-                // Actions need a live headless host; captures only publish metadata.
                 let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
                 app.harness().resize(viewport).unwrap();
                 app.with_widget::<InstallerPreview, _>(|preview| {
@@ -1578,8 +1541,6 @@ fn belongings_entry_discovers_real_metadata_after_profile_and_review_edit() {
                 preview.journey.migrate = Some(false);
                 preview.journey.edit("belongings").unwrap();
             } else {
-                // The ordinary interactive route continues from Devices into
-                // Your data; discovery runs there, never before identity.
                 preview.journey.page = Page::Devices;
                 preview.journey.migrate = Some(true);
                 preview.journey.identity = Some(Identity::New);
@@ -1600,9 +1561,6 @@ fn belongings_entry_discovers_real_metadata_after_profile_and_review_edit() {
             .unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
             assert_eq!(preview.journey.page, Page::Belongings);
-            // A fast discovery may already have been polled by the effect's
-            // frame. The granted roots and discovered provider below prove the
-            // production operation, not the lifetime of its receiver.
         })
         .unwrap();
         wait_for_preview(&mut app, |preview| {
@@ -1754,8 +1712,6 @@ fn unavailable_guided_host_paints_honest_state_and_refuses_semantic_navigation()
         let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
         wait_for_fresh_preparation(&mut app);
         app.with_widget::<InstallerPreview, _>(|preview| {
-            // Explicit unavailable-host fixture through the production capability
-            // gate, not an installation receipt or a synthetic success route.
             preview.live = true;
             preview.capture = false;
             preview.capabilities.prepared_installation = false;
@@ -1813,8 +1769,6 @@ fn missing_direct_preparation_stays_disabled_and_refuses_installation() {
     ] {
         let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
-            // Intentionally missing custody/host plan; no preparation success is
-            // injected. The real live admission must reject this review state.
             preview.live = true;
             preview.capture = false;
             preview.restart = restart_controller::Restart::default();
@@ -1849,23 +1803,17 @@ fn missing_direct_preparation_stays_disabled_and_refuses_installation() {
     }
 }
 
-/// A stored preparation the window cannot open stops what acts on it, never
-/// the way out of the page it is on.
 #[test]
 fn a_blocked_preparation_still_lets_the_person_go_back() {
     let mut app = TestApp::<ImagerShell>::capture(Some("installer-destination")).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = true;
         preview.direct.active = false;
-        // A preparation this window cannot open: it is not missing, so every
-        // effect that acts on it waits, as after a failed startup check.
         preview.restart.mark_changed();
         preview.dirty = true;
     })
     .unwrap();
     if let Err(refused) = app.effect(&InstallerPreviewEffect::BackInPreview) {
-        // The page itself may have nowhere to go; the stored preparation may
-        // not be the reason the person cannot leave it.
         assert!(
             !format!("{refused:?}").contains("installer-restart-unavailable"),
             "the stored preparation must not refuse Back: {refused:?}"
@@ -1883,8 +1831,6 @@ fn semantic_validation_error_matches_inline_feedback_and_survives_read_preview()
     let viewport = (1180, 820);
     let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
-        // Public profile fixture only. Exercise the launched resource's real
-        // effects, validation, shared controls and visible error composition.
         preview.live = false;
         preview.capture = false;
         preview.restart = restart_controller::Restart::default();
@@ -2164,16 +2110,12 @@ fn password_policy_feedback_explains_the_actual_requirement_through_public_effec
 #[cfg(unix)]
 #[test]
 fn compact_password_submission_reveals_invalid_field_and_correction_without_manual_scroll() {
-    // A short window at 200% genuinely clips either correction field, while
-    // retaining enough body height for the control and its concise caption.
     password_validation_scenario((480, 520), true);
 }
 
 #[cfg(unix)]
 #[test]
 fn compact_password_submission_keeps_feedback_readable_at_200_percent() {
-    // The 800px window need not clip the short-password input. Keep this
-    // everyday compact size covered without claiming it proves offscreen reveal.
     for viewport in [(480, 800), (320, 800)] {
         password_validation_scenario(viewport, false);
     }
@@ -2266,8 +2208,6 @@ fn password_validation_scenario(viewport: (u32, u32), require_clipped: bool) {
                     matches!(refused, tilo_actions::DoorError::Failed(ref message) if message == &t(error))
                 );
             } else {
-                // Continue remains visible but disabled. Enter in the actual
-                // confirmation input still exercises submission and reveal.
                 app.harness()
                     .perform_named("installer.confirmation", &ui::a11y::Action::Focus)
                     .unwrap();
@@ -2298,9 +2238,6 @@ fn password_validation_scenario(viewport: (u32, u32), require_clipped: bool) {
                 "dark-200",
             );
 
-            // Move from the rejected input to its neighbour through the real
-            // keyboard path. Focus navigation must reveal an offscreen input;
-            // clicking its old, clipped coordinates is not a reachable action.
             if mismatch {
                 app.harness().set_modifiers(&["shift".into()]);
             }
@@ -2321,8 +2258,6 @@ fn password_validation_scenario(viewport: (u32, u32), require_clipped: bool) {
             );
             app.harness().click_at(chosen.center().x, chosen.center().y);
             app.settle();
-            // Blurring a field can add live validation and reflow the form.
-            // Read-only observation, unlike validation, must not change geometry.
             let chosen = app
                 .with_widget::<InstallerPreview, _>(|preview| {
                     control(preview, other).unwrap().get_rect()
@@ -2367,8 +2302,6 @@ fn password_validation_scenario(viewport: (u32, u32), require_clipped: bool) {
             })
             .unwrap();
 
-            // Correct both inputs with real keyboard selection and typing.
-            // Separate frames make caret resets during validation observable.
             let valid = "walnut telescope amber meadow";
             for id in ["installer.password", "installer.confirmation"] {
                 app.harness()
@@ -2513,8 +2446,6 @@ fn personal_fields_enter_advances_and_password_enter_focuses_confirmation() {
     .unwrap();
     app.harness()
         .type_text("keyboard walnut telescope amber meadow");
-    // Deliver both presses to the actual focused input before the next frame.
-    // A queued duplicate must not continue past Devices into Belongings.
     let enter = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter);
     let event = winit::event::WindowEvent::KeyboardInput {
         device_id: winit::event::DeviceId::dummy(),
@@ -2778,8 +2709,6 @@ fn password_route_keeps_disabled_continue_and_real_back_in_every_frame() {
     ] {
         let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
-            // Suppress native work, not navigation: reach Password through
-            // the production effects so Back has the real route history.
             preview.live = false;
             preview.capture = false;
             preview.linux = true;

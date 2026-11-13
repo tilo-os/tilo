@@ -1,11 +1,4 @@
-//! The installer's console: the `tilo-control` action protocol answered on
-//! the UI thread over the effects the installer publishes, and the state
-//! report it and the `status` effect share.
-//!
-//! Secrets never leave through here. The state carries whether a passphrase
-//! is set, never the passphrase; whether a recovery key exists, is copied
-//! and is confirmed saved, never the key; and install output passes through
-//! [`redact_recovery_material`] before any line of it is reported.
+//! The console endpoints the installer answers while it runs headless or unattended.
 
 use imager_backend::destination::console::{self as console_control, Request, catalog, wire};
 use serde_json::{Value, json};
@@ -17,16 +10,10 @@ use super::{
 };
 use crate::setup::destination::effects::{DestinationEffect, PROVIDER};
 
-/// The wake-up that tells the installer console requests are queued.
 pub const CONSOLE_WAKE: &str = "\u{1}console";
 
-/// Install output lines reported through the console at most.
 const LOG_TAIL: usize = 20;
 
-/// Replace anything shaped like a recovery key with `[redacted]`, and drop
-/// the backend's recovery-key marker line entirely. The installer never
-/// stores the marker in its log, so this is the second of two independent
-/// barriers, not the only one.
 pub fn redact_recovery_material(line: &str) -> Option<String> {
     if line.contains(RECOVERY_KEY_PREFIX) {
         return None;
@@ -56,15 +43,12 @@ pub fn redact_recovery_material(line: &str) -> Option<String> {
 }
 
 impl InstallerApp {
-    /// Attach the console request queue. `main` starts its endpoints once
-    /// the event loop exists; tests submit to it directly.
     #[must_use]
     pub fn with_console(mut self, console: console_control::ConsoleServer) -> Self {
         self.console = Some(console);
         self
     }
 
-    /// Answer every queued console request, in order.
     pub(super) fn serve_console(&mut self) {
         let Some(console) = self.console.clone() else {
             return;
@@ -75,7 +59,6 @@ impl InstallerApp {
         }
     }
 
-    /// One request line in, one reply line out.
     pub fn answer_console(&mut self, line: &str) -> String {
         match wire::parse(line) {
             Err(error) => wire::error("parse_error", &error.0),
@@ -123,8 +106,6 @@ impl InstallerApp {
         }
     }
 
-    /// What the installer believes is on screen, as data. Shared by
-    /// `state_dump` and the `status` action.
     #[expect(
         clippy::too_many_lines,
         reason = "the state report mirrors the wizard in one place so no door drifts"
@@ -206,8 +187,6 @@ impl InstallerApp {
                 "hostname": local_text(&self.hostname).trim(),
                 "locale": self.locale().trim(),
                 "timezone": self.timezone().trim(),
-                // The method and every factor that unlocks it, as the Review
-                // rows list them: a caller gets the facts, not one joined line.
                 "encryption": "LUKS",
                 "unlock_factors": self.encryption_factors(),
             },
@@ -218,9 +197,6 @@ impl InstallerApp {
                 "recovery_promise": self.recovery_ack,
                 "ready": self.encryption_ready() && self.destructive_confirmation_ready(),
             },
-            // The same report Review shows, for a caller without a screen. It
-            // reads the words the rows draw, so an agent, a script and a
-            // screen reader are answered by one implementation.
             "hardware": self.hardware.to_json(),
             "install": {
                 "state": self.install_state_name(),
@@ -262,7 +238,6 @@ mod tests {
             redact_recovery_material("==> Installing Tilo onto /dev/vdb").as_deref(),
             Some("==> Installing Tilo onto /dev/vdb")
         );
-        // A UUID is five groups, not a recovery key.
         let uuid = "00000000-0000-4000-8000-000000000003";
         assert_eq!(redact_recovery_material(uuid).as_deref(), Some(uuid));
     }

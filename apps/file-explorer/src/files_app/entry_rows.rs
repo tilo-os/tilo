@@ -1,12 +1,5 @@
-//! The rows a Files window publishes for the entries it lists, each kept
-//! while what it shows holds.
-//!
-//! A row is a pure function of its entry, the facts about that entry the
-//! window holds (a converted file's description, the apps that open it)
-//! and what every row shares (the place shown, the devices nearby, the
-//! locale): [`entry_row`] reads nothing else, so a row whose inputs are the
-//! ones it was made from is that very row again. A publication made every
-//! row afresh, each with a dozen actions, on every click.
+//! The rows a Files window publishes for the entries it lists, each kept while
+//! what it shows holds.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -21,39 +14,25 @@ use super::{FilesState, MAX_EAGER_ENTRY_RESOURCES, hex_prefix};
 use crate::i18n::{arg, t, t_args};
 use crate::model::Entry;
 
-/// What every entry row of the listing shows besides its entry.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct RowContext {
-    /// The place shown is Recent.
     recent: bool,
-    /// The place shown is a Trash.
     trash: bool,
-    /// Where the accounts a file can be imported from are mounted.
     import_mounts: Vec<PathBuf>,
-    /// The host's Trash, when its native Trash is in use.
     native_trash: Option<PathBuf>,
-    /// Whether `AirDrop` can send.
     airdrop: bool,
-    /// The devices nearby that are online.
     nearby: Vec<NearbyTransferTarget>,
-    /// The copy's [`ui::i18n::I18nManager::revision`].
     locale: u64,
 }
 
-/// What one entry's row shows that the window holds about the entry.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct EntryRowFacts {
-    /// A converted cloud file's description.
     converted: Option<String>,
-    /// What its open-with actions are made from.
     open_with: Option<OpenWithFacts>,
-    /// `AirDrop` can send it: a file, with `AirDrop` available.
     airdrop_file: bool,
-    /// For an app in the Applications place, how it leaves.
     app_removal: Option<runtime_portal::tools::AppRemoval>,
 }
 
-/// The entry rows last published, by entry, under the context they share.
 #[derive(Default)]
 pub(super) struct EntryRows {
     context: Option<RowContext>,
@@ -66,9 +45,6 @@ struct KeptRow {
     row: LiveRow,
 }
 
-/// Whether a file at `path` can be imported once from an account mounted
-/// at one of `mounts`. Legacy native-document placeholders hold a browser
-/// link, not editable bytes: copying one cannot fulfil an import.
 pub(super) fn importable_under(path: &Path, mounts: &[PathBuf]) -> bool {
     let placeholder = path.extension().is_some_and(|extension| {
         [
@@ -80,13 +56,11 @@ pub(super) fn importable_under(path: &Path, mounts: &[PathBuf]) -> bool {
     !placeholder && mounts.iter().any(|mount| path.starts_with(mount))
 }
 
-/// Whether `path` is an entry of the host's Trash `trash`.
 pub(super) fn in_native_trash(path: &Path, trash: Option<&Path>) -> bool {
     trash.is_some_and(|root| path.parent() == Some(root))
 }
 
 impl FilesState {
-    /// What every row of the listing shares, now.
     pub(super) fn row_context(&self) -> RowContext {
         RowContext {
             recent: self.is_recent_view(),
@@ -105,7 +79,6 @@ impl FilesState {
         }
     }
 
-    /// What `entry`'s row shows that the window holds about it, now.
     pub(super) fn entry_row_facts(&self, context: &RowContext, entry: &Entry) -> EntryRowFacts {
         if crate::applications::is_app(&entry.path) {
             return EntryRowFacts {
@@ -123,16 +96,12 @@ impl FilesState {
         }
     }
 
-    /// The complete action contract of one listed entry's row, as an exact
-    /// search, history or agent address resolves it.
     pub(super) fn entry_resource(&self, entry: &Entry) -> ResourceSpec {
         let context = self.row_context();
         let facts = self.entry_row_facts(&context, entry);
         entry_row(&context, &facts, entry)
     }
 
-    /// The rows of the first entries of the listing, those kept whose
-    /// entry, facts and shared context are the ones they were made from.
     pub(super) fn live_entry_rows(&self) -> Vec<LiveRow> {
         let context = self.row_context();
         let mut kept = self.entry_rows.borrow_mut();
@@ -160,8 +129,6 @@ impl FilesState {
     }
 }
 
-/// An app's row in the Applications place: open it, and uninstall it (or
-/// remove it from the person's apps), which the shell asks about first.
 fn app_row(
     mut resource: ResourceSpec,
     resource_id: &str,
@@ -193,11 +160,6 @@ fn app_row(
     resource
 }
 
-/// Construct the complete action contract for one already-projected row.
-/// This is intentionally separate from `resources`: a folder can have far
-/// more rows than an action directory should enumerate, while an exact
-/// search/history/agent address must still resolve to the same canonical
-/// actions as a visible context menu.
 #[allow(
     clippy::too_many_lines,
     reason = "an entry's complete canonical action contract stays together so lazy and eager resource resolution cannot diverge by dispatch route"
@@ -216,9 +178,6 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
         },
         entry.name.clone(),
     );
-    // The entry's read discloses its row: a view of the window there
-    // (open, reveal) would be a private disclosure that keeps every action
-    // on the row from agents.
     resource.actions.push(
         row_action(
             &FilesEffect::ReadEntry { entry: id() },
@@ -300,8 +259,6 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
         append_open_with_actions(open_with, &resource_id, &mut resource);
     }
     if !context.trash {
-        // The destination folder is asked; the entry's own folder stands in
-        // for it until then.
         if let Ok(here) = AbsolutePath::new(entry.path.parent().unwrap_or(entry.path.as_path())) {
             let mut copy_to = FilesEffect::CopyTo {
                 entry: id(),

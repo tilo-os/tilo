@@ -3,8 +3,6 @@
 use super::desktop_install::{DesktopInstallEvent, DesktopInstallRequest};
 use std::sync::mpsc::{self, Receiver};
 
-/// The worker owns the helper until its terminal exit even if the UI drops this
-/// receiver. Closing the progress view is never transaction cancellation.
 pub fn spawn_desktop_install(
     request: &DesktopInstallRequest,
 ) -> Result<Receiver<DesktopInstallEvent>, String> {
@@ -124,7 +122,6 @@ fn track_helper(
                     continue;
                 }
             }
-            // Success is withheld until the helper exits successfully.
             if !matches!(
                 event,
                 DesktopInstallEvent::Complete(_) | DesktopInstallEvent::Failed(_)
@@ -160,8 +157,6 @@ fn track_helper(
     }
 }
 
-/// Hidden narrow helper dispatch, before GUI startup. The request and its digest
-/// are arguments, so elevation never writes through user-controlled file names.
 pub fn maybe_run_desktop_helper(args: &[String]) -> Result<Option<i32>, String> {
     if !args
         .iter()
@@ -197,7 +192,6 @@ mod tests {
     use std::process::{Command, Stdio};
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    /// Elevation request, protocol validation, disconnection and log locator.
     #[test]
     fn desktop_worker_protocol_completes_only_on_exact_verified_exit() {
         {

@@ -1,10 +1,4 @@
 //! [`KeyboardView`] — a picture of the keyboard layout the person picked.
-//!
-//! The toolkit's `KeyboardMap` draws the keys, their legends and the board,
-//! from the theme. This view feeds it the chosen layout's legends over a
-//! standard staggered board and follows the layout dropdown's selection: a
-//! new selection is a new map on the next pass. It is a picture, not an
-//! input: the dropdown above it is the control, so the view takes no focus.
 
 use std::collections::HashMap;
 
@@ -16,20 +10,13 @@ use winit::keyboard::{NativeKeyCode, PhysicalKey};
 
 use imager_backend::destination::layouts::{self, Layout};
 
-/// Where each of the four main rows starts, in key widths: the stagger of a
-/// standard board.
 const STAGGER: [f64; 4] = [0.0, 0.5, 0.75, 1.25];
-/// The keys of the bottom letter row the space bar spans, as on a standard
-/// board: from under the third key (C on a US board) to the end of the
-/// eighth (M).
 const SPACE_UNDER: std::ops::Range<usize> = 2..8;
-/// The share of a key width left between two keys.
 const KEY_GAP: f64 = 0.12;
 
 pub struct KeyboardView {
     selection: ui::LocalState<String>,
     layout: &'static Layout,
-    /// The layout changed since the last layout pass.
     changed: bool,
     map: KeyboardMap,
 }
@@ -49,8 +36,6 @@ impl KeyboardView {
         selection.with(|name| layouts::by_display_name(name))
     }
 
-    /// Follow the selection: a known layout replaces the shown one; anything
-    /// else keeps it.
     fn resolve(&mut self) {
         if let Some(layout) = Self::chosen(&self.selection)
             && !std::ptr::eq(layout, self.layout)
@@ -66,7 +51,6 @@ impl KeyboardView {
     }
 }
 
-/// One key's outline: `width` key widths at `x`, on row `row`.
 fn key(name: String, x: f64, row: usize, width: f64, levels: Vec<String>) -> KeyboardMapKey {
     let top = ui::num::f64_of_usize(row);
     let cap = Rect::new(
@@ -88,7 +72,6 @@ fn key(name: String, x: f64, row: usize, width: f64, levels: Vec<String>) -> Key
     }
 }
 
-/// The map of `layout`'s legends on the staggered board.
 fn map(layout: &'static Layout) -> KeyboardMap {
     let mut keys = Vec::new();
     let mut width = 0.0_f64;
@@ -205,7 +188,6 @@ mod tests {
             assert_eq!(kv.layout_id(), "fr");
             assert!(!kv.take_structure_dirty(), "nothing changed yet");
 
-            // Change the selection, re-sync: the picture follows.
             selection.set("Dvorak".to_string());
             sync(&mut kv);
             assert_eq!(kv.layout_id(), "dvorak");
@@ -215,7 +197,6 @@ mod tests {
             let selection = ui::LocalState::new("Nonsense".to_string());
             let mut kv = KeyboardView::new(&selection);
             sync(&mut kv);
-            // Falls back to the default (no panic, no change to a bogus layout).
             assert_eq!(kv.layout_id(), "us");
         }
         {

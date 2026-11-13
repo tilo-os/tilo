@@ -1,4 +1,5 @@
-//! Read-only native diagnostic state, reached only by the opt-in UI observer.
+//! Read-only native state for diagnostics and tests: where the native input
+//! observer sees each row.
 use super::FileExplorerWidget;
 use ui::widget::Widget;
 use vello::kurbo::Rect;
@@ -7,10 +8,6 @@ fn rect(value: Rect) -> [f64; 4] {
     [value.x0, value.y0, value.x1, value.y1]
 }
 
-/// Carry the nearest Scrollable ancestor (the grid's), avoiding the independent
-/// sidebar's viewport. The list is a table that scrolls itself, so it has no
-/// such ancestor and is its own viewport. No downcast, mutation, widget
-/// pointer, or thumbnail request.
 fn file_geometry(widget: &dyn Widget, viewport: Option<Rect>) -> Option<(Rect, Rect)> {
     let viewport = if widget.name() == "Scrollable" {
         Some(widget.get_rect())
@@ -36,10 +33,6 @@ pub(super) fn snapshot(window: &FileExplorerWidget) -> serde_json::Value {
     let scroll = f64::from(widget.list_slot.scroll_y());
     let geometry = file_geometry(window, None).map(|(content, viewport)| {
         if list {
-            // The list's viewport is its table, which ends above the status
-            // lane; its content is the view as if unscrolled, so (as for the
-            // grid under its Scrollable) the content's top moves up by the
-            // offset.
             let extent = f64::from(widget.list_slot.max_scroll_y());
             (
                 Rect::new(

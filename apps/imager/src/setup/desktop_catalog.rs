@@ -3,7 +3,6 @@
 use serde::Deserialize;
 use std::collections::HashSet;
 
-/// Package kind is independent of runtime support evidence.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PackageFormat {
@@ -25,7 +24,6 @@ impl PackageFormat {
     }
 }
 
-/// Explicit reviewed native-session evidence, bound to these exact package bytes.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeEvidence {
@@ -43,8 +41,6 @@ pub struct RuntimeEvidence {
 #[serde(deny_unknown_fields)]
 pub struct DesktopRelease {
     pub id: String,
-    /// Exact native package version, including its revision/epoch where applicable.
-    /// Future installer adapters must query the same native version representation.
     pub version: String,
     pub distro_id: String,
     pub distro_version: String,
@@ -54,13 +50,11 @@ pub struct DesktopRelease {
     pub byte_size: u64,
     pub sha256: String,
     pub verified_runtime: Option<RuntimeEvidence>,
-    /// Consumer proof extracted from these exact package bytes by the signed catalog producer.
     #[serde(default)]
     pub account_custody: Option<imager_backend::account_admission::ConsumerCapability>,
 }
 
 impl DesktopRelease {
-    /// No ID_LIKE inheritance, version approximation, or architecture aliasing.
     pub fn matches_platform(
         &self,
         distro_id: &str,
@@ -186,7 +180,6 @@ struct Catalog {
     releases: Vec<DesktopRelease>,
 }
 
-/// Parse all entries before selecting a host, so invalid foreign entries also fail closed.
 pub fn parse_catalog(json: &str) -> Result<Vec<DesktopRelease>, String> {
     let catalog: Catalog =
         serde_json::from_str(json).map_err(|error| format!("Invalid Desktop catalog: {error}"))?;
@@ -214,7 +207,6 @@ pub fn parse_catalog(json: &str) -> Result<Vec<DesktopRelease>, String> {
     Ok(catalog.releases)
 }
 
-/// Catalog authenticated by the signed application, never a network manifest.
 pub fn bundled_releases() -> Result<Vec<DesktopRelease>, String> {
     parse_catalog(include_str!("../../desktop-catalog.json"))
 }

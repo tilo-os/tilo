@@ -1,9 +1,9 @@
-//! The guided setup's local decisions. No identity, filesystem or installation authority.
+//! The guided setup's local decisions, with no identity, filesystem or install
+//! authority.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
     Destination,
-    /// Compatibility of the computer that will receive a prepared install.
     Target,
     Migration,
     Identity,
@@ -193,9 +193,6 @@ impl Journey {
             IdentityKind::Enrolled => Some("device".into()),
             IdentityKind::CurrentDevice => Some("current".into()),
         };
-        // New interactive preparations do not carry a password. The old
-        // unlock page is only restored for an account checkpoint that was
-        // written by a build which still encrypted it.
         self.page = if choices.deferred {
             Page::Devices
         } else {
@@ -275,8 +272,6 @@ impl Journey {
         }
         let mut next = match self.page {
             Page::Destination if self.destination.is_some() => match self.destination {
-                // The other computer needs its own compatibility step before
-                // identity, data or medium choices.
                 Some(Destination::Another) => Page::Target,
                 _ => Page::Migration,
             },
@@ -290,8 +285,6 @@ impl Journey {
             Page::Profile if !self.name.trim().is_empty() => Page::Devices,
             Page::Profile => return Err("installer-preview-name-required"),
             Page::Connect if self.transfer.is_some() => Page::Devices,
-            // The destination's normal login password is chosen at first boot.
-            // This page only unlocks a checkpoint written by an older build.
             Page::Password => {
                 if let Some(error) = self.validation() {
                     return Err(error);
@@ -307,8 +300,6 @@ impl Journey {
             {
                 return Err("installer-preview-device-invalid");
             }
-            // An explicit retained password marks an older prepared handoff.
-            // New interactive journeys never set one and skip this question.
             Page::Devices if !self.password.is_empty() => Page::Purpose,
             Page::Purpose | Page::Devices if self.migrate == Some(true) => Page::Belongings,
             Page::Belongings if self.categories[2] => Page::Accounts,
@@ -347,8 +338,6 @@ impl Journey {
             };
         }
         if next == Page::Review && self.editing.take().is_some() {
-            // A changed branch has a new trail. Back must never visit the
-            // old identity or the belongings of a fresh-start branch.
             self.history = vec![Page::Destination, Page::Migration, Page::Identity];
             if self.destination == Some(Destination::Another) {
                 self.history.insert(1, Page::Target);
@@ -378,7 +367,6 @@ impl Journey {
     }
 
     pub fn toggle_details(&mut self) {
-        // Review edits have their own save/cancel trail and restore a snapshot.
         if self.editing.is_some() {
             self.details = !self.details;
             return;
@@ -388,7 +376,6 @@ impl Journey {
                 self.history.pop();
             }
         } else {
-            // Overview and details share a page, but are separate navigation stops.
             self.history.push(Page::Belongings);
         }
         self.details = !self.details;
@@ -501,8 +488,6 @@ impl Journey {
         })
     }
 
-    /// Keep the choices the current edit has made and end it, so navigating
-    /// away cannot restore the snapshot the edit started from.
     pub fn keep_edit(&mut self) {
         self.editing = None;
     }
@@ -544,10 +529,6 @@ impl Journey {
     pub fn validation(&self) -> Option<&'static str> {
         match self.page {
             Page::Profile if self.name.trim().is_empty() => Some("installer-preview-name-required"),
-            // Only an older password-protected preparation can reach this
-            // page. The secret authenticates that retained ciphertext; it is
-            // not a new login or disk credential. Its historical policy is
-            // retained so those packages remain readable.
             Page::Password => {
                 use imager_backend::startup_password::{ValidationError, validate};
                 if let Err(reason) = validate(&self.password) {

@@ -4,7 +4,6 @@ use test_http::Responder;
 fn manifest() -> Vec<u8> {
     super::super::internal_bundle::tests::bytes(&super::super::internal_bundle::tests::fixture())
 }
-/// Selected context, manifest HTTP, size boundary and transfer encoding.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -164,7 +163,6 @@ use std::{
 pub(in crate::setup) struct Server {
     url: String,
     requests: Arc<Mutex<Vec<String>>>,
-    // Held for the fixture's lifetime: dropping it stops the answering.
     _served: Responder,
 }
 impl Server {
@@ -434,7 +432,6 @@ pub(in crate::setup) fn with_hook(hook: Hook, test: impl FnOnce()) {
     test();
 }
 
-/// Checkpoint trust, range restarts and whole-component digest.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -601,7 +598,6 @@ fn untrusted_checkpoints_and_bad_ranges_restart_or_refuse_safely() {
         },
     );
 }
-/// Transient retries, encoding/length/digest errors and EOF errors.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -750,7 +746,6 @@ fn network_errors_and_short_bodies_are_never_completion() {
         },
     );
 }
-/// Cancellation before requests, during hashing and at completion.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -960,7 +955,6 @@ fn download_cancellation_never_returns_success_at_any_boundary() {
         },
     );
 }
-/// Redirect bounds, stalled reads and multi-read timeouts.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -1140,7 +1134,6 @@ fn redirects_and_stream_timeouts_are_bounded() {
         },
     );
 }
-/// Malformed framing and HTTP/1.0 transfer encoding.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -1351,7 +1344,6 @@ fn with_write_failure(after: usize, test: impl FnOnce()) {
     let _reset = Reset;
     test();
 }
-/// Terminal byte counters across cancellation, reset and errors.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -1531,7 +1523,6 @@ fn with_write_script(
         (s.attempts, s.interrupted)
     })
 }
-/// Interrupted write recovery, cancellation and exhaustion.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -1657,7 +1648,6 @@ fn interrupted_writes_recover_within_a_cumulative_bound() {
     isolated(
         "interrupted_write_allowance_is_cumulative_across_successful_partial_writes",
         || {
-            // Directly exercise one production chunk to avoid depending on TCP read boundaries.
             let mut steps = Vec::new();
             for _ in 0..7 {
                 steps.extend([WriteStep::Interrupted, WriteStep::Write(1)]);
@@ -1693,7 +1683,6 @@ use super::super::internal_cache::tests::{
 };
 #[cfg(unix)]
 use super::super::internal_cache::{Provider, Session};
-/// Persistent success, pause tail, failed resets, cancel and retry.
 #[test]
 #[cfg(unix)]
 #[allow(
@@ -1990,7 +1979,6 @@ impl cache::Observer for AckAdapter<'_> {
         Ok(ack)
     }
 }
-/// Stale acks, failed EOF reset, pause checkpoints and reopen.
 #[test]
 #[cfg(unix)]
 #[allow(
@@ -2279,8 +2267,6 @@ impl Read for HashReader<'_> {
     }
 }
 
-/// Exact reader seam: the event is inside Read::read, after the caller's
-/// pre-read stop check. Tests block this call with channels, never timing sleeps.
 pub(super) struct ResponseReader<'a> {
     pub response: &'a mut reqwest::blocking::Response,
     pub received: u64,
@@ -2511,7 +2497,6 @@ fn returned_request_boundaries_observe_pause_cancel_and_reset() {
         },
     );
 }
-/// Pause during final verification, final ack, failed publication and last retry.
 #[test]
 #[cfg(unix)]
 #[allow(
@@ -2782,7 +2767,6 @@ impl cache::Observer for PauseAtFinalAck<'_> {
         result
     }
 }
-/// Scoped worker-thread interval override. The cell itself remains private.
 pub(in crate::setup) fn with_checkpoint_interval<T>(value: u64, run: impl FnOnce() -> T) -> T {
     assert!(value > 0);
     struct Reset(Option<u64>);

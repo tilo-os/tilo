@@ -18,13 +18,6 @@ fn cancelled(cancel: &AtomicBool) -> Result<(), String> {
     }
 }
 
-/// Download and authenticate a package into a private, content-addressed cache.
-/// The caller supplies a cache directory whose parent already exists. No elevation occurs.
-/// A returned pathname is not privileged authorization: the install helper must verify again.
-///
-/// # Errors
-/// Refuses invalid metadata, untrusted transport, unsafe cache objects, cancellation,
-/// incomplete transfers, and size/digest mismatches. Staging is removed on failure.
 pub fn download_package(
     release: &DesktopRelease,
     cache: &Path,
@@ -114,7 +107,6 @@ mod unix {
         cancel: &AtomicBool,
     ) -> Result<(), String> {
         let metadata = file.metadata().map_err(io_error)?;
-        // No executable, shared, hard-linked, or nonregular cache objects are accepted.
         if !metadata.is_file()
             || metadata.len() != release.byte_size
             || metadata.mode() & 0o777 != 0o600
@@ -264,8 +256,6 @@ mod unix {
         origin: reqwest::Url,
     ) -> Result<(), String> {
         let client = client(origin.clone())?;
-        // Bounded resume uses only bytes in this exclusive, held staging handle.
-        // Terminal failures/cancellation discard staging; no editable partial file is trusted.
         for _ in 0..3 {
             cancelled(cancel)?;
             let offset = file.metadata().map_err(io_error)?.len();
@@ -375,7 +365,6 @@ mod unix {
         verify(&mut staging.file, release, cancel)?;
         staging.file.sync_all().map_err(io_error)?;
         cancelled(cancel)?;
-        // hard_link publishes without replacing any concurrent winner or hostile object.
         match dir.hard_link(&staging.name, &dir, &name) {
             Ok(()) => {
                 dir.remove_file(&staging.name).map_err(io_error)?;
@@ -434,8 +423,6 @@ mod tests {
             body,
         )
     }
-    /// Serve `replies` in order until they run out or `stop` is set, as
-    /// the client asks for them.
     fn server(
         replies: Vec<Vec<u8>>,
         stop: Arc<AtomicBool>,
@@ -461,8 +448,6 @@ mod tests {
                         Err(error) => panic!("{error}"),
                     }
                 };
-                // Darwin can inherit O_NONBLOCK from the listener. A
-                // temporary WouldBlock is not a failed request read.
                 stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(std::time::Duration::from_secs(2)))
@@ -491,14 +476,12 @@ mod tests {
             &root.path().join("cache"),
             &AtomicBool::new(false),
         );
-        // A reply the download did not ask for is never served.
         stop.store(true, Ordering::Release);
         handle.join().unwrap();
         let observed = requests.lock().unwrap().clone();
         (root, result, observed)
     }
 
-    /// Range resume and restart.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -560,7 +543,6 @@ mod tests {
             assert!(!requests[2].contains("range:"));
         }
     }
-    /// Size, digest, cache revalidation, redirects and transport rejection.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -698,7 +680,6 @@ mod tests {
             );
         }
     }
-    /// Cache directory security.
     #[test]
     #[allow(
         clippy::too_many_lines,

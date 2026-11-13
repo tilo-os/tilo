@@ -1,49 +1,5 @@
-//! Explicit unattended installation from a private, relayed recipe.
-//!
-//! This is not a second automation surface. The recipe is read from an
-//! inherited descriptor or a no-follow private file, validated field by field,
-//! and then applied through the installer's published actions — the same
-//! resolution, availability, confirmation and strict-binding door that a
-//! control, a screen reader, `tilo-control actions invoke` and the console use.
-//! There is no unattended-only operation that can select a disk, write a
-//! credential or start an install behind that door.
-//!
-//! # What the recipe must carry
-//!
-//! * the destination's exact discovered identity (device, size, kernel device
-//!   number, partition table and UUID, sector size, and WWN/serial when the
-//!   hardware exposes them);
-//! * either a plaintext account password or its canonical SHA-512 crypt hash,
-//!   but never both, and never a target UID;
-//! * either a separate disk-unlock secret, with an explicit choice between the
-//!   measured-boot TPM2 PIN policy and an independent strong passphrase, or no
-//!   `protection` at all: then the plaintext account password is the startup
-//!   secret too, exactly as in the wizard;
-//! * an explicit `data_source`, currently only `none` because no data transfer
-//!   runs from this path;
-//! * an explicit acknowledgement that the one-time recovery key is the
-//!   operator's responsibility.
-//!
-//! Hardware-backed unlock is not inferred from a model name or a device node.
-//! The canonical `tilo-rollback tpm-status` probe must answer, the installed
-//! target preflight must accept the measured-boot boundary, and the real
-//! `tilo-rollback enroll` helper repeats the proof after the pending disk has
-//! actually been allocated. Sibling unlock is deliberately not enrolled here:
-//! it needs an installed, signed-in session to certify and distribute the other
-//! half, so this path does not fabricate a token it cannot validate.
-//! The driver revalidates the exact disk against a fresh probe immediately
-//! before `begin`; the privileged helper independently repeats every binding
-//! before it writes anything. A changed fact refuses the operation and leaves
-//! the ordinary wizard running behind the console socket, so a person can
-//! continue interactively with the precise reason on screen.
-//!
-//! # Secrets
-//!
-//! Passwords and the disk secret never appear on argv, in the JSON state, in
-//! action replies or in logs. The recipe bytes are zeroized after parsing, the
-//! parsed secret strings are zeroized on drop, and the recovery key is written
-//! only to an explicitly supplied private descriptor/file or to a real
-//! terminal. Without such a destination the install does not start.
+//! Unattended installation from a private recipe: the same wizard, driven by one
+//! document.
 
 use std::ffi::OsString;
 use std::io::{self, Write};
@@ -61,21 +17,17 @@ use imager_backend::destination::disks::Disk;
 use imager_backend::destination::private_io;
 use imager_backend::destination::probes::{ProtectionReport, SystemProtection};
 
-/// The one recipe schema this build understands.
 pub const SCHEMA: u32 = 1;
 
 /// A recipe is a small control document, not a payload.
 pub use private_io::MAX_RECIPE_BYTES;
 
-/// Where the recipe comes from. Neither source travels in argv content.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum RecipeSource {
     File(PathBuf),
     Fd(i32),
 }
 
-/// Where the one-time recovery key is delivered. A missing destination is a
-/// refusal before the first disk write, not a key hidden in a log.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum RecoveryDestination {
     File(PathBuf),
@@ -83,8 +35,6 @@ enum RecoveryDestination {
     Tty,
 }
 
-/// A parsed unattended invocation. The CLI only names descriptors and paths;
-/// no credential is ever accepted as a command-line value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Invocation {
     recipe: RecipeSource,
@@ -92,9 +42,6 @@ pub struct Invocation {
 }
 
 impl Invocation {
-    /// Parse the unattended subset of this binary's arguments. `Ok(None)` and
-    /// no arguments starting with `--unattended` keeps the ordinary graphical
-    /// installer path untouched.
     pub fn from_args<I>(args: I) -> Result<Option<Self>, String>
     where
         I: IntoIterator<Item = OsString>,
@@ -177,9 +124,6 @@ impl Invocation {
         Ok(Some(Self { recipe, recovery }))
     }
 
-    /// Run this invocation to completion. On an error before the first disk
-    /// write, the ordinary wizard stays alive behind the console socket; the
-    /// process does not exit and does not hide a prompt.
     pub fn run(self) -> Result<(), Box<dyn std::error::Error>> {
         let door = start_console(
             crate::setup::destination::effects::PROVIDER,
@@ -250,15 +194,10 @@ fn private_fd(value: &OsString, what: &str) -> Result<i32, String> {
     Ok(fd)
 }
 
-/// The console endpoints this process actually bound. A request wakes the
-/// owner through the channel, so the fallback listener never depends on a
-/// polling sleep to notice one.
 struct ConsoleDoor {
     console: imager_backend::destination::console::ConsoleServer,
     endpoints: Vec<imager_backend::destination::console::Endpoint>,
     wake: mpsc::Receiver<()>,
-    /// Keeps a fallback socket's private directory alive for as long as the
-    /// door serves it. The directory is removed when the process exits.
     _fallback: Option<tempfile::TempDir>,
 }
 
@@ -293,10 +232,6 @@ fn endpoint_path(endpoint: &imager_backend::destination::console::Endpoint) -> &
     }
 }
 
-/// Bind the discovered endpoints, or a private fallback socket when this is a
-/// real terminal session and no discovered endpoint could be bound. The
-/// fallback uses the same `ConsoleServer`/`Endpoint` door and the same actions
-/// as every other console caller; it is not a second automation surface.
 fn start_console(
     app: &str,
     discovered: Vec<imager_backend::destination::console::Endpoint>,
@@ -371,7 +306,6 @@ fn start_console(
     })
 }
 
-/// Answer every request queued so far, returning how many were answered.
 fn drain_console(
     app: &mut InstallerApp,
     console: &imager_backend::destination::console::ConsoleServer,
@@ -385,7 +319,6 @@ fn drain_console(
     answered
 }
 
-/// Keep the ordinary installer available after an unattended refusal.
 fn stay_with_error(
     app: &mut InstallerApp,
     door: &ConsoleDoor,
@@ -401,19 +334,12 @@ fn stay_with_error(
     serve_forever(app, door);
 }
 
-/// Answer console requests on this thread. Unattended runs have no winit event
-/// loop, so this is the same `answer_console` entry point woken by the console
-/// listener rather than by a winit proxy.
 fn serve_forever(app: &mut InstallerApp, door: &ConsoleDoor) -> ! {
     loop {
         drain_console(app, &door.console);
         let _ = door.wake.recv_timeout(Duration::from_secs(1));
     }
 }
-
-// ===================================================================
-// Recipe
-// ===================================================================
 
 /// A fully validated unattended recipe. Not `Debug`: it holds credentials.
 #[derive(Deserialize)]
@@ -422,14 +348,9 @@ struct Recipe {
     schema: u32,
     account: AccountRecipe,
     disk: DiskRecipe,
-    /// A separate disk secret. Absent, the account password is the startup
-    /// secret too, as in the wizard; that needs the plaintext `password`.
     #[serde(default)]
     protection: Option<ProtectionRecipe>,
-    /// No data-transfer implementation runs from this path yet. Requiring the
-    /// field makes "none" a reviewed choice rather than a silent omission.
     data_source: String,
-    /// The operator will take custody of the one-time recovery key.
     acknowledge_recovery_key: bool,
     #[serde(default)]
     preferences: Preferences,
@@ -584,9 +505,6 @@ impl AccountRecipe {
 #[serde(deny_unknown_fields)]
 struct DiskRecipe {
     device: String,
-    /// The explicit plan. Only a reviewed whole-disk erase is implemented
-    /// unattended; an alongside allocation still needs the interactive
-    /// preflight and is refused rather than guessed.
     method: String,
     size_bytes: u64,
     major_minor: String,
@@ -658,9 +576,6 @@ fn valid_major_minor(value: &str) -> bool {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProtectionRecipe {
-    /// `tpm2` requires the actual measured-boot TPM2 boundary; `passphrase`
-    /// forces an independent strong LUKS passphrase even where the TPM is
-    /// usable, never weakening the secret.
     kind: String,
     secret: String,
 }
@@ -819,10 +734,6 @@ impl RecipeSource {
     }
 }
 
-// ===================================================================
-// Destination protection
-// ===================================================================
-
 trait ProtectionProbe {
     fn probe(&mut self) -> Result<ProtectionReport, String>;
 }
@@ -832,10 +743,6 @@ impl ProtectionProbe for SystemProtection {
         SystemProtection::probe(self)
     }
 }
-
-// ===================================================================
-// Execution through published actions
-// ===================================================================
 
 fn execute(
     app: &mut InstallerApp,
@@ -921,14 +828,12 @@ fn drive(app: &mut InstallerApp, recipe: &Recipe) -> Result<(), String> {
             }
             Step::Network => advance(app, step)?,
             Step::Accounts => {
-                // This is the published offline choice; it advances on its own.
                 invoke(app, "continue-offline@installer", serde_json::json!({}))?;
                 if app.step() == step {
                     return Err(step_error(app, step));
                 }
             }
             Step::Disk => {
-                // Re-read the real inventory, then bind the recipe to it.
                 invoke(app, "refresh-disks@installer", serde_json::json!({}))?;
                 let disk = reviewed_disk(app.available_disks(), &recipe.disk)?.to_owned();
                 invoke(
@@ -947,8 +852,6 @@ fn drive(app: &mut InstallerApp, recipe: &Recipe) -> Result<(), String> {
                 advance(app, step)?;
             }
             Step::Account => {
-                // Without a separate disk secret the wizard's own rule holds:
-                // the account password set below is the startup secret too.
                 if let Some(protection) = &recipe.protection {
                     invoke(
                         app,
@@ -1095,8 +998,6 @@ fn invoke(app: &mut InstallerApp, id: &str, args: Value) -> Result<(), String> {
     app.invoke_published(id, &args).map(|_| ())
 }
 
-/// The one discovered disk the recipe names, with every reviewed identity
-/// field still identical. Anything else is a refusal, never a substitution.
 #[allow(
     clippy::suspicious_operation_groupings,
     reason = "each line compares one independent reviewed identity field"
@@ -1142,10 +1043,6 @@ fn reviewed_disk<'a>(disks: &'a [Disk], recipe: &DiskRecipe) -> Result<&'a str, 
         )),
     }
 }
-
-// ===================================================================
-// Recovery-key delivery
-// ===================================================================
 
 struct RecoverySink {
     inner: SinkInner,
@@ -1450,8 +1347,6 @@ mod tests {
         let installs = fake.installs.lock().unwrap().clone();
         assert_eq!(installs.len(), 1);
         let (_, _, password, options) = &installs[0];
-        // The same secret for both, as the wizard installs it: tilo-install
-        // then marks the slot as the account password's.
         assert_eq!(password, "ordinary typed password");
         assert_eq!(options.pin.as_str(), "ordinary typed password");
         assert!(!options.password_is_hash);
@@ -1635,7 +1530,6 @@ mod tests {
             |value: &mut serde_json::Value| value["disk"]["method"] = json!("alongside"),
             |value: &mut serde_json::Value| value["disk"]["partition_table"] = json!("dos"),
             |value: &mut serde_json::Value| value["protection"]["kind"] = json!("auto"),
-            // A hash cannot be the startup secret.
             |value: &mut serde_json::Value| {
                 value.as_object_mut().unwrap().remove("protection");
             },
@@ -1783,8 +1677,6 @@ mod tests {
             door.instructions()
         );
 
-        // An invalid recipe is refused before any mutation, then the ordinary
-        // wizard must remain reachable through the socket this process bound.
         let invalid = Recipe::parse(br#"{"schema":1,"account":{}}"#)
             .err()
             .expect("an incomplete recipe is refused");

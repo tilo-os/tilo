@@ -29,7 +29,6 @@ fn e(name: &str, is_dir: bool, size: u64, mime: &str, year: i32) -> Entry {
     }
 }
 
-/// Every sort key and both orders, each on its own entry fixture.
 #[test]
 fn sort_entries_orders_by_each_key_and_keeps_directories_first() {
     sort_entries_always_places_directories_first();
@@ -46,8 +45,6 @@ fn names(v: &[Entry]) -> Vec<&str> {
     v.iter().map(|entry| entry.name.as_str()).collect()
 }
 
-/// A camera's or a scanner's numbered files list in the order they were
-/// made, as a person reads the numbers: `IMG_9` before `IMG_10`.
 fn sort_by_name_reads_numbers_by_value() {
     let mut v = vec![
         e("IMG_10.jpg", false, 0, "image/jpeg", 2020),
@@ -87,7 +84,6 @@ fn sort_by_name_reads_numbers_by_value() {
             "img_9.jpg",
         ]
     );
-    // Names that differ only in case or leading zeros still have one order.
     let mut v = vec![
         e("b", false, 0, "text/plain", 2020),
         e("B", false, 0, "text/plain", 2020),
@@ -98,8 +94,6 @@ fn sort_by_name_reads_numbers_by_value() {
     assert_eq!(names(&v), ["B", "b", "page007", "page7"]);
 }
 
-/// Sorting by size, date or type orders the files that tie on it by name,
-/// not by the order the disk happened to list them in.
 fn entries_alike_by_the_key_read_in_name_order() {
     let mut v = vec![
         e("report-10.txt", false, 1, "text/plain", 2020),
@@ -190,37 +184,24 @@ fn breadcrumb_component_click_navigates_to_that_component() {
     let cwd = PathBuf::from("/home/user/Documents/Projects");
     let comps = breadcrumb_components(&cwd, Some(&home), &[]);
     let labels: Vec<&str> = comps.iter().map(|(l, _)| l.as_str()).collect();
-    // Clean text labels — the leading root is drawn as a themed vector icon
-    // by the breadcrumb bar, not a font glyph.
     assert_eq!(labels, vec!["Home", "Documents", "Projects"]);
-    // The last component path equals the cwd itself.
     assert_eq!(comps.last().unwrap().1, cwd);
 
-    // Non-home path falls through to root-based components.
     let comps2 = breadcrumb_components(&PathBuf::from("/etc/hosts"), Some(&home), &[]);
     let labels2: Vec<&str> = comps2.iter().map(|(l, _)| l.as_str()).collect();
     assert_eq!(labels2, vec!["/", "etc", "hosts"]);
 }
 
-/// A workspace is named, not spelled out.
-///
-/// The workspace's folder is mounted wherever the driver put it, which in a
-/// demo is under `/var/tmp`. Spelling that out tells a reader they are
-/// looking at scratch space on somebody's laptop, which is the opposite of
-/// what a workspace is - and the app already knew better, because its own
-/// sidebar lists the same directory by name under System.
 fn a_workspace_root_is_named_rather_than_spelled_out() {
     let ws = PathBuf::from("/var/tmp/tilo/workspace");
     let roots = vec![ws.clone()];
     let home = PathBuf::from("/home/user");
 
-    // The root itself: one segment, the workspace's name.
     let comps = breadcrumb_components(&ws, Some(&home), &roots);
     let labels: Vec<&str> = comps.iter().map(|(l, _)| l.as_str()).collect();
     assert_eq!(labels, vec!["workspace"]);
     assert_eq!(comps[0].1, ws, "the root segment navigates to the mount");
 
-    // Below it, relative to the workspace - no `var`, no `tmp`, no `tilo`.
     let deep = ws.join("Designs").join("v2");
     let labels: Vec<String> = breadcrumb_components(&deep, Some(&home), &roots)
         .into_iter()
@@ -228,10 +209,8 @@ fn a_workspace_root_is_named_rather_than_spelled_out() {
         .collect();
     assert_eq!(labels, vec!["workspace", "Designs", "v2"]);
 
-    // And the same label the places sidebar puts on the same location.
     assert_eq!(file_explorer::model::workspace_label(&ws), "workspace");
 
-    // A workspace outranks home when the mount happens to be inside it.
     let in_home = home.join("room");
     let roots_in_home = vec![in_home.clone()];
     let labels: Vec<String> =
@@ -241,7 +220,6 @@ fn a_workspace_root_is_named_rather_than_spelled_out() {
             .collect();
     assert_eq!(labels, vec!["room", "notes"]);
 
-    // Nothing else moves: a path in no workspace is the trail it always was.
     let labels: Vec<String> =
         breadcrumb_components(&PathBuf::from("/etc/hosts"), Some(&home), &roots)
             .into_iter()
@@ -253,8 +231,6 @@ fn a_workspace_root_is_named_rather_than_spelled_out() {
 use file_explorer::FileExplorerWidget;
 use ui::{AppKind, AppWidget, IconDescriptor};
 
-/// App identity, the startup path, footer, refresh and view-mode defaults,
-/// each on a freshly constructed widget.
 #[test]
 fn widget_identity_defaults_and_initial_path() {
     file_explorer_widget_implements_app_widget_and_defaults_correctly();
@@ -280,16 +256,9 @@ fn file_explorer_widget_implements_app_widget_and_defaults_correctly() {
 fn file_explorer_widget_constructs_with_sensible_default_path() {
     let w = FileExplorerWidget::new();
     let cwd = w.state().current_path();
-    // Must match `model::initial_path` resolution.
     assert_eq!(cwd, file_explorer::model::initial_path());
 }
 
-// ---------------------------------------------------------------------------
-// Behavioural parity tests
-// ---------------------------------------------------------------------------
-
-/// Back, click/double-click, error and loading states and Open Terminal,
-/// each on a freshly constructed widget.
 #[test]
 fn navigation_selection_loading_and_terminal_commands() {
     back_button_moves_to_parent_and_noops_at_root();
@@ -311,7 +280,6 @@ fn back_button_moves_to_parent_and_noops_at_root() {
     let now = w.state().current_path();
     assert_eq!(Some(now.clone()), start_parent.or(Some(now)));
 
-    // At root, back is a no-op.
     let w2 = FileExplorerWidget::new();
     w2.state().navigate(PathBuf::from("/"));
     let before = w2.state().current_path();
@@ -328,14 +296,12 @@ fn refresh_rereads_same_directory() {
 
 fn double_click_dir_navigates_into_it() {
     let w = FileExplorerWidget::new();
-    // Find a directory in current entries, if any. If no dirs, skip (test env-dep).
     let dir_idx = w_first_dir_index(&w);
     if let Some(idx) = dir_idx {
         let path = w_entry_path(&w, idx);
         let _ = w.state().select(Some(idx)); // first click
         let triggered = w.state().select(Some(idx)); // second click within 500 ms
         assert_eq!(triggered, Some(path.clone()));
-        // Caller would call navigate(path); simulate:
         w.state().navigate(path.clone());
         assert_eq!(w.state().current_path(), path);
     }
@@ -354,7 +320,6 @@ fn single_click_selects_single_entry() {
         let triggered = w.state().select(Some(0));
         assert!(triggered.is_none());
         assert_eq!(w.state().selected_index(), Some(0));
-        // Re-select another clears the double-click window for the first.
         let _ = w.state().select(Some(1));
         assert_eq!(w.state().selected_index(), Some(1));
     }
@@ -374,7 +339,6 @@ fn footer_shows_item_count_and_formatted_path() {
     let w = FileExplorerWidget::new();
     let (count, path_str) = w.state().footer_text();
     assert_eq!(count, w.state().entries_snapshot().len());
-    // format_path substitutes home prefix.
     assert_eq!(
         path_str,
         file_explorer::model::format_path(&w.state().current_path(), tilo_paths::home().as_deref())
@@ -390,12 +354,8 @@ fn view_mode_toggle_switches_between_list_and_grid() {
 }
 
 fn initial_path_prefers_workspace_then_user_home_then_cwd_then_root() {
-    // Assert the exact startup path for the current environment, including
-    // configured mounts and the sandbox's granted user home.
     use file_explorer::model::{initial_path, user_home, workspace_record_authority_roots};
     let p = initial_path();
-    // A configured mount, not `~/Shared`: received shares are a sidebar
-    // place, and an empty one is no window to open on.
     let workspace = workspace_record_authority_roots().into_iter().next();
     let home = user_home();
     let cwd = std::env::current_dir().ok();
@@ -438,7 +398,6 @@ fn sort_order_toggle_reverses_non_dir_group_but_keeps_dirs_first() {
 
     sort_entries(SortBy::Name, SortOrder::Descending, &mut v);
     let desc_names: Vec<String> = v.iter().map(|e| e.name.clone()).collect();
-    // Dirs still first. Among dirs and among files the order is reversed.
     assert_eq!(desc_names, vec!["dir_z", "dir_a", "zeta.txt", "alpha.txt"]);
 }
 
@@ -452,7 +411,6 @@ fn open_terminal_asks_the_shell_for_terminal_in_this_directory() {
             directory: Some(dir.to_string_lossy().into_owned())
         }
     );
-    // A path the request cannot carry still opens Terminal, just not there.
     w.state()
         .navigate(std::path::PathBuf::from("/tmp/line\nbreak"));
     assert_eq!(
@@ -502,8 +460,6 @@ fn list_build_yields_a_file_view() {
 }
 
 fn grid_mode_uses_responsive_file_view() {
-    // The grid is a responsive FileView: the column count reflows to the
-    // available width rather than being hard-coded.
     use file_explorer::command::new_sink;
     use file_explorer::model::Entry;
     use file_explorer::views::file_view::FileView;
@@ -541,7 +497,6 @@ fn grid_mode_uses_responsive_file_view() {
 }
 
 fn loading_state_shown_during_navigation() {
-    // Navigation is synchronous, so every return path must clear the flag.
     let w = FileExplorerWidget::new();
     assert!(!w.state().is_loading(), "fresh widget not loading");
     w.state().navigate(PathBuf::from("/definitely/not/here"));
@@ -553,7 +508,6 @@ fn loading_state_shown_during_navigation() {
         w.state().error_message().is_some(),
         "and an error is surfaced"
     );
-    // Successful refresh on a real directory also clears the flag.
     w.state().navigate(file_explorer::model::initial_path());
     assert!(
         !w.state().is_loading(),
@@ -562,10 +516,6 @@ fn loading_state_shown_during_navigation() {
 }
 
 fn draw_composition_exercises_the_five_pass_pipeline() {
-    // Drives the composed widget through the host's full frame
-    // (sync → build_layout → compute → apply_layout → draw).
-    // Assertion: the widget's `rect` is non-empty after the pipeline runs and
-    // the child widget tree is non-empty.
     use ui::headless::Framed;
     use ui::theme::Theme;
     use ui::widget::Widget;
@@ -577,9 +527,6 @@ fn draw_composition_exercises_the_five_pass_pipeline() {
         Theme::dark(),
     );
 
-    // The composition registers many taffy nodes (toolbar, breadcrumbs,
-    // sidebar, view, footer, plus the intermediate Rows/Columns). A plain
-    // leaf-only widget would register exactly one.
     let nodes = Framed::harness(&w).layout_node_ids().len();
     assert!(
         nodes > 1,
@@ -592,9 +539,6 @@ fn draw_composition_exercises_the_five_pass_pipeline() {
         "apply_layout must produce a non-zero rect for the composed widget; got {rect:?}"
     );
 
-    // draw must not panic and must fill a non-empty scene.
-    // Scene should have encoded *something* from the composition — at a
-    // minimum the toolbar's buttons produce fill/stroke commands.
     assert!(
         !Framed::harness(&w).scene().encoding().is_empty(),
         "draw composition must emit draw commands from the subtree"

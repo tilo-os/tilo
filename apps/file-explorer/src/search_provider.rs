@@ -1,13 +1,5 @@
-//! What the file explorer finds in the unified Ctrl+K palette: the user's
-//! curated **Favourites / Places**, the collaborative records of the mount
-//! and the remote file accounts, each a search entry the explorer surface
-//! contributes to the app's one search source. A pinned location is
-//! findable by its label or path; activating a row navigates there.
-//!
-//! Only stable, in-memory sets are searchable — never the live directory
-//! contents (which are not a bounded, stable library) nor the transient
-//! back/forward history. Reading the entries touches no filesystem, so it
-//! stays synchronous.
+//! What Ctrl+K finds in Files: the person's places, the mount's records and the
+//! remote accounts.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
@@ -26,10 +18,6 @@ pub const OPEN_ACTION: &str = "open";
 pub const REVEAL_ACTION: &str = "reveal";
 pub const REMOTE_ACCOUNT_OPEN_ACTION: &str = "open-remote-account";
 
-/// Stable resource identity for a local place. The digest keeps both wire
-/// separators *and the local path itself* out of resource ids: action ids can
-/// be retained by search, history and agents, while a host path is only valid
-/// in this process's live presentation snapshot.
 pub fn place_resource_id(path: &std::path::Path) -> String {
     format!("files.place:{}", path_identity_suffix(path))
 }
@@ -44,15 +32,11 @@ fn path_identity_suffix(path: &std::path::Path) -> String {
     digest.update(b"tilo.files.local-resource.v1\\0");
     digest.update((bytes.len() as u64).to_be_bytes());
     digest.update(bytes);
-    // 128 bits makes collisions infeasible for a local, bounded directory
-    // while retaining a compact action address.
+    // 128 bits: collisions are infeasible for a bounded local directory, and the id stays wire-safe.
     let digest = digest.finalize();
     hex::encode(digest.get(..16).unwrap_or(&digest))
 }
 
-/// Stable, wire-safe identity for an entry in the currently presented folder.
-/// Collaborative resources additionally publish their record UUID identity,
-/// which survives rename and move; this address is the local filesystem view.
 pub fn entry_resource_id(path: &std::path::Path) -> String {
     format!("files.entry:{}", path_identity_suffix(path))
 }
@@ -61,10 +45,6 @@ pub fn record_resource_id(record_id: uuid::Uuid) -> String {
     format!("files.record:{record_id}")
 }
 
-/// A revision-gated snapshot of the private Places list, the search entries
-/// and rows it offers. The widget changes the revision only after a
-/// favourite mutation, so a search merely reads the snapshot instead of
-/// re-walking paths.
 #[derive(Clone)]
 pub struct PlacesSearch {
     snapshot: Arc<RwLock<PlacesSnapshot>>,
@@ -74,8 +54,6 @@ pub struct PlacesSearch {
 #[derive(Clone, Debug)]
 struct PlacesSnapshot {
     revision: Option<u64>,
-    /// Each place under its resource id, in the sidebar's order: the order
-    /// the person arranged them in is the order search lists them in.
     favorites: Vec<(String, Favorite)>,
 }
 
@@ -92,9 +70,6 @@ impl PlacesSearch {
         provider
     }
 
-    /// Reconcile only when the owner has observed a new source revision.
-    /// Supplying the same revision is intentionally a no-op: it must not turn
-    /// a steady-state `sync` into a full traversal.
     pub fn refresh(&self, revision: u64, favorites: &[Favorite]) -> bool {
         {
             let snapshot = self.snapshot.read_recover();
@@ -139,7 +114,6 @@ impl PlacesSearch {
         )
     }
 
-    /// Every place as a search entry: found by its label or path, opening it.
     pub(crate) fn entries(&self) -> Vec<SearchEntry> {
         let Ok(snapshot) = self.snapshot.read() else {
             return Vec::new();
@@ -158,9 +132,6 @@ impl PlacesSearch {
     }
 }
 
-/// Complete search over the mount's ACL-filtered workspace record catalog. Record
-/// UUIDs, rather than paths, are action identity: paths are mutable provenance
-/// used only for matching and presentation.
 #[derive(Clone)]
 pub struct CollaborativeRecordSearch {
     snapshot: Arc<RwLock<RecordSnapshot>>,
@@ -199,9 +170,6 @@ impl CollaborativeRecordSearch {
         true
     }
 
-    /// Add one already-authorised mount page without revisiting earlier pages.
-    /// A source reset uses [`Self::refresh`] first; a mismatched revision is
-    /// refused rather than merging two authority generations.
     pub(crate) fn append_page(&self, revision: u64, entries: &[WorkspaceRecord]) -> bool {
         let mut snapshot = self.snapshot.write_recover();
         if snapshot.revision != Some(revision) {
@@ -215,8 +183,6 @@ impl CollaborativeRecordSearch {
         true
     }
 
-    /// Every collaborative record as a search entry: found by its name or
-    /// path, revealing it by its stable record id.
     pub(crate) fn entries(&self) -> Vec<SearchEntry> {
         let Ok(snapshot) = self.snapshot.read() else {
             return Vec::new();
@@ -265,10 +231,6 @@ impl CollaborativeRecordSearch {
     }
 }
 
-/// Searchable snapshot of the canonical, non-secret file-provider accounts.
-/// This is deliberately a small metadata projection, not a remote directory
-/// crawler: the mount daemon owns remote I/O and Files must remain responsive
-/// and offline-safe while the palette is open.
 #[derive(Clone)]
 pub struct RemoteAccountSearch {
     snapshot: Arc<RwLock<RemoteAccountsSnapshot>>,
@@ -333,8 +295,6 @@ impl RemoteAccountSearch {
 }
 
 impl RemoteAccountSearch {
-    /// Every remote account as a search entry: found by its label, host or
-    /// kind, opening its connection details.
     pub(crate) fn entries(&self) -> Vec<SearchEntry> {
         let Ok(snapshot) = self.snapshot.read() else {
             return Vec::new();
@@ -369,7 +329,6 @@ mod tests {
     use ui::search::SearchProvider;
     use ui::tilo_actions::ActionAddress;
 
-    /// The app's search source over `entries`, as the framework builds it.
     fn source(entries: Vec<SearchEntry>) -> impl SearchProvider {
         ui::framework::testing::search_source::<crate::resource::FileExplorer>(entries)
     }
@@ -434,14 +393,12 @@ mod tests {
         );
     }
 
-    /// Places and remote accounts are found by label, path, host and kind with wire-safe, round-tripping action ids that navigate.
     #[allow(
         clippy::too_many_lines,
         reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
     )]
     #[test]
     fn places_search_finds_and_addresses_destinations() {
-        // --- phase: provider_finds_a_place_by_label_or_path ---
         {
             let values = places();
             let provider = source(PlacesSearch::new(&values).entries());
@@ -451,7 +408,6 @@ mod tests {
                     .iter()
                     .any(|r| r.title == "Projects")
             );
-            // A path-only match (the "code" segment isn't in any label) still hits.
             assert!(
                 provider
                     .search("code")
@@ -461,7 +417,6 @@ mod tests {
             assert_eq!(provider.search("").len(), 3);
         }
 
-        // --- phase: unasked_the_places_come_in_the_sidebars_order ---
         {
             let mut values = places();
             values.reverse();
@@ -477,7 +432,6 @@ mod tests {
             );
         }
 
-        // --- phase: action_id_round_trips_to_the_destination_path ---
         {
             let mut registry = SearchRegistry::new();
             let values = places();
@@ -494,7 +448,6 @@ mod tests {
             );
         }
 
-        // --- phase: remote_accounts_are_searchable_by_label_host_and_kind ---
         {
             let account = RemoteAccount {
                 id: accounts::AccountId::from("cloud"),
@@ -518,14 +471,12 @@ mod tests {
             );
         }
 
-        // --- phase: place_resource_ids_are_wire_safe ---
         {
             let address = crate::effects::FilesEffect::OPEN_ITEM
                 .on(place_resource_id(PathBuf::from("/tmp/a\u{1f}b").as_path()));
             assert_eq!(ActionAddress::parse(&address.encode()), Some(address));
         }
 
-        // --- phase: entry_resource_ids_are_wire_safe ---
         {
             let path = PathBuf::from("/tmp/a\u{1f}b");
             let entry = crate::effects::FilesEffect::OPEN_ITEM.on(entry_resource_id(&path));
@@ -543,11 +494,9 @@ mod tests {
             }
         }
 
-        // --- phase: widget_hooks_find_then_navigate_to_the_place ---
         {
             use automerge::AutoCommit;
 
-            // Build the app against real temp dirs so navigation actually loads.
             let base = std::env::temp_dir().join(format!("tilo-fe-search-{}", std::process::id()));
             let home = base.join("home");
             let sub = home.join("sub");
@@ -559,7 +508,6 @@ mod tests {
                 Some(&cfg),
                 Some(home.clone()),
             );
-            // Move away from Home so activation demonstrably navigates back.
             app.state().navigate(sub.clone());
             assert_eq!(app.state().current_path(), sub);
 
@@ -596,10 +544,8 @@ mod tests {
         }
     }
 
-    /// Retained catalogues gate unchanged revisions, page with true cursors and hard budgets, and find suffix hits with a fixed budget.
     #[test]
     fn retained_catalogues_page_within_budgets() {
-        // --- phase: places_snapshot_gates_unchanged_revisions ---
         {
             let values = places();
             let places = PlacesSearch::new(&values);
@@ -620,7 +566,6 @@ mod tests {
             assert_eq!(source(places.entries()).search("late-needle").len(), 1);
         }
 
-        // --- phase: every_retained_provider_supports_true_cursor_pages_and_lazy_action_equivalence ---
         {
             let accounts: Vec<_> = (0..20)
                 .map(|index| RemoteAccount {
@@ -666,10 +611,8 @@ mod tests {
         }
     }
 
-    /// Collaborative results use stable record identity, are deduplicated and complete, and page to late hits.
     #[test]
     fn collaborative_search_uses_stable_record_identity() {
-        // --- phase: collaborative_results_use_stable_record_identity_and_path_as_provenance ---
         {
             let record_id = uuid::Uuid::from_u128(0x51);
             let mut entry = collaborative_entry("old-name.txt");
@@ -681,7 +624,6 @@ mod tests {
             assert!(hit.subtitle.unwrap().contains("/Workspace/old-name.txt"));
         }
 
-        // --- phase: collaborative_projection_is_deduplicated_and_complete_beyond_the_old_cap ---
         {
             const RECORD_COUNT: usize = 276;
             let entries: Vec<_> = (0..RECORD_COUNT)
@@ -694,13 +636,11 @@ mod tests {
                 })
                 .collect();
             let provider = source(CollaborativeRecordSearch::new(&entries).entries());
-            // Result presentation is intentionally capped, but the index itself
-            // is complete: a match beyond the former 256-record snapshot limit is
-            // still discoverable.
+            // Result presentation is capped; the index is complete, so a match
+            // past the cap is still found.
             assert_eq!(provider.search("file-275").len(), 1);
         }
 
-        // --- phase: collaborative_search_pages_a_late_hit_in_a_large_record_catalog ---
         {
             let (provider, hit) = assert_late_hit_reachable(
                 |corpus| {

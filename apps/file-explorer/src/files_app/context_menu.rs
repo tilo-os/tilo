@@ -8,12 +8,6 @@ use crate::model::SortBy;
 use std::path::PathBuf;
 
 impl FilesState {
-    /// The menu item specs for the current selection / clipboard / state, given
-    /// the available `templates`. Returns `(label, command)` pairs; a `None`
-    /// command with an empty label is a separator. Pure (templates injected) so
-    /// the menu contents — including the "New File ▸" gating — are unit-testable.
-    // This declarative menu state machine intentionally keeps visibility and
-    // command gating adjacent for auditability and accessibility parity.
     #[allow(
         clippy::too_many_lines,
         reason = "one declarative menu specification keeps visibility, enablement, and command identity auditable"
@@ -28,8 +22,6 @@ impl FilesState {
         let in_trash = self.is_trash_view();
         let mut spec: Vec<(String, Option<FileCommand>)> = Vec::new();
 
-        // Recent gathers files from many folders: it is for finding and
-        // reopening, not for editing in place.
         if self.is_recent_view() {
             return self.recent_menu_spec();
         }
@@ -37,9 +29,6 @@ impl FilesState {
             return spec;
         }
 
-        // An archive is a read-only folder view. Synthetic member paths must
-        // never leak into filesystem mutation commands such as rename, trash,
-        // drag, paste, sharing, or terminal launch.
         if crate::archive::location(&self.current_path).is_some() {
             if has_sel {
                 spec.push((
@@ -56,9 +45,6 @@ impl FilesState {
             return tidy_menu(spec);
         }
 
-        // The Trash is a restore/purge surface, not an editing one: offer Open
-        // plus Restore / permanent-delete / Empty, and nothing that would edit
-        // in place.
         if in_trash {
             if has_sel {
                 spec.push((
@@ -85,9 +71,6 @@ impl FilesState {
             return tidy_menu(spec);
         }
 
-        // A file's menu is about the file: open it, change it, organise it,
-        // collaborate on it. What belongs to the folder (new items, sorting,
-        // hidden files, a terminal) is the menu of the folder's empty space.
         if has_sel {
             let single = self.selection.selected().len() == 1;
             spec.push((
@@ -108,8 +91,6 @@ impl FilesState {
                         Some(FileCommand::OpenShortcutsMenu),
                     ));
                 }
-                // Only offered while one of the person's devices is there
-                // to receive.
                 if self
                     .nearby_send
                     .targets()
@@ -153,7 +134,6 @@ impl FilesState {
                     crate::archive::Packing::TarZst,
                 )),
             ));
-            // Favourites: add the single selected folder.
             if let Some(dir) = self.single_selected_dir() {
                 spec.push((
                     t("files-menu-add-favourite"),
@@ -236,11 +216,6 @@ impl FilesState {
                     .and_then(|index| displayed.get(index))
             {
                 if self.offers_sharing(entry) {
-                    // What Files shows is shared by the workspace it is in: the
-                    // row opens the desk's own invite sheet, where the link and
-                    // the part it brings people in at are picked, and where the
-                    // people the directory knows are offered. Sharing leads a
-                    // group of its own, directly above the file's properties.
                     spec.push((String::new(), None));
                     spec.push((t("files-share"), Some(FileCommand::Share)));
                 }
@@ -285,10 +260,6 @@ impl FilesState {
                                     version.content_hash.map(|hash| hash.0) == Some(current_hash)
                                 })
                                 .collect::<Vec<_>>();
-                            // An exact unique hash match is the strongest fact
-                            // this bounded V1 projection exposes. The daemon
-                            // additionally CAS-checks its signed revision, so a
-                            // stale menu action fails instead of changing meaning.
                             if current.len() != 1 {
                                 continue;
                             }
@@ -363,9 +334,7 @@ impl FilesState {
             return tidy_menu(spec);
         }
 
-        // The folder's own menu (nothing is selected).
         spec.push((t("files-menu-new-folder"), Some(FileCommand::NewFolder)));
-        // Only offer "New file…" when the Templates dir actually has files.
         if has_templates {
             spec.push((
                 t("files-menu-new-file"),
@@ -385,15 +354,12 @@ impl FilesState {
             t("files-menu-open-terminal"),
             Some(FileCommand::OpenTerminal),
         ));
-        // Remove the current directory from the favourites when it is one.
         if self.current_is_removable_favourite() {
             spec.push((
                 t("files-menu-remove-favourite"),
                 Some(FileCommand::RemoveFavorite(self.current_path.clone())),
             ));
         }
-        // How the folder is shown. Sorting lives here too: a grid has no
-        // column header, and "Sort by type" is reached only from this menu.
         spec.push((String::new(), None));
         for (label, by) in [
             ("files-menu-sort-name", SortBy::Name),

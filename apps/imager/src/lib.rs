@@ -46,45 +46,15 @@
     reason = "migration stack lint debt is scoped to this target"
 )]
 
-//! Disk Imager — Tilo native app for writing an OS image to a drive, and for
-//! installing Tilo (CRDT-native, built on the `ui` toolkit).
+//! Disk Imager: writing an OS image to a drive, and installing Tilo.
 //!
-//! A single guided **wizard** with a six-step stepper, covering both
-//! "write this image to a USB stick" and "install Tilo onto a disk":
+//! One wizard runs both: a source, a drive, the settings the target keeps, then
+//! the write and its read-back. Writing is gated twice: the host's typed
+//! confirmation, then the platform authenticating a short-lived helper.
 //!
-//!   1. **Source** — pick a local `.iso` / `.img` via the platform's native
-//!      file picker, or a known Tilo release.
-//!   2. **Drive** — choose a target from real platform block-device discovery;
-//!      internal disks are hidden behind an explicit opt-in, the **system disk**
-//!      needs a second acknowledgement before it can even be selected, and an
-//!      honest empty state asks the user to insert a drive.
-//!   3. **Customize** (Tilo only) — the guided-customization step (hostname,
-//!      first user and region), shared by the write and install flows. Plain
-//!      ISOs skip it. Only the secret-free settings the live installer applies
-//!      are offered; encryption and login secrets stay on the target device.
-//!   4. **Confirm** — a read-only review of every choice, an erase warning that
-//!      escalates for an internal / system disk; Erase and write is the drive's
-//!      published write, for which the host asks the device name.
-//!   5. **Write / Install** — a real, byte-for-byte streaming copy with live
-//!      progress, then a read-back **verify** pass. (The caption reads "Write"
-//!      for a removable drive, "Install" for a disk install.)
-//!   6. **Done** — the verified / failed outcome, with a fresh-start affordance.
-//!
-//! Writing is doubly gated: the host's typed confirmation, then platform-native
-//! authentication for a short-lived helper. The wizard, downloads, and
-//! customization remain in the user's unprivileged session.
-//!
-//! [`ImagerShell`] is the app: the wizard, the guided setup (`--setup`) and
-//! the folder imports (`--import-folders`) are its flows over one resource. A
-//! window someone uses probes real drives and starts genuinely blank; a
-//! screenshot scenario stages sample content so it is deterministic offline.
-//! Immediately before writing, the live inventory is read again and its
-//! stable device identity, size, and system-disk status must still match the
-//! confirmed target.
+//! [`ImagerShell`] is the app: this wizard plus the guided setup (`--setup`) and
+//! the folder imports (`--import-folders`), over one resource.
 
-// Apps run in isolated processes, so app-local arithmetic checks are relaxed.
-// Panic-producing lints remain denied; shared crates retain the full lint set
-// because a fault there can affect the session or every app.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -137,34 +107,29 @@ pub mod export_dialog;
 #[cfg(target_os = "linux")]
 pub use setup::media_setup;
 
-/// Entry point for the signed, confined home-export service.
 #[doc(hidden)]
 #[cfg(all(target_os = "linux", feature = "capture-worker"))]
 pub fn run_home_export_service() -> std::io::Result<()> {
     imager_backend::setup::home_capture::run_provider()
 }
-/// Qualification advertises the protocol compiled into this exact worker.
 #[doc(hidden)]
 #[cfg(all(target_os = "linux", feature = "capture-worker"))]
 pub fn home_export_worker_protocol() -> u32 {
     imager_backend::setup::home_capture::worker_protocol()
 }
 
-/// Internal fixed retained-source worker entry, confined by the canonical launcher.
 #[doc(hidden)]
 #[cfg(all(target_os = "linux", feature = "capture-worker"))]
 pub fn run_retained_source_io_service() -> std::io::Result<()> {
     imager_backend::retained_source::run(false)
 }
 
-/// Fixed Home-directory worker; launcher admission independently seals this mode.
 #[doc(hidden)]
 #[cfg(all(target_os = "linux", feature = "capture-worker"))]
 pub fn run_retained_home_io_service() -> std::io::Result<()> {
     imager_backend::retained_source::run(true)
 }
 
-/// Internal target-credential FUSE worker; never accepts a mount path or grant.
 #[doc(hidden)]
 #[cfg(all(target_os = "linux", feature = "capture-worker"))]
 pub fn run_retained_target_projection_service() -> std::io::Result<()> {

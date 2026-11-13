@@ -13,8 +13,6 @@ fn fixture_store(root: &Path) -> accounts::AccountStore {
     for (id, provider) in PROVIDERS {
         let mut account = accounts::Account::new(id, provider);
         account.display_name = "Cloud".into();
-        // Projection must select only public provider facts, not forward
-        // arbitrary stored configuration or imply authenticated access.
         account.config = serde_json::json!({"unsupported_private_field":"secret-sentinel"});
         store.upsert(account);
     }

@@ -1,7 +1,4 @@
 //! Read-only embedded-media-profile dialog.
-//!
-//! The host owns the policy which produces the export text. This component
-//! owns the transient modal state and every UI concern around presenting it.
 
 #[cfg(test)]
 use automerge::AutoCommit;
@@ -46,7 +43,6 @@ fn profile_body(text: &str) -> ui::widget::Column {
         ))
 }
 
-/// Shared-modal host for the generated configuration preview.
 pub(crate) struct ExportDialog {
     dialog: ModalDialog<ui::widget::Column>,
     text: String,
@@ -195,8 +191,6 @@ mod tests {
         ui::synthetic_input::cursor_moved(12.0, 16.0)
     }
 
-    /// Compact pages follow the shorter window axis and resolved UI scale;
-    /// accessibility must describe the same full-window surface.
     #[test]
     fn export_dialog_compact_layout_and_accessibility_fill_the_window() {
         let cases = vec![
@@ -253,16 +247,12 @@ mod tests {
             assert!(sheet.height() <= 600.0 * 0.8);
             assert_eq!(sheet.intersect(intermediate), sheet);
 
-            // Either short axis requires the shared full-window mobile page.
-            // Nonzero origins also prove this uses the actual content viewport.
             for viewport in [
                 Rect::new(0.0, 0.0, 320.0, 640.0),
                 Rect::new(0.0, 0.0, 800.0, 320.0),
                 Rect::new(20.0, 40.0, 410.0, 884.0),
             ] {
                 dialog.layout_in(viewport, &theme, &mut text);
-                // The real host supplies the window to its top-layer paint;
-                // the next layout places retained content in that viewport.
                 let presence = PresenceCtx::default();
                 let previous = presence.push_viewport(viewport);
                 dialog.draw_detached(
@@ -290,7 +280,6 @@ mod tests {
         }
     }
 
-    /// Export dialog layout, dismissal and read-only accessibility.
     #[test]
     fn export_dialog_layout_input_and_accessibility() {
         responsive_export_layout();

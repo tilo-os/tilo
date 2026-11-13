@@ -1,9 +1,4 @@
-//! Recent files: what you opened or changed through Files, newest first.
-//!
-//! The lists are a record beside the folder ([`RecentRecord`]), one per
-//! device: a device's list holds its own paths only, and the Recent listing
-//! skips entries whose file has gone. The Recent place in the sidebar lists
-//! it in recency order rather than by the folder sort.
+//! Recent files: what was opened or changed through Files, on every device.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -12,9 +7,6 @@ use serde::{Deserialize, Serialize};
 use ui::prelude::{Model, resource, tilo_resource};
 use ui::tilo_resource::{AbsolutePath, JsonSchema};
 
-/// The pseudo-location the Recent place navigates to. It is relative and
-/// scheme-like so it can never name a real directory Files would list or
-/// write into.
 pub const RECENT_LOCATION: &str = "recent://";
 
 pub fn location() -> PathBuf {
@@ -35,13 +27,11 @@ pub enum RecentUse {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecentItem {
     pub path: PathBuf,
-    /// Unix milliseconds of the latest use.
     pub at_ms: u64,
     #[serde(rename = "use")]
     pub last_use: RecentUse,
 }
 
-/// The recent list, newest first, one entry per path.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecentFiles {
     #[serde(default)]
@@ -53,8 +43,6 @@ impl RecentFiles {
         &self.items
     }
 
-    /// Record a use of `path` at `at_ms`, moving it to the front. Relative
-    /// paths and the Recent place itself are ignored.
     pub fn note(&mut self, path: &Path, last_use: RecentUse, at_ms: u64) {
         if !path.is_absolute() {
             return;
@@ -70,12 +58,10 @@ impl RecentFiles {
         self.items.sort_by_key(|item| std::cmp::Reverse(item.at_ms));
     }
 
-    /// Drop `path` from the list. Returns whether it was there.
     pub fn forget(&mut self, path: &Path) -> bool {
         self.items.retain(|item| item.path != path)
     }
 
-    /// Follow a rename or move so the entry keeps its place.
     pub fn moved(&mut self, from: &Path, to: &Path) {
         for item in &mut self.items {
             if item.path == from {
@@ -89,21 +75,12 @@ impl RecentFiles {
 
 tilo_resource::json_model!(RecentFiles);
 
-/// Every device's Recent list, by device id: a record Files keeps beside its
-/// own in the workspace, synced with it. Paths name files on one device, so
-/// each device reads and writes only its own list.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct RecentRecord {
     pub devices: BTreeMap<String, RecentFiles>,
 }
 
 impl RecentRecord {
-    /// What the record holds: every device's Recent list, newest first.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -117,8 +94,6 @@ impl RecentRecord {
     read_content = RecentRecord::read_document
 )]
 impl RecentRecord {
-    /// `path` on `device` was opened or changed at `at_ms`: it moves to the
-    /// front.
     #[action(housekeeping)]
     pub fn note(&mut self, device: String, path: AbsolutePath, last_use: RecentUse, at_ms: u64) {
         self.devices
@@ -127,7 +102,6 @@ impl RecentRecord {
             .note(path.as_path(), last_use, at_ms);
     }
 
-    /// `from` on `device` was renamed or moved to `to`: its entries follow.
     #[action(housekeeping)]
     pub fn moved(&mut self, device: String, from: AbsolutePath, to: AbsolutePath) {
         if let Some(recent) = self.devices.get_mut(&device) {
@@ -145,7 +119,6 @@ impl RecentRecord {
 }
 
 impl RecentRecord {
-    /// `device`'s Recent list.
     #[must_use]
     pub fn on(&self, device: &str) -> RecentFiles {
         self.devices.get(device).cloned().unwrap_or_default()

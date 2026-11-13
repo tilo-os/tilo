@@ -1,11 +1,10 @@
 //! Source-owned login groups; presentation never opens a native profile path.
+
 use super::*;
 #[cfg(test)]
 use ui::widget::Row;
 use ui::widget::{IconWidget, Image, Section, SectionHeader};
 
-/// A native app's default profile often repeats the app name. Browser
-/// profiles and genuinely distinct native profiles still identify the source.
 fn source_name(application: &str, label: &str, native: bool) -> String {
     let application = super::super::review_source_label(application);
     let label = super::super::review_source_label(label);
@@ -20,8 +19,6 @@ fn source_name(application: &str, label: &str, native: bool) -> String {
     }
 }
 
-/// Registry application identity only, never a destination service or profile
-/// label/path. Native and browser identities cannot impersonate one another.
 fn source_icon(application: &str, native: bool) -> Option<&'static [u8]> {
     match (native, application) {
         (true, "Slack" | "com.slack.Slack") => Some(include_bytes!("icons/slack.svg")),
@@ -34,7 +31,6 @@ fn source_icon(application: &str, native: bool) -> Option<&'static [u8]> {
     }
 }
 
-/// Presentation eligibility is not authority: mutations must still validate the source.
 fn selectable(source: &CookieProfile, presence: Presence) -> bool {
     presence != Presence::NeedsAccess || source.supports_encrypted_cookie_capture()
 }
@@ -216,8 +212,6 @@ impl Selection {
             };
             let id = source.id.clone();
             let toggle = expand.clone();
-            // Keep group selection and its one count visible when collapsed.
-            // The shared Section owns disclosure; the shared Checkbox owns selection.
             body = body.push(Box::new(
                 Column::new()
                     .with_no_padding()

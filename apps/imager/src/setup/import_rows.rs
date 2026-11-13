@@ -9,7 +9,6 @@ use super::desktop_continuation::ChoiceMode;
 use crate::resource::CATALOG;
 use imager_backend::migration_store::{OperationRecord, OperationState};
 
-/// One issue a copy found: the item and why it needs attention.
 pub(super) fn issue_row(path: &Path, reason: &str) -> ListRow {
     let shown = if path.as_os_str().is_empty() {
         CATALOG.t("imager-folder-itself")
@@ -21,7 +20,6 @@ pub(super) fn issue_row(path: &Path, reason: &str) -> ListRow {
         .secondary(reason.to_string())
 }
 
-/// "1 item", "3 items".
 pub(super) fn items_phrase(count: u64) -> String {
     if count == 1 {
         "1 item".to_string()
@@ -31,18 +29,14 @@ pub(super) fn items_phrase(count: u64) -> String {
 }
 
 thread_local! {
-    /// A screenshot fixture runs real copies in a disposable directory; its
-    /// pages show that directory as the home folder it stands for.
     static SHOT_PATH_ALIAS: std::cell::RefCell<Option<(PathBuf, PathBuf)>> =
         const { std::cell::RefCell::new(None) };
 }
 
-/// Show `from` as `to` in every path a screenshot page draws.
 pub(crate) fn set_shot_path_alias(from: PathBuf, to: PathBuf) {
     SHOT_PATH_ALIAS.with(|alias| *alias.borrow_mut() = Some((from, to)));
 }
 
-/// A path as the page shows it.
 pub(super) fn shown_path(path: &Path) -> String {
     SHOT_PATH_ALIAS.with(|alias| {
         alias
@@ -55,7 +49,6 @@ pub(super) fn shown_path(path: &Path) -> String {
     })
 }
 
-/// A copy's issues and what else it reports, before a page of them loads.
 pub(super) fn operation_details(
     operation: &OperationRecord,
 ) -> (Vec<(PathBuf, String)>, Vec<String>) {
@@ -74,7 +67,6 @@ pub(super) fn operation_state_label(state: OperationState) -> String {
     super::strings::t(operation_state_message(state))
 }
 
-/// The catalogue message naming `state` in a copy's row.
 pub(super) fn operation_state_message(state: OperationState) -> &'static str {
     match state {
         OperationState::AwaitingReview => "imager-import-state-awaiting-review",

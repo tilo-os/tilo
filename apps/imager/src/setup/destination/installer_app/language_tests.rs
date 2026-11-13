@@ -1,10 +1,9 @@
-//! The wizard's words: each step's actions and the breadcrumb resolve through
-//! the catalogue, so a German window reads German.
+//! The wizard's words: each step's actions and the breadcrumb resolve through the
+//! catalogue, so a German window reads German.
 
 use super::surface::step_name;
 use super::*;
 
-/// Every name a step paints, from its controls and its breadcrumb.
 fn accessible_names(widget: &dyn Widget, names: &mut Vec<String>) {
     if let Some(name) = widget.accessibility().and_then(|node| node.name) {
         names.push(name);
@@ -14,8 +13,6 @@ fn accessible_names(widget: &dyn Widget, names: &mut Vec<String>) {
     }
 }
 
-/// Every message the wizard's buttons and its breadcrumb name is one both
-/// shipped languages carry, so no window paints a key.
 #[test]
 fn the_wizard_names_messages_the_catalogues_carry() {
     let catalog = &crate::resource::CATALOG;
@@ -94,7 +91,6 @@ fn the_wizard_names_messages_the_catalogues_carry() {
     catalog.set_locale(&previous);
 }
 
-/// A German window names the wizard's steps and its actions in German.
 #[test]
 fn the_wizard_steps_read_in_the_windows_language() {
     let catalog = &crate::resource::CATALOG;
@@ -113,7 +109,6 @@ fn the_wizard_steps_read_in_the_windows_language() {
     ] {
         let mut app = InstallerApp::with_disks(Disk::samples());
         app.step = step;
-        // Media offers its forward action once the formats are chosen.
         app.codecs = step == Step::Media;
         let composition = app.build_composition(&Theme::dark());
         let mut names = Vec::new();
@@ -156,9 +151,6 @@ fn the_wizard_steps_read_in_the_windows_language() {
     }
 }
 
-/// A German window shows the disk method and the security-key choice, the
-/// reasons an effect is unavailable, and the badge of where the install
-/// stands, all in German.
 #[test]
 fn the_wizards_choices_reasons_and_badges_read_in_the_windows_language() {
     let catalog = &crate::resource::CATALOG;
@@ -166,7 +158,6 @@ fn the_wizards_choices_reasons_and_badges_read_in_the_windows_language() {
     catalog.set_locale("de-DE");
     let methods = captions(&INSTALL_METHOD_KEYS);
     let keys = captions(&FIDO2_KEYS);
-    // A control on another step says, in German, which step owns it.
     let elsewhere = InstallerApp::with_disks(Disk::samples())
         .blocked(&DestinationEffect::RefreshDisks)
         .map(|(_, reason)| reason);

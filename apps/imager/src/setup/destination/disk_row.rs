@@ -1,14 +1,4 @@
 //! A disk the installer can write to, as one selectable row.
-//!
-//! The row is the toolkit's `ListRow`, like the drive rows of the image
-//! wizard: the recognizable hardware model leads, the capacity sits in its
-//! meta column, and the device path with what the disk holds is the
-//! secondary line. A disk that cannot be chosen says why on its own row,
-//! because a control that is off with no reason reads as a fault. Choosing
-//! it, by click, Enter or Space, or assistive activation, fires
-//! its [`Control`]: the disk's published `select` action, which the
-//! [`crate::setup::destination::installer_app::InstallerApp`] runs through
-//! its action door.
 
 use ui::icons::Icon;
 use ui::widget::ListRow;
@@ -16,8 +6,6 @@ use ui::widget::ListRow;
 use crate::setup::destination::control::{Bound, Control};
 use imager_backend::destination::disks::Disk;
 
-/// The capacity a person reads for `disk`: its size in the locale's binary
-/// units, or `lsblk`'s own text when discovery could not read the byte count.
 pub fn capacity(disk: &Disk) -> String {
     if disk.size_bytes > 0 {
         ui::format::memory(disk.size_bytes)
@@ -26,13 +14,10 @@ pub fn capacity(disk: &Disk) -> String {
     }
 }
 
-/// Whether the installer refuses to write to `disk`.
 fn unavailable(disk: &Disk) -> bool {
     disk.blocks_install() || disk.read_only || !disk.identity_ready()
 }
 
-/// Why `disk` cannot be chosen, or what choosing it shares with the running
-/// installer: each a sentence of its own.
 fn notes(disk: &Disk) -> Vec<&'static str> {
     let mut notes = Vec::new();
     if disk.hosts_staged_installer() {
@@ -53,9 +38,6 @@ fn notes(disk: &Disk) -> Vec<&'static str> {
     notes
 }
 
-/// The row for `disk`, choosing it through `control`; `selected` when it is
-/// the disk the wizard holds. Serial numbers, WWNs and kernel device
-/// numbers bind the backend's safety check; they are never shown or spoken.
 pub fn disk_row(disk: &Disk, control: &Control, selected: bool) -> Bound {
     let model = disk.model.trim();
     let title = if model.is_empty() {
@@ -221,7 +203,6 @@ mod tests {
             assert_eq!(node.name.as_deref(), Some("40 GiB storage device"));
             assert_eq!(node.state.checked, Some(false));
         }
-        // Phase `an_unavailable_disk_says_every_reason_and_runs_nothing`.
         {
             let mut target = disk();
             target.is_system = true;

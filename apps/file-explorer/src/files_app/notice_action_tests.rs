@@ -1,13 +1,9 @@
-//! A failure that asks the person to try again waits in Needs you with the
-//! way on: a change in a file's history that failed opens its Version
-//! history, where it can be made again.
+//! A notice's action, pressed from the row waiting in the attention stack.
 
 use super::*;
 use crate::i18n::t;
 use ui::theme::Theme;
 
-/// Every way to press a notice's action: once per width, since the row is
-/// the same row at both.
 const WAYS: [(f64, bool); 2] = [(1280.0, false), (420.0, true)];
 
 fn harness_in(dir: &std::path::Path) -> ui::headless::FrameHarness {
@@ -27,8 +23,6 @@ fn files(
     harness.root_mut::<FileExplorerWidget>()
 }
 
-/// The label of the row waiting for this app's notice: the one action it
-/// carries.
 fn buttons(harness: &mut ui::headless::FrameHarness, _width: f64) -> Vec<String> {
     harness.recompose().unwrap();
     ui::attention::items()
@@ -38,7 +32,6 @@ fn buttons(harness: &mut ui::headless::FrameHarness, _width: f64) -> Vec<String>
         .collect()
 }
 
-/// Press the waiting row's one action, as the stack does.
 fn press(harness: &mut ui::headless::FrameHarness, _width: f64, _semantic: bool) {
     let item = files_waiting().expect("a row waits for the person");
     files(harness)
@@ -61,8 +54,6 @@ fn wait_for_failure(harness: &mut ui::headless::FrameHarness) -> String {
     })
 }
 
-/// A change in a file's history that failed carries Open Version history,
-/// which selects the file and opens its history.
 #[test]
 fn a_failed_history_change_opens_version_history() {
     let _serial = crate::files_app::serial();

@@ -1,4 +1,5 @@
-//! Device-local cloud transfers, isolated by their stable operation IDs.
+//! Device-local cloud transfers: their approval, consent and progress, none
+//! of it in the record.
 use crate::file_ops::{FileOp, Outcome, TransferProgress};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -56,9 +57,6 @@ pub(crate) fn approve(device: &str, op: &FileOp, entry: &str) -> Result<(), Stri
     })
 }
 
-/// Called on the checked host thread, before a worker or source request exists.
-/// Do not re-check the current collaborator: an already approved owner job may
-/// complete while another collaborator is interacting with the document.
 pub(crate) fn consume(
     device: &str,
     op: &FileOp,
@@ -217,7 +215,6 @@ fn job(id: &str) -> Arc<Job> {
         .clone()
 }
 
-/// Register before dispatch so cancellation also applies while queued.
 pub(crate) fn register(id: &str) {
     let _ = job(id);
 }
@@ -293,7 +290,6 @@ fn run_job(
     outcome
 }
 
-/// Explicit authorized fixture; no production path falls back to this issuer.
 #[cfg(test)]
 pub(crate) fn fixture_consent(op: &FileOp) -> tilo_cloud_files::ImportConsent {
     let FileOp::CloudImport {

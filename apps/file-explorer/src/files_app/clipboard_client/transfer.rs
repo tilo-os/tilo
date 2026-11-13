@@ -1,12 +1,11 @@
-//! One transfer keeps its receiving descriptor and operation id across replies.
+//! One native transfer: its receiving descriptor, the steps the host reports,
+//! and the answer to clashing names.
 
 use super::{Arc, Command, Duration, Instant, Offer, Reply, RetainedObject, SelectedDescriptor};
 use serde::{Deserialize, Serialize};
 use ui::collaboration::file_clipboard::Conflict;
 use ui::tilo_resource::{self, JsonSchema};
 
-/// What the native host reports of a transfer it carried out. Settled
-/// metadata only: it grants no authority.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Receipt {
     pub operation: String,
@@ -29,13 +28,7 @@ enum Phase {
 pub(super) enum Step {
     Send(Command),
     Done(Result<Receipt, String>),
-    /// The destination already has `count` of the names (the first in
-    /// `names`): nothing was pasted; the window asks, then answers with
-    /// [`Transfer::decide`].
-    Ask {
-        names: Vec<String>,
-        count: usize,
-    },
+    Ask { names: Vec<String>, count: usize },
 }
 
 pub(super) struct Transfer {
@@ -73,14 +66,11 @@ impl Transfer {
         }
     }
 
-    /// Paste with `conflict` for names the destination already has.
     pub(super) fn with_conflict(mut self, conflict: Conflict) -> Self {
         self.conflict = conflict;
         self
     }
 
-    /// The person's answer to clashing names: paste again with it (the same
-    /// operation, which never started), or give the destination back.
     pub(super) fn decide(&mut self, conflict: Option<Conflict>) -> Step {
         match conflict {
             Some(conflict) if conflict != Conflict::Ask => {
@@ -94,7 +84,6 @@ impl Transfer {
                     completed: 0,
                     cut: self.offer.as_ref().is_some_and(|offer| offer.cut),
                     restore: false,
-                    // Nothing was pasted, as the person chose: no failure.
                     error: None,
                 });
                 self.phase = Phase::Release;
@@ -160,7 +149,6 @@ impl Transfer {
             )));
         }
         match self.phase {
-            // Repeat the same fingerprint, never generate another operation id.
             Phase::Paste => Step::Send(self.paste()),
             Phase::Restore => Step::Send(self.restore_command()),
             Phase::Observe => Step::Send(Command::Observe {

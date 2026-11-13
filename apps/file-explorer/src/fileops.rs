@@ -1,19 +1,10 @@
-//! File-system mutations behind the file explorer's edit commands:
-//! new folder, rename, delete-to-trash, copy and move.
-//!
-//! Each operation is a small, independently-testable free function that
-//! works on real paths and returns a `Result<_, String>` (the string is a
-//! user-facing error the app surfaces as a toast). Destination-collision
-//! handling is centralised in [`unique_destination`] so copy/move never
-//! silently clobber an existing file.
+//! The disk work behind the edit commands: names, Trash, copying, moving and
+//! imports.
 
 use std::path::{Component, Path, PathBuf};
 
-/// Accept one portable filesystem leaf name, never a path expression.
-///
-/// Both action prompts and inline rename reach these operations. In
-/// particular, `.` and `..` must not be accepted as names: either would make
-/// a supposedly local operation address an ancestor directory instead.
+/// Accept one portable filesystem leaf name, never a path expression: `.` and
+/// `..` would let a supposedly local operation address an ancestor directory.
 pub(crate) fn leaf_name(name: &str) -> Result<&str, String> {
     let name = name.trim();
     if name.is_empty() {
@@ -32,11 +23,6 @@ pub(crate) fn leaf_name(name: &str) -> Result<&str, String> {
     Ok(name)
 }
 
-/// An operation's failure as a person reads it. Reasons cross the Files
-/// document as text; one that is the system's error message
-/// (`Permission denied (os error 13)`) becomes plain copy for the common
-/// cases, and loses the error number otherwise. Files' own reasons are
-/// already copy and pass through.
 pub(crate) fn readable_error(reason: &str) -> String {
     let reason = reason.trim();
     let Some((text, code)) = os_error(reason) else {
@@ -55,7 +41,6 @@ pub(crate) fn readable_error(reason: &str) -> String {
     key.map_or_else(|| ui::format::capitalize_first(text), crate::i18n::t)
 }
 
-/// A system error message split into its words and its error number.
 fn os_error(reason: &str) -> Option<(&str, i32)> {
     let (text, code) = reason
         .trim()
@@ -64,14 +49,10 @@ fn os_error(reason: &str) -> Option<(&str, i32)> {
     Some((text, code.parse().ok()?))
 }
 
-/// Why a folder can't be listed, as far as what to do about it goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FolderFailure {
-    /// No permission to look inside.
     Permission,
-    /// It isn't there (any more), or isn't a folder.
     Missing,
-    /// Anything else, which trying again may get past.
     Other,
 }
 
@@ -92,18 +73,10 @@ impl FolderFailure {
 
 pub use host_fs::trash::{is_trash_dir, trash_dir};
 
-/// Ensure the trash files directory exists, so opening an empty trash shows an
-/// empty listing rather than a "no such directory" error. Returns the dir.
 pub fn ensure_trash_dir() -> Option<PathBuf> {
     host_fs::trash::ensure_trash_dir().ok()
 }
 
-/// Snapshot the names currently visible in the home Trash.
-///
-/// Files uses this only to verify that a just-completed deletion produced an
-/// exact, local restore target. Some filesystems use a different Trash or do
-/// not expose one at all; in those cases the caller must simply not offer an
-/// optimistic Undo control.
 pub fn trash_entries_snapshot() -> Option<Vec<PathBuf>> {
     let dir = trash_dir()?;
     let entries = std::fs::read_dir(dir).ok()?;
@@ -115,30 +88,18 @@ pub fn trash_entries_snapshot() -> Option<Vec<PathBuf>> {
     )
 }
 
-/// Permanently remove everything in the trash. Returns how many items were purged.
 pub fn empty_trash() -> Result<usize, String> {
     host_fs::trash::empty()
 }
 
-/// Restore the trashed items backing `entries` to their original locations.
-/// Returns how many were restored.
 pub fn restore_entries(entries: &[PathBuf]) -> Result<usize, String> {
     host_fs::trash::restore(entries)
 }
 
-/// Permanently delete the trashed items backing `entries` (file + info).
-/// Returns how many were purged.
 pub fn purge_entries(entries: &[PathBuf]) -> Result<usize, String> {
     host_fs::trash::purge(entries)
 }
 
-/// Pick a non-colliding path for `name` inside `dir`. If `dir/name` is
-/// free it's returned as-is; otherwise a numeric suffix is inserted
-/// before the extension: `report.txt` → `report 2.txt` → `report 3.txt`.
-///
-/// # Errors
-/// Returns an error if a candidate cannot be inspected or all supported suffixes
-/// are occupied. Never falls back to an occupied directory entry.
 pub fn unique_destination(dir: &Path, name: &str) -> Result<PathBuf, String> {
     match host_fs::transfer::free_name(dir, std::ffi::OsStr::new(name)) {
         Ok(Some(candidate)) => Ok(candidate),
@@ -153,7 +114,6 @@ pub fn unique_destination(dir: &Path, name: &str) -> Result<PathBuf, String> {
     }
 }
 
-/// Create a new folder named `name` (deduplicated) inside `parent`.
 pub fn new_folder(parent: &Path, name: &str) -> Result<PathBuf, String> {
     let name = match leaf_name(name) {
         Ok(name) => name,
@@ -165,7 +125,6 @@ pub fn new_folder(parent: &Path, name: &str) -> Result<PathBuf, String> {
     Ok(dest)
 }
 
-/// Rename `path` to `new_name` within the same directory.
 pub fn rename(path: &Path, new_name: &str) -> Result<PathBuf, String> {
     let new_name = leaf_name(new_name)?;
     let parent = path
@@ -196,54 +155,26 @@ pub fn rename(path: &Path, new_name: &str) -> Result<PathBuf, String> {
     Ok(dest)
 }
 
-/// Move `paths` to the trash. Falls back to a clear message if the
-/// platform trash isn't available.
 pub fn delete_to_trash(paths: &[PathBuf]) -> Result<(), String> {
     host_fs::trash::delete(paths)
 }
 
-/// Move `path` to the trash, returning the Trash entry it became when the
-/// host says ([`host_fs::trash::trash`]).
-///
-/// # Errors
-///
-/// As [`delete_to_trash`].
 pub fn move_to_trash(path: &Path) -> Result<Option<PathBuf>, String> {
     host_fs::trash::trash(path)
 }
 
-/// Recursively copy `src` into the directory `dest_dir`, choosing a
-/// non-colliding name. Returns the created destination path.
-///
-/// # Errors
-///
-/// Returns an error if `src` has no file name, staging or publication fails,
-/// or no free name is left in `dest_dir`.
 pub fn copy_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
     transfer_into_with(src, dest_dir, false, &mut NoopTransferObserver)
 }
 
-/// Copy a mounted source into an independent, owner-writable local file.
-/// Permissions are applied to newly created files in private staging, never
-/// to the source or a published destination. Directories retain their modes.
-///
-/// # Errors
-///
-/// As [`copy_into`].
 pub fn import_mounted_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
     transfer_into_with(src, dest_dir, false, &mut MountedImportObserver)
 }
 
-/// Move `src` into `dest_dir` without replacing a concurrent destination.
-/// Linux, macOS and Windows use an atomic no-replace rename on the same
-/// filesystem. The cross-filesystem fallback stages a complete private copy,
-/// removes the source, and only then publishes the destination atomically.
 pub fn move_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
     transfer_into_with(src, dest_dir, true, &mut NoopTransferObserver)
 }
 
-/// Restore a moved item's original name, even when its current name was
-/// suffixed to avoid a collision in the destination folder.
 pub(crate) fn move_into_named(
     src: &Path,
     dest_dir: &Path,
@@ -252,7 +183,6 @@ pub(crate) fn move_into_named(
     transfer_into_named_with(src, dest_dir, name, true, &mut NoopTransferObserver)
 }
 
-/// Portable source capabilities passed to host admission hooks.
 pub use host_fs::transfer::{SourceDirectory, SourceOpenOptions, TransferObserver};
 
 struct NoopTransferObserver;
@@ -265,7 +195,6 @@ impl TransferObserver for MountedImportObserver {
     }
 }
 
-/// What a refused transfer says to a person.
 fn refusal(failure: host_fs::transfer::Failure) -> String {
     use host_fs::transfer::Failure;
     match failure {
@@ -283,8 +212,6 @@ fn refusal(failure: host_fs::transfer::Failure) -> String {
     }
 }
 
-/// The same copy/cut staging and recovery with a host's live admission hooks.
-/// This grants no filesystem access by itself.
 pub fn transfer_into_with(
     src: &Path,
     dest_dir: &Path,
@@ -297,8 +224,6 @@ pub fn transfer_into_with(
     transfer_into_named_with(src, dest_dir, name, remove_source, observer)
 }
 
-/// Transfer to one explicit leaf name with the same live admission and recovery.
-/// This grants no filesystem access and never replaces an occupied destination.
 pub fn transfer_into_named_with(
     src: &Path,
     dest_dir: &Path,
@@ -338,7 +263,6 @@ mod tests {
             readable_error(&full),
             crate::i18n::t("files-error-no-space")
         );
-        // An unmapped system error keeps its words, not its number.
         let odd = std::io::Error::from_raw_os_error(40).to_string();
         let shown = readable_error(&odd);
         assert!(!shown.contains("os error"), "{shown}");
@@ -422,8 +346,6 @@ mod tests {
         fs::write(&source, b"private notes").expect("source contents");
         delete_to_trash(std::slice::from_ref(&source)).expect("production legacy delete");
         assert!(!source.exists());
-        // Ask for the Trash root rather than assuming `$XDG_DATA_HOME`: macOS
-        // keeps it under `~/Library/Application Support`.
         let files = trash_dir().expect("test Trash path");
         let data = files
             .parent()
@@ -442,8 +364,6 @@ mod tests {
     fn opening_trash_refuses_a_symlink_without_populating_its_target() {
         let _home = tilo_test_env::TestHome::new().expect("private test home");
         let outside = tempfile::tempdir().expect("unrelated directory");
-        // The Trash root lives under the platform data dir, which is not
-        // `$XDG_DATA_HOME` everywhere (macOS uses `~/Library/Application Support`).
         let files = trash_dir().expect("test Trash path");
         let trash = files.parent().expect("Trash root");
         fs::create_dir_all(trash.parent().expect("data directory")).expect("data directory");
@@ -457,11 +377,9 @@ mod tests {
         );
     }
 
-    /// Windows mutations reject stream names without an XDG trash and junction copies never read outside the tree.
     #[test]
     #[cfg(windows)]
     fn windows_file_operations_refuse_streams_and_junction_escapes() {
-        // --- phase: windows_mutations_reject_stream_names_and_do_not_present_an_xdg_trash ---
         {
             let directory = tempfile::tempdir().unwrap();
             let source = directory.path().join("document.txt");
@@ -477,7 +395,6 @@ mod tests {
             assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
         }
 
-        // --- phase: copying_a_junction_never_reads_or_copies_the_outside_tree ---
         {
             let directory = tempfile::tempdir().unwrap();
             let outside = directory.path().join("outside");
@@ -509,14 +426,12 @@ mod tests {
         tempfile::tempdir().unwrap()
     }
 
-    /// Destination names dedup, folders are created, renamed, copied and moved, trash is the XDG home trash and exhausted names never overwrite.
     #[allow(
         clippy::too_many_lines,
         reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
     )]
     #[test]
     fn basic_file_operations_dedup_and_never_overwrite() {
-        // --- phase: unique_destination_dedups ---
         {
             let d = tmp();
             let root = d.path();
@@ -541,7 +456,6 @@ mod tests {
             );
         }
 
-        // --- phase: new_folder_creates_and_dedups ---
         {
             let d = tmp();
             let p = new_folder(d.path(), "Stuff").unwrap();
@@ -556,7 +470,6 @@ mod tests {
             assert!(unicode.is_dir());
         }
 
-        // --- phase: rename_moves_within_dir ---
         {
             let d = tmp();
             let f = d.path().join("old.txt");
@@ -570,7 +483,6 @@ mod tests {
             assert!(rename(&renamed, "..").is_err());
         }
 
-        // --- phase: copy_into_recurses_and_dedups ---
         {
             let d = tmp();
             let src = d.path().join("dir");
@@ -582,13 +494,11 @@ mod tests {
             let copied = copy_into(&src, &destdir).unwrap();
             assert!(copied.join("inner.txt").exists());
             assert_eq!(fs::read(copied.join("inner.txt")).unwrap(), b"hello");
-            // Original still present (copy, not move).
             assert!(src.join("inner.txt").exists());
             let copied2 = copy_into(&src, &destdir).unwrap();
             assert_eq!(copied2.file_name().unwrap().to_string_lossy(), "dir 2");
         }
 
-        // --- phase: move_into_relocates ---
         {
             let d = tmp();
             let f = d.path().join("move-me.txt");
@@ -601,10 +511,7 @@ mod tests {
             assert_eq!(moved.parent().unwrap(), destdir);
         }
 
-        // --- phase: trash_dir_is_the_xdg_home_trash_files_dir ---
         {
-            // The Trash sidebar entry + the "am I in the trash?" check both hinge on
-            // this path being the freedesktop home-trash files dir.
             if let Some(t) = trash_dir() {
                 assert!(
                     t.ends_with("Trash/files"),
@@ -618,7 +525,6 @@ mod tests {
             }
         }
 
-        // --- phase: exhausted_destination_names_do_not_overwrite_existing_files ---
         {
             let directory = tempfile::tempdir().unwrap();
             let source = directory.path().join("report.txt");
@@ -650,7 +556,6 @@ mod tests {
         }
     }
 
-    /// A destination that cannot be examined keeps its Files wording.
     #[cfg(unix)]
     #[test]
     fn destination_inspection_failure_reads_as_files_copy() {

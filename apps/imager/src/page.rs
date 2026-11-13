@@ -1,11 +1,5 @@
-//! The one page frame every imager surface stands in: the image wizard, the
-//! guided setup and the folder import.
-//!
-//! A page is a readable column centred in the window: an optional stepper
-//! on top, the scrolling body, an optional notice the person has to act on,
-//! and the page's actions at the bottom. Every surface builds its page
-//! here, so the stepper, the body's first line, the scroll bar and the
-//! actions sit at the same place whichever surface is showing.
+//! The setup pages' shared shapes: a stepper, a body that keeps its scroll, and a problem
+//! above the actions.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -13,26 +7,22 @@ use std::rc::Rc;
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::{Column, Container, Form, Row, Scrollable, Stepper, Text, Widget};
 
-/// A padding-free, content-sized column: one section of a page.
 pub(crate) fn stack() -> Column {
     Column::new().with_no_padding().with_intrinsic_height()
 }
 
-/// The page's title: the screen's one level-1 heading.
 pub(crate) fn title(text: &str) -> Text {
     Text::new(text)
         .with_role(TextRole::Title)
         .with_heading_level(1)
 }
 
-/// A page body: its title, then each section a group apart.
 pub(crate) fn body(title_text: &str) -> Column {
     stack()
         .with_rhythm(Rhythm::Group)
         .push(Box::new(title(title_text)))
 }
 
-/// A group of related lines inside a section.
 pub(crate) fn related() -> Column {
     stack().with_rhythm(Rhythm::Related)
 }
@@ -41,17 +31,12 @@ pub(crate) fn form_block(form: Form) -> Box<dyn Widget> {
     Box::new(form)
 }
 
-/// The page's notice: a problem the person has to act on. What merely
-/// happened is not repeated here; the page already shows it.
 #[cfg(feature = "installation")]
 pub(crate) fn notice(status: &str, is_error: bool) -> Option<Box<dyn Widget>> {
     (is_error && !status.is_empty())
         .then(|| Box::new(ui::widget::Banner::error(status.to_string())) as Box<dyn Widget>)
 }
 
-/// The id of the control holding keyboard focus in `root`, if it has one.
-/// A surface that composes its page again reads it first and hands it to
-/// [`refocus`], so the person keeps their place.
 pub(crate) fn focused_id(root: &dyn Widget) -> Option<String> {
     if root.is_focusable() && root.is_focused() {
         return root.test_id().map(str::to_string);
@@ -59,7 +44,6 @@ pub(crate) fn focused_id(root: &dyn Widget) -> Option<String> {
     root.children().into_iter().find_map(focused_id)
 }
 
-/// Give keyboard focus to the control `id` in a newly composed page.
 pub(crate) fn refocus(root: &mut dyn Widget, id: &str) -> bool {
     if root.test_id() == Some(id) && root.is_focusable() {
         root.set_focus(true);
@@ -70,7 +54,6 @@ pub(crate) fn refocus(root: &mut dyn Widget, id: &str) -> bool {
         .any(|child| refocus(child, id))
 }
 
-/// One page, assembled by [`Frame::build`].
 pub(crate) struct Frame {
     stepper: Option<Stepper>,
     body: Column,
@@ -96,25 +79,18 @@ impl Frame {
         }
     }
 
-    /// Where a wizard is, with a stepper the caller configured (one that can
-    /// go back to a done step).
     #[must_use]
     pub(crate) fn stepper_widget(mut self, stepper: Stepper) -> Self {
         self.stepper = Some(stepper);
         self
     }
 
-    /// Keep the body's scroll position across rebuilds of the page.
     #[must_use]
     pub(crate) fn offset(mut self, offset: Rc<Cell<(f32, f32)>>) -> Self {
         self.offset = Some(offset);
         self
     }
 
-    /// Seed the body's pointer position when the page is rebuilt between
-    /// wheel events. A wheel carries no position of its own, so a replacement
-    /// scroller without it treats the still pointer as outside its viewport
-    /// and drops every later step, leaving the rest of the page unreachable.
     #[cfg(feature = "installation")]
     #[must_use]
     pub(crate) fn with_cursor(mut self, cursor: ui::kurbo::Point) -> Self {
@@ -122,32 +98,24 @@ impl Frame {
         self
     }
 
-    /// A problem the person has to act on, above the actions.
     #[must_use]
     pub(crate) fn notice(mut self, notice: Option<Box<dyn Widget>>) -> Self {
         self.notice = notice;
         self
     }
 
-    /// The page's actions: Back at the leading edge, the main action at the
-    /// trailing one.
     #[must_use]
     pub(crate) fn actions(mut self, actions: impl Widget + 'static) -> Self {
         self.actions = Some(Box::new(actions));
         self
     }
 
-    /// Keep a short explanation, its problem and recovery controls together.
-    /// They still scroll as one region when large text needs more room.
     #[must_use]
     pub(crate) fn with_content_actions(mut self) -> Self {
         self.actions_in_body = true;
         self
     }
 
-    /// Centre a short body in its measured scrolling viewport. Long content
-    /// keeps its intrinsic extent and starts at the scrolling edge; navigation
-    /// stays outside that viewport in either case.
     #[cfg(feature = "installation")]
     #[must_use]
     pub(crate) fn center_short_body(mut self) -> Self {
@@ -198,8 +166,6 @@ impl Frame {
         if let Some(actions) = self.actions {
             column = column.push(actions);
         }
-        // A wizard stands alone in its window: its readable column is
-        // centred, the page gutter around it.
         Box::new(
             Container::new()
                 .filling()

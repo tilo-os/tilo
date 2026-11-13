@@ -1,5 +1,5 @@
-//! One account decision at a time. All state and prepared credentials stay
-//! device-local. Rendering and page entry never open the browser or sign in.
+//! One account decision at a time: its state and prepared credentials stay
+//! device-local.
 
 mod batch;
 mod icloud;
@@ -229,9 +229,6 @@ enum Step {
     },
 }
 
-/// Which configured accounts a source row owns. The source itself is an app
-/// identity (GNOME Online Accounts, Nextcloud, rclone), never a generic account
-/// form: each account and each service it turns on is its own decision.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum SourceAccountScope {
     Gnome,
@@ -282,24 +279,12 @@ impl SourceAccountScope {
     }
 }
 
-/// The person's per-account, per-service choice over the configured accounts
-/// discovered under the consented source roots. An empty selection means every
-/// discovered service is included, so a fresh review starts with all of them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct SourceAccountSelection {
-    /// Services the person turned off, by opaque discovery identity. A missing
-    /// identity or service is included.
     excluded: BTreeMap<String, BTreeSet<Service>>,
-    /// Whether the person edited this review. Until then an older checkpoint's
-    /// exact prepared accounts stay authoritative.
     touched: bool,
 }
 
-/// The services a configured source actually offers. GNOME Online Accounts and
-/// Nextcloud report them; a file remote (rclone, a granted Windows OneDrive
-/// root) enables Files even though its configuration has no service list. A
-/// source that names no service and is not a file remote keeps an empty list
-/// rather than an invented one.
 pub(super) fn source_account_services(candidate: &Candidate) -> Vec<Service> {
     use imager_backend::account_transfer::Provider;
     if !candidate.services.is_empty() {
@@ -363,8 +348,6 @@ impl SourceAccountSelection {
         }
     }
 
-    /// Drop identities the current discovery no longer has and services the
-    /// source stopped enabling, so an old scope cannot survive a changed source.
     fn retain(&mut self, inventory: &Inventory) {
         let current = inventory
             .candidates
@@ -571,9 +554,6 @@ impl Accounts {
     pub fn has_prepared_connections(&self) -> bool {
         !self.prepared.is_empty()
     }
-    /// The GOA source accounts the person selected, with exactly the services
-    /// they left on. Only opaque discovery ids and enabled services travel;
-    /// credentials stay in their source until the destination revalidates it.
     pub(in crate::setup::journey) fn selected_source_accounts(
         &self,
         inventory: &Inventory,
@@ -1650,8 +1630,6 @@ impl Accounts {
         ))
     }
 
-    // Native client configuration identifies an account, not the state of its sync queue.
-    // Keep this advice separate from authentication and migration destination choices.
     fn source_review_keys(&self) -> Vec<&'static str> {
         {
             use imager_backend::account_transfer::Origin;
@@ -2110,8 +2088,6 @@ impl Drop for Accounts {
     }
 }
 
-/// The account field `key`'s published edit, given what is typed: kept in
-/// this device's memory, never in shared state.
 pub(super) fn field_effect(
     key: &'static str,
 ) -> impl ui::tilo_resource::Binds<super::InstallerPreviewEffect, String> {
@@ -2119,7 +2095,6 @@ pub(super) fn field_effect(
         .map(move |value: String| (key.to_owned(), value))
 }
 
-/// The account step `request`, as Enter in a field of the step asks for it.
 pub(super) fn step_effect(
     request: AccountRequest,
 ) -> impl ui::tilo_resource::Binds<super::InstallerPreviewEffect, String> {

@@ -1,10 +1,5 @@
-//! Name clashes when copying or moving: one question for all of them.
-//!
-//! Copying or moving into a folder that already has items of the same names
-//! asks once: Replace (the existing items go to Trash, so nothing is lost),
-//! Keep both (the new ones get free names), or Skip (only the others go).
-//! The question is a sheet over the window, answered by pointer, keyboard
-//! or assistive technology.
+//! Name clashes when copying, moving or extracting: one question, asked over the
+//! window, for every clashing name.
 
 use std::path::{Path, PathBuf};
 
@@ -13,7 +8,6 @@ use ui::widget::modal_dialog::{self, ModalAction};
 use ui::widget::{ModalHit, ModalLayout, ModalSpec};
 use vello::kurbo::{Point, Rect};
 
-/// How to settle the clashes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ClashChoice {
     Skip,
@@ -22,7 +16,6 @@ pub(crate) enum ClashChoice {
 }
 
 impl ClashChoice {
-    /// In the order the sheet shows them; the last is the primary.
     const ALL: [Self; 3] = [Self::Skip, Self::KeepBoth, Self::Replace];
 
     fn label(self) -> String {
@@ -34,35 +27,24 @@ impl ClashChoice {
     }
 }
 
-/// What a click on the sheet decides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ClashClick {
     Choose(ClashChoice),
     Cancel,
 }
 
-/// A copy or move waiting for the person to say what to do about clashes.
 #[derive(Clone, Debug)]
 pub(crate) struct PendingClash {
-    /// Everything to copy or move.
     pub(crate) sources: Vec<PathBuf>,
-    /// The sources whose names are taken in `folder`.
     pub(crate) clashing: Vec<PathBuf>,
     pub(crate) folder: PathBuf,
     pub(crate) copy: bool,
-    /// For a paste through the desktop's clipboard: the clashing names the
-    /// host reported (the first few) and how many there are. The host
-    /// carries out the answer.
     pub(crate) clipboard: Option<(Vec<String>, usize)>,
-    /// For extracting the archives in `sources`: the names they would take
-    /// that `folder` already has. Replace sends those items to Trash first.
     pub(crate) extracting: Option<Vec<String>>,
     hovered: Option<usize>,
     layout: Option<ModalLayout>,
 }
 
-/// The sources whose names `folder` already has (a copy into its own folder
-/// is a duplicate, not a clash).
 pub(crate) fn clashing(sources: &[PathBuf], folder: &Path, copy: bool) -> Vec<PathBuf> {
     sources
         .iter()
@@ -95,7 +77,6 @@ impl PendingClash {
         }
     }
 
-    /// A clipboard paste into `folder` waiting for the answer.
     pub(crate) fn clipboard(names: Vec<String>, count: usize, folder: PathBuf) -> Self {
         Self {
             clipboard: Some((names, count)),
@@ -103,8 +84,6 @@ impl PendingClash {
         }
     }
 
-    /// Extracting `archives` into `folder`, where `clashing` (an archive and
-    /// the name it would take) are in use.
     pub(crate) fn extraction(
         archives: Vec<PathBuf>,
         clashing: Vec<(PathBuf, String)>,
@@ -117,7 +96,6 @@ impl PendingClash {
         }
     }
 
-    /// The existing items a Replace sends to Trash.
     pub(crate) fn replaced(&self) -> Vec<PathBuf> {
         self.clashing
             .iter()
@@ -125,7 +103,6 @@ impl PendingClash {
             .collect()
     }
 
-    /// The sources a Skip still copies or moves.
     pub(crate) fn unclashing(&self) -> Vec<PathBuf> {
         self.sources
             .iter()
@@ -170,7 +147,6 @@ impl PendingClash {
             .collect()
     }
 
-    /// Paint the sheet over `window`.
     pub(crate) fn paint(
         &mut self,
         scene: &mut vello::Scene,
@@ -216,7 +192,6 @@ impl PendingClash {
         self.layout = Some(layout);
     }
 
-    /// Follow the pointer; whether the hovered button changed.
     pub(crate) fn pointer_moved(&mut self, point: Point) -> bool {
         let hovered = match self.layout.as_ref().and_then(|layout| layout.hit(point)) {
             Some(ModalHit::Action(i)) => Some(i),
@@ -227,7 +202,6 @@ impl PendingClash {
         changed
     }
 
-    /// What a click at `point` decides, if anything.
     pub(crate) fn click(&self, point: Point) -> Option<ClashClick> {
         let layout = self.layout.as_ref()?;
         match layout.hit(point) {
@@ -238,7 +212,6 @@ impl PendingClash {
         }
     }
 
-    /// The choice an action target names, for assistive technology.
     pub(crate) fn choice_at(index: usize) -> Option<ClashChoice> {
         ClashChoice::ALL.get(index).copied()
     }

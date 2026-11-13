@@ -1,7 +1,5 @@
-//! Shared harness for the file-explorer integration tests: it drives the real
-//! `FileExplorerWidget` through the host's `sync → build_layout → compute →
-//! apply_layout` cycle and dispatches real winit events, so tests exercise the
-//! production input + layout paths rather than a mock.
+//! Shared harness for the file-explorer integration tests: a pinned locale, a
+//! headless window, and one frame's steps.
 
 #![allow(
     dead_code,
@@ -22,7 +20,6 @@ use winit::event::{Modifiers, WindowEvent};
 
 pub const VIEWPORT: (f32, f32) = (1200.0, 760.0);
 
-/// The locale every test runs under: the catalog's source locale.
 pub const TEST_LOCALE: &str = "en-US";
 
 /// Pin this test thread's UI locale. Files otherwise selects its catalog from
@@ -33,8 +30,6 @@ pub fn pin_locale() {
     file_explorer::i18n::set_locale(TEST_LOCALE);
 }
 
-/// The Files binary with a pinned locale environment, so a spawned run
-/// renders the same copy on every host.
 pub fn app_command() -> std::process::Command {
     let mut command = std::process::Command::new(tilo_test_env::package_binary!("file-explorer"));
     command
@@ -51,20 +46,10 @@ pub struct Harness {
 
 impl Harness {
     pub fn new(start_dir: &Path) -> Self {
-        // No persistence dir / home so the test never touches the real user's
-        // favourites or config.
         pin_locale();
         let w = FileExplorerWidget::with_persistence(None, None);
         w.state().navigate(start_dir.to_path_buf());
-        // Take the double-click window out of play. These tests drive two
-        // presses around a full relayout, and on a loaded machine that costs
-        // more than the real 450 ms — at which point a deliberate double-click
-        // reads as two singles and the test fails for a reason it is not
-        // about. Nothing here asserts on the window itself.
         ui::gesture::set_multi_click_interval(std::time::Duration::from_secs(60));
-        // Two frames: the first (at mount) lets the responsive `nav` learn its
-        // width and settle to its docked (wide) mode; the second is the
-        // steady-state geometry the user actually interacts with.
         let mut h = Harness {
             w: Framed::new(
                 ui::State::new(),
@@ -77,12 +62,6 @@ impl Harness {
         h
     }
 
-    /// Run the host's full frame (`sync → build_layout → compute →
-    /// apply_layout → draw`), rebuilding the whole tree. Calling this between
-    /// events reproduces the structural rebuild that discards the previous
-    /// frame's view instances. `FileView` publishes only the folders
-    /// intersecting Scrollable's viewport as drop targets during draw, which
-    /// a production frame always runs after layout.
     pub fn layout(&mut self) {
         Framed::harness_mut(&mut self.w).recompose().unwrap();
     }
@@ -105,10 +84,6 @@ impl Harness {
     }
 }
 
-/// Locate the on-screen centre of displayed row `index` by probing throwaway
-/// harnesses: for each candidate y, a single click that selects exactly `index`
-/// marks a hit. Returns the centre of the contiguous hit band, robust to the
-/// exact header / row metrics. `x` is the middle of the content pane.
 pub fn row_center(dir: &Path, index: usize) -> Point {
     let content = Harness::new(dir).w.debug_content_rect();
     let x = content.center().x;

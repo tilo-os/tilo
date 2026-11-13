@@ -1,29 +1,15 @@
-//! What Files says when something needs the person: a change they may want
-//! to take back, or a failure with a way on.
-//!
-//! It waits, and it does not expire. An outcome with a way on is an item in
-//! [`ui::attention`] — the app that asks, what it is about, and exactly one
-//! action — and one without is recorded in the ledger. Nothing here is said
-//! in a notice with a lifetime: a message that leaves after eight seconds
-//! teaches people not to read the ones that matter.
+//! What Files says when something needs the person: a change they may take back,
+//! or a failure with a way on.
 
 use std::path::PathBuf;
 
-/// The verb prefix a waiting row's action carries: the app reads which
-/// action by what follows it.
 pub(crate) const NOTICE_VERB: &str = "files.notice";
 
-/// What a notice's button does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum NoticeAction {
-    /// Take the change back: the window's Undo, the same one Ctrl+Z does.
     Undo,
-    /// Choose another app to open `path` with.
     OpenWith(PathBuf),
-    /// Stop the copy or move under way.
     CancelTransfer,
-    /// Open the version history of `path`, where a change to it that
-    /// failed can be made again.
     OpenHistory(PathBuf),
 }
 
@@ -37,8 +23,6 @@ impl NoticeAction {
         }
     }
 
-    /// The verb this action waits on: Files' own, so another app's row is
-    /// never mistaken for this one.
     fn verb(&self) -> String {
         let kind = match self {
             Self::Undo => "undo",
@@ -50,7 +34,6 @@ impl NoticeAction {
     }
 }
 
-/// Files, as the waiting stack and the ledger name it.
 fn owner() -> ui::attention::Owner {
     ui::attention::Owner::new("so.tilo.files", "Files").with_icon(ui::icons::Icon::Folder)
 }
@@ -62,14 +45,10 @@ struct Shown {
     action: Option<NoticeAction>,
 }
 
-/// What Files last said, and where it waits.
 #[derive(Debug, Default)]
 pub(crate) struct Notice {
     shown: Option<Shown>,
-    /// The row raised for it, and the action that row waits on: what the
-    /// person pressed is read back by the row's identity.
     waiting: Option<(ui::attention::ItemId, NoticeAction)>,
-    /// What was already said, so one outcome is recorded once.
     said: Option<String>,
 }
 
@@ -84,8 +63,6 @@ impl Clone for Notice {
 }
 
 impl Notice {
-    /// Show `title` (and `body`, when not empty) with `action`, replacing
-    /// any notice already up.
     pub(crate) fn show(
         &mut self,
         title: impl Into<String>,
@@ -99,8 +76,6 @@ impl Notice {
         });
     }
 
-    /// Show how far a copy or move is: the same notice updated in place, up
-    /// until the transfer ends.
     pub(crate) fn show_progress(&mut self, title: String, body: String) {
         if let Some(shown) = &mut self.shown
             && shown.action == Some(NoticeAction::CancelTransfer)
@@ -112,19 +87,15 @@ impl Notice {
         self.show(title, body, Some(NoticeAction::CancelTransfer));
     }
 
-    /// Whether the notice is a transfer's progress.
     pub(crate) fn shows_progress(&self) -> bool {
         self.action() == Some(&NoticeAction::CancelTransfer)
     }
 
     pub(crate) fn dismiss(&mut self) -> bool {
-        // What was said is said: if the same thing happens again after the
-        // person answered it, it is news again.
         self.said = None;
         self.shown.take().is_some()
     }
 
-    /// What the notice says, as one line: its title, then its reason.
     pub(crate) fn line(&self) -> Option<String> {
         let shown = self.shown.as_ref()?;
         Some(if shown.body.is_empty() {
@@ -144,9 +115,6 @@ impl Notice {
         self.action() == Some(&NoticeAction::Undo)
     }
 
-    /// Where the notice goes: a change to take back or a failure with a way
-    /// on waits for the person, and anything else is recorded. Call on every
-    /// sync; one outcome is said once.
     pub(crate) fn publish(&mut self) {
         let Some(line) = self.line() else {
             return;
@@ -178,8 +146,6 @@ impl Notice {
         }
     }
 
-    /// The row a person pressed, if it was this notice's: what it asked for,
-    /// and the notice is down.
     pub(crate) fn pressed(&mut self, acted: &ui::attention::Acted) -> Option<NoticeAction> {
         let (item, action) = self.waiting.as_ref()?;
         if *item != acted.item || acted.action.verb != action.verb() {
@@ -196,8 +162,6 @@ impl Notice {
 mod tests {
     use super::*;
 
-    /// A change to take back waits for the person, with one action, and
-    /// acting on that row takes it down. Nothing here has a lifetime.
     #[test]
     fn a_notice_waits_with_its_button_and_acting_takes_it_down() {
         ui::attention::clear();
@@ -243,7 +207,6 @@ mod tests {
         );
     }
 
-    /// The same outcome is said once, however many frames pass.
     #[test]
     fn one_outcome_is_recorded_once() {
         ui::attention::clear();

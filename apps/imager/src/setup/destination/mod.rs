@@ -1,41 +1,5 @@
-//! The guided setup's destination side: the installer on the live medium.
-//!
-//! Run under `cage` (a kiosk wlroots compositor) off the live medium, it
-//! walks a person through the wizard with a persistent progress breadcrumb:
-//!
-//!   1. **Keyboard** — pick a layout before typing any secrets.
-//!   2. **Network** — optionally connect through `NetworkManager`; offline is valid.
-//!   3. **Accounts** — optionally sign in to online accounts, privately.
-//!   4. **Disk** — pick a target disk, or free space beside another system.
-//!   5. **Account** — choose a username and a confirmed password.
-//!   6. **Options** — filesystem, hostname, time zone.
-//!   7. **Media** — explicitly choose whether to download more formats.
-//!   8. **Review** — every choice, the compatibility report and the erase warning.
-//!   9. **Install** — the privileged backend on a worker thread, streaming
-//!      progress into a live status log, then Finish (Reboot / Power off)
-//!      or a failure screen.
-//!
-//! What it reads from and does to the machine is its platform half,
-//! `imager_backend::destination`. Every step is also a set of published
-//! effects ([`effects`]), and the wizard's own controls run those effects:
-//! one implementation behind a click, a screen reader, the Ctrl+K palette, a
-//! headless scenario and the console. The destructive `begin` asks for the
-//! exact object it formats as a typed phrase. On the live medium the console
-//! answers the `tilo-control` action protocol; nothing about it can reveal a
-//! passphrase or the recovery key.
-//!
-//! Modules:
-//! * [`installer_app`] — the [`InstallerApp`] surface and wizard state
-//!   machine, its published effects and its console.
-//! * [`effects`] — the one effect vocabulary every door invokes.
-//! * [`control`] — what a control does when used: queue its effect.
-//! * [`unattended`] — an installation from a private recipe, through the
-//!   same effects.
-//! * [`status_log`], [`disk_row`], [`action_button`], [`seg_choice`],
-//!   [`keyboard_view`] — the wizard's controls, composed from ui widgets.
-//! * [`accounts_view`], [`accounts_hints`] — the private account form and
-//!   the hints read from the old system.
-//! * [`hardware_report`] — the compatibility report Review shows.
+//! The guided setup's destination side: the installer on the live medium, and the
+//! scenarios its captures show.
 
 #![cfg_attr(
     test,
@@ -61,10 +25,6 @@ pub mod unattended;
 
 pub use installer_app::{InstallState, InstallerApp, Step};
 
-/// Press `control`, then answer what its published action queued, as the
-/// window that holds it does after handling the press. A control's own
-/// closure runs in the toolkit; its press is the published action the tree
-/// answers, so a test drives the same door a person, a script and an agent do.
 #[cfg(test)]
 pub(crate) fn press(
     control: &mut dyn ui::widget::Widget,
@@ -87,12 +47,8 @@ pub(crate) fn press(
     );
 }
 
-/// Whether this process is the installer on the live medium.
 static LIVE_INSTALLER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Run the installer on the live medium (`tilo-installer`): an unattended
-/// installation from a private recipe when the command line names one,
-/// otherwise the imager app showing its destination side.
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(invocation) = unattended::Invocation::from_args(std::env::args_os().skip(1))? {
         return invocation.run();
@@ -102,12 +58,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Whether this process was started as the installer on the live medium.
 pub(crate) fn launched() -> bool {
     LIVE_INSTALLER.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// The installer's screenshot scenarios, one per step and terminal state.
 pub(crate) const SCENARIOS: &[&str] = &[
     "destination-keyboard",
     "destination-keyboard-default",
@@ -130,8 +84,6 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "destination-failed-recovery",
 ];
 
-/// The installer's window: the wizard live, probing this computer, or a
-/// sample one that a screenshot scenario stages.
 pub(crate) fn view(cx: &mut ui::framework::ViewCx<crate::resource::Imager>) -> ui::widget::Element {
     let app = if cx.mode().is_live() {
         let mut app = InstallerApp::new();
