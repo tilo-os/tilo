@@ -100,7 +100,9 @@ relay and the API server trust the local Caddy's CA through the fixed bundle pat
 Tilo's programs read, which bwrap (bubblewrap) puts in front of this machine's
 own for those processes alone. No process sees this session's D-Bus or runtime
 directory. TILO_SH_BUNDLE names a built desktop bundle
-(build.sh --bundle desktop) instead of building one; TILO_SH_BUNDLE_NAMES=1
+(build.sh --bundle desktop) instead of building one, built from this
+checkout's commit (TILO_SH_BUNDLE_ANY_COMMIT=1 serves one from another);
+TILO_SH_BUNDLE_NAMES=1
 builds it with its function names kept, for profiling the page
 (stack.sh restart web).
 Already-built inputs, which a check hands the stack so its bring-up compiles
@@ -838,6 +840,13 @@ lay_out_web() {
   fi
   local bundle=${TILO_SH_BUNDLE:-$native/bundle}
   bundle_whole "$bundle" || die "no whole desktop bundle at $bundle (build.json and pkg/tilo_browser_runtime{.js,_bg.wasm}); stack.sh restart web builds one"
+  # The page and the relay speak one protocol only when they come from one
+  # commit: a page built before a change to setup codes, served beside a relay
+  # built after it, showed codes the relay never knew.
+  local built
+  built=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("revision", ""))' "$bundle/build.json")
+  [[ $built == "$commit" || $commit == unknown || ${TILO_SH_BUNDLE_ANY_COMMIT:-0} == 1 ]] \
+    || die "the desktop bundle at $bundle was built from ${built:0:11}, the programs from ${commit:0:11}: build the bundle from this checkout (stack.sh restart web), or TILO_SH_BUNDLE_ANY_COMMIT=1 to serve it anyway"
   local stamp
   stamp=$(sha256sum "$bundle/build.json" | cut -c1-16)
   if [[ $(cat "$native/web/stamp" 2>/dev/null) != "$stamp" ]]; then
