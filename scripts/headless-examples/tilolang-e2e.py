@@ -33,8 +33,8 @@ app gets on a real system:
              show in Today's window, which holds none of them itself (today-*.png); one is
              marked done by its box, a checkbox Tasks' window names ("Mark ... done"), another
              from its row's menu, pressed by name as a tool presses it, and Today's "Morning
-             cleanup", pressed by name, runs on them and asks the person before changing Tasks
-             and Notes
+             cleanup", found by the action it runs and pressed where its header stands it, runs
+             on them and asks the person before changing Tasks and Notes
   places     a window grouped beside another, too narrow for Tasks' sidebar, still reaches its
              places through its own toggle, pressed by name as a tool presses a control, though
              another window goes by that name too: Inbox chosen there takes that window to the
