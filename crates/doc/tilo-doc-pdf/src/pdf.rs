@@ -37,9 +37,8 @@ impl PdfWriter {
     }
 
     pub fn set(&mut self, id: ObjId, body: Vec<u8>) {
-        /// `id.0` is 1-based and every id this crate makes comes from `reserve`, but
-        /// `ObjId`'s field is public, so an out-of-range id is a no-op rather than being
-        /// assumed valid.
+        // `id.0` is 1-based and every id this crate makes comes from `reserve`, but
+        // `ObjId`'s field is public, so an out-of-range id is a no-op.
         if let Some(idx) = id.0.checked_sub(1)
             && let Some(slot) = self.objects.get_mut(idx)
         {

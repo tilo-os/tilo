@@ -90,9 +90,9 @@ pub fn render_scanned_pdf(pages: &[ScannedPdfPage]) -> Vec<u8> {
             content.extend_from_slice(&escaped);
             content.extend_from_slice(b") Tj ET\n");
         }
-        /// Content commands are tiny beside the compressed raster, so they stay
-        /// uncompressed and an indexer that implements only core filters can still
-        /// recover the invisible OCR layer.
+        // Content commands are tiny beside the compressed raster, so they stay
+        // uncompressed and an indexer that implements only core filters can still
+        // recover the invisible OCR layer.
         let contents = writer.add_stream("", &content);
         let resources = format!(
             "<< /Font << /F1 {} 0 R >> /XObject << /Im{index} {} 0 R >> >>",
@@ -630,8 +630,8 @@ fn decode_image(bytes: &[u8]) -> Result<DecodedImage, DocPdfError> {
 }
 
 fn place_image(layout: &mut Layout, block: &BlockView, img: &DecodedImage) {
-    /// Scale to the text width, keeping the aspect, and cap the height to one page's
-    /// content.
+    // Scale to the text width, keeping the aspect, and cap the height to one page's
+    // content.
     #[allow(
         clippy::cast_precision_loss,
         reason = "aspect ratio is display-only; no real image dimension approaches f32's precision limit"
