@@ -887,6 +887,15 @@ d-chvuqgur = A note place
 d-tnecawb6 = A foreign place
     .doc = A place of a kind this build has no record for: it stands as it is, which is what a place another shell made looks like (§2).
 
+d-mtt6d3af = Tab it here
+    .doc = Tab the place whose window's bar was dragged onto the strip `s` into that strip — how a person drags one window's bar onto another's to make its tabs, and the same arranging action the window's menu's "Move into … as a tab" runs.
+
+d-n2ez6yop = Rearrange
+    .doc = Rank the place `place` at `at` among its strip's tabs: what dragging a pill within the window's bar does, as the desk's own `move` with the place it goes before.
+
+d-d64rg4sw = Its own window
+    .doc = Give the place `place` a window of its own: what dragging a tab out of its window's bar does, as the desk's own `split-right` for the window in front.
+
 d-b3rfswle = Show place
     .doc = Shows the place `place` and brings its strip forward with it: what choosing a tab does, and the same arranging action a script or an agent runs.
 

@@ -204,38 +204,133 @@ view row_window(a: Arrangement, v: Viewing, s: ArrangementStrip, lists: Bool) {
 /// top edge — the tabs of its places while it shows several, the place's own header while it
 /// shows one — and the place in front fills everything under it. A strip holding nothing is an
 /// empty window, saying so.
+///
+/// A strip of several places has tabs a person rearranges: choosing one shows its place and
+/// brings the strip forward, a press on its close takes that place out of the strip, a drag
+/// within the bar ranks it among the others, and a drag out of the bar into the desk gives it a
+/// window of its own (or, when the desk is the traditional one, the window of the place it was
+/// let go under). Every one is an arranging action of the session's, so a press, a key and an
+/// agent make the same change, attributed and undoable.
 view strip_window(a: Arrangement, v: Viewing, s: ArrangementStrip, lists: Bool) {
     let in_front = s.key == strip_in_front(a, v)
     let placed = places_of(a, s.key)
     let chosen = placed.find(p -> p.key == s.active)
     let shown = chosen ?? placed.first()
-    ui.WindowFrame(name: window_name(shown), focused: in_front, lists_actions: lists) {
-        controls: {
-            window_controls(a, v, s, shown, in_front)
-        }
-        tabs: {
-            if placed.len() > 1 {
-                ui.TabStrip(place_in_front(s), focused: in_front) {
-                    on activate(p: session.Place): show_place(v, s.key, p)
-                    on close(p: session.Place): session.close(place: p)
-                    for p in placed {
-                        ui.TabItem(the_place(p.key), title: place_title(p))
+    ui.DropTarget {
+        on drop(target: host.Resource): tab_place_here(a, v, s, target)
+        ui.WindowFrame(
+            name: window_name(shown),
+            focused: in_front,
+            lists_actions: lists,
+            carries: window_record(shown),
+        ) {
+            controls: {
+                window_controls(a, v, s, shown, in_front)
+            }
+            tabs: {
+                if placed.len() > 1 {
+                    ui.TabStrip(place_in_front(s), focused: in_front) {
+                        on activate(p: session.Place): show_place(v, s.key, p)
+                        on close(p: session.Place): session.close(place: p)
+                        on reorder(p: session.Place, at: Int): reorder_place(a, s, p, at)
+                        on detach(p: session.Place): detach_place(v, s, p)
+                        for p in placed {
+                            ui.TabItem(the_place(p.key), title: place_title(p))
+                        }
                     }
                 }
             }
-        }
-        body: {
-            if let p = shown {
-                place_content(p)
-            } else {
-                ui.EmptyState(
-                    "Nothing here",
-                    message: "Open something into this strip.",
-                    inline: true,
-                )
+            body: {
+                if let p = shown {
+                    place_content(p)
+                } else {
+                    ui.EmptyState(
+                        "Nothing here",
+                        message: "Open something into this strip.",
+                        inline: true,
+                    )
+                }
             }
         }
     }
+}
+
+/// The resource a window's bar carries when the person picks it up: the record its place in front
+/// shows, or empty when the place shows none (a window's well). A bar that carries nothing is not
+/// lifted, so a foreign window's bar is no drag at all.
+fn window_record(shown: Option<ArrangementPlace>) -> Text {
+    if let p = shown { p.record } else { "" }
+}
+
+/// Tab the place whose window's bar was dragged onto the strip `s` into that strip — how a person
+/// drags one window's bar onto another's to make its tabs, and the same arranging action the
+/// window's menu's "Move into … as a tab" runs. The place lands after the strip's other tabs and
+/// comes to the front of them, so the window shows what was dropped on it. A place already in
+/// this strip is only brought to the front, so dropping a window on itself raises it rather than
+/// standing a second place. The strip comes forward with it.
+action tab_place_here(a: Arrangement, v: Viewing, s: ArrangementStrip, target: host.Resource) (
+    icon: .columns_2,
+    label: "Tab it here",
+) {
+    focus_strip(v, s.key)
+    if let p = place_showing(target.id()) {
+        if p.strip != s.key {
+            session.move(
+                place: the_place(p.key),
+                row: the_row(s.row),
+                strip: the_strip(s.key),
+                before: .none,
+            )
+        } else {
+            session.activate(place: the_place(p.key))
+        }
+    }
+}
+
+/// The record key of the place a tab names: its resource id is `shell:place:<key>`, so the key is
+/// the part after the last colon. What a tab's event carries, read back for the actions that move
+/// and split places by their key.
+fn place_key(place: session.Place) -> Text {
+    place.id().split(":").last() ?? ""
+}
+
+/// Rank the place `place` at `at` among its strip's tabs: what dragging a pill within the
+/// window's bar does, as the desk's own `move` with the place it goes before. The strip reports
+/// the pill's place among the tabs with the moved pill taken out, so the tab it lands before is
+/// that index of the others; the last place goes last.
+action reorder_place(a: Arrangement, s: ArrangementStrip, place: session.Place, at: Int) (
+    icon: .arrow_up_down,
+    label: "Rearrange",
+) {
+    let key = place_key(place)
+    let placed = places_of(a, s.key)
+    let rest = placed.filter(p -> p.key != key)
+    if let b = rest.at(at) {
+        session.move(
+            place: the_place(key),
+            row: the_row(s.row),
+            strip: the_strip(s.key),
+            before: the_place(b.key),
+        )
+    } else {
+        session.move(
+            place: the_place(key),
+            row: the_row(s.row),
+            strip: the_strip(s.key),
+            before: .none,
+        )
+    }
+}
+
+/// Give the place `place` a window of its own: what dragging a tab out of its window's bar does,
+/// as the desk's own `split-right` for the window in front. The place stands in front of its new
+/// window, and that window comes to the front of the desk.
+action detach_place(v: Viewing, s: ArrangementStrip, place: session.Place) (
+    icon: .columns_2,
+    label: "Its own window",
+) {
+    focus_strip(v, s.key)
+    session.split_right(tab: place_key(place))
 }
 
 /// What a strip as a whole is called: the place in front, or an empty strip.
