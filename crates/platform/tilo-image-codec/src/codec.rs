@@ -1,22 +1,20 @@
-//! Decode and encode, the one way every program does: the browser's own
-//! codecs on the web, the `image` crate's natively. Both are asynchronous,
-//! because a browser decodes and encodes off the calling task.
+//! Decode and encode: the browser's own codecs on the web, the `image` crate's
+//! natively. Both are asynchronous, because a browser decodes off the calling
+//! task.
 
 use crate::{DecodeError, DecodedImage};
 
-/// How [`encode`] writes pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Encoding {
-    /// Lossless, alpha kept.
     Png,
     /// Lossy at `quality` (1-100), alpha dropped.
-    Jpeg { quality: u8 },
-    /// Lossless, alpha kept.
+    Jpeg {
+        quality: u8,
+    },
     WebP,
 }
 
 impl Encoding {
-    /// The media type of what it writes.
     #[must_use]
     pub const fn mime(self) -> &'static str {
         match self {
@@ -27,12 +25,10 @@ impl Encoding {
     }
 }
 
-/// Why [`encode`] wrote nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EncodeError {
     /// The pixels are not `width * height * 4` bytes, or have no area.
     Malformed,
-    /// The encoder refused them.
     Failed(String),
 }
 
@@ -62,13 +58,13 @@ impl std::fmt::Display for DecodeError {
 
 impl std::error::Error for DecodeError {}
 
-/// `bytes` decoded to straight-alpha RGBA, scaled down (keeping its
-/// proportions) so neither side exceeds `max_dimension` when one is given.
+/// `bytes` decoded to straight-alpha RGBA, scaled down keeping its proportions
+/// so neither side exceeds `max_dimension`.
 ///
 /// # Errors
 ///
-/// [`DecodeError::InvalidImage`] for bytes that are no image the codec
-/// reads; [`DecodeError::InvalidDimensions`] for one with no area.
+/// [`DecodeError::InvalidImage`] for bytes that are no image the codec reads,
+/// [`DecodeError::InvalidDimensions`] for one with no area.
 pub async fn decode(bytes: &[u8], max_dimension: Option<u32>) -> Result<DecodedImage, DecodeError> {
     crate::format::sniff(bytes).ok_or(DecodeError::InvalidImage)?;
     let decoded = crate::backend::decode(bytes, max_dimension).await?;
@@ -78,10 +74,8 @@ pub async fn decode(bytes: &[u8], max_dimension: Option<u32>) -> Result<DecodedI
     Ok(decoded)
 }
 
-/// `bytes` decoded at once on the calling thread, with the codec's own Rust
-/// decoders on every target, as [`decode`] would decode them. For the few
-/// callers that still decode inside a frame; [`decode`] is the one to use,
-/// which on the web takes the browser's codecs and never blocks.
+/// `bytes` decoded at once on the calling thread with the codec's own Rust
+/// decoders; [`decode`] is the one to use.
 ///
 /// # Errors
 ///
@@ -106,12 +100,6 @@ pub fn decode_now(bytes: &[u8], max_dimension: Option<u32>) -> Result<DecodedIma
     })
 }
 
-/// `image` written as `encoding`.
-///
-/// # Errors
-///
-/// [`EncodeError::Malformed`] for pixels that do not match their size;
-/// [`EncodeError::Failed`] when the encoder refuses them.
 pub async fn encode(image: &DecodedImage, encoding: Encoding) -> Result<Vec<u8>, EncodeError> {
     let expected = (image.width as usize)
         .checked_mul(image.height as usize)
@@ -122,13 +110,6 @@ pub async fn encode(image: &DecodedImage, encoding: Encoding) -> Result<Vec<u8>,
     crate::backend::encode(image, encoding).await
 }
 
-/// `image` written as `encoding` at once on the calling thread, with the
-/// codec's own Rust encoders on every target. For the few callers that
-/// still encode inside a frame; [`encode`] is the one to use.
-///
-/// # Errors
-///
-/// As [`encode`].
 pub fn encode_now(image: &DecodedImage, encoding: Encoding) -> Result<Vec<u8>, EncodeError> {
     use image::{ExtendedColorType, ImageEncoder};
     let expected = (image.width as usize)

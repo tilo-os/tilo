@@ -1,7 +1,5 @@
-//! What an image is and how large, from its header alone: no pixels are
-//! decoded, on any target.
+//! An image's format and size, from its header alone: no pixels are decoded.
 
-/// An image format the codec reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Format {
     Png,
@@ -12,7 +10,6 @@ pub enum Format {
 }
 
 impl Format {
-    /// Its media type, as a browser or a mail part names it.
     #[must_use]
     pub const fn mime(self) -> &'static str {
         match self {
@@ -25,8 +22,7 @@ impl Format {
     }
 }
 
-/// The format `bytes` are in, read from their first bytes; `None` for one
-/// the codec does not read.
+/// The format of `bytes`, or `None` for one the codec does not read.
 #[must_use]
 pub fn sniff(bytes: &[u8]) -> Option<Format> {
     match imagesize::image_type(bytes).ok()? {
@@ -39,8 +35,8 @@ pub fn sniff(bytes: &[u8]) -> Option<Format> {
     }
 }
 
-/// The width and height `bytes` encode, read from their header; `None` for
-/// a format the codec does not read or a header too short or malformed.
+/// The width and height `bytes` encode, or `None` for a format the codec does
+/// not read or a malformed header.
 #[must_use]
 pub fn dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     sniff(bytes)?;
