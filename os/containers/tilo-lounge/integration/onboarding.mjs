@@ -620,6 +620,32 @@ try {
   mark('tilo login ran and the tab is in the person\'s own workspace');
   console.log(`ok: the person is in their own workspace (${report.workspace})`);
 
+  // Let in, not only named: no failure screen over the workspace. Then a
+  // second tab of the same browser, which holds a device key of its own (one
+  // per tab), opens the person's workspace as theirs, and the first tab
+  // stays in: the agent's entry never takes the person's own tabs out.
+  const failureOf = tab => tab.evaluate(`document.documentElement.dataset.failure
+    ? document.documentElement.dataset.failure + ': ' + (document.body.innerText || '').replace(/\\s+/g, ' ').slice(0, 300) : ''`).catch(() => '');
+  const refusedFirst = await failureOf(stranger.tab);
+  if (refusedFirst) await fail(`the person's own workspace refused the tab after the agent entered it: ${refusedFirst}`);
+  const second = await stranger.browser.tab();
+  second.log ??= [];
+  said.push({name: 'stranger-second-tab', tab: second});
+  await second.send('Emulation.setDeviceMetricsOverride', deskMetrics).catch(() => {});
+  await second.navigate(site);
+  await until(second, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)`,
+    'a second tab of the person arriving', stepLimit(8));
+  const refusedSecond = await failureOf(second);
+  if (refusedSecond) await fail(`a second tab of the person was not let into their own workspace: ${refusedSecond}`);
+  await until(second, `!!(${JSON.stringify(report.workspace)} === document.title)`,
+    'the second tab in the person\'s own workspace', stepLimit(4));
+  await dump(second, '5-own-workspace-second-tab');
+  const refusedAfter = await failureOf(stranger.tab);
+  if (refusedAfter) await fail(`the first tab lost the person's own workspace when the second came: ${refusedAfter}`);
+  await second.close();
+  mark('a second tab of the person entered their own workspace, and the first stayed in');
+  console.log('ok: a second tab of the person enters their own workspace, and the first stays in');
+
   // -- 4. a passkey brings the same person back to that workspace ------------
   // Kept from the person's own desktop, as "Keep with passkey" does.
   const kept = await stranger.tab.evaluate(`(async () => {

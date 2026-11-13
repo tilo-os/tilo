@@ -176,6 +176,40 @@ fn apply_loaded_membership(
     runtime.loaded_generation = observed;
 }
 
+/// Enrol `cert`'s device as a member of `workspace`, where [`crate::workspace_access::decide`]
+/// answered [`crate::workspace_access::Decision::AdmitAndEnrol`], through whoever owns the
+/// workspace's membership: the governance of a workspace this relay governs records the device
+/// under its person, and its settle projects it here; any other workspace's membership file takes
+/// it ([`admit_member`]). The caller decides again afterwards: a device governance did not take
+/// is still no member.
+///
+/// # Errors
+///
+/// The store's error when the membership file cannot be read or written.
+pub(crate) async fn enrol(
+    workspace: &SharedWorkspace,
+    cert: &tilo_user_identity::DeviceCert,
+    expected_revision: u64,
+) -> Result<(), StoreError> {
+    let governed = {
+        let runtime = workspace.lock().await;
+        (runtime.admission == AdmissionMode::Governed).then(|| {
+            runtime.workspace_authority.as_ref().and_then(|authority| {
+                Some((authority.workspaces()?, authority.workspace().to_owned()))
+            })
+        })
+    };
+    match governed {
+        None => admit_member(workspace, cert.device_public_key, expected_revision).await,
+        Some(Some((workspaces, uuid))) => {
+            workspaces.enrol_member_device(cert, &uuid).await;
+            Ok(())
+        }
+        // Governed elsewhere: only that governance admits a device.
+        Some(None) => Ok(()),
+    }
+}
+
 /// Persist an explicitly authorized admission before granting it. The detached,
 /// bounded owner finishes a started update even if its caller disconnects.
 pub(crate) async fn admit_member(
@@ -515,7 +549,7 @@ pub async fn admit_for(
         Decision::Admit => Ok(Ok(())),
         Decision::Deny(reason) => Ok(Err(reason)),
         Decision::AdmitAndEnrol => {
-            admit_member(workspace, peer.device_public_key, revision).await?;
+            enrol(workspace, &peer.cert, revision).await?;
             let runtime = fresh_membership(workspace).await?;
             Ok(match decide(&runtime, trust, peer, operation) {
                 Decision::Admit => Ok(()),

@@ -328,7 +328,7 @@ async fn admit_subscription(
         Decision::AdmitAndEnrol => {
             let revision = wr.membership_revision;
             drop(wr);
-            crate::workspace_io::admit_member(&ws, peer.device_public_key, revision).await?;
+            crate::workspace_io::enrol(&ws, &peer.cert, revision).await?;
             wr = crate::workspace_io::fresh_membership(&ws).await?;
             if !session.admits(&wr, peer, WorkspaceOperation::Subscribe) {
                 return Err(PeerError::Protocol(
