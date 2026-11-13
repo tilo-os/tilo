@@ -130,25 +130,32 @@ impl MigrationIntent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn serialized_child_cannot_escape_private_grant_or_discover_recursive_authority() {
-        let (_root, mut main, _) = super::super::tests::fixture();
-        let other = tempfile::tempdir().unwrap();
-        main.grant.computer_applications = Some(NativePath::encode(other.path()));
-        let error = main.load_computer_applications().unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        assert!(std::fs::read_dir(other.path()).unwrap().next().is_none());
-    }
-    #[test]
-    fn metadata_without_real_secondary_custody_never_authorizes_applications() {
-        let (_root, mut main, _) = super::super::tests::fixture();
-        main.grant.computer_applications =
-            Some(NativePath::encode(&main.directory.join("applications")));
-        assert!(main.computer_applications().is_err());
-        assert!(main.for_media().is_err());
-        assert_eq!(
-            std::fs::read(main.grant.source.decode().unwrap().join("original")).unwrap(),
-            b"preserve"
-        );
+    tilo_test_env::scenario! {
+        /// The authority a computer's applications are transferred under.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn computer_applications_need_real_secondary_custody_and_stay_inside_their_grant;
+
+        phase serialized_child_cannot_escape_private_grant_or_discover_recursive_authority;
+        {
+            let (_root, mut main, _) = super::super::tests::fixture();
+            let other = tempfile::tempdir().unwrap();
+            main.grant.computer_applications = Some(NativePath::encode(other.path()));
+            let error = main.load_computer_applications().unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert!(std::fs::read_dir(other.path()).unwrap().next().is_none());
+        }
+
+        phase metadata_without_real_secondary_custody_never_authorizes_applications;
+        {
+            let (_root, mut main, _) = super::super::tests::fixture();
+            main.grant.computer_applications =
+                Some(NativePath::encode(&main.directory.join("applications")));
+            assert!(main.computer_applications().is_err());
+            assert!(main.for_media().is_err());
+            assert_eq!(
+                std::fs::read(main.grant.source.decode().unwrap().join("original")).unwrap(),
+                b"preserve"
+            );
+        }
     }
 }

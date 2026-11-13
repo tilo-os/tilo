@@ -756,96 +756,105 @@ mod tests {
         };
         (root, intent, installation)
     }
-    #[test]
-    fn actual_operation_binding_is_durable_idempotent_and_refuses_changed_source_or_layout() {
-        let (root, intent, installation) = fixture();
-        let operation = uuid::Uuid::new_v4().to_string();
-        let value = intent
-            .bind_attested(intent.grant.plan.clone(), &operation, &installation)
-            .unwrap();
-        assert_eq!(value["operation_id"], operation);
-        assert_eq!(
-            Plan::read_private(&intent.directory, &operation)
-                .unwrap()
-                .operation_id,
-            operation
-        );
-        assert_eq!(
-            intent
+    tilo_test_env::scenario! {
+        /// Binding a migration intent to an installation.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_migration_intent_binding_is_durable_and_refuses_changed_or_unsafe_inputs;
+
+        phase actual_operation_binding_is_durable_idempotent_and_refuses_changed_source_or_layout;
+        {
+            let (root, intent, installation) = fixture();
+            let operation = uuid::Uuid::new_v4().to_string();
+            let value = intent
                 .bind_attested(intent.grant.plan.clone(), &operation, &installation)
-                .unwrap(),
-            value
-        );
-        let mut changed = intent.grant.plan.clone();
-        changed.categories.accounts = true;
-        assert!(
-            intent
-                .bind_attested(changed, &operation, &installation)
-                .is_err()
-        );
-        let mut different = installation;
-        different.basis.disk.guid = "44444444-4444-4444-8444-444444444444".into();
-        assert!(
-            intent
-                .bind_attested(
-                    intent.grant.plan.clone(),
-                    &uuid::Uuid::new_v4().to_string(),
-                    &different
-                )
-                .is_err()
-        );
-        assert_eq!(
-            std::fs::read(root.path().join("source/original")).unwrap(),
-            b"preserve"
-        );
-    }
-    #[test]
-    fn retained_file_policy_survives_actual_installation_binding_without_copying() {
-        let (root, mut intent, installation) = fixture();
-        intent.grant.plan.home_policy =
-            crate::setup::migration_handoff::HomePolicy::AccessReadWrite;
-        let operation = uuid::Uuid::new_v4().to_string();
-        let value = intent
-            .bind_attested(intent.grant.plan.clone(), &operation, &installation)
-            .unwrap();
-        assert_eq!(value["home_policy"], "access-read-write");
-        let saved = Plan::read_private(&intent.directory, &operation).unwrap();
-        assert_eq!(
-            saved.home_policy,
-            crate::setup::migration_handoff::HomePolicy::AccessReadWrite
-        );
-        assert_eq!(
-            std::fs::read(root.path().join("source/original")).unwrap(),
-            b"preserve"
-        );
-        assert_eq!(std::fs::read_dir(&intent.directory).unwrap().count(), 1);
-        assert!(!root.path().join("imported-home").exists());
-    }
-    #[test]
-    fn selected_flatpak_cannot_be_silently_lost_in_stage_binding() {
-        let (_root, mut intent, installation) = fixture();
-        intent.grant.plan.categories.flatpak = true;
-        let error = intent
-            .bind(&uuid::Uuid::new_v4().to_string(), &installation)
-            .unwrap_err();
-        assert!(error.to_string().contains("Flatpak inventory"));
-        assert_eq!(std::fs::read_dir(&intent.directory).unwrap().count(), 0);
-    }
-    #[test]
-    fn explicit_intent_load_refuses_link_and_fifo_without_reading_other_content() {
-        let root = tempfile::tempdir().unwrap();
-        let directory = root.path().canonicalize().unwrap();
-        let outside = directory.join("outside");
-        std::fs::write(&outside, b"unchanged").unwrap();
-        symlink(&outside, directory.join(FILE)).unwrap();
-        assert!(MigrationIntent::load(&directory).is_err());
-        assert_eq!(std::fs::read(&outside).unwrap(), b"unchanged");
-        std::fs::remove_file(directory.join(FILE)).unwrap();
-        use std::os::unix::ffi::OsStrExt;
-        let name = std::ffi::CString::new(directory.join(FILE).as_os_str().as_bytes()).unwrap();
-        // SAFETY: terminated name points inside this isolated fixture.
-        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
-        assert!(MigrationIntent::load(&directory).is_err());
+                .unwrap();
+            assert_eq!(value["operation_id"], operation);
+            assert_eq!(
+                Plan::read_private(&intent.directory, &operation)
+                    .unwrap()
+                    .operation_id,
+                operation
+            );
+            assert_eq!(
+                intent
+                    .bind_attested(intent.grant.plan.clone(), &operation, &installation)
+                    .unwrap(),
+                value
+            );
+            let mut changed = intent.grant.plan.clone();
+            changed.categories.accounts = true;
+            assert!(
+                intent
+                    .bind_attested(changed, &operation, &installation)
+                    .is_err()
+            );
+            let mut different = installation;
+            different.basis.disk.guid = "44444444-4444-4444-8444-444444444444".into();
+            assert!(
+                intent
+                    .bind_attested(
+                        intent.grant.plan.clone(),
+                        &uuid::Uuid::new_v4().to_string(),
+                        &different
+                    )
+                    .is_err()
+            );
+            assert_eq!(
+                std::fs::read(root.path().join("source/original")).unwrap(),
+                b"preserve"
+            );
+        }
+
+        phase retained_file_policy_survives_actual_installation_binding_without_copying;
+        {
+            let (root, mut intent, installation) = fixture();
+            intent.grant.plan.home_policy =
+                crate::setup::migration_handoff::HomePolicy::AccessReadWrite;
+            let operation = uuid::Uuid::new_v4().to_string();
+            let value = intent
+                .bind_attested(intent.grant.plan.clone(), &operation, &installation)
+                .unwrap();
+            assert_eq!(value["home_policy"], "access-read-write");
+            let saved = Plan::read_private(&intent.directory, &operation).unwrap();
+            assert_eq!(
+                saved.home_policy,
+                crate::setup::migration_handoff::HomePolicy::AccessReadWrite
+            );
+            assert_eq!(
+                std::fs::read(root.path().join("source/original")).unwrap(),
+                b"preserve"
+            );
+            assert_eq!(std::fs::read_dir(&intent.directory).unwrap().count(), 1);
+            assert!(!root.path().join("imported-home").exists());
+        }
+
+        phase selected_flatpak_cannot_be_silently_lost_in_stage_binding;
+        {
+            let (_root, mut intent, installation) = fixture();
+            intent.grant.plan.categories.flatpak = true;
+            let error = intent
+                .bind(&uuid::Uuid::new_v4().to_string(), &installation)
+                .unwrap_err();
+            assert!(error.to_string().contains("Flatpak inventory"));
+            assert_eq!(std::fs::read_dir(&intent.directory).unwrap().count(), 0);
+        }
+
+        phase explicit_intent_load_refuses_link_and_fifo_without_reading_other_content;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let directory = root.path().canonicalize().unwrap();
+            let outside = directory.join("outside");
+            std::fs::write(&outside, b"unchanged").unwrap();
+            symlink(&outside, directory.join(FILE)).unwrap();
+            assert!(MigrationIntent::load(&directory).is_err());
+            assert_eq!(std::fs::read(&outside).unwrap(), b"unchanged");
+            std::fs::remove_file(directory.join(FILE)).unwrap();
+            use std::os::unix::ffi::OsStrExt;
+            let name = std::ffi::CString::new(directory.join(FILE).as_os_str().as_bytes()).unwrap();
+            // SAFETY: terminated name points inside this isolated fixture.
+            assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+            assert!(MigrationIntent::load(&directory).is_err());
+        }
     }
 }
 
