@@ -266,3 +266,159 @@ fn a_pending_write_settles_as_its_save_does() {
         "the silent save's answer stayed open throughout"
     );
 }
+
+/// A provider names a record only as `record:<app>:<record>`: anything else
+/// names none, so a request under it acts on no record. The workspace is the
+/// one the caller is in, never one the provider could name.
+#[test]
+fn a_provider_names_a_record_only_in_the_record_form() {
+    let rows: [(&str, Option<(&str, &str)>); 8] = [
+        ("record:so.tilo.notes:n1", Some(("so.tilo.notes", "n1"))),
+        // App ids have no colon; a record id may.
+        (
+            "record:so.tilo.sheets:uuid:6f1c",
+            Some(("so.tilo.sheets", "uuid:6f1c")),
+        ),
+        ("record:so.tilo.notes", None),
+        ("records:so.tilo.notes:n1", None),
+        ("Record:so.tilo.notes:n1", None),
+        ("so.tilo.notes:n1", None),
+        ("workspace:6f1c1b62-4f5e-4b8a-9b52-1f8a3f0f3a11", None),
+        ("", None),
+    ];
+    for (provider, expected) in rows {
+        let expected = expected.map(|(app, record)| route(WORKSPACE, app, record));
+        assert_eq!(
+            super::record_of(provider, WORKSPACE),
+            expected,
+            "{provider:?}"
+        );
+    }
+    let named = route(WORKSPACE, "so.tilo.sheets", "uuid:6f1c");
+    let provider = super::record_provider(&named);
+    assert_eq!(provider, "record:so.tilo.sheets:uuid:6f1c");
+    assert_eq!(super::record_of(&provider, WORKSPACE), Some(named));
+    assert_eq!(
+        super::record_of(&provider, OTHER_WORKSPACE),
+        Some(route(OTHER_WORKSPACE, "so.tilo.sheets", "uuid:6f1c")),
+        "the workspace is the caller's, whatever record the provider names"
+    );
+}
+
+/// What a request waits for follows from what it names: running an operation
+/// of a record waits for that record's keys as an act, a listing of one as a
+/// read, and a request naming no record never waits for one.
+#[test]
+fn a_request_waits_for_the_record_its_provider_names() {
+    use super::keys::{Keys, catalogue_keys, invoke_keys};
+    use tilo_actions::remote::{
+        CatalogueQuery, InvokeRequest, RemoteActionTarget, ViewResourceQuery,
+    };
+    let invoke = |provider: &str| InvokeRequest {
+        on_behalf_of: None,
+        invocation: tilo_actions::InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: provider.into(),
+            address: tilo_actions::door::ActionAddress::new("notes.page", "append"),
+        },
+        argument: tilo_actions::remote::InvokeArgument::default(),
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+    };
+    let listing = |provider: Option<&str>| CatalogueQuery {
+        provider: provider.map(str::to_owned),
+        ..CatalogueQuery::default()
+    };
+    let record = |act| Keys::Record {
+        app_id: "so.tilo.notes".into(),
+        record: "uuid:n1".into(),
+        act,
+    };
+    let named = "record:so.tilo.notes:uuid:n1";
+    let no_record = "record:so.tilo.notes";
+
+    assert_eq!(invoke_keys(&invoke(named)), record(true));
+    assert_eq!(invoke_keys(&invoke(no_record)), Keys::Joined);
+    assert_eq!(
+        invoke_keys(&invoke(&format!("workspace:{WORKSPACE}"))),
+        Keys::Joined
+    );
+    assert_eq!(catalogue_keys(&listing(Some(named))), record(false));
+    assert_eq!(catalogue_keys(&listing(Some(no_record))), Keys::Workspace);
+    assert_eq!(catalogue_keys(&listing(None)), Keys::Workspace);
+    let view = CatalogueQuery {
+        view_resource: Some(ViewResourceQuery {
+            id: "notes.page/p1".into(),
+            kind: "notes.page".into(),
+        }),
+        ..listing(Some(named))
+    };
+    assert_eq!(
+        catalogue_keys(&view),
+        Keys::Joined,
+        "a view lookup reads through the host's records link"
+    );
+}
+
+/// A record's keys are waited for as an act when it is acted on, however the
+/// request named it, and as a read when it is only listed; a request that
+/// names no record waits for none either way.
+#[test]
+fn a_records_keys_are_waited_for_as_an_act_or_a_read() {
+    use super::keys::Keys;
+    let record = |act| Keys::Record {
+        app_id: "so.tilo.notes".into(),
+        record: "uuid:n1".into(),
+        act,
+    };
+    let (act, read) = (record(true), record(false));
+    assert!(
+        matches!(
+            act.needs(),
+            Needs::Act {
+                app_id: "so.tilo.notes",
+                record: "uuid:n1"
+            }
+        ),
+        "{:?}",
+        act.needs()
+    );
+    assert!(
+        matches!(
+            read.needs(),
+            Needs::Read {
+                app_id: "so.tilo.notes",
+                record: "uuid:n1"
+            }
+        ),
+        "{:?}",
+        read.needs()
+    );
+    assert!(
+        matches!(
+            read.act(),
+            Needs::Act {
+                app_id: "so.tilo.notes",
+                record: "uuid:n1"
+            }
+        ),
+        "acting on a record that was only listed waits for its keys as an act: {:?}",
+        read.act()
+    );
+    assert!(
+        matches!(
+            act.read(),
+            Needs::Read {
+                app_id: "so.tilo.notes",
+                record: "uuid:n1"
+            }
+        ),
+        "{:?}",
+        act.read()
+    );
+    assert!(matches!(Keys::Joined.act(), Needs::Joined));
+    assert!(matches!(Keys::Workspace.read(), Needs::Workspace));
+}

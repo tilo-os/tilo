@@ -1682,6 +1682,47 @@ fn a_refusal_no_plan_changes_is_not_repaired() {
     assert!(!is_final("invalid_arguments: no column `Session`"));
 }
 
+/// A refusal that ends the task spends none of its repairs and is what the
+/// task's end logs; a failure that only mentions a refusal's words further
+/// in is a slip like any other, planned around.
+#[test]
+fn a_final_refusal_spends_no_repair_and_is_told_by_how_the_error_starts() {
+    use super::repairs::{Repairs, Unrepaired, is_final};
+    let mentioned = "action_failed: the cell says not_permitted: ask its owner";
+    assert!(!is_final(mentioned));
+    let mut repairs = Repairs::default();
+    assert!(
+        !repairs.any(),
+        "a task that met no failure repaired nothing"
+    );
+    assert_eq!(repairs.admit(&set_cells("A1", "x"), mentioned), Ok(1));
+    assert_eq!(
+        repairs.admit(
+            &set_cells("B1", "y"),
+            "not_permitted: the record is not shared with the agent"
+        ),
+        Err(Unrepaired::Final)
+    );
+    assert_eq!(
+        repairs.logged(),
+        serde_json::json!({"count": 1, "unrepaired": "Final"}),
+        "the refusal is the task's end, and it took no repair"
+    );
+    assert_eq!(repairs.logged_latest().unwrap()["reason"], mentioned);
+
+    let mut refused = Repairs::default();
+    assert_eq!(
+        refused.admit(&set_cells("A1", "x"), "the agent is paused or stopped"),
+        Err(Unrepaired::Final)
+    );
+    assert!(refused.any(), "a task ended by a refusal says so");
+    assert_eq!(
+        refused.logged(),
+        serde_json::json!({"count": 0, "unrepaired": "Final"})
+    );
+    assert_eq!(refused.logged_latest(), None);
+}
+
 /// A repair's plan runs no operation again as it ran, and what such a
 /// step was planned to fulfil counts as done.
 #[test]
