@@ -154,19 +154,6 @@ impl BrokerChannels {
         }
     }
 
-    /// The verdict on an op for `channel` from the gate governing it
-    /// ([`channel_crypto::admission`]). This broker holds every channel's
-    /// whole governance state, so a channel with no gate is one that is not
-    /// encrypted.
-    pub fn document_admission(
-        &self,
-        workspace: &str,
-        channel: ChannelId,
-        encryption: Option<&EncryptionMetadata>,
-    ) -> collab_types::inbound::OpAdmission {
-        self.gates.admission(workspace, channel, encryption)
-    }
-
     /// Append an op validated on `route` to durable history when it belongs
     /// there, bound to its record and workspace. Failure is logged, never fatal:
     /// the op is still delivered live. The caller syncs what this wrote once

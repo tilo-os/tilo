@@ -60,21 +60,7 @@ impl Gates {
         self.gate_for(workspace)
             .is_none_or(|gate| gate.accepts(encryption, channel))
     }
-
-    /// The verdict on an op for `channel` from the gate governing it
-    /// ([`channel_crypto::admission`]). A broker holding every channel's governance state knows a
-    /// channel with no gate is one that is not encrypted.
-    #[must_use]
-    pub fn admission(
-        &self,
-        workspace: &str,
-        channel: ChannelId,
-        encryption: Option<&EncryptionMetadata>,
-    ) -> collab_types::inbound::OpAdmission {
-        channel_crypto::admission(self.gate_for(workspace), true, channel, encryption)
-    }
 }
-
 impl ChannelGates for Gates {
     fn register_channel_gate(&self, channel: ChannelId, gate: channel_crypto::ChannelGate) {
         self.register(channel, gate);

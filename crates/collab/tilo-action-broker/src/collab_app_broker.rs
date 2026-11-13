@@ -6944,9 +6944,7 @@ impl AppBrokerState {
         if route.cluster_id.is_empty() {
             return;
         }
-        let Some(admission) = self.admission_of(event, route) else {
-            return;
-        };
+        let admission = Self::admission_of(event);
         let Ok(mut all_channels) = self.channels.lock() else {
             return;
         };

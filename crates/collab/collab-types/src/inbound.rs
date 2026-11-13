@@ -2,18 +2,18 @@
 //! whether its channel admits it as cleartext, and the hold for ops that
 //! cannot open yet.
 //!
-//! Whether cleartext belongs on a channel is decided by the channel's
-//! governance gate alone (`channel_crypto::admission`); an endpoint applies
-//! the verdict and keeps no rule of its own. An op it cannot decide or open
-//! yet waits in its route's [`InboundHold`] until the route's state changes
-//! or history supplies it. Nothing waits on a timer, and nothing is dropped
-//! unsaid.
+//! Whether cleartext belongs on a channel is decided where the op enters,
+//! before it is recorded; an endpoint that delivers an op it admitted states
+//! the verdict it admitted it under, and keeps no rule of its own. An op it
+//! cannot decide or open yet waits in its route's [`InboundHold`] until the
+//! route's state changes or history supplies it. Nothing waits on a timer,
+//! and nothing is dropped unsaid.
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
 
 use crate::{ArtifactId, Ed25519PublicKey, SignedOp};
 
-/// The verdict on one op from its channel's gate.
+/// The verdict on one op: whether its channel admits it as cleartext.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum OpAdmission {
     /// No verdict yet: the op waits for one.

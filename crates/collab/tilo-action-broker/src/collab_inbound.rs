@@ -324,6 +324,14 @@ mod tests {
         Standing::person(policy, "editor")
     }
 
+    /// The gate of a workspace that requires encryption: its group's, which
+    /// every record of the workspace seals under.
+    fn gate() -> channel_crypto::ChannelGate {
+        channel_crypto::ChannelGate {
+            encryption_required: true,
+        }
+    }
+
     #[test]
     fn a_host_replay_of_old_history_is_admitted_where_a_live_op_that_old_is_not() {
         let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
@@ -481,12 +489,10 @@ mod tests {
     /// the writes it was shown in the order it was shown them.
     fn member_takes(writes: &[SignedOp]) -> MemberTook {
         let channels = Arc::new(Mutex::new(BrokerChannels::default()));
-        channels.lock().unwrap().register_channel_gate(
-            collab_types::document_channel_id("notes", "workspace", "record"),
-            channel_crypto::ChannelGate {
-                encryption_required: true,
-            },
-        );
+        channels
+            .lock()
+            .unwrap()
+            .register_channel_gate(collab_types::workspace_scope("workspace"), gate());
         let fanout = FanoutState::new();
         let shown = Arc::new(Mutex::new(Vec::new()));
         let app = Arc::clone(&shown);
@@ -560,12 +566,10 @@ mod tests {
             op
         };
         let channels = Arc::new(Mutex::new(BrokerChannels::default()));
-        channels.lock().unwrap().register_channel_gate(
-            collab_types::document_channel_id("notes", "workspace", "record"),
-            channel_crypto::ChannelGate {
-                encryption_required: true,
-            },
-        );
+        channels
+            .lock()
+            .unwrap()
+            .register_channel_gate(collab_types::workspace_scope("workspace"), gate());
         let fanout = FanoutState::new();
         let delivered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let app = Arc::clone(&delivered);

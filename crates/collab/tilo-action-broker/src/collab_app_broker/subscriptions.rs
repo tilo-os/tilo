@@ -5,18 +5,27 @@ use super::{
 use std::sync::Mutex;
 use tokio::sync::mpsc;
 
-/// This broker's verdict for `envelope` on `route`'s channel as it fans out
-/// live: a sealed op is sealed because the channel requires it, and
-/// cleartext is admitted exactly while the channel's gates admit it. The
-/// app applies the verdict and keeps no policy of its own.
-pub(super) fn live_admission(
-    channels: &BrokerChannels,
-    route: &CrdtRoute,
-    envelope: &collab_types::SignedOp,
-) -> OpAdmission {
-    let channel =
-        collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record_id);
-    channels.document_admission(&route.cluster_id, channel, envelope.encryption.as_ref())
+/// This broker's verdict for an op it delivers: the one it decided when it
+/// admitted the op, read off the op itself. A sealed op is sealed because
+/// its channel requires it, and cleartext is admitted because the channel's
+/// gates admitted it then. The app applies that verdict and keeps no policy
+/// of its own.
+///
+/// Reading the channel's gate again here would decide the op a second time,
+/// by whatever the channel requires now: a write admitted in the clear a
+/// moment before the channel started requiring encryption — before its
+/// record sealed, or in a record whose seal another device's write made
+/// after it — would be refused when it is delivered again, and whether it
+/// reached an app would depend on when the gate arrived against when the
+/// write did. Refusing what the gate does not take is the ingress's job,
+/// before the op is recorded ([`crate::collab_inbound::deliver`]); what was
+/// admitted is history.
+pub(super) fn recorded_admission(envelope: &collab_types::SignedOp) -> OpAdmission {
+    if envelope.encryption.is_some() {
+        OpAdmission::EncryptionRequired
+    } else {
+        OpAdmission::CleartextAdmitted
+    }
 }
 
 /// Replay to a new op subscriber of `channel_id` the ops this broker
@@ -45,11 +54,7 @@ pub(super) fn admitted_ops(
             let _ = tx.send(OpEnvelope {
                 op_bytes,
                 from_user_id: hex::encode(op.author.as_bytes()),
-                admission: if op.encryption.is_some() {
-                    OpAdmission::EncryptionRequired
-                } else {
-                    OpAdmission::CleartextAdmitted
-                },
+                admission: recorded_admission(op),
             });
         }
     }
@@ -78,18 +83,12 @@ pub(super) fn held_tree_records(
 }
 
 impl super::AppBrokerState {
-    /// The verdict a document event fans out with, before the subscribers
-    /// are locked; `None` when the gates are unavailable.
-    pub(super) fn admission_of(
-        &self,
-        event: &super::CollabEvent,
-        route: &CrdtRoute,
-    ) -> Option<OpAdmission> {
+    /// The verdict a document event fans out with.
+    pub(super) fn admission_of(event: &super::CollabEvent) -> OpAdmission {
         let super::CollabEvent::Document { envelope, .. } = event else {
-            return Some(OpAdmission::Unstated);
+            return OpAdmission::Unstated;
         };
-        let broker_channels = self.broker_channels.lock().ok()?;
-        Some(live_admission(&broker_channels, route, envelope))
+        recorded_admission(envelope)
     }
 
     /// The records local app windows hold, by the window instance each shows:
@@ -523,8 +522,15 @@ mod tests {
         );
     }
 
+    /// A write in the clear is admitted, and the workspace then starts
+    /// requiring encryption. Every way the op reaches an app after that — the
+    /// history a window opened now is sent, and the op fanned out again —
+    /// carries the verdict it was admitted under: the history is the
+    /// channel's own, and what a window receives never depends on how long
+    /// after the write the gate arrived.
     #[test]
     fn cleartext_admitted_before_the_channel_required_encryption_stays_admitted() {
+        use std::sync::Arc;
         let route = CrdtRoute::record("so.tilo.chat", "workspace-1", "");
         let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
         let op = SignedOp::new_unsigned(
@@ -538,26 +544,56 @@ mod tests {
             tilo_clock::wall(),
             1,
         );
-        let channels = Mutex::new(BrokerChannels::default());
-        let admission = || live_admission(&channels.lock().unwrap(), &route, &op);
-        assert_eq!(admission(), OpAdmission::CleartextAdmitted);
+        let channels = Arc::new(Mutex::new(BrokerChannels::default()));
         channels
             .lock()
             .unwrap()
             .state_for(artifact)
             .record_validated_op(op.clone());
+        let (state, _bridge_rx) = broker(&channels);
+        let mut first = state.subscribe_ops(&route.channel_key(), 1);
+        let delivered = |rx: &mut mpsc::UnboundedReceiver<OpEnvelope>| {
+            postcard::from_bytes::<SignedOp>(&rx.try_recv().unwrap().op_bytes).unwrap()
+        };
+        assert_eq!(delivered(&mut first), op, "admitted in the clear");
+        assert!(
+            first.try_recv().is_err(),
+            "the subscriber holds exactly the op the broker admitted"
+        );
+        // The workspace's group requires encryption from now on.
         channels.lock().unwrap().register_channel_gate(
-            collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record_id),
+            collab_types::workspace_scope(&route.cluster_id),
             channel_crypto::ChannelGate {
                 encryption_required: true,
             },
         );
-        assert_eq!(admission(), OpAdmission::EncryptionRequired);
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        admitted_ops(&channels, &route.channel_key(), &tx);
+        let mut reopened = state.subscribe_ops(&route.channel_key(), 2);
+        let replayed = reopened.try_recv().unwrap();
         assert_eq!(
-            rx.try_recv().unwrap().admission,
-            OpAdmission::CleartextAdmitted
+            postcard::from_bytes::<SignedOp>(&replayed.op_bytes).unwrap(),
+            op
         );
+        assert_eq!(
+            replayed.admission,
+            OpAdmission::CleartextAdmitted,
+            "history admitted before the channel sealed stays admitted"
+        );
+        // The same op reaching a subscriber again is delivered as admitted.
+        state.fanout_to_route(
+            &super::super::CollabEvent::Document {
+                envelope: Box::new(op),
+                from_user_id: "writer".into(),
+                decrypted_payload: None,
+            },
+            u64::MAX,
+            &route,
+        );
+        for rx in [&mut reopened, &mut first] {
+            assert_eq!(
+                rx.try_recv().unwrap().admission,
+                OpAdmission::CleartextAdmitted,
+                "a write the broker admitted is not refused after the switch"
+            );
+        }
     }
 }
