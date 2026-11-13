@@ -46,6 +46,17 @@ pub struct Apps {
     state: RefCell<State>,
     /// Why a workspace's apps may not start yet, once the session lent it ([`Self::lend_admission`]).
     admission: RefCell<Option<Admission>>,
+    /// The deliveries whose answer a caller waits for, admitted and not settled yet: the broker
+    /// answers a person's action as soon as it is admitted, and the action's own answer is read
+    /// from its state once it settles ([`AppActions::poll_answers`]).
+    awaited: Arc<std::sync::Mutex<Vec<Awaited>>>,
+}
+
+/// A delivery whose answer its caller waits for: the invocation, who asked it, and who hears.
+struct Awaited {
+    invocation: tilo_actions::InvocationId,
+    caller: Caller,
+    answered: crate::search::Answered,
 }
 
 /// What lets a package author its own records in the workspace it opens in,
@@ -178,6 +189,7 @@ impl Apps {
         Self {
             desktop: RefCell::new(None),
             admission: RefCell::new(None),
+            awaited: Arc::default(),
             state: RefCell::new(State {
                 environment,
                 x11: None,
@@ -312,8 +324,8 @@ impl Apps {
         self.deliver_answered(target, arguments, workspace, None)
     }
 
-    /// [`Self::deliver`], telling `answered` what the action answered once it settled: the
-    /// broker holds the delivery until then, for at most [`ANSWER_WAIT_MS`].
+    /// [`Self::deliver`], telling `answered` what the action answered: at once when the broker
+    /// answers it settled, else once it settles ([`AppActions::poll_answers`]).
     fn deliver_answered(
         &self,
         target: RemoteActionTarget,
@@ -345,14 +357,12 @@ impl Apps {
             wait_ms: None,
             appearance: None,
         };
-        let request = InvokeRequest {
-            wait_ms: answered.is_some().then_some(ANSWER_WAIT_MS),
-            ..request
-        };
         // The delivery outlives this pass: its answer runs on the thread that completed it, and
         // wakes this loop, which reports what a person's own action could not do.
         let resource = request.target.address.resource.clone();
         let action = request.target.address.action.clone();
+        let asker = caller.clone();
+        let awaited = Arc::clone(&self.awaited);
         broker
             .action_invoke_local_person(&caller, &request)
             .then(move |answer| {
@@ -360,14 +370,26 @@ impl Apps {
                     tracing::warn!(%error, %resource, %action, "an app action was not delivered");
                 }
                 if let Some(answered) = answered {
-                    let value = match answer {
+                    match answer {
                         Some(Ok(tilo_actions::remote::InvocationReceipt {
                             status: tilo_actions::remote::ReceiptStatus::Completed { output },
                             ..
-                        })) => output.value,
-                        _ => None,
-                    };
-                    answered(value);
+                        })) => answered(output.value),
+                        // Admitted and running: its answer is read once it settled.
+                        Some(Ok(tilo_actions::remote::InvocationReceipt {
+                            status: tilo_actions::remote::ReceiptStatus::Accepted,
+                            invocation,
+                        })) => {
+                            if let Ok(mut held) = awaited.lock() {
+                                held.push(Awaited {
+                                    invocation,
+                                    caller: asker,
+                                    answered,
+                                });
+                            }
+                        }
+                        _ => answered(None),
+                    }
                 }
                 if let Some(wake) = &wake {
                     wake();
@@ -1865,10 +1887,6 @@ fn provider_selection(
     )
 }
 
-/// How long the broker holds a delivery whose answer its caller waits for: an app's own action
-/// that writes its record settles well within it.
-const ANSWER_WAIT_MS: u32 = 10_000;
-
 impl AppActions for Apps {
     /// What the apps publish, read from the session's action broker: the one host every app
     /// publishes on, whatever it is built with. The broker keeps the last surface an app published
@@ -1944,6 +1962,41 @@ impl AppActions for Apps {
                 .to_owned(),
         };
         self.deliver_answered(target, arguments, &workspace, Some(answered))
+    }
+
+    /// Tell each delivery's caller its action's answer once the action settled: read from the
+    /// broker's state of the invocation, on the pass after what the action wrote woke the loop.
+    fn poll_answers(&self) {
+        let Some(broker) = self.state.borrow().broker.clone() else {
+            return;
+        };
+        let held = match self.awaited.lock() {
+            Ok(mut held) => std::mem::take(&mut *held),
+            Err(error) => {
+                tracing::warn!(%error, "the deliveries awaiting their answer are poisoned");
+                return;
+            }
+        };
+        let mut waiting = Vec::new();
+        for awaited in held {
+            match broker
+                .action_observe(&awaited.caller, &awaited.invocation)
+                .map(|state| state.update)
+            {
+                Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
+                    (awaited.answered)(output.value);
+                }
+                Some(
+                    tilo_actions::InvocationUpdate::Failed { .. }
+                    | tilo_actions::InvocationUpdate::Cancelled { .. },
+                )
+                | None => (awaited.answered)(None),
+                Some(_) => waiting.push(awaited),
+            }
+        }
+        if let Ok(mut held) = self.awaited.lock() {
+            held.extend(waiting);
+        }
     }
 
     /// Open `app` where the person asked it, through the same run of the workspace's `open`

@@ -294,6 +294,8 @@ impl crate::Shared {
         // message it posted for the ask and its record holds it (canvas.md §3).
         let mut arrangement = self.arrangement.borrow_mut();
         if arrangement.awaits_turns() {
+            // What Chat answered the asks' sends, once they settled.
+            self.search.poll_answers();
             arrangement.stand_asked(
                 &|sent| {
                     let message = self.sends.posted(sent)?;
