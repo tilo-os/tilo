@@ -60,7 +60,8 @@ fn click(app: &mut Window, target: Category) {
 /// Every category, each in a window of its own: the window opens on the
 /// default category, a click on the category's row selects it and only it,
 /// its pane draws, and the frames an idle window runs afterwards change
-/// nothing in the record.
+/// nothing in the record. The default category's row is clicked too: the
+/// row already selected stays the one selected.
 #[test]
 fn clicking_a_category_navigates_to_its_pane_and_leaves_the_record_alone() {
     for &target in Category::ALL {
@@ -70,12 +71,6 @@ fn clicking_a_category_navigates_to_its_pane_and_leaves_the_record_alone() {
             Category::DEFAULT,
             "{target:?}: starts on the default category"
         );
-        if target == Category::DEFAULT {
-            // The default is already selected; navigating to it is a no-op, so
-            // this case is covered by every *other* category proving the switch.
-            continue;
-        }
-
         click(&mut app, target);
         let heads = app.read_document(ui::tilo_resource::heads_of);
         assert_eq!(
@@ -89,10 +84,12 @@ fn clicking_a_category_navigates_to_its_pane_and_leaves_the_record_alone() {
             row_is_active(&mut app, &target.label()),
             "the {target:?} row must be active after navigating to it"
         );
-        assert!(
-            !row_is_active(&mut app, &Category::DEFAULT.label()),
-            "the previously-active default row must no longer be highlighted after navigating to {target:?}"
-        );
+        if target != Category::DEFAULT {
+            assert!(
+                !row_is_active(&mut app, &Category::DEFAULT.label()),
+                "the previously-active default row must no longer be highlighted after navigating to {target:?}"
+            );
+        }
         assert_eq!(
             active_row_count(&mut app),
             1,
