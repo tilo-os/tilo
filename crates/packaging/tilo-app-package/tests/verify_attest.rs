@@ -95,7 +95,6 @@ fn pack_with_attestation(
     reason = "one scenario, one labelled phase per merged case"
 )]
 fn attestation_verdicts_resolve_trust_revocation_and_scope() {
-    // phase: attested_by_trusted_attestor_returns_attested_by
     {
         let (publisher_sk, publisher_pub_hex) = fresh_key();
         let mut manifest = manifest_with_key(&publisher_pub_hex);
@@ -128,7 +127,6 @@ fn attestation_verdicts_resolve_trust_revocation_and_scope() {
             other => panic!("expected AttestedBy, got {other:?}"),
         }
     }
-    // phase: attested_by_unknown_attestor_falls_back_to_untrusted
     {
         let (publisher_sk, publisher_pub_hex) = fresh_key();
         let mut manifest = manifest_with_key(&publisher_pub_hex);
@@ -147,14 +145,12 @@ fn attestation_verdicts_resolve_trust_revocation_and_scope() {
             &attestor_sk,
         );
 
-        // Registry is empty — the attestor isn't trusted.
         let v = verify_with_trust(&packed.meta, &[], &[], &RevocationList::default());
         match v {
             Verification::UntrustedPublisher { .. } => {}
             other => panic!("expected UntrustedPublisher, got {other:?}"),
         }
     }
-    // phase: revoked_publisher_returns_revoked
     {
         let (publisher_sk, publisher_pub_hex) = fresh_key();
         let manifest = manifest_with_key(&publisher_pub_hex);
@@ -181,7 +177,6 @@ fn attestation_verdicts_resolve_trust_revocation_and_scope() {
             other => panic!("expected Revoked, got {other:?}"),
         }
     }
-    // phase: revoked_publisher_overrides_attestor_trust
     {
         // Even if the package is signed by a trusted attestor, a
         // revoked publisher key still refuses. Revocation is the
@@ -217,10 +212,7 @@ fn attestation_verdicts_resolve_trust_revocation_and_scope() {
         let v = verify_with_trust(&packed.meta, &[], &trusted, &revocation);
         assert!(matches!(v, Verification::Revoked { .. }), "got {v:?}");
     }
-    // phase: attestor_scope_mismatch_falls_back_to_untrusted
     {
-        // Attestor is trusted for `prefix:com.example.` but the
-        // package declares id `so.tilo.editor` — scope doesn't cover.
         let (publisher_sk, publisher_pub_hex) = fresh_key();
         let mut manifest = manifest_with_key(&publisher_pub_hex);
         manifest.trust.attested_by.clear();
@@ -249,7 +241,6 @@ fn attestation_verdicts_resolve_trust_revocation_and_scope() {
             "got {v:?}"
         );
     }
-    // phase: tampered_attestation_signature_falls_back_to_untrusted
     {
         // Registry says the attestor's pubkey is DIFFERENT from the
         // one that actually signed — the sig doesn't verify against
@@ -283,7 +274,6 @@ fn attestation_verdicts_resolve_trust_revocation_and_scope() {
             "got {v:?}"
         );
     }
-    // phase: multiple_attestations_first_trusted_wins
     {
         // Manifest has two attestations. Only the second attestor is
         // trusted. verify walks in order, skips the first (not in
@@ -301,8 +291,6 @@ fn attestation_verdicts_resolve_trust_revocation_and_scope() {
         let payload_root = payload_root_of(payload_dir.path(), &publisher_sk);
         let publisher_pub_bytes = publisher_sk.verifying_key().to_bytes();
 
-        // Sign both attestations up-front (they don't depend on
-        // each other).
         let sig_a = attest(&payload_root, &publisher_pub_bytes, &first_attestor_sk);
         let sig_b = attest(&payload_root, &publisher_pub_bytes, &second_attestor_sk);
         manifest.trust.attested_by.push(TrustAttestation {

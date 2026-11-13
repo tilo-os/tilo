@@ -1,28 +1,9 @@
 //! Compressed twins: the transport form of content-addressed objects.
-//!
-//! A `.tapp` at URL `u`, or a payload object at `<base>/blobs/<hash>`, may
-//! have a twin at `u.zst`: the same bytes as one zstd frame. Rust binaries
-//! are most of what Tilo ships and shrink to about a third, so a client asks
-//! for the twin first and falls back to the raw object when there is none.
-//!
-//! A twin is transport only. Nothing names, hashes or signs the compressed
-//! bytes: what a reader trusts is still the hash and length the signed
-//! registry entry, the signed collection or the chunk list gives for the
-//! raw object. A reader therefore decompresses with [`decompress_bounded`],
-//! which refuses output past that length, and then checks the decompressed
-//! bytes exactly as it checks a raw download. A small twin cannot expand
-//! into more than the object it stands for, and the compressed bytes
-//! themselves are bounded by [`compressed_bound`].
-//!
-//! Twins are written once, when the object is published, at [`LEVEL`] with
-//! a window of at most 2^[`WINDOW_LOG_MAX`] bytes, so decompressing one
-//! never needs more memory than that, whatever its frame header claims.
 
 use std::io::{self, Read, Write};
 
 use zstd::stream::raw::CParameter;
 
-/// What a twin's URL or file name adds to its object's.
 pub const SUFFIX: &str = ".zst";
 
 /// Media type a server labels a twin with. Twins are never sent as
@@ -36,8 +17,6 @@ pub const MEDIA_TYPE: &str = "application/zstd";
 /// a higher level gains bytes in the thousandths.
 pub const LEVEL: i32 = 19;
 
-/// Largest window, as a power of two, a twin is compressed with and a reader
-/// accepts: 8 MiB, what level 19 picks for any object larger than that.
 pub const WINDOW_LOG_MAX: u32 = 23;
 
 pub fn compress(bytes: &[u8]) -> io::Result<Vec<u8>> {

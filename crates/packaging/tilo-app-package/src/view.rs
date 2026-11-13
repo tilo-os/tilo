@@ -1,21 +1,7 @@
 //! What a reader of an installed package takes from its manifest.
 //!
-//! The launcher, the shell, Settings, the install CLI and the relay all ask
-//! the same few questions of a package — its id and name, what it opens,
-//! how it starts, what its sandbox declares. [`ManifestView`] answers them,
-//! and it is built only from the canonical [`Manifest`]: there is one
-//! decoder of `manifest.toml`, so a field means the same thing to the
-//! registry, the installer and the sandbox.
-//!
-//! In particular the package's identity is `[package].id`, the field the
-//! signed root covers. A key the canonical schema does not define, such as
-//! a top-level `package_id`, is never read: an archive may describe itself,
-//! but it may not name itself something other than what was signed.
-//!
-//! The view keeps the launcher's shapes (strings for the network mode and
-//! the service requirements, payload paths as strings) and normalises what
-//! the desktop matches on: extensions, MIME types and schemes are trimmed,
-//! lowercased and dropped when unsafe.
+//! Built only from the canonical [`Manifest`]: one decoder of `manifest.toml`, so a field means the
+//! same thing to the registry, the installer and the sandbox.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -29,37 +15,20 @@ pub use crate::manifest::{
 };
 use crate::validate::{valid_extension, valid_mime, valid_scheme};
 
-/// `[package].kind` for something a user opens. Everything else is a
-/// system component, however it starts.
 pub const KIND_APP: &str = "app";
 /// `[package].kind` for a headless component the desktop starts and
 /// supervises. Service packages are never promoted to ordinary app launchers.
 pub const KIND_SERVICE: &str = "service";
-/// The strict syscall profile, the one a sandbox gets unless it names
-/// another.
 pub const DEFAULT_SECCOMP_PROFILE: &str = "tilo-default";
 
-/// A package's manifest as its readers use it, derived from the canonical
-/// [`Manifest`]. Decoding (`toml::from_str`, [`ManifestView::from_toml_str`]
-/// or [`read_manifest`]) goes through the canonical schema first.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(try_from = "Manifest")]
 pub struct ManifestView {
-    /// `[package].id`, the signed identity.
     pub package_id: String,
-    /// `[package].name` — the publisher's human-facing name. `None` falls
-    /// back to deriving one from the package id.
     pub name: Option<String>,
-    /// `[package.names]` — the name in other languages, by BCP 47 tag.
     pub localized_names: BTreeMap<String, String>,
-    /// `[package.keywords]` — the other words the app is known by, every
-    /// language's together: trimmed, de-duplicated and bounded.
     pub keywords: Vec<String>,
-    /// `[package].category` — freedesktop-style menu category.
     pub category: Option<String>,
-    /// `[package].icon`: the payload-relative path of the signed icon,
-    /// exported to the app as `TILO_APP_ICON` and shown by the launcher grid,
-    /// search and the window chrome. `None` means the generated glyph.
     pub icon: Option<String>,
     pub version: String,
     /// `[package].kind` — what the package *is*: `app` is something a user
@@ -79,20 +48,13 @@ pub struct ManifestView {
     pub required_runtimes: Vec<String>,
     pub entrypoint: Entrypoint,
     pub sandbox: Sandbox,
-    /// `[cli].commands` — PATH-visible command names the package declares.
     pub cli_commands: Vec<String>,
-    /// `[providers].ext` — file extensions this package can open, how the
-    /// desktop learns which app owns a document type.
     pub opens_ext: Vec<String>,
-    /// Normalized, concrete MIME types declared by the package.
     pub opens_mime: Vec<String>,
-    /// Normalized URI schemes (without `:`) declared by the package.
     pub opens_schemes: Vec<String>,
     /// `[providers].secondary`: another app claiming the same resource is
     /// its default.
     pub opens_secondary: bool,
-    /// Signed minimum handoff-fidelity facets. Legacy manifests default to
-    /// framework presentation state.
     pub continuity: ContinuityContract,
     /// `[capabilities]`, required and optional together: the host
     /// capabilities the app uses. What the launcher hands an app for one
@@ -102,7 +64,6 @@ pub struct ManifestView {
 }
 
 impl ManifestView {
-    /// Whether `[capabilities]` names `name`, required or optional.
     #[must_use]
     pub fn declares_capability(&self, name: &str) -> bool {
         self.capabilities.iter().any(|declared| declared == name)
@@ -217,8 +178,6 @@ impl TryFrom<Manifest> for ManifestView {
 const MAX_KEYWORDS: usize = 96;
 const MAX_KEYWORD_SCALARS: usize = 48;
 
-/// Every language's keywords as one list, trimmed, without blanks or
-/// repeats, in tag order.
 fn search_keywords(by_language: BTreeMap<String, Vec<String>>) -> Vec<String> {
     let mut seen = std::collections::BTreeSet::new();
     by_language
@@ -239,11 +198,8 @@ fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-/// `[entrypoint]` with payload paths as strings.
 #[derive(Debug, Clone)]
 pub struct Entrypoint {
-    /// Path of the entrypoint binary, relative to the payload root. Used
-    /// verbatim for `"gui"`/`"cli"`; falls back for `"both"`.
     pub bin: String,
     pub r#type: EntrypointType,
     /// GUI-flavour binary path inside the payload. Only meaningful when
@@ -252,12 +208,7 @@ pub struct Entrypoint {
     /// CLI-flavour binary path inside the payload. Only meaningful when
     /// `r#type = "both"`.
     pub cli_bin: Option<String>,
-    /// `[entrypoint].runtime`: the runtime bundle (`<name>/<version>`) the
-    /// binary paths are relative to, instead of the payload. The launcher
-    /// executes the runtime's binary and points it at the payload with
-    /// `TILO_APP_MODULE`.
     pub runtime: Option<String>,
-    /// `[entrypoint].origins`: the outside services the system runs a connector for.
     pub origins: Vec<String>,
 }
 
@@ -288,7 +239,6 @@ impl Entrypoint {
         }
     }
 
-    /// Binary a CLI command should exec. `None` for a pure-GUI package.
     pub fn cli_bin(&self) -> Option<&str> {
         match self.r#type {
             EntrypointType::Gui => None,
@@ -301,21 +251,11 @@ impl Entrypoint {
     }
 }
 
-/// `[sandbox]` as the launcher reads it.
 #[derive(Debug, Clone)]
 pub struct Sandbox {
-    /// `[sandbox] seccomp = "…"` — the named syscall profile requested.
-    /// `tilo-default` enforces write-xor-execute; `tilo-jit` is the same
-    /// policy without that rule, for code genuinely compiled at run time.
-    ///
-    /// A **request**, not a setting: the launcher treats an unrecognised
-    /// name as strict, and checks the weaker name against the image's
-    /// entitlement list — a package writing a string about itself is not
-    /// authority to lift a protection off itself.
     pub seccomp: String,
     pub net: Net,
     pub fs: Fs,
-    /// Map of service-name -> requirement.
     pub services: BTreeMap<String, ServiceReq>,
     /// XDG portal policy per portal name. When at least one is `ViaHost`
     /// the launcher bind-mounts the host session D-Bus socket and sets
@@ -355,16 +295,10 @@ impl From<crate::manifest::Sandbox> for Sandbox {
     }
 }
 
-/// `[sandbox.net]`.
 #[derive(Debug, Clone)]
 pub struct Net {
     /// - `"off"` → no network (`--unshare-all` with NO `--share-net`).
-    /// - `"allowlist"` → only [`Net::hosts`], brokered through the
-    ///   egress gate.
-    /// - anything else → the host network is shared in.
     pub mode: String,
-    /// Endpoints declared for `mode = "allowlist"`; the launcher's egress
-    /// gate makes them the ceiling.
     pub hosts: Vec<String>,
 }
 
@@ -415,8 +349,6 @@ pub enum ManifestReadError {
 mod tests {
     use super::*;
 
-    /// A canonical manifest: `package` is the body of `[package]`, `tail`
-    /// any further tables. `[sandbox.net]` is `off` unless `tail` sets it.
     fn source(package: &str, tail: &str) -> String {
         let net = if tail.contains("[sandbox.net]") {
             ""

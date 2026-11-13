@@ -1,11 +1,6 @@
 //! Package identity: [`PackageId`] (the BLAKE3 root hash) and
 //! [`Kind`] (app / service / format-provider / plugin / runtime /
 //! env-runtime / tool).
-//!
-//! The package id is intentionally the same shape across every
-//! package kind — same `pack` flow, same on-disk format, same
-//! verifier. The `Kind` discriminates *what* the package is, not
-//! *how* it is packed.
 
 use std::fmt;
 use std::str::FromStr;
@@ -106,8 +101,6 @@ mod serde_id_bytes {
     }
 }
 
-/// What the package is. Same packaging machinery handles all kinds;
-/// the loader picks the kind-specific runtime hook.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Kind {
@@ -131,12 +124,8 @@ pub enum Kind {
     LanguagePack,
 }
 
-/// The package id of a language pack is this and its locale in lower case
-/// (`so.tilo.language-pack.de-de`).
 pub const LANGUAGE_PACK_ID_PREFIX: &str = "so.tilo.language-pack.";
 
-/// The locale a language pack's package id names, lowercased (`de-de`), or
-/// `None` for an id that names none.
 #[must_use]
 pub fn language_pack_locale(package_id: &str) -> Option<&str> {
     package_id
@@ -153,7 +142,6 @@ pub fn language_pack_locale(package_id: &str) -> Option<&str> {
 }
 
 impl Kind {
-    /// String form used in the manifest (kebab-case).
     pub fn as_str(&self) -> &'static str {
         match self {
             Kind::App => "app",

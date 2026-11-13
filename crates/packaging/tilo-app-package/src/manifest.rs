@@ -1,10 +1,4 @@
 //! The Tilo package manifest — schema, TOML parsing, and its sub-types.
-//!
-//! Human-authored side of a `.tapp`; deserialised from TOML, validated
-//! (see [`crate::validate`]), then bound into the signed root via
-//! canonical postcard encoding so on-wire bytes are stable across TOML
-//! formatting differences. Field renames map kebab-case TOML keys to
-//! Rust `snake_case`.
 
 use std::path::PathBuf;
 
@@ -12,8 +6,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::id::{Kind, PackageId};
 
-/// Top-level manifest. All fields except `Option` ones are required;
-/// missing ones fail TOML decode with a helpful path.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     /// `[package]` block — id, version, kind, runtimes.
@@ -43,12 +35,6 @@ pub struct Manifest {
     /// kind listed here; a manifest without the block declares none.
     #[serde(default, skip_serializing_if = "Resources::is_empty")]
     pub resources: Resources,
-    /// `[[offers]]` — actions the app offers while it is not running. The
-    /// action catalogue lists them for an installed app that has not
-    /// published its own actions in a workspace yet, and invoking one starts
-    /// the app and delivers the invocation once it publishes the action.
-    /// The running app's published action is what admits it; a manifest
-    /// without the table offers nothing until the app runs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub offers: Vec<OfferedAction>,
     /// `[sandbox]` block — the security profile applied at load.
@@ -80,16 +66,6 @@ pub struct Manifest {
     pub capabilities: Capabilities,
 }
 
-/// A target an app is built and published for.
-///
-/// Apps run on [`DEFAULT_PLATFORMS`] unless `package.platforms` narrows the
-/// list, which always comes with a `package.platform-reason`:
-///
-/// ```toml
-/// [package]
-/// platforms = ["linux", "macos"]
-/// platform-reason = "Hosts a pseudo-terminal for a login shell."
-/// ```
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Platform {
@@ -101,7 +77,6 @@ pub enum Platform {
 }
 
 impl Platform {
-    /// The manifest spelling.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -125,17 +100,6 @@ pub struct Capabilities {
     pub required: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub optional: Vec<String>,
-    /// `[capabilities.reasons]` — one line per capability on why the app
-    /// needs it, shown to the person who is asked. Required for every
-    /// capability in [`REASONED_CAPABILITIES`], allowed for any declared one.
-    ///
-    /// ```toml
-    /// [capabilities]
-    /// optional = ["io-uring"]
-    ///
-    /// [capabilities.reasons]
-    /// io-uring = "Its storage engine batches disk reads through io_uring."
-    /// ```
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub reasons: std::collections::BTreeMap<String, String>,
 }
@@ -158,30 +122,12 @@ impl Capabilities {
     }
 }
 
-/// `[target]` — a Linux, Windows, macOS or Android build of the package.
-///
-/// `architecture` is `x86_64` or `aarch64`, `module` is the executable the
-/// GUI entrypoint names (for `android`, an `.apk` or `.aab`), and `runtime`
-/// is the toolkit release linked into it (`[package].runtime`).
-///
-/// The first four fields are exactly the registry's signed `RegistryTarget`
-/// (see `registry_types::target` for the canonical spellings):
-///
-/// ```toml
-/// [target]
-/// platform = "linux"
-/// architecture = "x86_64"
-/// isa = "x86_64"
-/// runtime = "tilo-runtime/2026.07"
-/// module = "bin/books"
-/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Target {
     pub platform: String,
     pub architecture: String,
     pub isa: String,
     pub runtime: String,
-    /// Payload path of the executable the GUI entrypoint names.
     pub module: String,
 }
 
@@ -198,20 +144,12 @@ pub struct Target {
 /// on any other. An `env-runtime` names none.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Image {
-    /// The `env-runtime` package a `tool` was built for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<PackageId>,
-    /// The distribution packages the image holds, as exact
-    /// `name-epoch:version-release.arch` strings, sorted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub packages: Vec<String>,
 }
 
-/// Optional accessibility acceptance data for an application package.
-///
-/// The generic installed-image client consumes the AT-SPI scenario directly
-/// from this signed manifest. It is not a complete user-journey declaration:
-/// it is deliberately limited to a safe action and a named, observable result.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Accessibility {
     #[serde(default)]
@@ -224,8 +162,6 @@ impl Accessibility {
     }
 }
 
-/// One external AT-SPI acceptance scenario, executed against the installed
-/// payload's real accessibility bus provider.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AtspiAcceptance {
     pub root: String,
@@ -234,11 +170,8 @@ pub struct AtspiAcceptance {
     pub after_action: Vec<String>,
 }
 
-/// `[package]` — the identifying metadata.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Package {
-    /// Reverse-DNS identifier — `so.tilo.editor`. Stable across versions;
-    /// pinned in CLI/loader/sandbox profile names.
     pub id: String,
     /// The ids the app was published under before (`previously = ["so.tilo.lang.todo"]`):
     /// what it keeps of them (its records, grants and windows) is this app's. Signed with the
@@ -246,20 +179,8 @@ pub struct Package {
     /// app of another publisher's is refused.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub previously: Vec<String>,
-    /// Human-facing name — `"API Tester"`, `"On-Screen Keyboard"`. Absent
-    /// means derive one from the id's trailing component, which can't
-    /// produce e.g. `API` from `api-tester`.
     #[serde(default)]
     pub name: Option<String>,
-    /// The name in other languages, keyed by BCP 47 tag:
-    ///
-    /// ```toml
-    /// [package.names]
-    /// de = "Dateien"
-    /// ```
-    ///
-    /// Search matches every one of them, so an app is found by its name
-    /// in either the desktop's language or English.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub names: std::collections::BTreeMap<String, String>,
     /// What else people call the app, keyed by BCP 47 tag:
@@ -291,25 +212,13 @@ pub struct Package {
     /// and joined here when the app is packed, like [`Self::keywords`].
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub taglines: std::collections::BTreeMap<String, String>,
-    /// Screenshots the package carries, as paths under its `screenshots/`
-    /// directory (`screenshots/home.png`), in the order the Store shows them.
-    /// PNG, JPEG or WebP; validated by [`crate::validate`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub screenshots: Vec<String>,
-    /// Freedesktop-style menu category (`Office`, `Development`, ...);
-    /// the shell's Applications search provider surfaces packages by category.
     #[serde(default)]
     pub category: Option<String>,
-    /// The app's icon: a payload-relative SVG or PNG file (`icon.svg`).
-    /// Signed with the rest of the manifest, so the launcher grid, search and
-    /// the window chrome show the publisher's artwork for the id it was
-    /// signed under; absent means the generated glyph for the id or category.
-    /// Validated by [`crate::validate`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
-    /// Semver string, validated by [`crate::validate`] via the `semver` crate.
     pub version: String,
-    /// One of the [`Kind`] variants.
     pub kind: Kind,
     /// Signed service wire contract; absent for packages without a service.
     #[serde(
@@ -327,10 +236,6 @@ pub struct Package {
     /// Packaging stamps the build over the authored release.
     #[serde(default)]
     pub runtime: Option<String>,
-    /// For a native `kind = "runtime"` package: the runtime build its
-    /// payload is, `<runtime-name>/<release>+native.<abi digest>`. The
-    /// payload is that signed runtime bundle, and installing the package
-    /// installs the bundle for the apps that name it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provides: Option<String>,
     /// Further runtime bundles, `<runtime-name>/<version>` each, the app
@@ -348,8 +253,6 @@ pub struct Package {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub required_runtimes: Vec<String>,
-    /// Targets the app is built and published for; absent means
-    /// [`DEFAULT_PLATFORMS`]. Read it through [`Package::platforms`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platforms: Option<Vec<Platform>>,
     /// One-line reason the app narrows `platforms`; required exactly when
@@ -404,9 +307,6 @@ impl Package {
         text_in(&self.taglines, locale).filter(|tagline| !tagline.trim().is_empty())
     }
 
-    /// The runtime build a native package binds: the one an app links, or
-    /// the one a runtime package provides. This is what a registry version's
-    /// `target.runtime` records.
     #[must_use]
     pub fn native_runtime_binding(&self) -> Option<&str> {
         if self.kind == Kind::Runtime {
@@ -416,13 +316,11 @@ impl Package {
         }
     }
 
-    /// The targets the app is built and published for.
     #[must_use]
     pub fn platforms(&self) -> &[Platform] {
         self.platforms.as_deref().unwrap_or(DEFAULT_PLATFORMS)
     }
 
-    /// Whether `platforms` leaves out any of [`DEFAULT_PLATFORMS`].
     #[must_use]
     pub fn is_platform_narrowed(&self) -> bool {
         let platforms = self.platforms();
@@ -431,7 +329,6 @@ impl Package {
             .any(|platform| !platforms.contains(platform))
     }
 
-    /// Whether the app runs on `platform`.
     #[must_use]
     pub fn supports(&self, platform: Platform) -> bool {
         self.platforms().contains(&platform)
@@ -473,16 +370,12 @@ impl IsaRequirements {
         }
     }
 
-    /// Whether no architecture is declared.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.x86_64.is_none() && self.aarch64.is_none()
     }
 }
 
-/// Architectures Tilo distributes packages for. Deliberately narrow —
-/// broader targets join once the publisher pipeline, bootc image,
-/// and test coverage support them.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Arch {
@@ -490,8 +383,6 @@ pub enum Arch {
     AArch64,
 }
 
-/// Per-arch level, arch-tagged so mismatched compares are impossible
-/// at the type level (a v3 x86 tag can't be compared with an armv8.2 tag).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum IsaLevel {
     X86_64(X86_64Level),
@@ -506,7 +397,6 @@ impl IsaLevel {
         }
     }
 
-    /// Machine-readable label used in .tapp filenames — e.g. `so.tilo.editor-0.1.0-x86_64-v3.tapp`.
     pub fn wire_label(self) -> &'static str {
         match self {
             IsaLevel::X86_64(l) => l.wire_label(),
@@ -514,7 +404,7 @@ impl IsaLevel {
         }
     }
 
-    /// Ranks within an arch — cross-arch compare panics (comparing arm and x86 has no semantic meaning).
+    /// Ranks within an arch: comparing a level of one arch with another panics.
     pub fn rank(self) -> u8 {
         match self {
             IsaLevel::X86_64(l) => l.rank(),
@@ -523,22 +413,15 @@ impl IsaLevel {
     }
 }
 
-/// x86-64 microarchitecture feature levels per the `SysV` psABI x86-64
-/// supplement. Each level is a strict superset of the previous.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum X86_64Level {
-    /// Baseline x86-64 (K8, 2003+). SSE2 + CMPXCHG16B + generic AMD64.
     #[serde(alias = "x86-64")]
     #[serde(alias = "baseline")]
     Baseline,
-    /// v2 — Nehalem (Intel 2008) + Bulldozer (AMD 2011). Adds
-    /// SSE3/SSSE3/SSE4.1/SSE4.2/POPCNT/CMPXCHG16B.
     #[serde(rename = "v2")]
     #[serde(alias = "x86-64-v2")]
     V2,
-    /// v3 — Haswell (Intel 2013) + Excavator (AMD 2015). Adds AVX/AVX2
-    /// + BMI1/BMI2/FMA/F16C/LZCNT/MOVBE/OSXSAVE. **Tilo default floor.**
     #[serde(rename = "v3")]
     #[serde(alias = "x86-64-v3")]
     V3,
@@ -576,25 +459,17 @@ impl X86_64Level {
 /// opt-in `target-cpu` selections, not a tier bump.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AArch64Level {
-    /// ARMv8-A baseline (2013+). NEON + FP + AES/SHA1/SHA2 crypto
-    /// (mandatory in v8-A). Every 64-bit Android + iPhone 5S+.
     #[serde(rename = "armv8-a")]
     #[serde(alias = "v8-a")]
     #[serde(alias = "aarch64")]
     #[serde(alias = "baseline")]
     Armv8A,
-    /// ARMv8.2-A (Cortex-A75/A55, 2017+, Apple A11+, Snapdragon 845+).
-    /// Adds FP16, dot-product (SDOT/UDOT).
     #[serde(rename = "armv8.2-a")]
     #[serde(alias = "v8.2-a")]
     Armv8_2A,
-    /// ARMv8.4-A (Cortex-A76+, 2019+, Apple A12+, Neoverse N1). Adds
-    /// i8mm, ARMv8.2-SHA3.
     #[serde(rename = "armv8.4-a")]
     #[serde(alias = "v8.4-a")]
     Armv8_4A,
-    /// ARMv9-A (Cortex-X2/A710+, 2021+, Apple M2+, Neoverse V2).
-    /// Adds SVE2 (width-agnostic — code runs on any SVE2 impl).
     #[serde(rename = "armv9-a")]
     #[serde(alias = "v9-a")]
     Armv9A,
@@ -619,7 +494,6 @@ impl AArch64Level {
     }
 }
 
-/// `[publisher]` — who signed it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Publisher {
     /// The publisher's Ed25519 public key as `ed25519:<hex>` (canonical lower-case hex).
@@ -696,15 +570,12 @@ fn parse_ed25519_hex(s: &str) -> Result<[u8; 32], IdentityParseError> {
 /// these before granting elevated capabilities.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Trust {
-    /// `[[trust.attested_by]]` repeated array.
     #[serde(default, rename = "attested_by")]
     pub attested_by: Vec<TrustAttestation>,
 }
 
-/// One row from `[[trust.attested_by]]`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrustAttestation {
-    /// Attestor's identity, e.g. `tilo-curated/2025.06`.
     pub attestor: String,
     /// Opaque, hex-encoded claim bytes; format is attestor-specific.
     #[serde(rename = "claim")]
@@ -717,18 +588,10 @@ pub struct TrustAttestation {
 }
 
 /// `[continuity]` — minimum facets a continuation payload must contain.
-///
-/// Presentation state is the fleet-wide baseline supplied by the UI runtime.
-/// Apps may additionally require a semantic projection which another device
-/// can reopen natively rather than merely reproducing pixels.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContinuityContract {
     #[serde(default = "default_continuity_facets")]
     pub required: Vec<ContinuityFacet>,
-    /// Standard portable semantic shape emitted by this package. Keeping the
-    /// validator in the signed manifest lets third-party apps adopt native
-    /// handoff without teaching the shell their package id, while still
-    /// preventing arbitrary opaque JSON from becoming roaming state.
     #[serde(default, rename = "semantic-schema")]
     pub semantic_schema: Option<ContinuitySemanticSchema>,
 }
@@ -746,23 +609,15 @@ fn default_continuity_facets() -> Vec<ContinuityFacet> {
     vec![ContinuityFacet::Presentation]
 }
 
-/// A stable, signed handoff-fidelity capability.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ContinuityFacet {
-    /// Framework-owned focus, viewport, scroll, and view-mode state.
     Presentation,
     /// App-owned resource identity and domain state, sanitized for roaming.
     Semantic,
 }
 
 /// Portable semantic projections understood by the platform runtime.
-///
-/// These schemas describe meaning, not a particular application. A browser,
-/// documentation viewer, or third-party knowledge app may therefore share a
-/// standard location schema without gaining permission to serialize arbitrary
-/// process state. Each schema's payload shape, safety invariants and wire tag
-/// live in [`crate::continuity_schema`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ContinuitySemanticSchema {
@@ -799,35 +654,25 @@ impl TrustAttestation {
 }
 
 /// `[actions]` — an application's own standing on the session's action door.
-///
-/// An app always reaches the actions it publishes. Everything else is
-/// declared here, signed with the manifest, and is only a ceiling: invoking
-/// another app's action additionally needs the workspace to grant it to
-/// this app, exactly as it grants a collaborator.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionAccess {
     /// Read the catalogue of actions the person using the app is offered:
     /// labels, typed parameters and contracts, never their data.
     #[serde(default)]
     pub query: bool,
-    /// Invoke actions other apps publish, as this app.
     #[serde(default)]
     pub invoke: bool,
 }
 
 impl ActionAccess {
-    /// Whether nothing beyond the app's own actions is declared.
     pub fn is_empty(&self) -> bool {
         !self.query && !self.invoke
     }
 }
 
-/// `[sandbox]` — the runtime confinement profile.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sandbox {
-    /// Linux namespaces to unshare, matching `unshare(2)`'s flag names (user, pid, uts, ipc, mount, net).
     pub namespaces: Vec<String>,
-    /// Named seccomp profile — `tilo-default` is the baseline.
     pub seccomp: String,
     /// Landlock strictness — `strict` | `lax` | `off`.
     pub landlock: String,
@@ -847,7 +692,6 @@ pub struct Sandbox {
     /// proxy the bus, and the app's `ashpd` call surfaces `NotAvailable`.
     #[serde(default)]
     pub portals: std::collections::BTreeMap<String, PortalPolicy>,
-    /// `[sandbox.services]` table — required/optional services, values parsed as `"required@N"`/`"optional@N"`.
     #[serde(default)]
     pub services: std::collections::BTreeMap<String, ServiceReq>,
 }
@@ -866,7 +710,6 @@ pub struct SandboxFs {
     /// Read-only path patterns. Any entry is a validation failure.
     #[serde(default)]
     pub read: Vec<PathPattern>,
-    /// Read-write path patterns. Any entry is a validation failure.
     #[serde(default)]
     pub write: Vec<PathPattern>,
 }
@@ -907,9 +750,6 @@ impl SandboxNet {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PortalPolicy {
-    /// Route through the freedesktop portal on the host session bus —
-    /// the launcher bind-mounts the D-Bus socket and sets
-    /// `DBUS_SESSION_BUS_ADDRESS`; the app talks to the portal through `ashpd`.
     ViaHost,
     /// The portal is explicitly denied — same on-wire behaviour as
     /// omitting the entry (`ashpd` surfaces `PortalError::NotAvailable`),
@@ -921,18 +761,15 @@ pub enum PortalPolicy {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NetMode {
-    /// No network access at all.
     Off,
     /// Full host network (only for `runtime` / privileged apps).
     Host,
     /// DNS resolution only — for apps that surface URLs but rely on the host browser to follow them.
     DnsOnly,
-    /// Allowlist of hostnames the app may connect to; concrete names live in [`SandboxNet::hosts`].
     Allowlist,
 }
 
 impl NetMode {
-    /// The manifest spelling.
     #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -944,18 +781,14 @@ impl NetMode {
     }
 }
 
-/// `required@N`/`optional@N` — a declared dependency on a service protocol with a version pin.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceReq {
-    /// Protocol name as declared by the providing service (e.g. `collab`, `tilo-fs`, `spellcheck`).
     pub protocol: String,
-    /// Whether absence is a hard failure.
     pub requirement: Requirement,
     /// Protocol version pin; `1` if the manifest wrote no `@N`.
     pub version: u32,
 }
 
-/// Service-dep severity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Requirement {
@@ -1031,22 +864,10 @@ impl serde::Serialize for ServiceReq {
     }
 }
 
-/// `[entrypoint]` — the launch hook. Required for `app`, optional for
-/// `service` (which typically installs a systemd unit instead), unset
-/// for `runtime`.
-///
-/// `type` selects the flavour: `gui` (default) — whole [`Entrypoint`]
-/// is a GUI app; `cli` — the launcher inherits stdio, no Wayland
-/// surface, commands from [`Cli`] are published as PATH shims; `both`
-/// — two binaries, `gui_bin` for the app grid and `cli_bin` for the
-/// PATH shim to exec.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entrypoint {
-    /// Path inside the payload to the binary to exec. For `type = "both"`,
-    /// `gui_bin`/`cli_bin` take precedence; `bin` is kept for schema back-compat.
     #[serde(default)]
     pub bin: PathBuf,
-    /// Kind of entrypoint; defaults to `gui` so existing manifests stay valid.
     #[serde(default, rename = "type")]
     pub r#type: EntrypointType,
     /// GUI-flavour binary path; only meaningful when `type = "both"`.
@@ -1102,20 +923,13 @@ impl Entrypoint {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EntrypointType {
-    /// Windowed / graphical app. The default so back-compat is silent.
     #[default]
     Gui,
     /// Terminal / stdio-only app.
     Cli,
-    /// Ships both flavours; [`Entrypoint::gui_bin`]/`cli_bin` pick the binary per launch mode.
     Both,
 }
 
-/// `[cli]` — commands the package publishes on the user's PATH. Each
-/// name in `commands` becomes a shim at
-/// `~/.local/share/tilo-apps/bin/<cmd>` that re-execs through
-/// `run-installed`; the shim layer treats names as raw filesystem
-/// paths, so keep them short and namespace-clean.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Cli {
     /// PATH-visible command names; empty vec means no PATH commands.
@@ -1128,8 +942,6 @@ fn default_splash_budget() -> u32 {
 }
 
 /// A path with optional byte range for `splash-segments`, e.g.
-/// `"bin/editor[0x0:0x300000]"` or a whole-file path; parsed eagerly
-/// into a typed range.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SplashSegment {
     pub path: PathBuf,
@@ -1223,8 +1035,6 @@ impl serde::Serialize for SplashSegment {
     }
 }
 
-/// `[resources]` — the resource kinds an app's records hold, such as
-/// `example.note`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Resources {
     #[serde(default)]
@@ -1253,8 +1063,6 @@ impl Resources {
 /// publishes the full typed contract, and that is what admits an invocation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OfferedAction {
-    /// The resource the app publishes the action on, exactly as it
-    /// publishes it (`calendar.calendar`).
     pub resource: String,
     /// The kind of that resource; the resource itself when unset.
     #[serde(
@@ -1263,16 +1071,12 @@ pub struct OfferedAction {
         skip_serializing_if = "Option::is_none"
     )]
     pub resource_kind: Option<String>,
-    /// The action's id on that resource (`show-tasks`).
     pub action: String,
-    /// What a person reads in the catalogue.
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// What the action is able to do; grants are given by kind.
     #[serde(default)]
     pub kind: OfferKind,
-    /// How the action runs: a document change, an effect, or a view change.
     #[serde(default)]
     pub operation: OfferOperation,
     /// Whether a person confirms the action before it runs.
@@ -1281,7 +1085,6 @@ pub struct OfferedAction {
 }
 
 impl OfferedAction {
-    /// The kind of the resource the action is on.
     #[must_use]
     pub fn resource_kind(&self) -> &str {
         self.resource_kind.as_deref().unwrap_or(&self.resource)
@@ -1299,7 +1102,6 @@ pub enum OfferKind {
     Outside,
 }
 
-/// How an offered action runs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum OfferOperation {
@@ -1313,15 +1115,10 @@ pub enum OfferOperation {
 /// for `kind = "format-provider"`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Providers {
-    /// MIME types claimed (e.g. `application/vnd.oasis.opendocument.text`).
     #[serde(default)]
     pub mime: Vec<String>,
-    /// File extensions claimed (without leading dot).
     #[serde(default)]
     pub ext: Vec<String>,
-    /// URI schemes handled by the application (without `:`), such as
-    /// `https`, `mailto`, or `webcal`. `file`, `data`, and `javascript` are
-    /// deliberately reserved and rejected by validation.
     #[serde(default)]
     pub schemes: Vec<String>,
     /// The app is a tool someone picks for these resources (an editor that
@@ -1331,9 +1128,6 @@ pub struct Providers {
     /// still the default.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub secondary: bool,
-    /// Resource kinds the application opens (e.g. `mail.message`): an
-    /// address of one (`mail.message:<id>`) opens in this app, at it, as
-    /// the desktop's `open` routes it, without the app listing every item.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resources: Vec<String>,
 }
@@ -1625,7 +1419,6 @@ mode = "off"
     }
 }
 
-/// TOML decode / encode errors.
 #[derive(Debug, thiserror::Error)]
 pub enum ManifestParseError {
     #[error("TOML decode failed: {0}")]

@@ -2,28 +2,6 @@
 //! keys, loaded from user config by the caller (usually `tilo-install`)
 //! and threaded into [`crate::verify::verify`]. The foundation crate
 //! itself never touches `$HOME`.
-//!
-//! ```text
-//! ~/.config/tilo/trusted-attestors.toml   # [[attestor]] id/pubkey_hex/scope
-//! ~/.config/tilo/revoked-keys.toml        # [[revoked]] pubkey_hex/reason
-//! ```
-//!
-//! An attestor's signature covers a domain-separated message:
-//! `b"tilo-app-package-attest-v1\0" || payload_root_hash[32] || publisher_pubkey[32]`
-//! (83 bytes, Ed25519 → 64-byte signature).
-//!
-//! **Why `payload_root_hash` and not `package_id`?** `package_id`
-//! transitively includes the manifest bytes, which include the
-//! attestation signatures themselves — signing over `package_id`
-//! creates a fixed-point loop. `payload_root_hash` (BLAKE3 of the
-//! payload collection) is stable across attestation updates and binds
-//! the attestation to "this payload, signed by this publisher".
-//!
-//! `signature_hex` on `[[trust.attested_by]]` holds this signature's
-//! hex; threshold-Ed25519 (FROST) signatures verify identically at the
-//! wire. For k-of-n attestation, add multiple `[[trust.attested_by]]`
-//! rows — `verify_with_trust` returns after the first trusted-attestor
-//! match, so a stricter policy can walk and check each row itself.
 
 use std::path::{Path, PathBuf};
 
@@ -59,11 +37,8 @@ pub fn attestation_preimage(
     out
 }
 
-/// The scope an attestor is trusted for, parsed from the `scope`
-/// string: `"all"`, `"mime:<mime>[,...]"`, or `"prefix:<pref>[,...]"`.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub enum AttestorScope {
-    /// Trusts every package the attestor signs.
     #[default]
     All,
     /// Only trusts packages whose manifest declares one of these MIME types in `providers`.mime.
@@ -101,7 +76,6 @@ impl AttestorScope {
         Err(TrustLoadError::BadScope(raw.to_string()))
     }
 
-    /// Render back to the string form, for CLI printing + on-disk round-trip.
     pub fn render(&self) -> String {
         match self {
             AttestorScope::All => "all".into(),
@@ -110,7 +84,6 @@ impl AttestorScope {
         }
     }
 
-    /// Does this scope match a package with the given id + mime list from `providers`.mime?
     pub fn covers(&self, package_id: &str, mime: &[String]) -> bool {
         match self {
             AttestorScope::All => true,
@@ -120,7 +93,6 @@ impl AttestorScope {
     }
 }
 
-/// One row of trusted-attestors.toml — an attestor we accept third-party attestations from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrustedAttestor {
     /// Human-readable id, e.g. `tilo-curated/2026.07`; must match the
@@ -180,7 +152,6 @@ impl Serialize for TrustedAttestor {
     }
 }
 
-/// The full contents of `trusted-attestors.toml`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrustedAttestors {
     #[serde(default)]
@@ -188,12 +159,10 @@ pub struct TrustedAttestors {
 }
 
 impl TrustedAttestors {
-    /// Look up an attestor by id.
     pub fn get(&self, id: &str) -> Option<&TrustedAttestor> {
         self.attestor.iter().find(|a| a.id == id)
     }
 
-    /// Return the slice of attestors as a plain slice — convenience for `verify()`.
     pub fn as_slice(&self) -> &[TrustedAttestor] {
         &self.attestor
     }
@@ -254,12 +223,10 @@ pub trait TrustFile: Default + Serialize + DeserializeOwned {
 
 impl TrustFile for TrustedAttestors {}
 
-/// One revoked publisher key.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RevokedKey {
     /// Ed25519 public key of the revoked publisher, hex encoded.
     pub pubkey_hex: String,
-    /// Free-form human-readable reason for the record.
     #[serde(default)]
     pub reason: String,
 }
@@ -277,7 +244,6 @@ impl RevokedKey {
     }
 }
 
-/// The full contents of `revoked-keys.toml`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RevocationList {
     #[serde(default)]
@@ -285,7 +251,6 @@ pub struct RevocationList {
 }
 
 impl TrustFile for RevocationList {
-    /// Reject malformed keys rather than silently dropping a revocation.
     fn from_toml_str(s: &str) -> Result<Self, TrustLoadError> {
         let list: Self = toml::from_str(s).map_err(|e| TrustLoadError::Parse(e.to_string()))?;
         for entry in &list.revoked {
@@ -319,13 +284,10 @@ fn read_optional_policy(path: &Path) -> Result<Option<String>, TrustLoadError> {
     }
 }
 
-/// Standard config-dir paths for the trust registry + revocation
-/// list; follows XDG (`$XDG_CONFIG_HOME`, fallback `~/.config`) under a `tilo/` subdir.
 pub fn default_trusted_attestors_path() -> Option<PathBuf> {
     config_dir().map(|d| d.join("trusted-attestors.toml"))
 }
 
-/// Sibling of [`default_trusted_attestors_path`].
 pub fn default_revoked_keys_path() -> Option<PathBuf> {
     config_dir().map(|d| d.join("revoked-keys.toml"))
 }

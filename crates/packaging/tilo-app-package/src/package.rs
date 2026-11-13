@@ -1,24 +1,11 @@
 //! The signed metadata of one package: the three small blobs a package is
 //! without its payload bytes.
-//!
-//! ```text
-//! signed root (173 B) ──hash──▶ PackageId
-//!   ├─ manifest_hash     ──▶ manifest.toml
-//!   └─ payload_root_hash ──▶ collection (path → payload blob hash)
-//! ```
-//!
-//! [`PackageMeta::from_parts`] checks every hash link, so holding a
-//! `PackageMeta` means the manifest and collection are exactly the ones the
-//! root commits to. Whether the root's signature is trusted is a separate
-//! question, answered by [`crate::verify()`].
 
 use crate::blobs::{BlobHash, Collection, CollectionDecodeError};
 use crate::id::PackageId;
 use crate::manifest::{Manifest, ManifestParseError};
 use crate::signed::{SignedRoot, SignedRootError};
 
-/// A package's signed root, manifest and payload collection, with every
-/// hash link between them checked.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PackageMeta {
     pub id: PackageId,
@@ -26,11 +13,9 @@ pub struct PackageMeta {
     pub manifest: Manifest,
     pub collection: Collection,
     pub manifest_bytes: Vec<u8>,
-    /// The exact encoded collection the root commits to.
     pub collection_bytes: Vec<u8>,
 }
 
-/// A structural failure: the pieces do not form one package.
 #[derive(Debug, thiserror::Error)]
 pub enum MetaError {
     #[error("signed root: {0}")]
@@ -55,8 +40,6 @@ pub enum MetaError {
 }
 
 impl PackageMeta {
-    /// Assemble a package from its three metadata blobs, checking that
-    /// `signed_root` hashes to `id` and commits to the other two.
     pub fn from_parts(
         id: PackageId,
         signed_root: &[u8],
@@ -74,7 +57,6 @@ impl PackageMeta {
         Self::from_root(root, manifest_bytes, collection_bytes)
     }
 
-    /// Assemble a package from a decoded root and the blobs it commits to.
     pub fn from_root(
         root: SignedRoot,
         manifest_bytes: Vec<u8>,
@@ -102,24 +84,18 @@ impl PackageMeta {
         })
     }
 
-    /// The encoded signed root, whose hash is [`Self::id`].
     pub fn signed_root_bytes(&self) -> [u8; crate::SIGNED_ROOT_LEN] {
         self.root.encode()
     }
 
-    /// The publisher key the root names.
     pub fn publisher(&self) -> [u8; 32] {
         self.root.publisher_identity
     }
 
-    /// Each distinct payload blob, once, in hash order.
     pub fn payload_hashes(&self) -> std::collections::BTreeSet<BlobHash> {
         self.collection.entries.values().copied().collect()
     }
 
-    /// The entrypoint path the launcher executes, normalised to the
-    /// collection's forward-slash form, for kinds that have one. A runtime
-    /// may declare its internal engine host; this does not make it an app.
     pub fn executable_path(&self) -> Option<String> {
         match self.manifest.package.kind {
             crate::Kind::App | crate::Kind::Service | crate::Kind::Runtime => self

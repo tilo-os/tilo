@@ -1,30 +1,4 @@
 //! The `.tapp` archive: how a package travels as one file.
-//!
-//! A `.tapp` is a tar archive:
-//!
-//! ```text
-//! tapp.toml          # header: package_id = "tapp:<hex>", format = 2
-//! signed-root        # the 173-byte signed root (its hash is the package id)
-//! manifest.toml      # the manifest the root commits to
-//! collection.qcl     # the payload collection the root commits to
-//! blobs/<hex>        # payload blobs, named by BLAKE3 hash (full form only)
-//! ```
-//!
-//! It comes in two forms that verify identically:
-//!
-//! - **thin** — metadata only, typically a few KiB. The payload bytes are
-//!   content like any other and are fetched from whoever holds them (the
-//!   device's store, a peer, a registry), each checked against the
-//!   collection.
-//! - **full** — metadata plus every distinct payload blob, for offline
-//!   transfer and for sources that cannot serve blobs.
-//!
-//! Both directions stream. [`write()`] reads payload bytes from a
-//! [`BlobSource`] as it emits them, and [`read`] hands each carried blob to
-//! a [`BlobSink`] as it arrives and checks the blob's hash after the sink
-//! has consumed it. Metadata entries precede blobs, so the reader knows the
-//! collection before the first payload byte and skips anything the package
-//! does not reference.
 
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
@@ -94,17 +68,13 @@ struct Header {
     format: u32,
 }
 
-/// A decoded archive: the package's metadata and which payload blobs the
-/// archive carried.
 #[derive(Clone, Debug)]
 pub struct Tapp {
     pub meta: PackageMeta,
-    /// Length of each payload blob the archive carried, all verified.
     pub carried: BTreeMap<BlobHash, u64>,
 }
 
 impl Tapp {
-    /// Payload blobs the package references that the archive did not carry.
     pub fn missing(&self) -> Vec<BlobHash> {
         self.meta
             .payload_hashes()
@@ -113,7 +83,6 @@ impl Tapp {
             .collect()
     }
 
-    /// Whether the archive carried every payload blob.
     pub fn is_complete(&self) -> bool {
         self.missing().is_empty()
     }
@@ -214,10 +183,6 @@ fn set_once(slot: &mut Option<Vec<u8>>, name: &str, bytes: Vec<u8>) -> Result<()
 }
 
 /// Decode an archive, handing each carried payload blob to `sink`.
-///
-/// Every carried blob is verified against its name after `sink` consumed
-/// it; blobs the collection does not reference, and repeats, are skipped
-/// unread by the sink. The archive may be thin: check [`Tapp::missing`].
 pub fn read<R: Read>(reader: R, sink: &mut dyn BlobSink) -> Result<Tapp, TappError> {
     let mut archive = tar::Archive::new(reader);
     let mut pending = Some(Pending::default());

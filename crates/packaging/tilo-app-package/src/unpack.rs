@@ -1,9 +1,5 @@
 //! `unpack` — write a package's payload tree to a directory, streaming each
 //! file from a [`BlobSource`] and checking its hash on the way.
-//!
-//! This is the reverse of [`crate::pack::pack`]. It does **not** check the
-//! publisher signature — see [`crate::verify()`] for that. Unpack succeeds on
-//! an unsigned package so build tooling can round-trip without keys.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -53,14 +49,6 @@ pub fn validate_materialized_payload(
     validate_materialized_payload_within(crate::app_size_limit(manifest), collection, len_of)
 }
 
-/// [`validate_materialized_payload`] against the application budget `limit`
-/// the caller chose for the package (its [`crate::app_size_limit`], or a
-/// development store's [`crate::local_build_size_limit`]); `None`, a
-/// non-app bundle, is not bounded here.
-///
-/// # Errors
-///
-/// As [`validate_materialized_payload`].
 pub fn validate_materialized_payload_within(
     limit: Option<u64>,
     collection: &Collection,
